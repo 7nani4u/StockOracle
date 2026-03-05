@@ -1,15 +1,62 @@
-streamlit
-yfinance
-pandas
-numpy
-plotly
-scipy
-scikit-learn
-statsmodels
-textblob
-prophet
-xgboost
-feedparser
-ta-lib
-beautifulsoup4
-requests
+# ============================================================
+# StockOracle - Vercel 서버리스 환경 최적화 requirements.txt
+# ============================================================
+#
+# [수정 이유별 분류]
+#
+# ❌ 제거된 패키지:
+#   - streamlit          → Vercel은 독립 웹서버 실행 불가
+#   - prophet            → CmdStan C++ 컴파일러 필요, Vercel 빌드 불가
+#   - ta-lib             → C 바이너리(libta-lib.so) 필요, Vercel 빌드 불가
+#   - textblob           → 미사용 (텍스트 감성 분석 기능 미구현)
+#   - statsmodels        → ExponentialSmoothing 사용 시 재추가 (아래 참조)
+#
+# ✅ 유지된 패키지:
+#   - yfinance           → 주가 데이터 수집 (순수 Python)
+#   - pandas, numpy      → 데이터 처리 (순수 Python)
+#   - xgboost            → CPU 모드 pip 설치만으로 동작
+#   - scikit-learn       → 선형회귀 폴백 (순수 Python)
+#   - scipy              → 극값 찾기 (argrelextrema) - 순수 Python
+#   - feedparser         → RSS 뉴스 파싱 (순수 Python)
+#   - beautifulsoup4     → 네이버 금융 크롤링 (순수 Python)
+#   - requests           → HTTP 요청 (순수 Python)
+#
+# ✅ 추가된 패키지:
+#   - pandas-ta          → TA-Lib C 라이브러리 대체 (순수 Python 구현)
+#   - statsmodels        → Prophet 대체 (Holt-Winters, 순수 Python)
+#
+# ============================================================
+
+# ── 핵심 데이터 처리 ─────────────────────────────────────────
+numpy>=1.26.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+scipy>=1.11.0
+
+# ── 주가 데이터 수집 ─────────────────────────────────────────
+yfinance>=0.2.36
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# ── 기술적 분석 (TA-Lib 대체) ───────────────────────────────
+# [수정 이유] ta-lib은 C 바이너리 컴파일 필수 → pandas-ta(순수 Python)로 교체
+pandas-ta>=0.3.14b0
+
+# ── 예측 모델 (Prophet 대체) ──────────────────────────────────
+# [수정 이유] prophet은 CmdStan 컴파일러 필요 → statsmodels로 교체
+# ExponentialSmoothing(Holt-Winters) 사용
+statsmodels>=0.14.0
+
+# ── 머신러닝 ──────────────────────────────────────────────────
+# [주의] xgboost는 Vercel Lambda에서 동작하나 모델 크기/속도 주의
+xgboost>=2.0.0
+scikit-learn>=1.3.0
+
+# ── 뉴스/RSS ──────────────────────────────────────────────────
+feedparser>=6.0.10
+
+# ── lxml (BeautifulSoup 파서, 속도 향상) ─────────────────────
+lxml>=4.9.0
+
+# ── 표준 라이브러리 (Python 내장) ────────────────────────────
+# json, os, time, datetime, warnings, functools, traceback, tempfile
+# urllib.parse, http.server → requirements.txt 불필요
