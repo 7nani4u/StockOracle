@@ -11,8 +11,8 @@ from http.server import HTTPServer
 # 현재 디렉토리를 Python 경로에 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# api/stock.py의 handler 클래스를 import
-from api.stock import handler
+# api/index.py의 handler 클래스를 import
+from api.index import handler
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
