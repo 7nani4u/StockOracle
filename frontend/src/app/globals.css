@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --rise: #ef4444;
+  --fall: #3b82f6;
+}
+
+body {
+  @apply bg-gray-950 text-gray-100;
+  font-family: 'Segoe UI', 'Noto Sans KR', sans-serif;
+}
+
+/* 스크롤바 커스텀 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { @apply bg-gray-900; }
+::-webkit-scrollbar-thumb { @apply bg-gray-600 rounded-full; }
+
+/* 카드 기본 스타일 */
+.card {
+  @apply bg-gray-900 border border-gray-800 rounded-2xl p-5;
+}
+
+/* 탭 버튼 */
+.tab-btn {
+  @apply px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200;
+}
+.tab-btn.active {
+  @apply bg-blue-600 text-white;
+}
+.tab-btn:not(.active) {
+  @apply text-gray-400 hover:text-white hover:bg-gray-800;
+}
+
+/* 메트릭 카드 */
+.metric-card {
+  @apply card flex flex-col gap-1;
+}
+.metric-label {
+  @apply text-xs text-gray-400 uppercase tracking-wide;
+}
+.metric-value {
+  @apply text-2xl font-bold;
+}
+.metric-change {
+  @apply text-sm font-medium;
+}
+
+/* 스코어 바 */
+.score-bar-bg {
+  @apply w-full bg-gray-800 rounded-full h-3;
+}
+.score-bar-fill {
+  @apply h-3 rounded-full transition-all duration-700;
+}
+
+/* 리스크 카드 */
+.risk-card {
+  @apply card hover:scale-[1.02] transition-transform duration-200;
+}
+
+/* 뉴스 아이템 */
+.news-item {
+  @apply flex items-start gap-3 py-3 border-b border-gray-800 last:border-0;
+}

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+venv/
+.cache/
+.yf_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / Next.js
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+.npm
+
+# Vercel
+.vercel/
+
+# 로컬 캐시
+*.db
+*.sqlite
+*.sqlite3
+
+# 에디터
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
