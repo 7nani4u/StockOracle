@@ -1,0 +1,15 @@
+streamlit
+yfinance
+pandas
+numpy
+plotly
+scipy
+scikit-learn
+statsmodels
+textblob
+prophet
+xgboost
+feedparser
+ta-lib
+beautifulsoup4
+requests
