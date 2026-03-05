@@ -31,19 +31,27 @@ import datetime
 import traceback
 import warnings
 import functools
+import tempfile
 from typing import Optional, Dict, Any, List, Tuple
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 
 # ── /tmp 강제 사용 (Vercel은 /tmp 외 쓰기 금지) ───────────────────────────────
-os.environ.setdefault("TMPDIR", "/tmp")
-os.environ.setdefault("HOME", "/tmp")
-os.environ.setdefault("XDG_CACHE_HOME", "/tmp/cache")
+if os.name == 'nt':
+    # Windows 로컬 개발 환경
+    TMP_DIR = tempfile.gettempdir()
+else:
+    # Vercel / Linux 환경
+    TMP_DIR = "/tmp"
+
+os.environ.setdefault("TMPDIR", TMP_DIR)
+os.environ.setdefault("HOME", TMP_DIR)
+os.environ.setdefault("XDG_CACHE_HOME", os.path.join(TMP_DIR, "cache"))
 
 try:
     import platformdirs
     def _tmp(*a, **k):
-        d = "/tmp/yf_cache"
+        d = os.path.join(TMP_DIR, "yf_cache")
         os.makedirs(d, exist_ok=True)
         return d
     platformdirs.user_cache_dir = _tmp
@@ -59,6 +67,7 @@ import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
+from scipy.signal import argrelextrema
 
 try:
     from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -77,6 +86,12 @@ try:
     FEEDPARSER_AVAILABLE = True
 except ImportError:
     FEEDPARSER_AVAILABLE = False
+
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+except ImportError:
+    PANDAS_TA_AVAILABLE = False
 
 try:
     from sklearn.linear_model import LinearRegression
@@ -125,8 +140,9 @@ US_STOCK_MAPPING = {
     "맥도날드": "MCD", "코스트코": "COST", "월마트": "WMT",
     "제이피모건": "JPM", "비자": "V", "마스터카드": "MA",
     "화이자": "PFE", "모더나": "MRNA", "TSMC": "TSM",
-    "알리바바": "BABA", "쿠팡": "CPNG", "팔란티어": "PLTR",
-    "코인베이스": "COIN", "QQQ": "QQQ", "SPY": "SPY",
+    "알리바바": "BABA", "쿠팡": "CPNG", "로블록스": "RBLX", "유니티": "U",
+    "팔란티어": "PLTR", "코인베이스": "COIN", "게임스탑": "GME", "AMC": "AMC",
+    "QQQ": "QQQ", "SPY": "SPY", "SQQQ": "SQQQ",
     "TQQQ": "TQQQ", "SOXL": "SOXL", "비트코인": "BTC-USD",
     "이더리움": "ETH-USD",
 }
@@ -262,19 +278,37 @@ def fetch_naver(code: str):
     url = f"https://finance.naver.com/item/main.naver?code={code}"
     r = {"price":None,"market_cap":None,"per":None,"pbr":None,"opinion":None,"news":[],"disclosures":[]}
     try:
-        hdrs = {"User-Agent": "Mozilla/5.0"}
-        soup = BeautifulSoup(requests.get(url, headers=hdrs, timeout=5).text, "html.parser")
+        # User-Agent 업데이트 및 타임아웃 증가
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://finance.naver.com/"
+        }
+        resp = requests.get(url, headers=hdrs, timeout=10)
+        resp.raise_for_status()
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # 가격 (class 변경 가능성 대비)
         el = soup.select_one(".no_today .blind")
         if el: r["price"] = el.text.replace(",","")
+        
+        # 주요 지표
         for k, s in [("market_cap","#_market_sum"),("per","#_per"),("pbr","#_pbr")]:
             e = soup.select_one(s)
             r[k] = e.text.strip() if e else "-"
+            
+        # 뉴스 섹션
         for item in soup.select(".news_section ul li")[:5]:
             a = item.select_one("span > a")
             if a:
-                r["news"].append({"title": a.text.strip(),
-                                   "link": "https://finance.naver.com" + a["href"]})
-    except Exception:
+                title = a.text.strip()
+                link = a["href"]
+                if not link.startswith("http"):
+                    link = "https://finance.naver.com" + link
+                r["news"].append({"title": title, "link": link})
+                
+    except Exception as e:
+        print(f"Naver Fetch Error: {e}")
         pass
     return r
 
@@ -324,8 +358,18 @@ def fetch_screener():
             {"ticker":"META","name":"메타","cat":"인터넷"},
             {"ticker":"TSLA","name":"테슬라","cat":"자동차"},
             {"ticker":"TSM","name":"TSMC","cat":"반도체"},
+            {"ticker":"AVGO","name":"브로드컴","cat":"반도체"},
+            {"ticker":"LLY","name":"일라이 릴리","cat":"제약"},
             {"ticker":"JPM","name":"JP모건","cat":"금융"},
             {"ticker":"V","name":"비자","cat":"금융"},
+            {"ticker":"WMT","name":"월마트","cat":"유통"},
+            {"ticker":"XOM","name":"엑슨모빌","cat":"에너지"},
+            {"ticker":"UNH","name":"유나이티드헬스","cat":"헬스케어"},
+            {"ticker":"MA","name":"마스터카드","cat":"금융"},
+            {"ticker":"PG","name":"P&G","cat":"소비재"},
+            {"ticker":"COST","name":"코스트코","cat":"유통"},
+            {"ticker":"JNJ","name":"존슨앤존슨","cat":"헬스케어"},
+            {"ticker":"HD","name":"홈디포","cat":"유통"},
         ],
     }
     all_tickers = [s["ticker"] for sl in stocks.values() for s in sl]
@@ -377,10 +421,132 @@ def fetch_screener():
 # =============================================================================
 # 분석 엔진
 # =============================================================================
+class ChartPatternAnalyzer:
+    def __init__(self, df):
+        self.df = df
+        self.closes = np.array(df['Close'].values, dtype=float)
+        self.highs = np.array(df['High'].values, dtype=float)
+        self.lows = np.array(df['Low'].values, dtype=float)
+        
+    def find_local_extrema(self, order=5):
+        peaks_idx = argrelextrema(self.highs, np.greater, order=order)[0]
+        troughs_idx = argrelextrema(self.lows, np.less, order=order)[0]
+        return peaks_idx, troughs_idx
+
+    def detect_patterns(self):
+        patterns = []
+        try:
+            peaks, troughs = self.find_local_extrema(order=5)
+            if len(peaks) < 3 or len(troughs) < 3:
+                return patterns
+
+            last_peaks = peaks[-3:]
+            last_troughs = troughs[-3:]
+            
+            # Linear regression for slope
+            def get_slope(x, y):
+                if len(x) < 2: return 0
+                return np.polyfit(x, y, 1)[0]
+
+            slope_upper = get_slope(last_peaks, self.highs[last_peaks])
+            slope_lower = get_slope(last_troughs, self.lows[last_troughs])
+            
+            # Triangle Patterns
+            if slope_upper < 0 and slope_lower > 0:
+                patterns.append({'name': '대칭 삼각형 (Symmetrical Triangle)', 'signal': '중립/변동성 축소', 'desc': '곧 큰 방향성이 나올 것입니다.'})
+            elif slope_upper < 0 and abs(slope_lower) < 0.05:
+                patterns.append({'name': '하락 삼각형 (Descending Triangle)', 'signal': '매도 (하락형)', 'desc': '지지선 붕괴 위험이 있습니다.'})
+            elif abs(slope_upper) < 0.05 and slope_lower > 0:
+                patterns.append({'name': '상승 삼각형 (Ascending Triangle)', 'signal': '매수 (상승형)', 'desc': '저항선 돌파 시도가 예상됩니다.'})
+                
+            # Wedge Patterns
+            if slope_upper < 0 and slope_lower < 0:
+                if slope_lower < slope_upper:
+                    patterns.append({'name': '하락 쐐기형 (Falling Wedge)', 'signal': '매수 (반전)', 'desc': '하락세가 약화되고 반등할 가능성이 큽니다.'})
+            if slope_upper > 0 and slope_lower > 0:
+                if slope_lower > slope_upper:
+                    patterns.append({'name': '상승 쐐기형 (Rising Wedge)', 'signal': '매도 (반전)', 'desc': '상승세가 약화되고 하락할 가능성이 큽니다.'})
+                    
+            # Double Top/Bottom
+            if len(last_peaks) >= 2:
+                if abs(self.highs[last_peaks[-1]] - self.highs[last_peaks[-2]]) / (self.highs[last_peaks[-1]] or 1) < 0.02:
+                    patterns.append({'name': '이중 천장 (Double Top)', 'signal': '매도', 'desc': '고점 돌파 실패, 하락 전환 가능성.'})
+            if len(troughs) >= 2:
+                if abs(self.lows[last_troughs[-1]] - self.lows[last_troughs[-2]]) / (self.lows[last_troughs[-1]] or 1) < 0.02:
+                    patterns.append({'name': '이중 바닥 (Double Bottom)', 'signal': '매수', 'desc': '바닥 지지 성공, 상승 전환 가능성.'})
+        except Exception:
+            pass
+        return patterns
+
+def detect_patterns(dd: Dict) -> List[Dict]:
+    # 1. Try pandas-ta if available
+    patterns = []
+    if PANDAS_TA_AVAILABLE:
+        try:
+            df = pd.DataFrame({k: dd[k] for k in ["Open", "High", "Low", "Close"] if k in dd})
+            # Detect all patterns
+            # pandas_ta.cdl_pattern returns a DataFrame with columns like "CDL_DOJI", "CDL_HAMMER"
+            # We need to map them to our format
+            cdl = df.ta.cdl_pattern(name="all")
+            if cdl is not None and not cdl.empty:
+                last_row = cdl.iloc[-1]
+                for col, val in last_row.items():
+                    if val != 0:
+                        name = col.replace("CDL_", "")
+                        direction = "상승" if val > 0 else "하락"
+                        patterns.append({
+                            "name": name,
+                            "desc": f"{name} 패턴 ({direction})",
+                            "direction": direction,
+                            "conf": 100
+                        })
+                if patterns:
+                    return patterns
+        except Exception:
+            pass
+
+    # 2. Fallback to manual logic
+    try:
+        o = [float(x) for x in dd.get("Open", []) if x is not None]
+        h = [float(x) for x in dd.get("High", []) if x is not None]
+        l = [float(x) for x in dd.get("Low", []) if x is not None]
+        c = [float(x) for x in dd.get("Close", []) if x is not None]
+        if len(c) < 3: return []
+        o1,h1,l1,c1 = o[-1],h[-1],l[-1],c[-1]
+        o2,h2,l2,c2 = o[-2],h[-2],l[-2],c[-2]
+        o3,h3,l3,c3 = o[-3],h[-3],l[-3],c[-3]
+        body1 = abs(c1-o1); rng1 = h1-l1 or 0.001
+        body2 = abs(c2-o2); rng2 = h2-l2 or 0.001
+        up_sh1 = h1-max(c1,o1); lo_sh1 = min(c1,o1)-l1
+        bull1 = c1>=o1; bull2 = c2>=o2; bull3 = c3>=o3
+        
+        if body1/rng1 < 0.1:
+            patterns.append({"name":"✖️ Doji","desc":"도지","direction":"중립","conf":100})
+        if lo_sh1 >= body1*2 and up_sh1 <= body1*0.5 and body1>0 and c2>c1:
+            patterns.append({"name":"🔨 Hammer","desc":"해머 (반등 신호)","direction":"상승","conf":100})
+        if up_sh1 >= body1*2 and lo_sh1 <= body1*0.5 and body1>0 and c2<c1:
+            patterns.append({"name":"⭐ Shooting Star","desc":"유성형 (하락 신호)","direction":"하락","conf":100})
+        if bull1 and not bull2 and o1<=c2 and c1>=o2 and body1>body2:
+            patterns.append({"name":"🫂 Bullish Engulfing","desc":"상승 포용형","direction":"상승","conf":100})
+        if not bull1 and bull2 and o1>=c2 and c1<=o2 and body1>body2:
+            patterns.append({"name":"🫂 Bearish Engulfing","desc":"하락 포용형","direction":"하락","conf":100})
+        if bull1 and not bull2 and o1>c2 and c1<o2 and body1<body2*0.5:
+            patterns.append({"name":"🤰 Bullish Harami","desc":"상승 하라미","direction":"상승","conf":100})
+        if body1/rng1 > 0.9 and body1>0:
+            patterns.append({"name":"📏 Marubozu","desc":f"마루보즈({'상승' if bull1 else '하락'})","direction":"상승" if bull1 else "하락","conf":100})
+        if bull3 and body2/rng2 < 0.3 and bull1 and c1 > (o3+c3)/2 and c3 > o3:
+            patterns.append({"name":"🌆 Evening Star","desc":"이브닝스타 (하락 반전)","direction":"하락","conf":100})
+        if not bull3 and body2/rng2 < 0.3 and bull1 and c1 < (o3+c3)/2 and c3 < o3:
+            patterns.append({"name":"🌅 Morning Star","desc":"모닝스타 (상승 반전)","direction":"상승","conf":100})
+    except Exception:
+        pass
+        
+    return patterns
+
 def analyze_score(dd: Dict):
     closes = dd.get("Close", [])
     if len(closes) < 20:
-        return 50, [], []
+        return 50, [], [], []
     def v(k):
         a = dd.get(k, [])
         val = a[-1] if a else None
@@ -446,45 +612,17 @@ def analyze_score(dd: Dict):
     else: pmsgs.append("특이 패턴 없음")
     score += ps
     steps.append({"step": "4. 캔들 패턴", "result": " | ".join(pmsgs), "score": ps})
-    return max(0, min(100, score)), steps, patterns
-
-def detect_patterns(dd: Dict) -> List[Dict]:
+    
+    # 기하학적 패턴 (점수 반영 X, 정보 제공용)
+    geo_patterns = []
     try:
-        o = [float(x) for x in dd.get("Open", []) if x is not None]
-        h = [float(x) for x in dd.get("High", []) if x is not None]
-        l = [float(x) for x in dd.get("Low", []) if x is not None]
-        c = [float(x) for x in dd.get("Close", []) if x is not None]
-        if len(c) < 3: return []
-        o1,h1,l1,c1 = o[-1],h[-1],l[-1],c[-1]
-        o2,h2,l2,c2 = o[-2],h[-2],l[-2],c[-2]
-        o3,h3,l3,c3 = o[-3],h[-3],l[-3],c[-3]
-        body1 = abs(c1-o1); rng1 = h1-l1 or 0.001
-        body2 = abs(c2-o2); rng2 = h2-l2 or 0.001
-        body3 = abs(c3-o3); rng3 = h3-l3 or 0.001
-        up_sh1 = h1-max(c1,o1); lo_sh1 = min(c1,o1)-l1
-        bull1 = c1>=o1; bull2 = c2>=o2; bull3 = c3>=o3
-        res = []
-        if body1/rng1 < 0.1:
-            res.append({"name":"✖️ Doji","desc":"도지","direction":"중립","conf":100})
-        if lo_sh1 >= body1*2 and up_sh1 <= body1*0.5 and body1>0 and c2>c1:
-            res.append({"name":"🔨 Hammer","desc":"해머 (반등 신호)","direction":"상승","conf":100})
-        if up_sh1 >= body1*2 and lo_sh1 <= body1*0.5 and body1>0 and c2<c1:
-            res.append({"name":"⭐ Shooting Star","desc":"유성형 (하락 신호)","direction":"하락","conf":100})
-        if bull1 and not bull2 and o1<=c2 and c1>=o2 and body1>body2:
-            res.append({"name":"🫂 Bullish Engulfing","desc":"상승 포용형","direction":"상승","conf":100})
-        if not bull1 and bull2 and o1>=c2 and c1<=o2 and body1>body2:
-            res.append({"name":"🫂 Bearish Engulfing","desc":"하락 포용형","direction":"하락","conf":100})
-        if bull1 and not bull2 and o1>c2 and c1<o2 and body1<body2*0.5:
-            res.append({"name":"🤰 Bullish Harami","desc":"상승 하라미","direction":"상승","conf":100})
-        if body1/rng1 > 0.9 and body1>0:
-            res.append({"name":"📏 Marubozu","desc":f"마루보즈({'상승' if bull1 else '하락'})","direction":"상승" if bull1 else "하락","conf":100})
-        if bull3 and body2/rng2 < 0.3 and bull1 and c1 > (o3+c3)/2 and c3 > o3:
-            res.append({"name":"🌆 Evening Star","desc":"이브닝스타 (하락 반전)","direction":"하락","conf":100})
-        if not bull3 and body2/rng2 < 0.3 and bull1 and c1 < (o3+c3)/2 and c3 < o3:
-            res.append({"name":"🌅 Morning Star","desc":"모닝스타 (상승 반전)","direction":"상승","conf":100})
-        return res
-    except Exception:
-        return []
+        df = pd.DataFrame({k: dd[k] for k in ["Open", "High", "Low", "Close"] if k in dd})
+        if not df.empty and len(df) > 20:
+            geo_patterns = ChartPatternAnalyzer(df).detect_patterns()
+    except:
+        pass
+
+    return max(0, min(100, score)), steps, patterns, geo_patterns
 
 def calc_risk(price: float, atr: float) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
@@ -547,34 +685,77 @@ def linear_forecast(dd: Dict, days: int):
 def xgb_forecast(dd: Dict, days: int = 30):
     if not XGBOOST_AVAILABLE: return None
     try:
-        needed = ["Open","High","Low","Close","Volume","MA5","MA20","RSI","MACD"]
-        df = pd.DataFrame({k: dd[k] for k in needed if k in dd}).dropna().tail(252).reset_index(drop=True)
-        if len(df) < 30: return None
+        # 1. 데이터 준비
+        needed = ["Open","High","Low","Close","Volume"]
+        df = pd.DataFrame({k: dd[k] for k in needed if k in dd}).dropna()
+        if len(df) < 60: return None
+        
+        # 2. 피처 엔지니어링 (순수 시계열 기반)
+        # 복잡한 지표(RSI 등)는 재귀 예측 시 업데이트가 어려우므로 제외하거나 단순화
         df["Target"] = df["Close"].shift(-1)
         df["Returns"] = df["Close"].pct_change()
-        df["Range"] = df["High"] - df["Low"]
-        for lag in [1,2,3]:
-            df[f"Lag{lag}"] = df["Close"].shift(lag)
+        df["Range"] = (df["High"] - df["Low"]) / df["Close"]
+        df["Vol_Change"] = df["Volume"].pct_change().replace([np.inf, -np.inf], 0)
+        
+        # Lag 피처 (과거 5일치)
+        for i in range(1, 6):
+            df[f"Lag{i}"] = df["Close"].shift(i)
+            
         df = df.dropna()
-        feats = [c for c in ["Close","Open","High","Low","Volume","MA5","MA20","RSI","MACD","Returns","Range","Lag1","Lag2","Lag3"] if c in df.columns]
-        X, y = df[feats], df["Target"]
-        split = int(len(X)*0.9)
-        model = xgb.XGBRegressor(n_estimators=50, learning_rate=0.1, tree_method="hist", verbosity=0)
-        model.fit(X.iloc[:split], y.iloc[:split])
-        last = X.iloc[[-1]].copy()
+        
+        # 3. 학습 (최근 1년 데이터만 사용)
+        df = df.tail(252)
+        features = ["Close", "Returns", "Range", "Vol_Change"] + [f"Lag{i}" for i in range(1, 6)]
+        X = df[features]
+        y = df["Target"]
+        
+        model = xgb.XGBRegressor(
+            n_estimators=100, 
+            learning_rate=0.05, 
+            max_depth=5, 
+            early_stopping_rounds=10,
+            eval_metric="rmse",
+            n_jobs=1
+        )
+        
+        # 학습/검증 분할
+        split = int(len(X) * 0.9)
+        X_train, y_train = X.iloc[:split], y.iloc[:split]
+        X_valid, y_valid = X.iloc[split:], y.iloc[split:]
+        
+        model.fit(X_train, y_train, eval_set=[(X_valid, y_valid)], verbose=False)
+        
+        # 4. 재귀적 예측 (Recursive Forecasting)
+        last_row = df.iloc[[-1]].copy()
         preds = []
-        cur = float(df["Close"].iloc[-1])
+        current_close = float(last_row["Close"].iloc[0])
+        
         for _ in range(days):
-            p = float(model.predict(last)[0])
-            preds.append(round(p, 2))
-            if "Lag3" in last: last["Lag3"] = last.get("Lag2", last["Lag3"])
-            if "Lag2" in last: last["Lag2"] = last.get("Lag1", last["Lag2"])
-            if "Lag1" in last: last["Lag1"] = cur
-            last["Close"] = p
-            if "Returns" in last: last["Returns"] = (p - cur) / cur if cur else 0
-            cur = p
+            # 예측
+            pred_price = float(model.predict(last_row[features])[0])
+            preds.append(round(pred_price, 2))
+            
+            # 다음 스텝을 위한 피처 업데이트
+            new_row = last_row.copy()
+            
+            # Lag 업데이트 (Shift)
+            for i in range(5, 1, -1):
+                new_row[f"Lag{i}"] = new_row[f"Lag{i-1}"]
+            new_row["Lag1"] = current_close
+            
+            # 파생 변수 업데이트
+            new_row["Close"] = pred_price
+            new_row["Returns"] = (pred_price - current_close) / current_close if current_close else 0
+            # Range/Vol_Change는 평균값으로 대체 (변동성 감소 가정)
+            new_row["Range"] = df["Range"].mean()
+            new_row["Vol_Change"] = 0
+            
+            last_row = new_row
+            current_close = pred_price
+            
         return preds
-    except Exception:
+    except Exception as e:
+        print(f"XGB Error: {e}")
         return None
 
 # =============================================================================
@@ -596,7 +777,18 @@ def route(path: str, params: Dict) -> Dict:
         last = float(closes[-1]) if closes else 0
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
-        score, steps, patterns = analyze_score(dd)
+        score, steps, patterns, geo_patterns = analyze_score(dd)
+        
+        # 기하학적 패턴을 캔들 패턴 리스트에 통합 (UI 표시용)
+        for gp in geo_patterns:
+            direction = "상승" if gp.get("signal") == "매수" else "하락" if gp.get("signal") == "매도" else "중립"
+            patterns.append({
+                "name": gp.get("name"),
+                "desc": gp.get("desc"),
+                "direction": direction,
+                "conf": 100
+            })
+            
         forecast = holt_winters_forecast(dd)
         xgbp = xgb_forecast(dd)
         atrs = dd.get("ATR", [])
@@ -1231,6 +1423,27 @@ function renderForecast(d, isKrx) {
         <div style="font-size:17px;font-weight:800;color:#fff">${fmt(ens, isKrx)}</div>
         <div style="font-size:12px;color:${clr}">${ensUp?'▲':'▼'} ${Math.abs(ensChg).toFixed(2)}%</div>
       </div>`;
+
+    // Peak Detection (JS에서 계산)
+    if (fc.dates.length > 0) {
+        let maxVal = -Infinity;
+        let maxIdx = -1;
+        const len = Math.min(fc.yhat.length, xgb ? xgb.length : fc.yhat.length);
+        for(let i=0; i<len; i++) {
+            const h = fc.yhat[i];
+            const x = xgb ? xgb[i] : h;
+            const e = x != null ? h * 0.6 + x * 0.4 : h;
+            if (e > maxVal) { maxVal = e; maxIdx = i; }
+        }
+        if (maxIdx >= 0) {
+             sumEl.innerHTML += `
+             <div style="margin-top:12px;background:#1c2128;border:1px solid #30363d;border-radius:10px;padding:10px;text-align:center">
+                <div style="font-size:11px;color:#8b949e">📅 추천 매도 타이밍 (Peak)</div>
+                <div style="font-size:14px;font-weight:700;color:#facc15;margin-top:2px">${fc.dates[maxIdx]}</div>
+                <div style="font-size:12px;color:#8b949e">예상 최고가: ${fmt(maxVal, isKrx)}</div>
+             </div>`;
+        }
+    }
   }
 
   // 리스크 카드
