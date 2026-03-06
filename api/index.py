@@ -1785,3 +1785,46 @@ class handler(BaseHTTPRequestHandler):
                 _send(self, result)
         except Exception as e:
             _send(self, {"error": str(e), "trace": traceback.format_exc()[-400:]}, 500)
+
+
+def app(environ, start_response):
+    """
+    Vercel Python Runtime (WSGI) 엔트리포인트.
+    BaseHTTPRequestHandler 기반 handler와 동일한 라우팅 로직을 사용한다.
+    """
+    try:
+        path = (environ.get("PATH_INFO") or "/").rstrip("/") or "/"
+        query = environ.get("QUERY_STRING", "")
+        params = {k: v[0] for k, v in parse_qs(query).items()}
+
+        result = route(path, params)
+        if result is None:
+            body = HTML.encode("utf-8")
+            headers = [("Content-Type", "text/html; charset=utf-8")]
+        else:
+            body = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8")
+            headers = [("Content-Type", "application/json; charset=utf-8")]
+
+        headers.extend([
+            ("Content-Length", str(len(body))),
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "GET, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Content-Type"),
+        ])
+        start_response("200 OK", headers)
+        return [body]
+    except Exception as e:
+        body = json.dumps(
+            {"error": str(e), "trace": traceback.format_exc()[-400:]},
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+        start_response(
+            "500 Internal Server Error",
+            [
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
+        )
+        return [body]
