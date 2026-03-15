@@ -69,35 +69,14 @@ import requests
 from bs4 import BeautifulSoup
 from scipy.signal import argrelextrema
 
-try:
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing
-    STATSMODELS_AVAILABLE = True
-except ImportError:
-    STATSMODELS_AVAILABLE = False
-
-try:
-    import xgboost as xgb
-    XGBOOST_AVAILABLE = True
-except ImportError:
-    XGBOOST_AVAILABLE = False
+# 통계/학습 라이브러리 제거 (Vercel 용량 제한 대응)
+# 대신 경량화된 자체 구현 알고리즘 사용
 
 try:
     import feedparser
     FEEDPARSER_AVAILABLE = True
 except ImportError:
     FEEDPARSER_AVAILABLE = False
-
-try:
-    import pandas_ta as ta
-    PANDAS_TA_AVAILABLE = True
-except ImportError:
-    PANDAS_TA_AVAILABLE = False
-
-try:
-    from sklearn.linear_model import LinearRegression
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    SKLEARN_AVAILABLE = False
 
 # =============================================================================
 # TTL 캐시 (st.cache_data 대체)
@@ -479,33 +458,9 @@ class ChartPatternAnalyzer:
         return patterns
 
 def detect_patterns(dd: Dict) -> List[Dict]:
-    # 1. Try pandas-ta if available
     patterns = []
-    if PANDAS_TA_AVAILABLE:
-        try:
-            df = pd.DataFrame({k: dd[k] for k in ["Open", "High", "Low", "Close"] if k in dd})
-            # Detect all patterns
-            # pandas_ta.cdl_pattern returns a DataFrame with columns like "CDL_DOJI", "CDL_HAMMER"
-            # We need to map them to our format
-            cdl = df.ta.cdl_pattern(name="all")
-            if cdl is not None and not cdl.empty:
-                last_row = cdl.iloc[-1]
-                for col, val in last_row.items():
-                    if val != 0:
-                        name = col.replace("CDL_", "")
-                        direction = "상승" if val > 0 else "하락"
-                        patterns.append({
-                            "name": name,
-                            "desc": f"{name} 패턴 ({direction})",
-                            "direction": direction,
-                            "conf": 100
-                        })
-                if patterns:
-                    return patterns
-        except Exception:
-            pass
-
-    # 2. Fallback to manual logic
+    
+    # 순수 시계열 분석을 통한 캔들스틱 패턴 인식
     try:
         o = [float(x) for x in dd.get("Open", []) if x is not None]
         h = [float(x) for x in dd.get("High", []) if x is not None]
@@ -633,42 +588,75 @@ def calc_risk(price: float, atr: float) -> Dict:
     }
 
 def holt_winters_forecast(dd: Dict, days: int = 30):
-    if not STATSMODELS_AVAILABLE:
-        return linear_forecast(dd, days)
+    """
+    Lightweight implementation of Double Exponential Smoothing (Holt's Linear Trend)
+    Replaces statsmodels to reduce dependency size.
+    """
     try:
         closes = [float(c) for c in dd.get("Close", []) if c is not None]
         dates = dd.get("Date", [])
-        if len(closes) < 60: return None
-        y = pd.Series(closes).tail(504)
-        m = ExponentialSmoothing(y, trend="add", seasonal="add",
-                                  seasonal_periods=5, initialization_method="estimated").fit(optimized=True)
-        fc = m.forecast(days)
-        std = float(m.resid.std()) if len(m.resid) > 0 else 0
+        if len(closes) < 30: return None
+        
+        # Parameters (Fixed for simplicity, or could be optimized via grid search)
+        alpha = 0.8  # Level smoothing factor
+        beta = 0.2   # Trend smoothing factor
+        
+        # Initialization
+        level = closes[0]
+        trend = closes[1] - closes[0]
+        
+        # Fit
+        for i in range(1, len(closes)):
+            last_level = level
+            level = alpha * closes[i] + (1 - alpha) * (level + trend)
+            trend = beta * (level - last_level) + (1 - beta) * trend
+        
+        # Forecast
+        forecast = []
         last_d = datetime.datetime.strptime(dates[-1], "%Y-%m-%d") if dates else datetime.datetime.now()
         future_dates = []
         d = last_d
-        for _ in range(days):
+        
+        for i in range(1, days + 1):
             d += datetime.timedelta(days=1)
             while d.weekday() >= 5: d += datetime.timedelta(days=1)
             future_dates.append(d.strftime("%Y-%m-%d"))
+        
+            yhat = level + i * trend
+            forecast.append(yhat)
+        
+        # Calculate std for confidence intervals based on recent volatility
+        std = np.std(closes[-30:]) if len(closes) >= 30 else 0
+        
         return {
             "dates": future_dates,
-            "yhat": [round(float(f), 2) for f in fc],
-            "yhat_upper": [round(float(f)+1.96*std, 2) for f in fc],
-            "yhat_lower": [round(float(f)-1.96*std, 2) for f in fc],
+            "yhat": [round(float(f), 2) for f in forecast],
+            "yhat_upper": [round(float(f)+1.96*std, 2) for f in forecast],
+            "yhat_lower": [round(float(f)-1.96*std, 2) for f in forecast],
         }
     except Exception:
         return linear_forecast(dd, days)
 
 def linear_forecast(dd: Dict, days: int):
-    if not SKLEARN_AVAILABLE: return None
+    """
+    Simple Linear Regression using numpy.polyfit
+    Replaces sklearn to reduce dependency size.
+    """
     try:
         closes = [float(c) for c in dd.get("Close", []) if c is not None]
         dates = dd.get("Date", [])
         if len(closes) < 20: return None
-        X = np.arange(len(closes)).reshape(-1,1)
-        reg = LinearRegression().fit(X, closes)
-        preds = reg.predict(np.arange(len(closes), len(closes)+days).reshape(-1,1)).tolist()
+        
+        y = np.array(closes)
+        x = np.arange(len(y))
+        
+        # Linear Fit (Degree 1)
+        slope, intercept = np.polyfit(x, y, 1)
+        
+        # Predict
+        future_x = np.arange(len(y), len(y) + days)
+        preds = slope * future_x + intercept
+        
         last_d = datetime.datetime.strptime(dates[-1], "%Y-%m-%d") if dates else datetime.datetime.now()
         fds = []
         d = last_d
@@ -676,86 +664,49 @@ def linear_forecast(dd: Dict, days: int):
             d += datetime.timedelta(days=1)
             while d.weekday() >= 5: d += datetime.timedelta(days=1)
             fds.append(d.strftime("%Y-%m-%d"))
-        return {"dates": fds, "yhat": [round(p,2) for p in preds],
-                "yhat_upper": [round(p*1.05,2) for p in preds],
-                "yhat_lower": [round(p*0.95,2) for p in preds]}
+            
+        return {
+            "dates": fds, 
+            "yhat": [round(float(p),2) for p in preds],
+            "yhat_upper": [round(float(p)*1.05,2) for p in preds],
+            "yhat_lower": [round(float(p)*0.95,2) for p in preds]
+        }
     except Exception:
         return None
 
 def xgb_forecast(dd: Dict, days: int = 30):
-    if not XGBOOST_AVAILABLE: return None
+    """
+    Simulated Forecast based on Momentum & Mean Reversion
+    Replaces XGBoost to reduce dependency size.
+    """
     try:
-        # 1. 데이터 준비
-        needed = ["Open","High","Low","Close","Volume"]
-        df = pd.DataFrame({k: dd[k] for k in needed if k in dd}).dropna()
-        if len(df) < 60: return None
+        closes = [float(c) for c in dd.get("Close", []) if c is not None]
+        if len(closes) < 60: return None
         
-        # 2. 피처 엔지니어링 (순수 시계열 기반)
-        # 복잡한 지표(RSI 등)는 재귀 예측 시 업데이트가 어려우므로 제외하거나 단순화
-        df["Target"] = df["Close"].shift(-1)
-        df["Returns"] = df["Close"].pct_change()
-        df["Range"] = (df["High"] - df["Low"]) / df["Close"]
-        df["Vol_Change"] = df["Volume"].pct_change().replace([np.inf, -np.inf], 0)
+        # Calculate recent momentum (short vs long MA)
+        short_ma = np.mean(closes[-5:])
+        long_ma = np.mean(closes[-20:])
+        momentum_strength = (short_ma - long_ma) / long_ma
         
-        # Lag 피처 (과거 5일치)
-        for i in range(1, 6):
-            df[f"Lag{i}"] = df["Close"].shift(i)
-            
-        df = df.dropna()
-        
-        # 3. 학습 (최근 1년 데이터만 사용)
-        df = df.tail(252)
-        features = ["Close", "Returns", "Range", "Vol_Change"] + [f"Lag{i}" for i in range(1, 6)]
-        X = df[features]
-        y = df["Target"]
-        
-        model = xgb.XGBRegressor(
-            n_estimators=100, 
-            learning_rate=0.05, 
-            max_depth=5, 
-            early_stopping_rounds=10,
-            eval_metric="rmse",
-            n_jobs=1
-        )
-        
-        # 학습/검증 분할
-        split = int(len(X) * 0.9)
-        X_train, y_train = X.iloc[:split], y.iloc[:split]
-        X_valid, y_valid = X.iloc[split:], y.iloc[split:]
-        
-        model.fit(X_train, y_train, eval_set=[(X_valid, y_valid)], verbose=False)
-        
-        # 4. 재귀적 예측 (Recursive Forecasting)
-        last_row = df.iloc[[-1]].copy()
+        last_price = closes[-1]
         preds = []
-        current_close = float(last_row["Close"].iloc[0])
+        
+        # Simulation parameters
+        decay = 0.95 # Momentum decay factor
+        current_price = last_price
+        
+        # Estimated daily drift based on momentum
+        # If momentum is 0.05 (5%), daily drift might be approx 0.05/20 per day initially
+        drift = momentum_strength * last_price * 0.1
         
         for _ in range(days):
-            # 예측
-            pred_price = float(model.predict(last_row[features])[0])
-            preds.append(round(pred_price, 2))
-            
-            # 다음 스텝을 위한 피처 업데이트
-            new_row = last_row.copy()
-            
-            # Lag 업데이트 (Shift)
-            for i in range(5, 1, -1):
-                new_row[f"Lag{i}"] = new_row[f"Lag{i-1}"]
-            new_row["Lag1"] = current_close
-            
-            # 파생 변수 업데이트
-            new_row["Close"] = pred_price
-            new_row["Returns"] = (pred_price - current_close) / current_close if current_close else 0
-            # Range/Vol_Change는 평균값으로 대체 (변동성 감소 가정)
-            new_row["Range"] = df["Range"].mean()
-            new_row["Vol_Change"] = 0
-            
-            last_row = new_row
-            current_close = pred_price
-            
+            drift *= decay # Momentum fades over time
+            current_price += drift
+            preds.append(round(current_price, 2))
+        
         return preds
     except Exception as e:
-        print(f"XGB Error: {e}")
+        print(f"Simulation Error: {e}")
         return None
 
 # =============================================================================
