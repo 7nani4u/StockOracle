@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 로컬 개발 서버
-Vercel 배포 전 로컬에서 api/stock.py를 테스트하기 위한 래퍼.
+Vercel 배포 전 로컬에서 api/index.py를 테스트하기 위한 래퍼.
 실제 Vercel 환경과 동일하게 BaseHTTPRequestHandler 기반으로 동작.
 """
 import sys
@@ -24,5 +24,5 @@ if __name__ == "__main__":
     print(f"   GET /api/sentiment?market=KRX")
     print(f"   GET /api/resolve?q=삼성전자")
     print(f"")
-    print(f"   프론트엔드: cd frontend && npm run dev (포트 3000)")
+    print(f"   프론트엔드: http://localhost:{port}/ (api/index.py 인라인 HTML)")
     server.serve_forever()
