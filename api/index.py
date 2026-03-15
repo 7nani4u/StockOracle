@@ -67,7 +67,7 @@ import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
-from scipy.signal import argrelextrema
+# from scipy.signal import argrelextrema
 
 # 통계/학습 라이브러리 제거 (Vercel 용량 제한 대응)
 # 대신 경량화된 자체 구현 알고리즘 사용
@@ -408,9 +408,24 @@ class ChartPatternAnalyzer:
         self.lows = np.array(df['Low'].values, dtype=float)
         
     def find_local_extrema(self, order=5):
-        peaks_idx = argrelextrema(self.highs, np.greater, order=order)[0]
-        troughs_idx = argrelextrema(self.lows, np.less, order=order)[0]
-        return peaks_idx, troughs_idx
+        # scipy.signal.argrelextrema 대체 구현 (Pure Numpy)
+        # order: 양쪽으로 비교할 이웃의 수
+        peaks = []
+        troughs = []
+        
+        # Highs for peaks
+        for i in range(order, len(self.highs) - order):
+            window = self.highs[i-order : i+order+1]
+            if self.highs[i] == np.max(window) and self.highs[i] != self.highs[i-1]:
+                peaks.append(i)
+                
+        # Lows for troughs
+        for i in range(order, len(self.lows) - order):
+            window = self.lows[i-order : i+order+1]
+            if self.lows[i] == np.min(window) and self.lows[i] != self.lows[i-1]:
+                troughs.append(i)
+                
+        return np.array(peaks), np.array(troughs)
 
     def detect_patterns(self):
         patterns = []
