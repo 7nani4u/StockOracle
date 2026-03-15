@@ -1715,8 +1715,34 @@ loadSentiment('KRX');
 # =============================================================================
 # Vercel Handler
 # =============================================================================
+def replace_nan_with_none(obj):
+    # Handle pandas Series/Index/DataFrame
+    if isinstance(obj, (pd.Series, pd.Index)):
+        return replace_nan_with_none(obj.tolist())
+    if isinstance(obj, pd.DataFrame):
+        return replace_nan_with_none(obj.to_dict(orient='list'))
+        
+    # Handle numpy arrays (convert to list first)
+    if isinstance(obj, np.ndarray):
+        return replace_nan_with_none(obj.tolist())
+        
+    if isinstance(obj, list):
+        return [replace_nan_with_none(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: replace_nan_with_none(v) for k, v in obj.items()}
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (float, np.floating)):
+        return None if np.isnan(obj) else float(obj)
+    elif pd.isna(obj): # pd.NaT, np.nan, etc.
+        return None
+    elif isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    return obj
+
 def _send(handler_self, data: Any, status: int = 200, content_type: str = "application/json"):
     if content_type == "application/json":
+        data = replace_nan_with_none(data)
         body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
     else:
         body = data if isinstance(data, bytes) else data.encode("utf-8")
