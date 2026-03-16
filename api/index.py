@@ -1594,9 +1594,6 @@ function renderCharts(d, isKrx) {
     histSeries.setData(histData);
     chart.timeScale().fitContent();
   }
-
-  // ── 예측 차트 ──
-  renderForecastChart(d, isKrx);
 }
 
 function renderForecastChart(d, isKrx) {
@@ -1605,7 +1602,14 @@ function renderForecastChart(d, isKrx) {
   const cd = d.chart_data;
   const n = cd.dates.length;
   const fcEl = document.getElementById('forecast-chart');
-  if (!fcEl || !fc) return;
+  if (!fcEl) return;
+  
+  // 데이터가 없으면 차트 영역 숨김
+  if (!fc) {
+    fcEl.style.display = 'none';
+    return;
+  }
+  fcEl.style.display = 'block';
 
   const chart = LightweightCharts.createChart(fcEl, {
     layout: { background: { color: '#161b22' }, textColor: '#8b949e' },
@@ -1658,7 +1662,8 @@ function switchTab(tab) {
     btn.classList.toggle('active', tabs[i] === tab);
   });
   if (tab === 'forecast' && currentData && !chartInstances['forecast']) {
-    setTimeout(() => renderForecastChart(currentData, currentData.market === 'KRX'), 50);
+    // 탭 전환 애니메이션 고려하여 렌더링 지연
+    setTimeout(() => renderForecastChart(currentData, currentData.market === 'KRX'), 100);
   }
 }
 
