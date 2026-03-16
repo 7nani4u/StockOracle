@@ -287,6 +287,22 @@ def fetch_naver(code: str):
                     link = "https://finance.naver.com" + link
                 r["news"].append({"title": title, "link": link})
                 
+        # 공시 섹션 (별도 페이지 조회)
+        url_notice = f"https://finance.naver.com/item/news_notice.naver?code={code}"
+        resp_notice = requests.get(url_notice, headers=hdrs, timeout=5)
+        soup_notice = BeautifulSoup(resp_notice.text, "html.parser")
+        
+        for row in soup_notice.select("tbody tr")[:5]:
+            title_a = row.select_one(".title a")
+            date_td = row.select_one(".date")
+            if title_a:
+                title = title_a.text.strip()
+                link = title_a["href"]
+                date = date_td.text.strip() if date_td else ""
+                if not link.startswith("http"):
+                    link = "https://finance.naver.com" + link
+                r["disclosures"].append({"title": title, "link": link, "date": date})
+
     except Exception as e:
         print(f"Naver Fetch Error: {e}")
         pass
@@ -1456,7 +1472,13 @@ function renderNews(d, isKrx) {
     const discList = document.getElementById('disclosure-list');
     const discs = d.naver.disclosures || [];
     discList.innerHTML = discs.length > 0
-      ? discs.map(n => `<div class="news-item"><span class="news-dot">📌</span><div><a class="news-a" href="${n.link}" target="_blank">${n.title}</a></div></div>`).join('')
+      ? discs.map(n => `<div class="news-item">
+          <span class="news-dot">📌</span>
+          <div>
+            <a class="news-a" href="${n.link}" target="_blank">${n.title}</a>
+            ${n.date ? `<div class="news-meta">${n.date}</div>` : ''}
+          </div>
+        </div>`).join('')
       : '<p style="font-size:13px;color:#484f58">공시 없음</p>';
   } else {
     col1Title.textContent = '📰 관련 뉴스 (Google RSS)';
