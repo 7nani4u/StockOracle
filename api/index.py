@@ -32,6 +32,7 @@ import traceback
 import warnings
 import functools
 import tempfile
+import re
 from typing import Optional, Dict, Any, List, Tuple
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
@@ -790,7 +791,17 @@ def route(path: str, params: Dict) -> Dict:
         }
 
     if path == "/api/screener":
+        # Pre-calculated/Cached response via CDN (s-maxage)
         return fetch_screener()
+
+    if path == "/api/cron":
+        # Vercel Cron Endpoint to warm the cache
+        try:
+            # Force fetch if needed, but TTL(300s) ensures freshness for hourly cron
+            fetch_screener() 
+            return {"status": "ok", "message": "Cache warmed"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     if path == "/api/sentiment":
         m = params.get("market", "US")
@@ -1740,18 +1751,52 @@ def replace_nan_with_none(obj):
         return obj.isoformat()
     return obj
 
+VALID_PERIODS = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
+
 def _send(handler_self, data: Any, status: int = 200, content_type: str = "application/json"):
+    path = getattr(handler_self, 'path', '/').split('?')[0].rstrip('/') or '/'
+
     if content_type == "application/json":
         data = replace_nan_with_none(data)
         body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
     else:
         body = data if isinstance(data, bytes) else data.encode("utf-8")
+    
     handler_self.send_response(status)
     handler_self.send_header("Content-Type", content_type + "; charset=utf-8")
     handler_self.send_header("Content-Length", str(len(body)))
+    
+    # CORS Policy
     handler_self.send_header("Access-Control-Allow-Origin", "*")
     handler_self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
     handler_self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    # Cache Policy (Vercel/CDN Integration)
+    # Default: No Cache for errors
+    cache_control = "no-store, no-cache, must-revalidate, proxy-revalidate"
+    
+    if status == 200:
+        if path == "/api/screener":
+            # Long cache for screener (1 hour + 1 day stale)
+            cache_control = "public, s-maxage=3600, stale-while-revalidate=86400"
+        elif path == "/api/stock":
+            # Short cache for stock data
+            cache_control = "public, s-maxage=60, stale-while-revalidate=300"
+        elif path == "/" or path == "/index.html":
+            # HTML Cache
+            cache_control = "public, s-maxage=3600"
+        elif path.startswith("/api/"):
+            cache_control = "public, s-maxage=10, stale-while-revalidate=60"
+
+    handler_self.send_header("Cache-Control", cache_control)
+
+    # Security Headers
+    handler_self.send_header("X-Content-Type-Options", "nosniff")
+    handler_self.send_header("X-Frame-Options", "DENY")
+    handler_self.send_header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+    handler_self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://finance.naver.com https://query1.finance.yahoo.com https://query2.finance.yahoo.com;")
+    handler_self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+
     handler_self.end_headers()
     handler_self.wfile.write(body)
 
@@ -1769,11 +1814,25 @@ class handler(BaseHTTPRequestHandler):
             params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
             path = parsed.path.rstrip("/") or "/"
 
+            # Input Validation
+            if path == "/api/stock":
+                ticker = params.get("ticker", "")
+                period = params.get("period", "1y")
+                
+                if len(ticker) > 20 or (ticker and not re.match(r"^[a-zA-Z0-9가-힣.\-\s]+$", ticker)):
+                     _send(self, {"error": "Invalid ticker format"}, 400)
+                     return
+
+                if period not in VALID_PERIODS:
+                     _send(self, {"error": f"Invalid period. Allowed: {', '.join(VALID_PERIODS)}"}, 400)
+                     return
+
             result = route(path, params)
             if result is None:
-                # HTML 서빙
                 _send(self, HTML, 200, "text/html")
             else:
                 _send(self, result)
         except Exception as e:
-            _send(self, {"error": str(e), "trace": traceback.format_exc()[-400:]}, 500)
+            # Log traceback internally but hide from user
+            print(f"Server Error: {str(e)}\n{traceback.format_exc()}")
+            _send(self, {"error": "Internal Server Error"}, 500)
