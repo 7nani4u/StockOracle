@@ -1126,13 +1126,16 @@ input::placeholder{color:#484f58}
       <!-- 예측 탭 -->
       <div id="tab-forecast" style="display:none">
         <div class="card">
-          <div class="card-title">🔮 가격 예측 (30일 / Holt-Winters + XGBoost)</div>
-          <!-- Summary moved up to reduce empty space perception -->
-          <div id="forecast-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px"></div>
-          <div id="forecast-chart" style="height:220px"></div>
-        </div>
-        <div>
-          <div style="font-size:13px;font-weight:600;color:#8b949e;margin-bottom:12px;text-transform:uppercase;letter-spacing:.05em">🛡️ 리스크 관리 (ATR 기반)</div>
+          <div class="card-title">🔮 가격 예측 & 리스크 관리</div>
+          
+          <!-- Forecast Summary (Flexbox for auto-fit) -->
+          <div id="forecast-summary" style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap"></div>
+
+          <!-- Chart -->
+          <div id="forecast-chart" style="height:250px;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #30363d"></div>
+
+          <!-- Risk Management -->
+          <div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;border-top:1px solid #30363d;padding-top:16px">🛡️ 리스크 관리 (ATR 기반)</div>
           <div class="risk-grid" id="risk-grid"></div>
         </div>
       </div>
@@ -1388,15 +1391,15 @@ function renderForecast(d, isKrx) {
     const ensUp = ensChg >= 0;
     const clr = isKrx ? (ensUp ? '#f85149' : '#388bfd') : (ensUp ? '#3fb950' : '#f85149');
     sumEl.innerHTML = `
-      <div style="background:#21262d;border-radius:10px;padding:12px;text-align:center">
+      <div style="background:#21262d;border-radius:10px;padding:12px;text-align:center;flex:1;min-width:120px">
         <div style="font-size:11px;color:#8b949e;margin-bottom:4px">HW 예측 (30일)</div>
         <div style="font-size:15px;font-weight:700;color:#388bfd">${fmt(hwF, isKrx)}</div>
       </div>
-      ${xgbF != null ? `<div style="background:#21262d;border-radius:10px;padding:12px;text-align:center">
+      ${xgbF != null ? `<div style="background:#21262d;border-radius:10px;padding:12px;text-align:center;flex:1;min-width:120px">
         <div style="font-size:11px;color:#8b949e;margin-bottom:4px">XGBoost (30일)</div>
         <div style="font-size:15px;font-weight:700;color:#d29922">${fmt(xgbF, isKrx)}</div>
       </div>` : ''}
-      <div style="background:#0d1f4f;border:1px solid #1f4f8e;border-radius:10px;padding:12px;text-align:center">
+      <div style="background:#0d1f4f;border:1px solid #1f4f8e;border-radius:10px;padding:12px;text-align:center;flex:1;min-width:120px">
         <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🤖 AI 앙상블</div>
         <div style="font-size:17px;font-weight:800;color:#fff">${fmt(ens, isKrx)}</div>
         <div style="font-size:12px;color:${clr}">${ensUp?'▲':'▼'} ${Math.abs(ensChg).toFixed(2)}%</div>
@@ -1415,10 +1418,12 @@ function renderForecast(d, isKrx) {
         }
         if (maxIdx >= 0) {
              sumEl.innerHTML += `
-             <div style="margin-top:12px;background:#1c2128;border:1px solid #30363d;border-radius:10px;padding:10px;text-align:center">
-                <div style="font-size:11px;color:#8b949e">📅 추천 매도 타이밍 (Peak)</div>
-                <div style="font-size:14px;font-weight:700;color:#facc15;margin-top:2px">${fc.dates[maxIdx]}</div>
-                <div style="font-size:12px;color:#8b949e">예상 최고가: ${fmt(maxVal, isKrx)}</div>
+             <div style="background:#1c2128;border:1px solid #30363d;border-radius:10px;padding:10px;text-align:center;width:100%;display:flex;justify-content:space-between;align-items:center;padding-left:16px;padding-right:16px">
+                <div style="font-size:12px;color:#8b949e">📅 추천 매도 (Peak)</div>
+                <div style="text-align:right">
+                    <span style="font-size:14px;font-weight:700;color:#facc15;margin-right:8px">${fc.dates[maxIdx]}</span>
+                    <span style="font-size:12px;color:#8b949e">최고 ${fmt(maxVal, isKrx)}</span>
+                </div>
              </div>`;
         }
     }
