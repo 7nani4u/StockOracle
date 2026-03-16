@@ -356,188 +356,150 @@ def fetch_sentiment(market: str):
     except Exception:
         return None
 
+# ── EXPANDED UNIVERSE ──
+KR_STOCK_MAP = {
+    "삼성전자": "005930.KS", "삼성전자우": "005935.KS", "SK하이닉스": "000660.KS", "LG에너지솔루션": "373220.KS",
+    "삼성바이오로직스": "207940.KS", "삼성SDI": "006400.KS", "현대차": "005380.KS", "기아": "000270.KS",
+    "셀트리온": "068270.KS", "KB금융": "105560.KS", "신한지주": "055550.KS", "POSCO홀딩스": "005490.KS",
+    "NAVER": "035420.KS", "카카오": "035720.KS", "LG화학": "051910.KS", "LG전자": "066570.KS",
+    "삼성물산": "028260.KS", "삼성생명": "032830.KS", "삼성화재": "000810.KS", "삼성전기": "009150.KS",
+    "삼성SDS": "018260.KS", "현대모비스": "012330.KS", "SK이노베이션": "096770.KS", "SK텔레콤": "017670.KS",
+    "SK": "034730.KS", "KT": "030200.KS", "KT&G": "033780.KS", "한국전력": "015760.KS",
+    "하나금융지주": "086790.KS", "우리금융지주": "316140.KS", "카카오뱅크": "323410.KS", "카카오페이": "377300.KS",
+    "크래프톤": "259960.KS", "엔씨소프트": "036570.KS", "넷마블": "251270.KS", "펄어비스": "263750.KS",
+    "하이브": "352820.KS", "CJ제일제당": "097950.KS", "CJ": "001040.KS", "롯데케미칼": "011170.KS",
+    "한화솔루션": "009830.KS", "한화에어로스페이스": "012450.KS", "한화오션": "042660.KS", "HD현대중공업": "329180.KS",
+    "HD한국조선해양": "009540.KS", "두산에너빌리티": "034020.KS", "두산밥캣": "241560.KS", "포스코퓨처엠": "003670.KS",
+    "에코프로비엠": "247540.KQ", "에코프로": "086520.KQ", "엘앤에프": "066970.KQ", "HLB": "028300.KQ",
+    "리노공업": "058470.KQ", "알테오젠": "196170.KQ"
+}
+
+US_TICKERS = [
+    "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "BRK-B", "LLY", "AVGO", "JPM", "V", "UNH", "XOM", 
+    "MA", "JNJ", "PG", "HD", "COST", "ABBV", "MRK", "ADBE", "CVX", "PEP", "KO", "BAC", "ACN", "NFLX", "LIN", 
+    "MCD", "TMO", "AMD", "DIS", "ABT", "WMT", "CSCO", "INTU", "PFE", "CMCSA", "ORCL", "QCOM", "NKE", "UPS", 
+    "TXN", "PM", "GE", "IBM", "AMGN", "HON", "UNP", "SBUX", "BA", "MMM", "CAT", "GS", "MS", "C", "BLK", "SPGI", 
+    "AXP", "LOW", "TGT", "TJX", "CVS", "CI", "ELV", "DE", "PLD", "AMT", "NOW", "ISRG", "ZTS", "GILD", "SYK", 
+    "BKNG", "MDT", "ADP", "LRCX", "ADI", "MU", "VRTX", "REGN", "SO", "DUK", "SLB", "EOG", "COP", "MMC", "AON", 
+    "PGR", "CB", "CL", "MO", "EMR", "ETN", "ITW", "PH", "USB", "PNC", "TFC", "COF", "MET", "PRU", "ALL", "TRV", 
+    "AIG", "HIG", "PLTR", "IONQ", "JOBY", "ACHR", "SOFI", "AFRM", "UPST", "RIVN", "LCID", "NKLA", "DNA", "PATH"
+]
+
 @ttl_cache(3600)
-def fetch_screener():
+def fetch_metrics(item):
+    try:
+        t = yf.Ticker(item["ticker"])
+        i = t.info
+        
+        # Basic Price Data
+        price = i.get("currentPrice") or i.get("regularMarketPrice")
+        if not price: return None
+        
+        # Metadata Update
+        if item["market_type"] == "US":
+            item["name"] = i.get("shortName", item["name"])
+        item["cat"] = i.get("sector", "Unknown")
+        
+        # Signal (Consensus)
+        rec = i.get("recommendationKey", "").lower()
+        if rec == "buy": item["signal"] = "매수"
+        elif rec == "strong_buy": item["signal"] = "적극 매수"
+        else: item["signal"] = "중립"
+        
+        mkt_cap = i.get("marketCap", 0)
+        
+        # Quality Factors
+        roic = i.get("returnOnEquity", 0) 
+        debt_ratio = i.get("debtToEquity", 999)
+        if debt_ratio is None: debt_ratio = 999
+        
+        fcf = i.get("freeCashflow", 0)
+        if fcf is None: fcf = i.get("operatingCashflow", -1)
+
+        # Value & Growth Factors
+        peg = i.get("pegRatio")
+        per = i.get("trailingPE")
+        
+        if peg is None and per is not None:
+            growth = i.get("earningsGrowth")
+            if growth and growth > 0:
+                peg = per / (growth * 100)
+        
+        # Profitability Init
+        op_margin = i.get("operatingMargins", 0)
+        eps = i.get("trailingEps", 0)
+
+        # KRX Fallback (Naver) - Enhanced with Financials
+        if item.get("market_type") == "KRX":
+                try:
+                    # Fetch if any key metric is missing or suspicious
+                    if peg is None or per is None or not roic or debt_ratio == 999 or op_margin == 0:
+                        nv = fetch_naver(item["ticker"])
+                        if nv:
+                            if (per is None or per == 999) and nv.get("per"):
+                                try:
+                                    val = nv["per"]
+                                    if isinstance(val, str) and val != "-": val = float(val.replace(",",""))
+                                    per = float(val)
+                                except: pass
+                            
+                            if (not roic or roic == 0) and nv.get("roe"):
+                                roic = float(nv["roe"]) / 100.0
+                            
+                            if (debt_ratio == 999 or debt_ratio is None) and nv.get("debt"):
+                                debt_ratio = float(nv["debt"])
+                                
+                            if nv.get("op_margin"): op_margin = float(nv["op_margin"])
+                            if nv.get("eps"): eps = float(nv["eps"])
+                            
+                            if peg is None and per and per < 15:
+                                peg = 1.2
+                except:
+                    pass
+
+        if peg is None: peg = 999
+        if per is None: per = 999
+        
+        # Momentum Factor
+        high52 = i.get("fiftyTwoWeekHigh", price)
+        prox = price / high52 if high52 else 0
+        
+        # 3-year Profit Check
+        is_profitable = (op_margin is not None and op_margin > 0) or (eps is not None and eps > 0)
+        
+        item["market_cap"] = mkt_cap
+        item["roic"] = roic if roic else 0
+        item["debt_ratio"] = debt_ratio
+        item["fcf"] = fcf
+        item["peg"] = peg
+        item["per"] = per
+        item["prox"] = prox
+        item["price_val"] = price
+        item["change"] = i.get("regularMarketChangePercent", 0) * 100
+        item["volume"] = i.get("volume", 0)
+        item["is_profitable"] = is_profitable
+        
+        return item
+    except:
+        return None
+
+@ttl_cache(3600)
+def fetch_screener(sort_order="desc"):
     try:
         usd_krw = float(yf.Ticker("USDKRW=X").history(period="1d")["Close"].iloc[-1])
     except Exception:
         usd_krw = 1450.0
 
-    # 1. Universe Definition (Expanded for Strategy)
-    stocks = {
-        "KRX": [
-            {"ticker":"005930.KS","name":"삼성전자","cat":"반도체"},
-            {"ticker":"000660.KS","name":"SK하이닉스","cat":"반도체"},
-            {"ticker":"373220.KS","name":"LG에너지솔루션","cat":"2차전지"},
-            {"ticker":"207940.KS","name":"삼성바이오로직스","cat":"바이오"},
-            {"ticker":"005380.KS","name":"현대차","cat":"자동차"},
-            {"ticker":"000270.KS","name":"기아","cat":"자동차"},
-            {"ticker":"068270.KS","name":"셀트리온","cat":"바이오"},
-            {"ticker":"005490.KS","name":"POSCO홀딩스","cat":"철강"},
-            {"ticker":"035420.KS","name":"NAVER","cat":"인터넷"},
-            {"ticker":"035720.KS","name":"카카오","cat":"인터넷"},
-            {"ticker":"105560.KS","name":"KB금융","cat":"금융"},
-            {"ticker":"055550.KS","name":"신한지주","cat":"금융"},
-            {"ticker":"086790.KS","name":"하나금융지주","cat":"금융"},
-            {"ticker":"032830.KS","name":"삼성생명","cat":"보험"},
-            {"ticker":"012330.KS","name":"현대모비스","cat":"자동차"},
-            {"ticker":"000810.KS","name":"삼성화재","cat":"보험"},
-            {"ticker":"015760.KS","name":"한국전력","cat":"유틸리티"},
-            {"ticker":"034020.KS","name":"두산에너빌리티","cat":"기계"},
-            {"ticker":"017670.KS","name":"SK텔레콤","cat":"통신"},
-            {"ticker":"018260.KS","name":"삼성에스디에스","cat":"IT서비스"},
-            {"ticker":"323410.KS","name":"카카오뱅크","cat":"금융"},
-            {"ticker":"003550.KS","name":"LG","cat":"지주사"},
-            {"ticker":"034730.KS","name":"SK","cat":"지주사"},
-            {"ticker":"010130.KS","name":"고려아연","cat":"철강"},
-            {"ticker":"009150.KS","name":"삼성전기","cat":"IT부품"},
-        ],
-        "US": [
-            {"ticker":"AAPL","name":"애플","cat":"기술"},
-            {"ticker":"NVDA","name":"엔비디아","cat":"반도체"},
-            {"ticker":"MSFT","name":"마이크로소프트","cat":"소프트웨어"},
-            {"ticker":"AMZN","name":"아마존","cat":"유통/클라우드"},
-            {"ticker":"GOOGL","name":"구글","cat":"인터넷"},
-            {"ticker":"META","name":"메타","cat":"인터넷"},
-            {"ticker":"TSLA","name":"테슬라","cat":"자동차"},
-            {"ticker":"AVGO","name":"브로드컴","cat":"반도체"},
-            {"ticker":"TSM","name":"TSMC","cat":"반도체"},
-            {"ticker":"LLY","name":"일라이 릴리","cat":"제약"},
-            {"ticker":"WMT","name":"월마트","cat":"유통"},
-            {"ticker":"JPM","name":"JP모건","cat":"금융"},
-            {"ticker":"V","name":"비자","cat":"금융"},
-            {"ticker":"UNH","name":"유나이티드헬스","cat":"헬스케어"},
-            {"ticker":"MA","name":"마스터카드","cat":"금융"},
-            {"ticker":"ORCL","name":"오라클","cat":"소프트웨어"},
-            {"ticker":"XOM","name":"엑슨모빌","cat":"에너지"},
-            {"ticker":"HD","name":"홈디포","cat":"유통"},
-            {"ticker":"PG","name":"P&G","cat":"소비재"},
-            {"ticker":"COST","name":"코스트코","cat":"유통"},
-            {"ticker":"JNJ","name":"존슨앤존슨","cat":"헬스케어"},
-            {"ticker":"ABBV","name":"애브비","cat":"제약"},
-            {"ticker":"BAC","name":"뱅크오브아메리카","cat":"금융"},
-            {"ticker":"KO","name":"코카콜라","cat":"필수소비재"},
-            {"ticker":"NFLX","name":"넷플릭스","cat":"엔터테인먼트"},
-            {"ticker":"AMD","name":"AMD","cat":"반도체"},
-            {"ticker":"CRM","name":"세일즈포스","cat":"소프트웨어"},
-            {"ticker":"PEP","name":"펩시코","cat":"필수소비재"},
-            {"ticker":"TMO","name":"써모피셔","cat":"헬스케어"},
-            {"ticker":"LIN","name":"린데","cat":"화학"},
-            {"ticker":"ADBE","name":"어도비","cat":"소프트웨어"},
-            {"ticker":"CSCO","name":"시스코","cat":"통신장비"},
-            {"ticker":"CVX","name":"쉐브론","cat":"에너지"},
-            {"ticker":"ACN","name":"액센츄어","cat":"IT서비스"},
-            {"ticker":"MCD","name":"맥도날드","cat":"경기소비재"},
-        ]
-    }
-
+    # 1. Universe Definition (Expanded)
     candidates = []
-    for m, s_list in stocks.items():
-        for s in s_list:
-            s["market_type"] = m
-            candidates.append(s)
-
-    # 2. Strategy Logic Helper (Quality-GARP Hybrid)
-    def fetch_metrics(item):
-        try:
-            t = yf.Ticker(item["ticker"])
-            i = t.info
-            
-            # Basic Price Data
-            price = i.get("currentPrice") or i.get("regularMarketPrice")
-            if not price: return None
-            
-            mkt_cap = i.get("marketCap", 0)
-            
-            # Quality Factors
-            # ROIC Proxy: ROE (Return on Equity) > 12%
-            roic = i.get("returnOnEquity", 0) 
-            
-            # Debt Ratio < 100% (debtToEquity is usually in %, e.g., 50.5)
-            debt_ratio = i.get("debtToEquity", 999)
-            if debt_ratio is None: debt_ratio = 999
-            
-            # FCF > 0
-            fcf = i.get("freeCashflow", 0)
-            if fcf is None: 
-                 # Proxy: Operating Cashflow > 0
-                 fcf = i.get("operatingCashflow", -1)
-
-            # Value & Growth Factors
-            # 0 < PEG < 1.5
-            peg = i.get("pegRatio")
-            per = i.get("trailingPE")
-            
-            # Calculate missing PEG if possible
-            if peg is None and per is not None:
-                growth = i.get("earningsGrowth")
-                if growth and growth > 0:
-                    # PEG = PE / (Growth Rate * 100)
-                    peg = per / (growth * 100)
-            
-            # Profitability Init
-            op_margin = i.get("operatingMargins", 0)
-            eps = i.get("trailingEps", 0)
-
-            # KRX Fallback (Naver) - Enhanced with Financials
-            if item.get("market_type") == "KRX":
-                 try:
-                     # Fetch if any key metric is missing or suspicious
-                     if peg is None or per is None or not roic or debt_ratio == 999 or op_margin == 0:
-                         nv = fetch_naver(item["ticker"])
-                         if nv:
-                             # PER
-                             if (per is None or per == 999) and nv.get("per"):
-                                 try:
-                                     val = nv["per"]
-                                     if isinstance(val, str) and val != "-": val = float(val.replace(",",""))
-                                     per = float(val)
-                                 except: pass
-                             
-                             # ROE -> ROIC proxy
-                             if (not roic or roic == 0) and nv.get("roe"):
-                                 roic = float(nv["roe"]) / 100.0
-                             
-                             # Debt Ratio
-                             if (debt_ratio == 999 or debt_ratio is None) and nv.get("debt"):
-                                 debt_ratio = float(nv["debt"])
-                                 
-                             # Profitability (Update if missing)
-                             if nv.get("op_margin"): op_margin = float(nv["op_margin"])
-                             if nv.get("eps"): eps = float(nv["eps"])
-                             
-                             # PEG Proxy
-                             if peg is None and per and per < 15:
-                                 peg = 1.2
-                 except:
-                     pass
-
-            if peg is None: peg = 999
-            if per is None: per = 999
-            
-            # Momentum Factor
-            # Price >= 0.75 * 52w High
-            high52 = i.get("fiftyTwoWeekHigh", price)
-            prox = price / high52 if high52 else 0
-            
-            # 3-year Profit Check
-            is_profitable = (op_margin is not None and op_margin > 0) or (eps is not None and eps > 0)
-            
-            item["market_cap"] = mkt_cap
-            item["roic"] = roic if roic else 0
-            item["debt_ratio"] = debt_ratio
-            item["fcf"] = fcf
-            item["peg"] = peg
-            item["per"] = per
-            item["prox"] = prox
-            item["price_val"] = price
-            item["change"] = i.get("regularMarketChangePercent", 0) * 100
-            item["volume"] = i.get("volume", 0)
-            item["is_profitable"] = is_profitable
-            
-            return item
-        except:
-            return None
+    
+    # KRX
+    for name, ticker in KR_STOCK_MAP.items():
+        candidates.append({"ticker": ticker, "name": name, "market_type": "KRX"})
+        
+    # US
+    for ticker in US_TICKERS:
+        candidates.append({"ticker": ticker, "name": ticker, "market_type": "US"})
 
     # 3. Parallel Execution
     processed = []
@@ -552,24 +514,19 @@ def fetch_screener():
         
     df = pd.DataFrame(processed)
     
-    # 4. Filter & Rank (Quality-GARP Logic)
+    # 4. Filter & Rank (Quality-GARP Logic + Signal)
     
-    # 4.1 Universe Filtering
-    # Exclude bottom 20% Market Cap (within this universe)
-    if len(df) > 5:
-        mkt_cap_20pct = df["market_cap"].quantile(0.20)
-        df = df[df["market_cap"] >= mkt_cap_20pct]
+    # 4.1 Signal Filter (Toss Style: Buy/Strong Buy)
+    # User requested: "Signal is Buy or Strong Buy only"
+    df = df[df["signal"].isin(["매수", "적극 매수"])]
     
-    # Must be profitable
-    df = df[df["is_profitable"] == True]
-    
-    # 4.2 Strict Strategy Filtering
-    # ROIC > 12% (0.12)
-    # Debt < 100% (100)
-    # FCF > 0
-    # 0 < PEG < 1.5
-    # PER < 25
-    # Prox >= 0.75
+    if df.empty:
+         return {"data": [], "usd_krw": round(usd_krw, 2)}
+
+    # 4.2 Quality-GARP Strategy Filtering (Strict)
+    # ROIC > 12%, Debt < 100%, FCF > 0, 0 < PEG < 1.5, PER < 25, Prox >= 0.75
+    # Since we already filtered by Signal, we apply Strategy strictly?
+    # User said "Use Quality-GARP Factor Hybrid strategy".
     
     cond_roic = df["roic"] > 0.12
     cond_debt = df["debt_ratio"] < 100
@@ -577,73 +534,59 @@ def fetch_screener():
     cond_peg = (df["peg"] > 0) & (df["peg"] < 1.5)
     cond_per = df["per"] < 25
     cond_prox = df["prox"] >= 0.75
+    cond_profit = df["is_profitable"] == True
     
-    passed_mask = cond_roic & cond_debt & cond_fcf & cond_peg & cond_per & cond_prox
+    passed_mask = cond_roic & cond_debt & cond_fcf & cond_peg & cond_per & cond_prox & cond_profit
     df["strict_pass"] = passed_mask
     
-    # 4.3 Ranking (Higher Score = Better)
-    # ROIC: Higher is better -> Rank Ascending
-    df["rank_roic"] = df["roic"].rank(ascending=True)
-    # PEG: Lower is better -> Rank Descending (Smallest PEG gets Highest Rank Score)
-    df["rank_peg"] = df["peg"].rank(ascending=False) 
-    # Prox: Higher is better (Closer to High) -> Rank Ascending
-    df["rank_prox"] = df["prox"].rank(ascending=True)
+    # User said "Output ALL stocks visible on Toss... Signal Buy/Strong Buy... Quality-GARP".
+    # Interpretation: Show only those passing Quality-GARP AND Signal.
     
-    df["total_score"] = df["rank_roic"] + df["rank_peg"] + df["rank_prox"]
-    
-    # 4.4 Selection
-    # Prioritize strictly passed items.
     candidates_df = df[df["strict_pass"] == True].copy()
     
-    # Fallback if too few candidates (Relax logic for demo/small universe)
-    if len(candidates_df) < 20:
-        # Relaxed: ROIC > 3%, PEG < 5.0 (or missing), Prox > 0.5
-        # Allow missing PEG (999) in relaxed mode if other metrics are okay
-        cond_relaxed = (df["roic"] > 0.03) & ((df["peg"] < 5.0) | (df["peg"] == 999)) & (df["prox"] > 0.5)
-        candidates_df = df[cond_relaxed].copy()
-        
-    # Sort by Total Score Descending
-    candidates_df = candidates_df.sort_values("total_score", ascending=False)
+    # 4.3 Ranking (Total Score)
+    if not candidates_df.empty:
+        candidates_df["rank_roic"] = candidates_df["roic"].rank(ascending=True)
+        candidates_df["rank_peg"] = candidates_df["peg"].rank(ascending=False) 
+        candidates_df["rank_prox"] = candidates_df["prox"].rank(ascending=True)
+        candidates_df["total_score"] = candidates_df["rank_roic"] + candidates_df["rank_peg"] + candidates_df["rank_prox"]
+    else:
+        # If strict returns nothing, maybe return all Signal passed ones but mark as fail?
+        # User said "Use Quality-GARP". If none match, return empty.
+        # But for UX, let's stick to strict.
+        pass
+
+    # 4.4 Sorting (Price)
+    # "Current price also ascending, descending"
+    if not candidates_df.empty:
+        ascending = True if sort_order == "asc" else False
+        candidates_df = candidates_df.sort_values("price_val", ascending=ascending)
     
-    # 4.5 Sector Cap (Max 30%)
-    final_selection = []
-    sector_counts = {}
-    total_target = 30
-    
-    for _, row in candidates_df.iterrows():
-        if len(final_selection) >= total_target:
-            break
-            
-        sec = row["cat"]
-        current_sec_count = sector_counts.get(sec, 0)
-        
-        # 30% of 30 is 9
-        if current_sec_count >= (total_target * 0.3):
-            continue
-            
-        final_selection.append(row)
-        sector_counts[sec] = current_sec_count + 1
-        
-    final_df = pd.DataFrame(final_selection)
+    final_df = candidates_df
     
     results = []
     if not final_df.empty:
         for _, row in final_df.iterrows():
             p_str = f"{row['price_val'] * usd_krw:,.0f}원" if row["market_type"] == "US" else f"{row['price_val']:,.0f}원"
             
-            # Signal based on Score
-            score_norm = row["total_score"] / (len(df) * 3) * 100 if len(df) > 0 else 50
+            # Normalize Score for Display (0-100)
+            score_norm = 100 # Default if only strict passed
+            if "total_score" in row:
+                max_score = final_df["total_score"].max()
+                score_norm = (row["total_score"] / max_score * 100) if max_score > 0 else 100
             
             results.append({
                 "market": "국내" if row["market_type"] == "KRX" else "해외",
                 "name": row["name"],
                 "ticker": row["ticker"],
                 "price": p_str,
+                "price_val": row["price_val"],
                 "change": round(row["change"], 2),
                 "category": row["cat"],
                 "volume": int(row["volume"]),
                 "score": round(row["total_score"], 2),
-                "strict": bool(row["strict_pass"])
+                "strict": bool(row["strict_pass"]),
+                "signal": row["signal"]
             })
         
     return {"data": results, "usd_krw": round(usd_krw, 2)}
