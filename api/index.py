@@ -1127,8 +1127,9 @@ input::placeholder{color:#484f58}
       <div id="tab-forecast" style="display:none">
         <div class="card">
           <div class="card-title">🔮 가격 예측 (30일 / Holt-Winters + XGBoost)</div>
-          <div id="forecast-chart" style="height:300px"></div>
-          <div id="forecast-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px"></div>
+          <!-- Summary moved up to reduce empty space perception -->
+          <div id="forecast-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px"></div>
+          <div id="forecast-chart" style="height:220px"></div>
         </div>
         <div>
           <div style="font-size:13px;font-weight:600;color:#8b949e;margin-bottom:12px;text-transform:uppercase;letter-spacing:.05em">🛡️ 리스크 관리 (ATR 기반)</div>
