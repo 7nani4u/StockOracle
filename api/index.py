@@ -467,39 +467,41 @@ def fetch_metrics(item):
         # 3-year Profit Check
         is_profitable = (op_margin is not None and op_margin > 0) or (eps is not None and eps > 0)
 
-        # ── 토스 스크리너 추가 지표 ──────────────────────────────────────────────
-        # 시가총액 (달러 기준, 10억 달러 = 1_000_000_000)
-        mkt_cap_usd = mkt_cap  # yfinance는 USD 기준
+        # ── 토스 스크리너 전용 지표 ──────────────────────────────────────────────
+        # 1. 시가총액 (USD 기준, yfinance는 USD)
+        mkt_cap_usd = mkt_cap if mkt_cap else 0
 
-        # 순이익 증감률 TTM (earningsGrowth: 연간 EPS 성장률)
-        net_income_growth_ttm = i.get("earningsGrowth")  # 소수점 형태 (0.15 = 15%)
-        if net_income_growth_ttm is None:
-            # 대안: revenueGrowth 사용
-            net_income_growth_ttm = i.get("revenueGrowth")
-        if net_income_growth_ttm is None:
-            net_income_growth_ttm = -999
-
-        # PFCR (Price to Free Cash Flow Ratio) = 시가총액 / FCF
-        pfcr = None
-        if fcf and fcf > 0 and mkt_cap and mkt_cap > 0:
-            pfcr = mkt_cap / fcf
-        elif fcf and fcf <= 0:
-            pfcr = -1  # FCF 음수
-        else:
-            pfcr = 999  # 계산 불가
-
-        # ROE (토스 기준: returnOnEquity, 소수점 → 15% = 0.15)
+        # 2. ROE (소수점: 0.15 = 15%)
         roe_val = i.get("returnOnEquity", 0) or 0
 
+        # 3. 순이익 증감률 TTM (earningsGrowth: 소수점, 0.10 = 10%)
+        net_income_growth_ttm = i.get("earningsGrowth")
+        if net_income_growth_ttm is None:
+            net_income_growth_ttm = i.get("revenueGrowth")
+        if net_income_growth_ttm is None:
+            net_income_growth_ttm = -999.0
+
+        # 4. PFCR = 시가총액 / FCF (양수이면 FCF 흑자)
+        fcf_val = i.get("freeCashflow", 0) or 0
+        if fcf_val > 0 and mkt_cap_usd > 0:
+            pfcr = mkt_cap_usd / fcf_val
+        elif fcf_val < 0:
+            pfcr = -1.0  # FCF 음수
+        else:
+            pfcr = 999.0  # 계산 불가
+
+        # 5. op_margin 재확인 (소수점: 0.05 = 5%)
+        op_margin_val = op_margin if op_margin is not None else 0.0
+
         item["market_cap"] = mkt_cap
-        item["mkt_cap_usd"] = mkt_cap_usd or 0
+        item["mkt_cap_usd"] = mkt_cap_usd
         item["roic"] = roic if roic else 0
         item["roe"] = roe_val
         item["debt_ratio"] = debt_ratio
-        item["fcf"] = fcf
-        item["pfcr"] = pfcr if pfcr is not None else 999
+        item["fcf"] = fcf_val
+        item["pfcr"] = pfcr
         item["net_income_growth_ttm"] = net_income_growth_ttm
-        item["op_margin"] = op_margin if op_margin is not None else 0
+        item["op_margin"] = op_margin_val
         item["peg"] = peg
         item["per"] = per
         item["prox"] = prox
@@ -514,19 +516,31 @@ def fetch_metrics(item):
 
 @ttl_cache(3600)
 def fetch_screener():
+    """
+    주식 골라보기 스크리너
+    - 국내(KRX): Quality-GARP 하이브리드 전략 필터
+    - 해외(US) : 토스 증권 스크리너 7가지 필터 적용
+      1. 시가충액 10억 달러 이상
+      2. 영업이익률 0% 이상
+      3. 순이익 증감률 TTM 10% 이상
+      4. ROE 최근 1년 15% 이상
+      5. PER 0배 ~ 25배 이하
+      6. 부체비율 100% 이하
+      7. PFCR 0배 이상 (양수 FCF)
+    """
     try:
         usd_krw = float(yf.Ticker("USDKRW=X").history(period="1d")["Close"].iloc[-1])
     except Exception:
         usd_krw = 1450.0
 
-    # 1. Universe Definition
+    # 1. Universe 정의
     candidates = []
     for name, ticker in KR_STOCK_MAP.items():
         candidates.append({"ticker": ticker, "name": name, "market_type": "KRX"})
     for ticker in US_TICKERS:
         candidates.append({"ticker": ticker, "name": ticker, "market_type": "US"})
 
-    # 2. Parallel Fetch
+    # 2. 병렬 데이터 수집
     processed = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         futures = [executor.submit(fetch_metrics, c) for c in candidates]
@@ -540,69 +554,55 @@ def fetch_screener():
 
     df = pd.DataFrame(processed)
 
+    # 누락된 필수 콼럼 기본값 체우기
+    for col in ["mkt_cap_usd", "roe", "net_income_growth_ttm", "op_margin", "pfcr",
+                "debt_ratio", "per", "roic", "peg", "prox", "fcf"]:
+        if col not in df.columns:
+            df[col] = 0.0
+
     # ==========================================================================
     # 3. 국내(KRX) 필터링: Quality-GARP 하이브리드 전략
+    #    (yfinance에서 KRX PEG 데이터 미제공 → PEG 조건 제외, 나머지로 필터)
     # ==========================================================================
     df_kr = df[df["market_type"] == "KRX"].copy()
     if not df_kr.empty:
-        cond_roic  = df_kr["roic"] > 0.12
-        cond_debt  = df_kr["debt_ratio"] < 100
-        cond_fcf   = df_kr["fcf"] > 0
-        cond_peg   = (df_kr["peg"] > 0) & (df_kr["peg"] < 1.5)
-        cond_per   = (df_kr["per"] > 0) & (df_kr["per"] < 25)
-        cond_prox  = df_kr["prox"] >= 0.75
+        cond_roic   = df_kr["roic"] > 0.08          # ROE 8% 이상
+        cond_debt   = df_kr["debt_ratio"] < 150      # 부채비율 150% 이하
+        cond_per    = (df_kr["per"] > 0) & (df_kr["per"] < 20)  # PER 20배 이하
         cond_profit = df_kr["is_profitable"] == True
-        df_kr["toss_pass"] = cond_roic & cond_debt & cond_fcf & cond_peg & cond_per & cond_prox & cond_profit
-        df_kr = df_kr[df_kr["toss_pass"] == True].copy()
+        strict = df_kr[cond_roic & cond_debt & cond_per & cond_profit].copy()
+        # 통과 종목이 5개 미만이면 ROE만 적용
+        if len(strict) < 5:
+            df_kr = df_kr[cond_roic & cond_profit].copy()
+        else:
+            df_kr = strict
 
     # ==========================================================================
-    # 4. 해외(US) 필터링: 토스 증권 스크리너 7가지 필터 조건 적용
-    #
-    # 토스 스크리너 필터 조건 (청부 스크린샷 기준):
-    #   1. 시가총액 : 10억 달러(약 1조 4,208억원) 이상
-    #   2. 영업이익률: 직전 분기 대비 0% 이상
-    #   3. 순이익 증감률: 최근 1년(TTM) 10% 이상
-    #   4. ROE : 최근 1년(TTM) 15% 이상
-    #   5. PER : 0배 이상 ~ 25배 이하
-    #   6. 부체비율: 직전 분기 100% 이하
-    #   7. PFCR : 0배 이상 (양수 FCF)
+    # 4. 해외(US) 필터링: 토스 증권 스크리너 7가지 필터
     # ==========================================================================
     df_us = df[df["market_type"] == "US"].copy()
     if not df_us.empty:
-        # 1. 시가총액 >= 10억 달러 (1_000_000_000 = 10억)
-        cond_mktcap = df_us["mkt_cap_usd"] >= 1_000_000_000
-
-        # 2. 영업이익률 >= 0%
+        # 필터 1: 시가총액 >= 10억 달러
+        cond_mktcap    = df_us["mkt_cap_usd"] >= 1_000_000_000
+        # 필터 2: 영업이익률 >= 0%
         cond_op_margin = df_us["op_margin"] >= 0
-
-        # 3. 순이익 증감률 TTM >= 10% (earningsGrowth: 0.10 = 10%)
+        # 필터 3: 순이익 증감률 TTM >= 10% (0.10)
         cond_ni_growth = df_us["net_income_growth_ttm"] >= 0.10
+        # 필터 4: ROE >= 15% (0.15)
+        cond_roe       = df_us["roe"] >= 0.15
+        # 필터 5: 0 < PER <= 25
+        cond_per       = (df_us["per"] > 0) & (df_us["per"] <= 25)
+        # 필터 6: 부체비율 < 100%
+        cond_debt      = df_us["debt_ratio"] < 100
+        # 필터 7: PFCR >= 0 (양수 FCF)
+        cond_pfcr      = df_us["pfcr"] >= 0
 
-        # 4. ROE TTM >= 15% (returnOnEquity: 0.15 = 15%)
-        cond_roe = df_us["roe"] >= 0.15
+        all_conds = cond_mktcap & cond_op_margin & cond_ni_growth & cond_roe & cond_per & cond_debt & cond_pfcr
+        df_us_passed = df_us[all_conds].copy()
 
-        # 5. PER: 0 < PER <= 25
-        cond_per = (df_us["per"] > 0) & (df_us["per"] <= 25)
-
-        # 6. 부체비율 < 100% (debtToEquity: 100 = 100%)
-        cond_debt = df_us["debt_ratio"] < 100
-
-        # 7. PFCR >= 0 (양수 FCF 보유)
-        cond_pfcr = df_us["pfcr"] >= 0
-
-        df_us["toss_pass"] = (
-            cond_mktcap & cond_op_margin & cond_ni_growth &
-            cond_roe & cond_per & cond_debt & cond_pfcr
-        )
-        df_us_passed = df_us[df_us["toss_pass"] == True].copy()
-
-        # 토스 필터 통과 종목이 없으면 조건 완화 (PFCR 제외)
+        # 통과 종목이 없으면 PFCR 조건 완화 (나머지 6개 필터만 적용)
         if df_us_passed.empty:
-            df_us["toss_pass"] = (
-                cond_mktcap & cond_op_margin & cond_ni_growth &
-                cond_roe & cond_per & cond_debt
-            )
-            df_us_passed = df_us[df_us["toss_pass"] == True].copy()
+            df_us_passed = df_us[cond_mktcap & cond_op_margin & cond_ni_growth & cond_roe & cond_per & cond_debt].copy()
 
         df_us = df_us_passed
 
@@ -613,9 +613,9 @@ def fetch_screener():
         if d.empty:
             return d
         d = d.copy()
-        d["rank_roe"]  = d["roe"].rank(ascending=True)
-        d["rank_per"]  = d["per"].rank(ascending=False)   # PER 낙을수록 좋음
-        d["rank_prox"] = d["prox"].rank(ascending=True)   # 52주 최고가 근접도
+        d["rank_roe"]   = d["roe"].rank(ascending=True)
+        d["rank_per"]   = d["per"].rank(ascending=False)   # PER 낙을수록 좋음
+        d["rank_prox"]  = d["prox"].rank(ascending=True)   # 52주 최고가 근접도
         d["total_score"] = d["rank_roe"] + d["rank_per"] + d["rank_prox"]
         return d
 
@@ -638,49 +638,29 @@ def fetch_screener():
                 p_str = f"{row['price_val']:,.0f}원"
                 p_krw = p_str
 
-            max_score = frame["total_score"].max() if "total_score" in frame.columns else 1
+            max_score = frame["total_score"].max() if "total_score" in frame.columns and not frame.empty else 1
             score_norm = round((row.get("total_score", 0) / max_score * 100) if max_score > 0 else 0, 1)
 
-            # 토스 필터 통과 여부 배지 텍스트
-            toss_badge = ""
-            if is_us:
-                badges = []
-                if row.get("mkt_cap_usd", 0) >= 1_000_000_000:
-                    badges.append("시총✓")
-                if row.get("op_margin", 0) >= 0:
-                    badges.append("영업✓")
-                if row.get("net_income_growth_ttm", -999) >= 0.10:
-                    badges.append("NI✓")
-                if row.get("roe", 0) >= 0.15:
-                    badges.append("ROE✓")
-                if 0 < row.get("per", 999) <= 25:
-                    badges.append("PER✓")
-                if row.get("debt_ratio", 999) < 100:
-                    badges.append("부채✓")
-                if row.get("pfcr", -1) >= 0:
-                    badges.append("FCF✓")
-                toss_badge = "/".join(badges)
-
             results.append({
-                "market": "국내" if not is_us else "해외",
-                "name": row["name"],
-                "ticker": row["ticker"],
-                "price": p_str,
+                "market":    "국내" if not is_us else "해외",
+                "name":      row["name"],
+                "ticker":    row["ticker"],
+                "price":     p_str,
                 "price_krw": p_krw,
-                "price_val": round(row["price_val"], 4),
-                "change": round(row["change"], 2),
-                "category": row.get("cat", "-"),
-                "volume": int(row.get("volume", 0)),
-                "score": score_norm,
-                "toss_pass": bool(row.get("toss_pass", False)),
-                "toss_badge": toss_badge,
-                "roe": round(row.get("roe", 0) * 100, 1),
-                "per": round(row.get("per", 0), 1) if row.get("per", 999) < 999 else None,
-                "debt_ratio": round(row.get("debt_ratio", 0), 1) if row.get("debt_ratio", 999) < 999 else None,
-                "ni_growth": round(row.get("net_income_growth_ttm", -999) * 100, 1) if row.get("net_income_growth_ttm", -999) > -999 else None,
-                "op_margin": round(row.get("op_margin", 0) * 100, 1),
-                "pfcr": round(row.get("pfcr", 999), 1) if row.get("pfcr", 999) < 999 else None,
-                "signal": row.get("signal", "-")
+                "price_val": round(float(row["price_val"]), 4),
+                "change":    round(float(row["change"]), 2),
+                "category":  row.get("cat", "-"),
+                "volume":    int(row.get("volume", 0)),
+                "score":     score_norm,
+                "signal":    row.get("signal", "-"),
+                # 토스 필터 지표 (해외 전용)
+                "roe":       round(float(row.get("roe", 0)) * 100, 1),
+                "per":       round(float(row.get("per", 0)), 1) if row.get("per", 999) < 999 else None,
+                "ni_growth": round(float(row.get("net_income_growth_ttm", -999)) * 100, 1)
+                             if row.get("net_income_growth_ttm", -999) > -999 else None,
+                "debt_ratio":round(float(row.get("debt_ratio", 0)), 1) if row.get("debt_ratio", 999) < 999 else None,
+                "op_margin": round(float(row.get("op_margin", 0)) * 100, 1),
+                "pfcr":      round(float(row.get("pfcr", 999)), 1) if row.get("pfcr", 999) < 999 else None,
             })
 
     build_rows(df_kr, is_us=False)
@@ -1082,7 +1062,6 @@ def route(path: str, params: Dict) -> Dict:
 
     if path == "/api/screener":
         # Pre-calculated/Cached response via CDN (s-maxage)
-        # sort_order 파라미터는 프론트엔드에서 JS로 정렬 처리하므로 API는 데이터만 반환
         return fetch_screener()
 
     if path == "/api/cron":
@@ -1469,20 +1448,28 @@ input::placeholder{color:#484f58}
       데이터 로딩 중...
     </div>
     <!-- 토스 필터 조건 배지 (해외 탭 전용) -->
-    <div id="toss-filter-badges" style="display:none;margin-bottom:12px;padding:10px 14px;background:#161b22;border:1px solid #1f6feb;border-radius:10px;font-size:12px">
-      <span style="color:#1f6feb;font-weight:700;margin-right:8px">토스 스크리너 필터 적용중</span>
-      <span style="color:#8b949e">시가총액 10억달러+ &nbsp;•&nbsp; 영업이익률 0%+ &nbsp;•&nbsp; 순이익증감률 TTM 10%+ &nbsp;•&nbsp; ROE 15%+ &nbsp;•&nbsp; PER 0~25배 &nbsp;•&nbsp; 부체비율 100%이하 &nbsp;•&nbsp; PFCR 0배+</span>
+    <div id="toss-filter-badges" style="display:none;margin-bottom:12px;padding:10px 14px;background:#0d1117;border:1px solid #1f6feb;border-radius:10px;font-size:12px;line-height:1.8">
+      <span style="color:#58a6ff;font-weight:700;margin-right:8px">토스 스크리너 필터 적용중</span><br>
+      <span style="color:#8b949e">
+        ① 시가충액 10억달러+ &nbsp;•&nbsp;
+        ② 영업이익률 0%+ &nbsp;•&nbsp;
+        ③ 순이익증감률 TTM 10%+ &nbsp;•&nbsp;
+        ④ ROE 15%+ &nbsp;•&nbsp;
+        ⑤ PER 0~25배 &nbsp;•&nbsp;
+        ⑥ 부체비율 100%이하 &nbsp;•&nbsp;
+        ⑦ PFCR 0배+
+      </span>
     </div>
     <div id="scrn-result" style="display:none">
-      <div class="card" style="padding:0;overflow:hidden">
+      <div class="card" style="padding:0;overflow:hidden;overflow-x:auto">
         <table class="screener-table" id="scrn-table">
           <thead><tr id="scrn-thead-row">
             <th>#</th>
             <th>종목</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortScreener('price')" id="th-price">현재가 ↕</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortScreener('change')" id="th-change">등락률 ↕</th>
+            <th id="th-price" style="text-align:right;cursor:pointer;user-select:none" onclick="sortScreener('price')">현재가 ↕</th>
+            <th id="th-change" style="text-align:right;cursor:pointer;user-select:none" onclick="sortScreener('change')">등락률 ↕</th>
             <th>카테고리</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortScreener('volume')" id="th-volume">거래량 ↕</th>
+            <th id="th-volume" style="text-align:right;cursor:pointer;user-select:none" onclick="sortScreener('volume')">거래량 ↕</th>
             <th style="text-align:center">신호</th>
           </tr></thead>
           <tbody id="scrn-tbody"></tbody>
@@ -1969,28 +1956,28 @@ function switchTab(tab) {
   }
 }
 
-// ── 스크리너 메타 (전역) ──
-let screenerMeta = { usd_krw: 0 };
-
 // ── 스크리너 ──
+let screenerMeta = {};
+
 async function loadScreener() {
   document.getElementById('scrn-loading').style.display = 'block';
   document.getElementById('scrn-result').style.display = 'none';
-  // 토스 필터 배지 초기화
-  const badge = document.getElementById('toss-filter-badges');
-  if (badge) badge.style.display = 'none';
+  const badges = document.getElementById('toss-filter-badges');
+  if (badges) badges.style.display = 'none';
   try {
-    const r = await fetch('/api/screener');
+    // no-cache: 서버에서 항상 새로운 데이터 요청
+    const r = await fetch('/api/screener', {cache: 'no-store'});
     const d = await r.json();
     screenerData = d.data || [];
-    screenerMeta = { usd_krw: d.usd_krw || 0 };
+    screenerMeta = d;
+    const usdKrw = (d.usd_krw || 0).toLocaleString();
+    document.getElementById('scrn-subtitle').textContent =
+      `국내/해외 주요 종목 실시간 시세 | USD/KRW: ${usdKrw}`;
     renderScreener();
     document.getElementById('scrn-loading').style.display = 'none';
     document.getElementById('scrn-result').style.display = 'block';
-    // 해외 탭이 활성화되어 있으면 배지 표시
-    if (scrnMarket === 'overseas' && badge) badge.style.display = 'block';
   } catch(e) {
-    document.getElementById('scrn-loading').innerHTML = '<p style="color:#f85149">데이터 로딩 실패</p>';
+    document.getElementById('scrn-loading').innerHTML = '<p style="color:#f85149">데이터 로딩 실패. 잠시 후 새로고침하세요.</p>';
   }
 }
 
@@ -1998,36 +1985,42 @@ function switchScrnTab(tab) {
   scrnMarket = tab;
   document.getElementById('scrn-tab-domestic').classList.toggle('active', tab === 'domestic');
   document.getElementById('scrn-tab-overseas').classList.toggle('active', tab === 'overseas');
-  // 토스 필터 배지: 해외 탭일 때만 표시
-  const badge = document.getElementById('toss-filter-badges');
-  if (badge) badge.style.display = tab === 'overseas' ? 'block' : 'none';
+  // 토스 필터 배지: 해외 탭에서만 표시
+  const badges = document.getElementById('toss-filter-badges');
+  if (badges) badges.style.display = tab === 'overseas' ? 'block' : 'none';
   renderScreener();
 }
 
 function sortScreener(key) {
-  if (scrnSort.key === key) scrnSort.dir = scrnSort.dir === 'desc' ? 'asc' : 'desc';
-  else { scrnSort.key = key; scrnSort.dir = 'desc'; }
-  // 정렬 중인 컨럼 표시 업데이트
+  if (scrnSort.key === key) {
+    scrnSort.dir = scrnSort.dir === 'desc' ? 'asc' : 'desc';
+  } else {
+    scrnSort.key = key;
+    scrnSort.dir = 'desc';
+  }
+  // 정렬 중인 콼럼 표시 업데이트
   ['price','change','volume'].forEach(k => {
     const th = document.getElementById('th-' + k);
     if (!th) return;
-    const base = k === 'price' ? '현재가' : k === 'change' ? '등락률' : '거래량';
-    if (scrnSort.key === k) {
-      th.textContent = base + (scrnSort.dir === 'desc' ? ' ▼' : ' ▲');
-      th.style.color = '#1f6feb';
+    if (k === scrnSort.key) {
+      th.style.color = '#58a6ff';
+      // 아이콘 업데이트
+      const label = k === 'price' ? '현재가' : k === 'change' ? '등락률' : '거래량';
+      th.textContent = label + (scrnSort.dir === 'desc' ? ' ▼' : ' ▲');
     } else {
-      th.textContent = base + ' ↕';
       th.style.color = '';
+      const label = k === 'price' ? '현재가' : k === 'change' ? '등락률' : '거래량';
+      th.textContent = label + ' ↕';
     }
   });
   renderScreener();
 }
 
 function renderScreener() {
-  const marketLabel = scrnMarket === 'domestic' ? '국내' : '해외';
-  const isKrx = scrnMarket === 'domestic';
-  const isOverseas = !isKrx;
+  const isOverseas = scrnMarket === 'overseas';
+  const marketLabel = isOverseas ? '해외' : '국내';
 
+  // 정렬
   const filtered = screenerData
     .filter(s => s.market === marketLabel)
     .sort((a, b) => {
@@ -2036,73 +2029,90 @@ function renderScreener() {
         va = a.price_val || 0;
         vb = b.price_val || 0;
       } else if (scrnSort.key === 'change') {
-        va = a.change;
-        vb = b.change;
+        va = a.change || 0;
+        vb = b.change || 0;
       } else {
-        va = a.volume;
-        vb = b.volume;
+        va = a.volume || 0;
+        vb = b.volume || 0;
       }
       return scrnSort.dir === 'desc' ? vb - va : va - vb;
     });
 
-  // 해외 탭: 토스 필터 지표 컨럼 동적 삽입
+  // 토스 필터 배지 표시 여부
+  const badges = document.getElementById('toss-filter-badges');
+  if (badges) badges.style.display = isOverseas ? 'block' : 'none';
+
+  // 테이블 헤더: 해외 탭에서만 토스 지표 콼럼 추가
   const thead = document.getElementById('scrn-thead-row');
   if (thead) {
-    const existExtra = thead.querySelectorAll('.toss-col');
-    existExtra.forEach(el => el.remove());
+    // 기존 토스 콼럼 제거
+    thead.querySelectorAll('.toss-col').forEach(el => el.remove());
     if (isOverseas) {
-      const cols = [
-        { label: 'ROE', title: 'ROE ≥ 15%' },
-        { label: 'PER', title: 'PER 0~25배' },
-        { label: '순이익증감', title: '순이익 증감률 TTM ≥ 10%' },
-        { label: '부체비율', title: '부체비율 < 100%' },
-        { label: 'PFCR', title: 'PFCR ≥ 0 (양수 FCF)' },
+      const tossCols = [
+        {id:'th-roe',   label:'ROE',     title:'ROE ≥ 15%'},
+        {id:'th-per',   label:'PER',     title:'PER 0~25배'},
+        {id:'th-ni',    label:'순이익증감',  title:'순이익 증감률 TTM ≥ 10%'},
+        {id:'th-debt',  label:'부체비율',  title:'부체비율 < 100%'},
+        {id:'th-pfcr',  label:'PFCR',    title:'PFCR ≥ 0 (양수 FCF)'},
       ];
-      cols.forEach(c => {
+      tossCols.forEach(c => {
         const th = document.createElement('th');
+        th.id = c.id;
         th.className = 'toss-col';
-        th.style.cssText = 'text-align:right;color:#8b949e;font-size:10px;white-space:nowrap';
         th.title = c.title;
+        th.style.cssText = 'text-align:right;color:#8b949e;font-size:11px;white-space:nowrap;padding:8px 10px';
         th.textContent = c.label;
         thead.appendChild(th);
       });
     }
   }
 
+  // 종목 수 업데이트
+  const subtitle = document.getElementById('scrn-subtitle');
+  if (subtitle) {
+    const usdKrw = (screenerMeta.usd_krw || 0).toLocaleString();
+    subtitle.textContent = isOverseas
+      ? `토스 필터 통과 ${filtered.length}종목 | USD/KRW: ${usdKrw}`
+      : `국내 ${filtered.length}종목 | USD/KRW: ${usdKrw}`;
+  }
+
   const tbody = document.getElementById('scrn-tbody');
+  if (!tbody) return;
+
   tbody.innerHTML = filtered.map((s, i) => {
     const up = s.change >= 0;
-    const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
+    // 국내: 상승=빨강, 하락=파랑 / 해외: 상승=녹색, 하락=빨강
+    const clr = !isOverseas ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
     const signal = s.change > 3 ? '강력 매수' : s.change > 0 ? '매수' : s.change > -3 ? '중립' : '매도';
     const sigCls = signal === '강력 매수' ? 'sig-buy-strong' : signal === '매수' ? 'sig-buy' : signal === '중립' ? 'sig-neu' : 'sig-sell';
 
     // 현재가 표시: 해외는 달러 + 원화 병행 표시
     const priceDisplay = isOverseas
-      ? `<span style="font-weight:700">${s.price}</span><br><span style="font-size:10px;color:#484f58">${s.price_krw || ''}</span>`
+      ? `<span style="font-weight:700">${s.price}</span><br><span style="font-size:10px;color:#6e7681">${s.price_krw || ''}</span>`
       : `<span style="font-weight:700">${s.price}</span>`;
 
-    // 토스 필터 지표 코드 (해외 탭에서만)
+    // 토스 필터 지표 콼럼 (해외 탭에서만)
     let extraCols = '';
     if (isOverseas) {
-      const fmtVal = (v, unit='%', decimals=1) => v !== null && v !== undefined ? `${v.toFixed ? v.toFixed(decimals) : v}${unit}` : '-';
-      const roe = s.roe !== null && s.roe !== undefined ? s.roe : null;
-      const per = s.per !== null && s.per !== undefined ? s.per : null;
-      const ni  = s.ni_growth !== null && s.ni_growth !== undefined ? s.ni_growth : null;
-      const dr  = s.debt_ratio !== null && s.debt_ratio !== undefined ? s.debt_ratio : null;
-      const pf  = s.pfcr !== null && s.pfcr !== undefined ? s.pfcr : null;
+      const roe = s.roe;
+      const per = s.per;
+      const ni  = s.ni_growth;
+      const dr  = s.debt_ratio;
+      const pf  = s.pfcr;
 
-      const roeClr  = roe !== null && roe >= 15 ? '#3fb950' : '#f85149';
-      const perClr  = per !== null && per > 0 && per <= 25 ? '#3fb950' : '#f85149';
-      const niClr   = ni  !== null && ni  >= 10 ? '#3fb950' : '#f85149';
-      const drClr   = dr  !== null && dr  < 100 ? '#3fb950' : '#f85149';
-      const pfClr   = pf  !== null && pf  >= 0  ? '#3fb950' : '#f85149';
+      const roeClr = (roe !== null && roe !== undefined && roe >= 15) ? '#3fb950' : '#f85149';
+      const perClr = (per !== null && per !== undefined && per > 0 && per <= 25) ? '#3fb950' : '#f85149';
+      const niClr  = (ni  !== null && ni  !== undefined && ni  >= 10) ? '#3fb950' : '#f85149';
+      const drClr  = (dr  !== null && dr  !== undefined && dr  < 100) ? '#3fb950' : '#f85149';
+      const pfClr  = (pf  !== null && pf  !== undefined && pf  >= 0)  ? '#3fb950' : '#f85149';
 
+      const fmt = (v, unit='%', dec=1) => (v !== null && v !== undefined) ? v.toFixed(dec) + unit : '-';
       extraCols = `
-        <td class="toss-col" style="text-align:right;font-size:12px;color:${roeClr}">${roe !== null ? roe.toFixed(1)+'%' : '-'}</td>
-        <td class="toss-col" style="text-align:right;font-size:12px;color:${perClr}">${per !== null ? per.toFixed(1) : '-'}</td>
-        <td class="toss-col" style="text-align:right;font-size:12px;color:${niClr}">${ni  !== null ? (ni >= 0 ? '+' : '') + ni.toFixed(1)+'%' : '-'}</td>
-        <td class="toss-col" style="text-align:right;font-size:12px;color:${drClr}">${dr  !== null ? dr.toFixed(1)+'%' : '-'}</td>
-        <td class="toss-col" style="text-align:right;font-size:12px;color:${pfClr}">${pf  !== null ? pf.toFixed(1)+'x' : '-'}</td>`;
+        <td class="toss-col" style="text-align:right;font-size:12px;color:${roeClr}">${fmt(roe)}</td>
+        <td class="toss-col" style="text-align:right;font-size:12px;color:${perClr}">${fmt(per,'',1)}</td>
+        <td class="toss-col" style="text-align:right;font-size:12px;color:${niClr}">${ni !== null && ni !== undefined ? (ni >= 0 ? '+' : '') + ni.toFixed(1) + '%' : '-'}</td>
+        <td class="toss-col" style="text-align:right;font-size:12px;color:${drClr}">${fmt(dr)}</td>
+        <td class="toss-col" style="text-align:right;font-size:12px;color:${pfClr}">${fmt(pf,'x',1)}</td>`;
     }
 
     return `<tr onclick="quickSearch('${s.ticker}')" style="cursor:pointer">
@@ -2110,20 +2120,12 @@ function renderScreener() {
       <td><div class="ticker-name">${s.name}</div><div class="ticker-code">${s.ticker}</div></td>
       <td style="text-align:right">${priceDisplay}</td>
       <td style="text-align:right;font-weight:700;color:${clr}">${up?'▲':'▼'} ${Math.abs(s.change).toFixed(2)}%</td>
-      <td><span class="cat-badge">${s.category}</span></td>
-      <td style="text-align:right;color:#8b949e;font-size:12px">${s.volume.toLocaleString()}</td>
+      <td><span class="cat-badge">${s.category || '-'}</span></td>
+      <td style="text-align:right;color:#8b949e;font-size:12px">${(s.volume||0).toLocaleString()}</td>
       <td style="text-align:center"><span class="signal-badge ${sigCls}">${signal}</span></td>
       ${extraCols}
     </tr>`;
   }).join('');
-
-  // 종목 수 업데이트
-  const subtitle = document.getElementById('scrn-subtitle');
-  if (subtitle) {
-    const usdKrw = screenerMeta.usd_krw || 0;
-    const label = isOverseas ? `토스 필터 통과 ${filtered.length}종목 | USD/KRW: ${usdKrw.toLocaleString()}` : `국내 ${filtered.length}종목 | USD/KRW: ${usdKrw.toLocaleString()}`;
-    subtitle.textContent = label;
-  }
 }
 
 // ── 초기화 ──
@@ -2187,8 +2189,9 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
     
     if status == 200:
         if path == "/api/screener":
-            # Long cache for screener (1 hour + 1 day stale)
-            cache_control = "public, s-maxage=3600, stale-while-revalidate=86400"
+            # 스크리너는 실시간 데이터이므로 CDN 캐시 비활성화
+            # stale-while-revalidate 제거: 배포 후 즉시 새 코드 반영
+            cache_control = "no-store, no-cache, must-revalidate, proxy-revalidate"
         elif path == "/api/stock":
             # Short cache for stock data
             cache_control = "public, s-maxage=60, stale-while-revalidate=300"
