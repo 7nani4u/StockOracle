@@ -491,12 +491,17 @@ def fetch_metrics(item):
 
 def fetch_toss_metrics(ticker: str):
     """
-    yfinance .info 에서 토스 스크리너 필터에 필요한 지표만 뽑아 반환.
-    필터 미통과 또는 실패 시 None 반환.
+    [BUG-FIX v2]
+    토스증권 스크린샷 필터 조건을 yfinance로 구현.
+    - BUG-2: earningsGrowth=None → 필터 스킵 (None과 음수만 제거)
+    - BUG-3: ROE 상한선 1.01→5.0 (yfinance 소수 단위, 101%→500%)
+    - BUG-4: debtToEquity 단위 안전 처리 (소수/퍼센트 자동 판별)
     """
     try:
         t = yf.Ticker(ticker)
         i = t.info
+        if not i or i.get("quoteType") == "MUTUALFUND":
+            return None
 
         # ── 현재가 ──────────────────────────────────────────────
         price = (i.get("currentPrice")
@@ -515,31 +520,45 @@ def fetch_toss_metrics(ticker: str):
         if op_margin is None or op_margin <= 0:
             return None
 
-        # ── 순이익 증감률 TTM 10% 이상 ──────────────────────────
+        # ── 순이익 증감률 TTM: 10% 이상 (없으면 필터 스킵) ──────
+        # [BUG-2] earningsGrowth=None 종목이 많아 전부 필터링되던 문제 수정
         earnings_growth = i.get("earningsGrowth")
-        if earnings_growth is None or earnings_growth < 0.10:
-            return None
+        if earnings_growth is not None and earnings_growth < 0.10:
+            return None  # 있는데 10% 미만이면 탈락
 
-        # ── ROE TTM: 15% ~ 101% ──────────────────────────────────
+        # ── ROE TTM: 15% 이상 (상한 실용적 완화) ────────────────
+        # [BUG-3] 상한 1.01 → 5.0: AAPL(~1.47), 고ROE기업 포함
+        # yfinance returnOnEquity: 소수 단위 (0.15 = 15%, 1.47 = 147%)
         roe = i.get("returnOnEquity")
-        if roe is None or not (0.15 <= roe <= 1.01):
+        if roe is None or roe < 0.15:
+            return None
+        # 상한: 5.0 (500%) → 비정상적 ROE 제외 (부채과다 착시 방지)
+        if roe > 5.0:
             return None
 
-        # ── PER: 0 ~ 25 ──────────────────────────────────────────
-        per = i.get("trailingPE")
+        # ── PER: 0 ~ 25배 ────────────────────────────────────────
+        # trailingPE 없으면 forwardPE로 fallback
+        per = i.get("trailingPE") or i.get("forwardPE")
         if per is None or not (0 < per <= 25):
             return None
 
         # ── 부채비율 100% 이하 ───────────────────────────────────
-        debt_eq = i.get("debtToEquity")
-        if debt_eq is None or debt_eq > 100:
+        # [BUG-4] yfinance debtToEquity 단위 안전 처리:
+        #   - 최신 yfinance: % 단위 (146.52 = 146.52%)
+        #   - 구버전 일부: 소수 단위 (1.4652 = 146.52%)
+        #   → 값이 10 미만이면 소수로 간주하여 100배 변환
+        debt_raw = i.get("debtToEquity")
+        if debt_raw is None:
+            return None
+        debt_pct = debt_raw * 100 if debt_raw < 10 else debt_raw
+        if debt_pct > 100:
             return None
 
-        # ── PFCR ≥ 0 (양의 FCF) ──────────────────────────────────
+        # ── PFCR ≥ 0: 양의 FCF 여부 확인 ────────────────────────
         fcf = i.get("freeCashflow") or i.get("operatingCashflow") or 0
         if fcf <= 0:
             return None
-        pfcr = round(mkt_cap / fcf, 2) if fcf > 0 else -1
+        pfcr = round(mkt_cap / fcf, 2)
 
         # ── 보조 정보 ────────────────────────────────────────────
         change_pct = (i.get("regularMarketChangePercent") or 0) * 100
@@ -554,6 +573,7 @@ def fetch_toss_metrics(ticker: str):
         analyst_signal = analyst_map.get(rec_key, "중립")
         high52 = i.get("fiftyTwoWeekHigh") or price
         prox52 = round(price / high52, 4) if high52 else 0
+        eg_pct = round(earnings_growth * 100, 2) if earnings_growth is not None else None
 
         return {
             "ticker":          ticker,
@@ -563,10 +583,10 @@ def fetch_toss_metrics(ticker: str):
             "change":          round(change_pct, 2),
             "market_cap":      mkt_cap,
             "op_margin":       round(op_margin * 100, 2),
-            "earnings_growth": round(earnings_growth * 100, 2),
+            "earnings_growth": eg_pct,
             "roe":             round(roe * 100, 2),
             "per":             round(per, 2),
-            "debt_ratio":      round(debt_eq, 2),
+            "debt_ratio":      round(debt_pct, 2),
             "pfcr":            pfcr,
             "fcf":             fcf,
             "volume":          int(volume),
@@ -1583,7 +1603,7 @@ let currentData = null;
 let currentTab = 'chart';
 let screenerData = [];
 let scrnMarket = 'domestic';
-let scrnSort = {key:'change', dir:'desc'};
+let scrnSort = {key:'price', dir:'desc'};
 let chartInstances = {};
 
 // ── 페이지 전환 ──
@@ -2100,14 +2120,17 @@ function sortScreener(key) {
 
 function renderScreener() {
   const marketLabel = scrnMarket === 'domestic' ? '국내' : '해외';
-  // 서버 정렬 결과를 그대로 사용 (해외), 국내는 클라이언트 정렬
   let filtered = screenerData.filter(s => s.market === marketLabel);
+
+  // 국내: 클라이언트 정렬 / 해외: 서버 정렬 결과 그대로
   if (scrnMarket === 'domestic') {
-    filtered = filtered.sort((a, b) => {
+    filtered = filtered.slice().sort((a, b) => {
       let va, vb;
-      if (scrnSort.key === 'price')  { va = a.price_val; vb = b.price_val; }
-      else if (scrnSort.key === 'change') { va = a.change; vb = b.change; }
-      else { va = a.volume; vb = b.volume; }
+      if      (scrnSort.key === 'price')  { va = a.price_val || 0; vb = b.price_val || 0; }
+      else if (scrnSort.key === 'change') { va = a.change    || 0; vb = b.change    || 0; }
+      else if (scrnSort.key === 'per')    { va = a.per       || 0; vb = b.per       || 0; }
+      else if (scrnSort.key === 'roe')    { va = a.roe_pct   || 0; vb = b.roe_pct   || 0; }
+      else                                { va = a.volume    || 0; vb = b.volume    || 0; }
       return scrnSort.dir === 'desc' ? vb - va : va - vb;
     });
   }
@@ -2115,34 +2138,50 @@ function renderScreener() {
   const isKrx = scrnMarket === 'domestic';
   const tbody = document.getElementById('scrn-tbody');
 
-  // 정렬 헤더 활성화 표시
-  document.querySelectorAll('.screener-table th').forEach(th => {
-    th.style.color = '#8b949e';
-  });
-
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:32px;color:#8b949e">필터 조건에 맞는 종목이 없습니다.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#8b949e">필터 조건에 맞는 종목이 없습니다.<br><small style="font-size:11px">토스증권 필터 기준: 시가총액≥10억$ / 영업이익률>0% / ROE≥15% / PER≤25 / 부채비율≤100% / FCF>0</small></td></tr>';
     return;
   }
 
-  tbody.innerHTML = filtered.map((s, i) => {
-    const up = s.change >= 0;
+  tbody.innerHTML = filtered.map((s, idx) => {
+    const up  = s.change >= 0;
     const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
-    // 애널리스트 신호 우선, 없으면 등락률 기반
-    const signal = s.signal || (s.change > 3 ? '적극 매수' : s.change > 0 ? '매수' : s.change > -3 ? '중립' : '매도');
-    const sigCls = signal.includes('적극') ? 'sig-buy-strong' : signal === '매수' ? 'sig-buy' : signal === '중립' || signal === '보유' ? 'sig-neu' : 'sig-sell';
-    const priceDisp = isKrx ? (s.price || s.price_krw) : `${s.price_usd || s.price}<br><span style="font-size:11px;color:#8b949e">${s.price_krw||''}</span>`;
-    const perDisp  = s.per  ? s.per.toFixed(1)  : '-';
-    return \`<tr onclick="quickSearch('$\{s.ticker\}')" style="cursor:pointer">
-      <td style="color:#484f58">${i+1}</td>
-      <td><div class="ticker-name">${s.name}</div><div class="ticker-code">${s.ticker}</div></td>
-      <td style="text-align:right;font-weight:600">\${priceDisp}</td>
-      <td style="text-align:right;font-weight:700;color:\${clr}">\${up?'▲':'▼'} \${Math.abs(s.change).toFixed(2)}%</td>
-      <td><span class="cat-badge">\${s.category||s.sector||''}</span></td>
-      <td style="text-align:right;color:#8b949e;font-size:12px">\${(s.volume||0).toLocaleString()}</td>
-      <td style="text-align:center;color:#8b949e;font-size:12px">\${perDisp}</td>
-      <td style="text-align:center"><span class="signal-badge \${sigCls}">\${signal}</span></td>
-    </tr>\`;
+
+    // 애널리스트 신호 우선 사용
+    const rawSig = s.signal || '';
+    const signal = rawSig || (s.change > 3 ? '적극 매수' : s.change > 0 ? '매수' : s.change > -3 ? '중립' : '매도');
+    const sigCls = signal.includes('적극') ? 'sig-buy-strong'
+                 : signal === '매수'        ? 'sig-buy'
+                 : signal === '중립' || signal === '보유' ? 'sig-neu'
+                 : 'sig-sell';
+
+    // 현재가 표시: 해외는 달러 + 원화 병기
+    let priceDisp;
+    if (isKrx) {
+      priceDisp = s.price || s.price_krw || '-';
+    } else {
+      const usd = s.price_usd || s.price || '-';
+      const krw = s.price_krw ? '<br><span style="font-size:11px;color:#8b949e">' + s.price_krw + '</span>' : '';
+      priceDisp = usd + krw;
+    }
+
+    const perDisp = (s.per != null && s.per > 0) ? s.per.toFixed(1) : '-';
+    const ticker  = String(s.ticker || '');
+    const name    = String(s.name   || '');
+    const cat     = String(s.category || s.sector || '');
+    const vol     = (s.volume || 0).toLocaleString();
+    const chg     = Math.abs(s.change || 0).toFixed(2);
+
+    return '<tr onclick="quickSearch(\'' + ticker + '\')" style="cursor:pointer">'
+      + '<td style="color:#484f58">' + (idx+1) + '</td>'
+      + '<td><div class="ticker-name">' + name + '</div><div class="ticker-code">' + ticker + '</div></td>'
+      + '<td style="text-align:right;font-weight:600">' + priceDisp + '</td>'
+      + '<td style="text-align:right;font-weight:700;color:' + clr + '">' + (up?'▲':'▼') + ' ' + chg + '%</td>'
+      + '<td><span class="cat-badge">' + cat + '</span></td>'
+      + '<td style="text-align:right;color:#8b949e;font-size:12px">' + vol + '</td>'
+      + '<td style="text-align:center;color:#8b949e;font-size:12px">' + perDisp + '</td>'
+      + '<td style="text-align:center"><span class="signal-badge ' + sigCls + '">' + signal + '</span></td>'
+      + '</tr>';
   }).join('');
 }
 
