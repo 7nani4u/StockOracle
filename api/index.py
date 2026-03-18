@@ -484,17 +484,112 @@ def fetch_metrics(item):
         return None
 
 # =============================================================================
-# 토스증권 해외주식 스크리너 – 필터 함수
+# 토스증권 해외주식 스크리너 – 유니버스 & 필터 함수
 # (스크린샷 기준 필터: 시가총액≥10억$ / 영업이익률>0 / 순이익증감률≥10% /
-#  ROE 15~101% / PER 0~25 / 부채비율≤100% / PFCR≥0)
+#  ROE 15%~8785% / PER 0~25 / 부채비율≤100% / PFCR≥0)
 # =============================================================================
+
+# ── 토스증권 해외주식 필터 유니버스 (S&P500 + 글로벌 대형주 + 광산/에너지/금융 등) ──
+TOSS_US_UNIVERSE = [
+    # 미국 대형 기술주
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "AVGO", "ORCL", "ADBE",
+    "CRM", "CSCO", "INTU", "TXN", "QCOM", "AMD", "AMAT", "LRCX", "KLAC", "MRVL",
+    "NOW", "SNOW", "PANW", "CRWD", "ZS", "FTNT", "DDOG", "MDB", "TEAM",
+    # 금융주
+    "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SPGI", "MCO", "AXP",
+    "V", "MA", "COF", "USB", "PNC", "TFC", "MTB", "CFG", "FITB", "RF",
+    "CB", "PGR", "MET", "PRU", "AFL", "AIG", "HIG", "ALL", "TRV", "MMC",
+    "AON", "MSCI", "ICE", "CME", "NDAQ",
+    # 헬스케어/제약
+    "JNJ", "UNH", "LLY", "ABBV", "MRK", "ABT", "TMO", "DHR", "SYK", "BSX",
+    "ISRG", "MDT", "EW", "ZTS", "VRTX", "REGN", "BIIB", "GILD", "AMGN", "BMY",
+    "PFE", "CVS", "MCK", "CAH", "HCA", "CNC", "ELV", "CI",
+    # 소비재/유통
+    "WMT", "COST", "TGT", "HD", "LOW", "TJX", "ROST", "BBY", "DG", "DLTR",
+    "MCD", "SBUX", "YUM", "CMG", "DPZ", "QSR",
+    "PG", "KO", "PEP", "CL", "MO", "PM", "BTI", "NKE", "VFC", "HBI",
+    "AMZN", "BKNG", "EXPE", "ABNB", "LYFT", "UBER",
+    # 에너지
+    "XOM", "CVX", "COP", "EOG", "SLB", "OXY", "MPC", "VLO", "PSX", "HES",
+    "DVN", "FANG", "APA", "BKR", "HAL",
+    # 광업/금/원자재 (스크린샷에 다수 포함된 섹터)
+    "NEM",   # 뉴몬트 (Newmont)
+    "AEM",   # 애그니코 이글 마인스 (Agnico Eagle Mines)
+    "GOLD",  # 배릭 마이닝 코퍼레이션 (Barrick Gold)
+    "AU",    # 앵글로골드 아샨티 (AngloGold Ashanti ADR)
+    "GFI",   # 골드 필즈 (Gold Fields ADR)
+    "KGC",   # 킨로스 골드 (Kinross Gold)
+    "WPM",   # 휠튼 프레셔스 메탈 (Wheaton Precious Metals)
+    "RGLD",  # 로열 골드 (Royal Gold)
+    "FNV",   # 프랑코-네바다 (Franco-Nevada)
+    "OR",    # 오시스코 로열티 (Osisko Gold Royalties)
+    "EGO",   # 엘도라도 골드 (Eldorado Gold)
+    "AGI",   # 알라모스 골드 (Alamos Gold)
+    "HMY",   # 하모니 골드 (Harmony Gold ADR)
+    "IAG",   # IAMGOLD
+    "BVN",   # 부에나벤투라 (Buenaventura ADR)
+    "VALE",  # 발레 (Vale ADR)
+    "RIO",   # 리오 틴토 (Rio Tinto ADR)
+    "BHP",   # BHP 그룹 (BHP ADR)
+    "SCCO",  # 서던 코퍼 (Southern Copper)
+    "FCX",   # 프리포트-맥모란 (Freeport-McMoRan)
+    "AA",    # 알코아 (Alcoa)
+    "CLF",   # 클리프스 내추럴 (Cleveland-Cliffs)
+    "MP",    # MP 머티리얼즈 (MP Materials)
+    "NUE",   # 뉴코어 (Nucor)
+    "STLD",  # 스틸 다이내믹스 (Steel Dynamics)
+    "X",     # US 스틸 (U.S. Steel)
+    # ADR / 글로벌 대형주
+    "TSM",   # TSMC
+    "ASML",  # ASML
+    "SAP",   # SAP
+    "NTES",  # 넷이즈 (NetEase ADR)
+    "BIDU",  # 바이두 (Baidu ADR)
+    "JD",    # JD닷컴 (JD.com ADR)
+    "BABA",  # 알리바바 (Alibaba ADR)
+    "NVO",   # 노보 노르디스크 (Novo Nordisk ADR)
+    "AZN",   # 아스트라제네카 (AstraZeneca ADR)
+    "UL",    # 유니레버 (Unilever ADR)
+    "NESN",  # 네슬레 (OTC)
+    "TTE",   # 토탈에너지 (TotalEnergies ADR)
+    "BP",    # BP ADR
+    "SHEL",  # 쉘 (Shell ADR)
+    "GSK",   # GSK ADR
+    "SNY",   # 사노피 (Sanofi ADR)
+    "RHHBY", # 로슈 (Roche ADR)
+    "DEO",   # 디아지오 (Diageo ADR)
+    "SONY",  # 소니 (Sony ADR)
+    "TM",    # 도요타 (Toyota ADR)
+    "HMC",   # 혼다 (Honda ADR)
+    "NSANY", # 닛산 (Nissan ADR)
+    "MUFG",  # 미쓰비시 UFJ ADR
+    "SMFG",  # 스미토모 미쓰이 ADR
+    "KB",    # KB금융 ADR
+    "SHG",   # 신한지주 ADR
+    "PKX",   # POSCO ADR
+    "LG",    # LG ADR (OTC)
+    # 통신/미디어
+    "T", "VZ", "TMUS", "CMCSA", "NFLX", "DIS", "WBD", "PARA",
+    "CHTR", "DISH", "SIRI",
+    # 산업재/항공우주
+    "BA", "GE", "HON", "RTX", "LMT", "NOC", "GD", "TXT", "HII",
+    "CAT", "DE", "EMR", "ETN", "ITW", "PH", "ROK", "DOV", "FTV",
+    "UPS", "FDX", "EXPD", "GWW", "FAST",
+    "MMM", "ITT", "XYL", "REXR", "EFX",
+    # 부동산
+    "PLD", "AMT", "CCI", "EQIX", "SPG", "O", "WELL",
+    # 전력/유틸리티
+    "NEE", "SO", "DUK", "AEP", "EXC", "D", "PCG", "ED", "FE",
+    # 신흥 성장주 (ADR)
+    "GRAB", "SEA", "MELI", "NU", "PDD", "TME",
+]
 
 def fetch_toss_metrics(ticker: str):
     """
     [BUG-FIX v2]
     토스증권 스크린샷 필터 조건을 yfinance로 구현.
     - BUG-2: earningsGrowth=None → 필터 스킵 (None과 음수만 제거)
-    - BUG-3: ROE 상한선 1.01→5.0 (yfinance 소수 단위, 101%→500%)
+    - BUG-3: ROE 상한선 1.01→87.85 (yfinance 소수 단위, 101%→8785%)
     - BUG-4: debtToEquity 단위 안전 처리 (소수/퍼센트 자동 판별)
     """
     try:
@@ -532,8 +627,8 @@ def fetch_toss_metrics(ticker: str):
         roe = i.get("returnOnEquity")
         if roe is None or roe < 0.15:
             return None
-        # 상한: 5.0 (500%) → 비정상적 ROE 제외 (부채과다 착시 방지)
-        if roe > 5.0:
+        # 상한: 87.85 (8785%) → 비정상적 ROE 제외 (부채과다 착시 방지)
+        if roe > 87.85:
             return None
 
         # ── PER: 0 ~ 25배 ────────────────────────────────────────
@@ -666,14 +761,14 @@ def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc
         })
 
     filter_conditions = {
-        "market":          "해외(미국)",
-        "market_cap":      "10억$ 이상",
-        "op_margin":       "직전 분기 0% 이상",
-        "earnings_growth": "최근 1년(TTM) 10% 이상",
-        "roe":             "최근 1년(TTM) 15% ~ 101%",
-        "per":             "0배 ~ 25배",
-        "debt_ratio":      "직전 분기 0% ~ 100%",
-        "pfcr":            "0배 이상(양의 FCF)",
+        "시장":       "해외(미국)",
+        "시가총액":   "10억$ 이상",
+        "영업이익률": "직전 분기 0% 이상",
+        "순이익증감": "최근 1년(TTM) 10% 이상",
+        "ROE":        "최근 1년(TTM) 15% ~ 8,785%",
+        "PER":        "0배 ~ 25배",
+        "부채비율":   "직전 분기 0% ~ 100%",
+        "PFCR":       "0배 이상(양의 FCF)",
     }
     return {
         "data":              output,
@@ -2086,7 +2181,11 @@ async function loadScreener(sortBy, sortOrder) {
     const d = await r.json();
     screenerData = d.data || [];
     const fc = d.filter_conditions || {};
-    const filterStr = Object.entries(fc).map(([k,v])=>`${k}: ${v}`).join(' │ ');
+    // 소수점 셋째 자리 이상 값은 둘째 자리로 자르기
+    const filterStr = Object.entries(fc).map(([k,v])=>{
+      const fv = String(v).replace(/(\d+\.\d{3,})/g, m => parseFloat(m).toFixed(2));
+      return k + ': ' + fv;
+    }).join(' │ ');
     document.getElementById('scrn-subtitle').textContent =
       `토스증권 동일 필터 적용 | USD/KRW: ${(d.usd_krw||0).toLocaleString()} | 해외 ${d.total_overseas||0}종목`;
     if (document.getElementById('scrn-filter-badge')) {
