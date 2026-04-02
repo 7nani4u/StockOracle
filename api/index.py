@@ -265,21 +265,51 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         df = obj.history(period=period, interval="1d", auto_adjust=True)
         if df.empty and market == "KRX" and sym.endswith(".KS"):
             sym = sym.replace(".KS", ".KQ")
-            df = yf.Ticker(sym).history(period=period, interval="1d", auto_adjust=True)
+            obj = yf.Ticker(sym)
+            df = obj.history(period=period, interval="1d", auto_adjust=True)
         if df.empty:
-            return None, None, f"데이터 없음: {sym}"
+            return None, None, None, f"데이터 없음: {sym}"
+        
         # MultiIndex 처리 (안전하게)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+        
         # 컬럼명 표준화: 일부 버전에서 소문자로 오는 경우
         df.columns = [c.capitalize() if c.lower() in ("open","high","low","close","volume") else c for c in df.columns]
+        
         # 필수 컬럼 존재 확인
         required_cols = ["Open", "High", "Low", "Close", "Volume"]
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
-            return None, None, f"컬럼 누락: {missing}"
+            return None, None, None, f"컬럼 누락: {missing}"
+            
         df = add_indicators(df)
         df = df.dropna(subset=["Close", "MA20", "RSI"])
+
+        # 현재가 실시간/프리마켓/애프터마켓 반영 로직 (빠른 조회)
+        realtime_price = None
+        market_state = "REGULAR"
+        try:
+            info = obj.info
+            # 미국 주식의 경우 프리마켓/애프터마켓 가격 우선 반영
+            if market == "US":
+                pre_price = info.get("preMarketPrice")
+                post_price = info.get("postMarketPrice")
+                reg_price = info.get("currentPrice") or info.get("regularMarketPrice")
+                
+                if post_price and info.get("marketState") in ["POST", "POSTPOST", "CLOSED"]:
+                    realtime_price = post_price
+                    market_state = "AFTER_MARKET"
+                elif pre_price and info.get("marketState") in ["PRE", "PREPRE"]:
+                    realtime_price = pre_price
+                    market_state = "PRE_MARKET"
+                else:
+                    realtime_price = reg_price
+                    market_state = "REGULAR"
+            else:
+                realtime_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        except Exception:
+            pass
 
         # 뉴스
         news = []
@@ -304,9 +334,11 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
             df2["Date"] = df2["Date"].dt.tz_localize(None)
         df2["Date"] = df2["Date"].dt.strftime("%Y-%m-%d")
         d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
-        return d, news, sym
+        
+        realtime_info = {"price": realtime_price, "state": market_state}
+        return d, news, sym, realtime_info
     except Exception as e:
-        return None, None, str(e)
+        return None, None, None, str(e)
 
 @ttl_cache(600)
 def fetch_naver(code: str):
@@ -1471,13 +1503,78 @@ def route(path: str, params: Dict) -> Dict:
         ticker, market, company = resolve_ticker(raw)
         if not ticker:
             return {"error": f"'{raw}' 종목을 찾을 수 없습니다."}
-        dd, news, sym = fetch_stock_data(ticker, market, period)
+        dd, news, sym, rt_info = fetch_stock_data(ticker, market, period)
         if dd is None:
             return {"error": f"데이터 조회 실패: {sym}"}
+            
+        # 실시간 가격 강제 우회 (10분 캐시 회피)
+        realtime_price = rt_info.get("price") if rt_info else None
+        market_state = rt_info.get("state", "REGULAR")
+        try:
+            # yfinance fast_info나 별도 API로 현재가만 즉시 가져옴
+            t_obj = yf.Ticker(sym)
+            fast_i = t_obj.fast_info
+            curr_p = fast_i.get("last_price")
+            if curr_p:
+                # 미국장인 경우 info에서 pre/post 확인
+                if market == "US":
+                    try:
+                        info_dict = t_obj.info
+                        state = info_dict.get("marketState")
+                        if state in ["POST", "POSTPOST", "CLOSED"] and info_dict.get("postMarketPrice"):
+                            realtime_price = info_dict.get("postMarketPrice")
+                            market_state = "AFTER_MARKET"
+                        elif state in ["PRE", "PREPRE"] and info_dict.get("preMarketPrice"):
+                            realtime_price = info_dict.get("preMarketPrice")
+                            market_state = "PRE_MARKET"
+                        else:
+                            realtime_price = curr_p
+                            market_state = "REGULAR"
+                    except:
+                        realtime_price = curr_p
+                else:
+                    realtime_price = curr_p
+        except Exception:
+            pass
+
         closes = dd.get("Close", [])
-        last = float(closes[-1]) if closes else 0
-        prev = float(closes[-2]) if len(closes) > 1 else last
+        # 종가 히스토리 기준 가격 (캐시된 지연 데이터)
+        last_hist = float(closes[-1]) if closes else 0
+        prev = float(closes[-2]) if len(closes) > 1 else last_hist
+        
+        # 한국 주식은 네이버 금융을 우선하여 실시간 가격 확보
+        naver = fetch_naver(sym) if market == "KRX" else None
+        if market == "KRX":
+            try:
+                # 캐시를 피하기 위해 가벼운 모바일 페이지나 폴링 전용 요청을 시도
+                code = str(sym).replace(".KS","").replace(".KQ","")
+                # 간단한 실시간 가격 전용 우회 로직
+                m_url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+                m_res = requests.get(m_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+                if m_res.status_code == 200:
+                    m_data = m_res.json()
+                    if m_data.get("closePrice"):
+                        realtime_price = float(m_data["closePrice"].replace(",", ""))
+                elif naver and naver.get("price"):
+                    realtime_price = float(naver["price"])
+            except:
+                if naver and naver.get("price"):
+                    try: realtime_price = float(naver["price"])
+                    except: pass
+                
+        # 최종 표시 가격 결정
+        last = realtime_price if realtime_price else last_hist
         pct = (last - prev) / prev * 100 if prev else 0
+        
+        # 환율 (미국 주식용)
+        usd_krw = 1380.0
+        if market == "US":
+            try:
+                # 빠른 환율 조회
+                usd_krw = float(yf.Ticker("USDKRW=X").fast_info.get("last_price", 1380.0))
+            except:
+                pass
+
         score, steps, patterns, geo_patterns = analyze_score(dd)
         
         # 기하학적 패턴을 캔들 패턴 리스트에 통합 (UI 표시용)
@@ -1496,11 +1593,17 @@ def route(path: str, params: Dict) -> Dict:
         pivot_points     = calc_pivot_points(dd)
         indicator_signals= calc_indicator_signals(dd)
         buy_price        = calc_buy_price(dd, last, atr_val)
-        naver = fetch_naver(sym) if market == "KRX" else None
+        
+        # 한국 주식은 정수 처리, 미국 주식은 소수점 2자리
+        last_display = int(last) if market == "KRX" else round(last, 2)
+        prev_display = int(prev) if market == "KRX" else round(prev, 2)
+
         return {
             "symbol": sym, "company": company or sym, "market": market,
-            "last_close": round(last, 2), "prev_close": round(prev, 2),
+            "last_close": last_display, "prev_close": prev_display,
             "pct_change": round(pct, 2),
+            "market_state": market_state,
+            "usd_krw": round(usd_krw, 2) if market == "US" else None,
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
             "atr": round(atr_val, 2),
@@ -2108,11 +2211,21 @@ function renderResult(d) {
   const up = d.pct_change >= 0;
   const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
 
+  let stateLabel = '';
+  if (d.market_state === 'PRE_MARKET') stateLabel = '<span style="font-size:11px;background:#21262d;padding:2px 6px;border-radius:4px;color:#d29922;margin-left:6px">프리마켓</span>';
+  else if (d.market_state === 'AFTER_MARKET') stateLabel = '<span style="font-size:11px;background:#21262d;padding:2px 6px;border-radius:4px;color:#8b949e;margin-left:6px">애프터마켓</span>';
+
   document.getElementById('r-title').innerHTML =
     `${d.company || d.symbol} <span class="ticker-badge">${d.symbol}</span>`;
   document.getElementById('r-subtitle').textContent =
     `기준일: ${new Date().toLocaleDateString('ko-KR')} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'}`;
-  document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
+  
+  let priceHtml = fmt(d.last_close, isKrx);
+  if (!isKrx && d.usd_krw) {
+    const krwPrice = (d.last_close * d.usd_krw).toLocaleString('ko-KR', {maximumFractionDigits:0});
+    priceHtml += ` <span style="font-size:13px;color:#8b949e;font-weight:400">(${krwPrice}원)</span>`;
+  }
+  document.getElementById('r-price').innerHTML = priceHtml + stateLabel;
   document.getElementById('r-pct').innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
 
   const rsi = d.rsi;
