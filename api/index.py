@@ -180,6 +180,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df[f"MA{w}"] = c.rolling(w).mean()
     df["EMA12"] = c.ewm(span=12, adjust=False).mean()
     df["EMA26"] = c.ewm(span=26, adjust=False).mean()
+    df["EMA13"] = c.ewm(span=13, adjust=False).mean()
+    df["EMA20"] = c.ewm(span=20, adjust=False).mean()
+    df["EMA50"] = c.ewm(span=50, adjust=False).mean()
     delta = c.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -199,6 +202,59 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     denom = (high14 - low14).replace(0, np.nan)
     df["%K"] = (c - low14) / denom * 100
     df["%D"] = df["%K"].rolling(3).mean()
+
+    # STOCH (9,6)
+    low9 = df["Low"].rolling(9).min()
+    high9 = df["High"].rolling(9).max()
+    df["STOCH_K"] = (c - low9) / (high9 - low9).replace(0, np.nan) * 100
+    df["STOCH_D"] = df["STOCH_K"].rolling(6).mean()
+
+    # Williams %R (14)
+    df["WILLR"] = (high14 - c) / (high14 - low14).replace(0, np.nan) * -100
+
+    # CCI (14)
+    tp = (df["High"] + df["Low"] + c) / 3
+    tp_ma = tp.rolling(14).mean()
+    tp_mad = tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+    df["CCI"] = (tp - tp_ma) / (0.015 * tp_mad.replace(0, np.nan))
+
+    # ADX (14)
+    dm_plus = df["High"].diff()
+    dm_minus = -df["Low"].diff()
+    dm_plus_adj = dm_plus.where((dm_plus > dm_minus) & (dm_plus > 0), 0.0)
+    dm_minus_adj = dm_minus.where((dm_minus > dm_plus) & (dm_minus > 0), 0.0)
+    atr14 = df["ATR"]
+    df["DI_Plus"]  = 100 * dm_plus_adj.rolling(14).mean()  / atr14.replace(0, np.nan)
+    df["DI_Minus"] = 100 * dm_minus_adj.rolling(14).mean() / atr14.replace(0, np.nan)
+    dx = (df["DI_Plus"] - df["DI_Minus"]).abs() / (df["DI_Plus"] + df["DI_Minus"]).replace(0, np.nan) * 100
+    df["ADX"] = dx.rolling(14).mean()
+
+    # StochRSI (14)
+    rsi_s = df["RSI"]
+    rsi_low14  = rsi_s.rolling(14).min()
+    rsi_high14 = rsi_s.rolling(14).max()
+    df["STOCHRSI"] = (rsi_s - rsi_low14) / (rsi_high14 - rsi_low14).replace(0, np.nan) * 100
+
+    # ROC (12)
+    df["ROC"] = c.pct_change(12) * 100
+
+    # Bull / Bear Power (13)
+    df["BULL_POWER"] = df["High"] - df["EMA13"]
+    df["BEAR_POWER"] = df["Low"]  - df["EMA13"]
+
+    # Ultimate Oscillator (7/14/28)
+    prev_c = df["Close"].shift(1)
+    bp_uo  = c - pd.concat([df["Low"], prev_c], axis=1).min(axis=1)
+    tr_uo  = pd.concat([df["High"], prev_c], axis=1).max(axis=1) \
+           - pd.concat([df["Low"],  prev_c], axis=1).min(axis=1)
+    avg7  = bp_uo.rolling(7).sum()  / tr_uo.rolling(7).sum().replace(0, np.nan)
+    avg14 = bp_uo.rolling(14).sum() / tr_uo.rolling(14).sum().replace(0, np.nan)
+    avg28 = bp_uo.rolling(28).sum() / tr_uo.rolling(28).sum().replace(0, np.nan)
+    df["UO"] = 100 * (4 * avg7 + 2 * avg14 + avg28) / 7
+
+    # Highs / Lows (14) range
+    df["HL14"] = high14 - low14
+
     return df
 
 @ttl_cache(600)
@@ -979,76 +1035,134 @@ def detect_patterns(dd: Dict) -> List[Dict]:
     return patterns
 
 def analyze_score(dd: Dict):
+    """
+    가중치 기반 종합 점수 산출
+    - 추세 (35%): MACD & EMA 20/50
+    - 모멘텀 (30%): RSI (14) & ADX (14)
+    - 변동성 (20%): Bollinger Bands (20,2) & ATR (14)
+    - 거래량 (15%): Volume 급증 확인
+    Base 50 + 각 구간 ±(weight/2) → 최종 0~100 클리핑
+    """
     closes = dd.get("Close", [])
     if len(closes) < 20:
         return 50, [], [], []
+
     def v(k):
         a = dd.get(k, [])
         val = a[-1] if a else None
         return float(val) if val is not None else 0.0
-    close, ma20, ma60 = v("Close"), v("MA20"), v("MA60")
-    rsi, macd, sig = v("RSI"), v("MACD"), v("Signal_Line")
-    bb_u, bb_l = v("BB_Upper"), v("BB_Lower")
-    vols = dd.get("Volume", [])
+
+    close  = v("Close")
+    ema20  = v("EMA20");  ema50 = v("EMA50")
+    macd   = v("MACD");   sig   = v("Signal_Line")
+    rsi    = v("RSI")
+    adx    = v("ADX");    dip   = v("DI_Plus");  dim = v("DI_Minus")
+    bb_u   = v("BB_Upper"); bb_l = v("BB_Lower"); bb_m = v("BB_Middle")
+    atr    = v("ATR")
+    opn    = v("Open")
+    vols   = dd.get("Volume", [])
     cur_vol = float(vols[-1]) if vols else 0
     avg_vol = float(np.mean([x for x in vols[-20:] if x])) if vols else 1
-    opn = v("Open")
-    score, steps = 50, []
 
-    # 추세
-    ts, msg = 0, ""
-    if close > ma20:
-        ts += 10
-        if close > ma60:
-            ts += 10
-            if ma20 > ma60: ts += 10; msg = "단기/장기 이동평균 정배열 → 강한 상승 추세"
-            else: msg = "장기 이평선 위 → 상승 기조"
-        else: msg = "20일 이평선 위 → 단기 상승 시도"
+    score = 50.0
+    steps = []
+
+    # ── 1. MACD & EMA (20/50) — 추세 방향성 및 강도 [35%] max ±17.5 ──
+    ts = 0.0; msgs = []
+    if ema20 and ema50:
+        if ema20 > ema50:
+            ts += 7.0; msgs.append(f"EMA20 > EMA50 정배열 → 중기 상승 추세")
+        else:
+            ts -= 7.0; msgs.append(f"EMA20 < EMA50 역배열 → 중기 하락 추세")
+    if ema20 and close:
+        if close > ema20:
+            ts += 5.0; msgs.append("현재가 EMA20 상회 → 단기 강세")
+        else:
+            ts -= 5.0; msgs.append("현재가 EMA20 하회 → 단기 약세")
+    if macd > sig:
+        ts += 5.5; msgs.append("MACD 골든크로스 → 상승 전환 신호")
     else:
-        ts -= 10
-        if close < ma60:
-            ts -= 10
-            if ma20 < ma60: ts -= 10; msg = "역배열 → 하락 압력 강함"
-            else: msg = "장기 이평선 아래 → 하락 추세 우려"
-        else: msg = "20일 이평선 하회 → 조정 중"
+        ts -= 5.5; msgs.append("MACD 데드크로스 → 하락 전환 신호")
+    ts = max(-17.5, min(17.5, ts))
     score += ts
-    steps.append({"step": "1. 추세 분석 (MA)", "result": msg, "score": ts})
+    steps.append({"step": "1. MACD & EMA (20/50) — 추세 방향성 및 강도",
+                  "result": " | ".join(msgs), "score": round(ts, 1), "weight": "35%"})
 
-    # 모멘텀
-    ms, msgs = 0, []
-    if rsi > 70: ms -= 5; msgs.append(f"RSI {rsi:.1f} 과매수")
-    elif rsi < 30: ms += 10; msgs.append(f"RSI {rsi:.1f} 과매도 → 반등 기대")
-    else: msgs.append(f"RSI {rsi:.1f} 중립")
-    if macd > sig: ms += 10; msgs.append("MACD 골든크로스 → 상승 신호")
-    else: ms -= 10; msgs.append("MACD 데드크로스 → 하락 신호")
+    # ── 2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도 [30%] max ±15 ──
+    ms = 0.0; msgs = []
+    if   rsi > 70: ms -= 6.0; msgs.append(f"RSI {rsi:.1f} 과매수 → 하락 압력 주의")
+    elif rsi < 30: ms += 8.0; msgs.append(f"RSI {rsi:.1f} 과매도 → 강한 반등 기대")
+    elif rsi > 55: ms -= 2.0; msgs.append(f"RSI {rsi:.1f} 고점권 — 완만한 하락 압력")
+    elif rsi < 45: ms += 3.0; msgs.append(f"RSI {rsi:.1f} 저점권 → 매수 관심 구간")
+    else:                      msgs.append(f"RSI {rsi:.1f} 중립")
+    if adx > 25:
+        if dip > dim:
+            ms += 7.0; msgs.append(f"ADX {adx:.0f} + +DI 우세 → 강한 상승 추세 신뢰")
+        else:
+            ms -= 7.0; msgs.append(f"ADX {adx:.0f} + -DI 우세 → 강한 하락 추세 신뢰")
+    elif adx > 20:
+        msgs.append(f"ADX {adx:.0f} — 추세 형성 초기")
+    else:
+        msgs.append(f"ADX {adx:.0f} — 횡보 구간 (추세 약함)")
+    ms = max(-15.0, min(15.0, ms))
     score += ms
-    steps.append({"step": "2. 모멘텀 (RSI/MACD)", "result": " | ".join(msgs), "score": ms})
+    steps.append({"step": "2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도",
+                  "result": " | ".join(msgs), "score": round(ms, 1), "weight": "30%"})
 
-    # 거래량/BB
-    vs, vmsgs = 0, []
-    if close > bb_u * 0.98: vs += 5; vmsgs.append("볼린저 상단 터치")
-    elif close < bb_l * 1.02: vs -= 5; vmsgs.append("볼린저 하단 터치")
-    if avg_vol > 0 and cur_vol > avg_vol * 1.5:
-        if close > opn: vs += 10; vmsgs.append("거래량 급증 + 상승 → 신뢰도 높음")
-        else: vs -= 10; vmsgs.append("거래량 급증 + 하락 → 매도 압력")
-    else: vmsgs.append("거래량 평이")
+    # ── 3. Bollinger Bands (20, 2) & ATR (14) — 변동성 및 리스크 관리 [20%] max ±10 ──
+    vs = 0.0; msgs = []
+    if close and bb_u and bb_l and bb_u > bb_l:
+        bb_range = bb_u - bb_l
+        pos = (close - bb_l) / bb_range  # 0~1 위치
+        if close >= bb_u * 0.98:
+            vs -= 5.0; msgs.append("볼린저 상단 터치 → 단기 과매수/저항")
+        elif close <= bb_l * 1.02:
+            vs += 5.0; msgs.append("볼린저 하단 터치 → 단기 과매도/지지")
+        elif pos > 0.7:
+            vs -= 2.0; msgs.append("볼린저 상단권 (70%+) → 매도 압력")
+        elif pos < 0.3:
+            vs += 2.0; msgs.append("볼린저 하단권 (30%-) → 지지 기대")
+        else:
+            msgs.append("볼린저 중간권 → 중립")
+        bb_pct = bb_range / close * 100
+        if bb_pct < 3.0:
+            vs += 3.0; msgs.append(f"밴드 수렴 ({bb_pct:.1f}%) → 큰 방향 돌파 임박")
+        elif atr and close:
+            atr_pct = atr / close * 100
+            if atr_pct > 4.0:
+                vs -= 2.0; msgs.append(f"ATR 고변동 ({atr_pct:.1f}%) → 리스크 증가")
+            else:
+                msgs.append(f"ATR {atr_pct:.1f}% — 적정 변동성")
+    vs = max(-10.0, min(10.0, vs))
     score += vs
-    steps.append({"step": "3. 거래량/변동성", "result": " | ".join(vmsgs), "score": vs})
+    steps.append({"step": "3. Bollinger Bands (20,2) & ATR (14) — 변동성 및 리스크 관리",
+                  "result": " | ".join(msgs), "score": round(vs, 1), "weight": "20%"})
 
-    # 캔들 패턴
+    # ── 4. Volume — 거래량 급증 확인 [15%] max ±7.5 ──
+    gvs = 0.0; msgs = []
+    if avg_vol > 0:
+        ratio = cur_vol / avg_vol
+        if ratio > 2.0:
+            if close > opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
+            else:           gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
+        elif ratio > 1.5:
+            if close > opn: gvs += 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
+            else:           gvs -= 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
+        elif ratio < 0.5:
+            msgs.append(f"거래량 급감 ({ratio:.1f}x) → 신뢰도 낮음")
+        else:
+            msgs.append(f"거래량 평이 ({ratio:.1f}x)")
+    else:
+        msgs.append("거래량 데이터 없음")
+    gvs = max(-7.5, min(7.5, gvs))
+    score += gvs
+    steps.append({"step": "4. Volume — 거래량 급증 확인",
+                  "result": " | ".join(msgs), "score": round(gvs, 1), "weight": "15%"})
+
+    # 캔들 패턴 (점수 반영 없이 정보 제공)
     patterns = detect_patterns(dd)
-    ps = 0; pmsgs = []
-    if patterns:
-        bull = sum(1 for p in patterns if p["direction"] == "상승")
-        bear = sum(1 for p in patterns if p["direction"] == "하락")
-        if bull > bear: ps += 10; pmsgs.append(f"상승 패턴 {bull}개")
-        elif bear > bull: ps -= 10; pmsgs.append(f"하락 패턴 {bear}개")
-        else: pmsgs.append(f"패턴 혼재 {len(patterns)}개")
-    else: pmsgs.append("특이 패턴 없음")
-    score += ps
-    steps.append({"step": "4. 캔들 패턴", "result": " | ".join(pmsgs), "score": ps})
-    
-    # 기하학적 패턴 (점수 반영 X, 정보 제공용)
+
+    # 기하학적 패턴 (점수 반영 없이 정보 제공)
     geo_patterns = []
     try:
         df = pd.DataFrame({k: dd[k] for k in ["Open", "High", "Low", "Close"] if k in dd})
@@ -1057,7 +1171,7 @@ def analyze_score(dd: Dict):
     except:
         pass
 
-    return max(0, min(100, score)), steps, patterns, geo_patterns
+    return max(0, min(100, round(score))), steps, patterns, geo_patterns
 
 def calc_risk(price: float, atr: float) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
@@ -1066,6 +1180,148 @@ def calc_risk(price: float, atr: float) -> Dict:
         "balanced":      {"label":"중립적","target":round(price+atr*2.5,2),"stop":round(price-atr*1.5,2),"ratio":"1:1.67","desc":"스윙 트레이딩","icon":"⚖️"},
         "aggressive":    {"label":"공격적","target":round(price+atr*4,2),"stop":round(price-atr*2,2),"ratio":"1:2.0","desc":"추세 추종","icon":"🚀"},
     }
+
+def calc_pivot_points(dd: Dict) -> Dict:
+    """피봇 포인트 계산: 클래식, 피보나치, 카마리야, 우디스, 디마크"""
+    highs  = [float(x) for x in dd.get("High",  []) if x is not None]
+    lows   = [float(x) for x in dd.get("Low",   []) if x is not None]
+    closes = [float(x) for x in dd.get("Close", []) if x is not None]
+    opens  = [float(x) for x in dd.get("Open",  []) if x is not None]
+    if len(highs) < 2:
+        return {}
+    # 전일 고/저/종
+    h = highs[-2]; l = lows[-2]; c = closes[-2]
+    o = opens[-2] if len(opens) >= 2 else c
+    r = lambda v: round(v, 2)
+    rng = h - l
+
+    # 클래식
+    piv = (h + l + c) / 3
+    classic = {
+        "Pivot": r(piv),
+        "R1": r(2*piv - l),   "R2": r(piv + rng),     "R3": r(h + 2*(piv - l)),
+        "S1": r(2*piv - h),   "S2": r(piv - rng),     "S3": r(l - 2*(h - piv)),
+    }
+
+    # 피보나치
+    fibonacci = {
+        "Pivot": r(piv),
+        "R1": r(piv + 0.382*rng), "R2": r(piv + 0.618*rng), "R3": r(piv + 1.000*rng),
+        "S1": r(piv - 0.382*rng), "S2": r(piv - 0.618*rng), "S3": r(piv - 1.000*rng),
+    }
+
+    # 카마리야
+    camarilla = {
+        "Pivot": r(c),
+        "R1": r(c + rng*1.1/12), "R2": r(c + rng*1.1/6), "R3": r(c + rng*1.1/4),
+        "S1": r(c - rng*1.1/12), "S2": r(c - rng*1.1/6), "S3": r(c - rng*1.1/4),
+    }
+
+    return {"classic": classic, "fibonacci": fibonacci, "camarilla": camarilla}
+
+def calc_indicator_signals(dd: Dict) -> Dict:
+    """각 기술적 지표별 현재 상태·매매 시그널·핵심 해석 계산"""
+    def v(k):
+        a = dd.get(k, [])
+        val = a[-1] if a else None
+        return float(val) if val is not None else None
+
+    close = v("Close") or 1.0
+    signals = {}
+
+    # STOCH (9,6)
+    sk = v("STOCH_K"); sd = v("STOCH_D")
+    if sk is not None and sd is not None:
+        if   sk > 80:    st,sig,desc = "과매수",    "매도", "스토캐스틱 과매수 → 하락 전환 경계"
+        elif sk < 20:    st,sig,desc = "과매도",    "매수", "과매도 구간 → 단기 반등 기대"
+        elif sk > sd:    st,sig,desc = "상향 전환", "매수", "%K > %D 골든크로스 → 단기 매수 신호"
+        else:            st,sig,desc = "하향 전환", "매도", "%K < %D 데드크로스 → 단기 매도 신호"
+        signals["stoch"] = {"name":"STOCH (9,6)", "state":st, "signal":sig, "desc":desc, "value":f"{sk:.1f} / {sd:.1f}"}
+
+    # ADX (14)
+    adx = v("ADX"); dip = v("DI_Plus"); dim = v("DI_Minus")
+    if adx is not None:
+        if adx > 25:
+            if dip is not None and dim is not None and dip > dim:
+                st,sig,desc = "강한 상승 추세","매수", f"ADX {adx:.0f} 강세 + +DI 우세 → 상승 추세 강함"
+            elif dip is not None and dim is not None:
+                st,sig,desc = "강한 하락 추세","매도", f"ADX {adx:.0f} 강세 + -DI 우세 → 하락 추세 강함"
+            else:
+                st,sig,desc = "추세 강함",     "관망", f"ADX {adx:.0f} — 강한 추세 형성 중"
+        elif adx > 20: st,sig,desc = "추세 발생",    "관망", f"ADX {adx:.0f} — 추세 형성 초기"
+        else:          st,sig,desc = "횡보/추세 없음","관망", f"ADX {adx:.0f} — 방향성 불명확, 돌파 대기"
+        signals["adx"] = {"name":"ADX (14)", "state":st, "signal":sig, "desc":desc, "value":f"{adx:.1f}"}
+
+    # CCI (14)
+    cci = v("CCI")
+    if cci is not None:
+        if   cci >  100: st,sig,desc = "과매수",     "매도", "CCI +100 초과 → 고점 매도 신호"
+        elif cci < -100: st,sig,desc = "과매도",     "매수", "CCI -100 미만 → 저점 매수 신호"
+        elif cci >    0: st,sig,desc = "상승 모멘텀","관망", "양수 유지 — 상승 추세 지속 중"
+        else:            st,sig,desc = "하락 모멘텀","관망", "음수 — 하락 추세 지속 중"
+        signals["cci"] = {"name":"CCI (14)", "state":st, "signal":sig, "desc":desc, "value":f"{cci:.1f}"}
+
+    # ATR (14)
+    atr = v("ATR")
+    if atr is not None:
+        atr_pct = atr / close * 100
+        if   atr_pct > 3:   st,sig,desc = "고변동성",   "관망", f"일간 변동 ≈{atr_pct:.1f}% — 분할 매수 권장"
+        elif atr_pct > 1.5: st,sig,desc = "보통 변동성","관망", f"일간 변동 ≈{atr_pct:.1f}% — 적정 리스크"
+        else:                st,sig,desc = "저변동성",   "관망", f"일간 변동 ≈{atr_pct:.1f}% — 돌파 시 강한 추세 기대"
+        signals["atr"] = {"name":"ATR (14)", "state":st, "signal":sig, "desc":desc, "value":f"{atr:.2f}"}
+
+    buy_n   = sum(1 for s in signals.values() if s["signal"] == "매수")
+    sell_n  = sum(1 for s in signals.values() if s["signal"] == "매도")
+    watch_n = sum(1 for s in signals.values() if s["signal"] == "관망")
+    total_n = len(signals)
+    if   buy_n  > sell_n  and buy_n  >= watch_n: ov_sig,ov_lbl = "매수","매수 우세"
+    elif sell_n > buy_n   and sell_n >= watch_n: ov_sig,ov_lbl = "매도","매도 우세"
+    else:                                         ov_sig,ov_lbl = "관망","중립 / 관망"
+
+    return {"signals": signals,
+            "summary": {"buy":buy_n,"sell":sell_n,"watch":watch_n,"total":total_n,
+                        "overall_signal":ov_sig,"overall_label":ov_lbl}}
+
+def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
+    """매수 적정 가격 예측 (지지선·변동성·기술적 지표 기반)"""
+    lows   = [float(x) for x in dd.get("Low",   []) if x is not None]
+    rsi    = float((dd.get("RSI",   [50])[-1]) or 50)
+    bb_l   = dd.get("BB_Lower",    [None])[-1]
+    ma20   = dd.get("MA20",        [None])[-1]
+    ma60   = dd.get("MA60",        [None])[-1]
+    if not atr or np.isnan(atr):
+        atr = last_price * 0.02
+
+    recent_lows  = sorted([x for x in lows[-30:] if x > 0])
+    support_zone = float(np.mean(recent_lows[:5])) if len(recent_lows) >= 5 else last_price * 0.95
+
+    aggressive      = round(last_price - atr * 0.5,  2)
+    recommended_low = round(last_price - atr * 1.0,  2)
+    recommended_hi  = round(last_price - atr * 0.3,  2)
+    conservative    = round(max(support_zone, last_price - atr * 2.0), 2)
+
+    basis = []
+    if bb_l and float(bb_l) < last_price * 1.05:
+        basis.append(f"볼린저 하단 지지선 근접 (≈{round(float(bb_l), 2):,})")
+    if ma20 and abs(float(ma20) - last_price) / last_price < 0.15:
+        basis.append(f"MA20 이동평균 지지 (≈{round(float(ma20), 2):,})")
+    if ma60 and abs(float(ma60) - last_price) / last_price < 0.20:
+        basis.append(f"MA60 이동평균 지지 (≈{round(float(ma60), 2):,})")
+    basis.append(f"ATR(14) 변동성 기반 구간 설정 (ATR ~{round(atr, 2):,})")
+    basis.append(f"최근 30일 저점 지지구간 (~{round(support_zone, 2):,})")
+
+    if   rsi < 30:  rsi_ctx = "RSI 과매도 — 적극 매수 구간"
+    elif rsi < 45:  rsi_ctx = "RSI 저점권 — 매수 유리"
+    elif rsi > 70:  rsi_ctx = "RSI 과매수 — 추가 눌림 후 매수"
+    elif rsi > 55:  rsi_ctx = "RSI 고점권 — 눌림 확인 후 분할 매수"
+    else:           rsi_ctx = "RSI 중립 — 지지선 확인 후 진입"
+
+    return {"current": round(last_price, 2),
+            "aggressive": aggressive,
+            "recommended": {"low": recommended_low, "high": recommended_hi},
+            "conservative": conservative,
+            "support_zone": round(support_zone, 2),
+            "basis": basis, "rsi": round(rsi, 1), "rsi_context": rsi_ctx, "atr": round(atr, 2)}
 
 def holt_winters_forecast(dd: Dict, days: int = 30):
     """
@@ -1220,11 +1476,12 @@ def route(path: str, params: Dict) -> Dict:
                 "conf": 100
             })
             
-        forecast = holt_winters_forecast(dd)
-        xgbp = xgb_forecast(dd)
         atrs = dd.get("ATR", [])
         atr_val = float(atrs[-1]) if atrs and atrs[-1] else last * 0.02
-        risk = calc_risk(last, atr_val)
+        risk             = calc_risk(last, atr_val)
+        pivot_points     = calc_pivot_points(dd)
+        indicator_signals= calc_indicator_signals(dd)
+        buy_price        = calc_buy_price(dd, last, atr_val)
         naver = fetch_naver(sym) if market == "KRX" else None
         return {
             "symbol": sym, "company": company or sym, "market": market,
@@ -1250,8 +1507,11 @@ def route(path: str, params: Dict) -> Dict:
                 "macd": dd.get("MACD", []),
                 "signal_line": dd.get("Signal_Line", []),
             },
-            "forecast": forecast, "xgb_forecast": xgbp,
-            "risk_scenarios": risk, "news": news or [], "naver": naver,
+            "risk_scenarios": risk,
+            "pivot_points": pivot_points,
+            "indicator_signals": indicator_signals,
+            "buy_price": buy_price,
+            "news": news or [], "naver": naver,
         }
 
     if path == "/api/screener":
@@ -1375,7 +1635,7 @@ input::placeholder{color:#484f58}
 .page-header p{font-size:12px;color:#484f58;margin-top:4px}
 
 /* 펀더멘털 */
-.fund-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.fund-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .fund-item{background:#21262d;border-radius:10px;padding:12px}
 .fund-label{font-size:11px;color:#8b949e;margin-bottom:4px}
 .fund-val{font-size:14px;font-weight:600}
@@ -1444,11 +1704,52 @@ input::placeholder{color:#484f58}
 .sig-neu{background:#2d2206;color:#d29922}
 .sig-sell{background:#2d0d0d;color:#f85149}
 
+/* 기술적 지표 시그널 */
+.indicator-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:4px}
+.indicator-item{background:#21262d;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:4px}
+.ind-name{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.04em}
+.ind-state{font-size:13px;font-weight:600}
+.ind-value{font-size:11px;color:#484f58}
+.ind-desc{font-size:12px;color:#8b949e;line-height:1.4;margin-top:2px}
+.sig-buy-badge{background:#0d2d1a;color:#3fb950;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.sig-sell-badge{background:#2d0d0d;color:#f85149;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.sig-watch-badge{background:#2d2200;color:#d29922;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.overall-signal-box{display:flex;justify-content:space-between;align-items:center;background:#21262d;border-radius:12px;padding:14px 18px;margin-bottom:14px;flex-wrap:wrap;gap:8px}
+.ovs-label{font-size:11px;color:#8b949e;margin-bottom:4px}
+.ovs-counts{display:flex;gap:14px;font-size:12px;flex-wrap:wrap}
+.ovs-buy{color:#3fb950;font-weight:700}
+.ovs-sell{color:#f85149;font-weight:700}
+.ovs-watch{color:#d29922;font-weight:700}
+
+/* 피봇 포인트 테이블 */
+.pivot-table{width:100%;border-collapse:collapse;font-size:12px}
+.pivot-table th{padding:8px 10px;text-align:center;color:#8b949e;font-size:11px;border-bottom:1px solid #30363d;font-weight:500}
+.pivot-table td{padding:7px 10px;text-align:center;border-bottom:1px solid #21262d}
+.pivot-table tr:last-child td{border-bottom:none}
+.pivot-label-col{color:#8b949e;text-align:left!important;font-weight:500;white-space:nowrap}
+.pv-r{color:#f85149;font-weight:600}
+.pv-s{color:#388bfd;font-weight:600}
+.pv-p{color:#e6edf3;font-weight:700}
+.pv-nr{background:#2d150d}
+.pv-ns{background:#0d2d1a}
+
+/* 매수 적정가 카드 */
+.buy-price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.buy-card{border-radius:12px;padding:16px;border:1px solid transparent}
+.buy-card.aggressive{background:#2d200a;border-color:#4d3615}
+.buy-card.recommended{background:#0d2d1a;border-color:#1a4730}
+.buy-card.conservative{background:#0a1f3a;border-color:#15356b}
+.buy-label{font-size:10px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
+.buy-price-val{font-size:18px;font-weight:800;margin-bottom:4px;word-break:break-all}
+.buy-basis-box{font-size:11px;color:#8b949e;line-height:1.5;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
+
 /* 반응형 */
 @media(max-width:900px){
   .metrics-grid{grid-template-columns:repeat(2,1fr)}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
+  .buy-price-grid{grid-template-columns:1fr}
+  .indicator-grid{grid-template-columns:1fr}
 }
 @media(max-width:640px){
   #sidebar{width:220px}
@@ -1547,7 +1848,6 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">시가총액</div><div class="fund-val" id="f-mktcap"></div></div>
           <div class="fund-item"><div class="fund-label">PER</div><div class="fund-val" id="f-per"></div></div>
           <div class="fund-item"><div class="fund-label">PBR</div><div class="fund-val" id="f-pbr"></div></div>
-          <div class="fund-item"><div class="fund-label">투자의견</div><div class="fund-val" id="f-opinion"></div></div>
         </div>
       </div>
       <div class="tabs">
@@ -1572,6 +1872,14 @@ input::placeholder{color:#484f58}
             <div class="card-title">MACD</div>
             <div id="macd-chart" style="height:150px"></div>
           </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📡 기술적 지표 종합 시그널</div>
+          <div id="indicator-signals-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">📐 피봇 포인트 분석</div>
+          <div id="pivot-points-section"></div>
         </div>
       </div>
 
@@ -1603,16 +1911,11 @@ input::placeholder{color:#484f58}
       <!-- 예측 탭 -->
       <div id="tab-forecast" style="display:none">
         <div class="card">
-          <div class="card-title">🔮 가격 예측 & 리스크 관리</div>
-          
-          <!-- Forecast Summary (Flexbox for auto-fit) -->
-          <div id="forecast-summary" style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap"></div>
-
-          <!-- Chart -->
-          <div id="forecast-chart" style="height:250px;margin-bottom:20px;border-radius:8px;overflow:hidden;border:1px solid #30363d"></div>
-
-          <!-- Risk Management -->
-          <div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;border-top:1px solid #30363d;padding-top:16px">🛡️ 리스크 관리 (ATR 기반)</div>
+          <div class="card-title">🎯 현재가 기준 매수 적정 가격 예측</div>
+          <div id="buy-price-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">🛡️ 리스크 관리 (ATR 기반)</div>
           <div class="risk-grid" id="risk-grid"></div>
         </div>
       </div>
@@ -1810,7 +2113,6 @@ function renderResult(d) {
     document.getElementById('f-mktcap').textContent = d.naver.market_cap || '-';
     document.getElementById('f-per').textContent = d.naver.per || '-';
     document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
-    document.getElementById('f-opinion').textContent = d.naver.opinion || '-';
   } else {
     document.getElementById('r-naver-fund').style.display = 'none';
   }
@@ -1819,6 +2121,9 @@ function renderResult(d) {
   renderAI(d, isKrx);
   // 예측/리스크
   renderForecast(d, isKrx);
+  // 기술적 지표 시그널 & 피봇 포인트
+  renderTechnicalSignals(d);
+  renderPivotPoints(d, isKrx);
   // 뉴스
   renderNews(d, isKrx);
   // 탭 초기화
@@ -1844,10 +2149,14 @@ function renderAI(d, isKrx) {
     const sc = st.score;
     const cls = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
     const label = sc > 0 ? '+' + sc : sc;
+    const weight = st.weight || '';
     return `<div class="step-item">
       <div class="step-header">
         <span class="step-title">${st.step}</span>
-        <span class="step-score ${cls}">${label}점</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          ${weight ? `<span style="font-size:10px;color:#484f58;background:#21262d;padding:1px 6px;border-radius:8px">${weight}</span>` : ''}
+          <span class="step-score ${cls}">${label}점</span>
+        </div>
       </div>
       <div class="step-result">${st.result}</div>
     </div>`;
@@ -1869,74 +2178,208 @@ function renderAI(d, isKrx) {
 }
 
 function renderForecast(d, isKrx) {
-  const fc = d.forecast;
-  const xgb = d.xgb_forecast;
   const risk = d.risk_scenarios;
-  const last = d.last_close;
+  const bp   = d.buy_price;
 
-  // 예측 요약
-  const sumEl = document.getElementById('forecast-summary');
-  if (!fc) {
-    sumEl.innerHTML = '<p style="color:#484f58;font-size:13px">예측 데이터 부족</p>';
-  } else {
-    const hwF = fc.yhat[fc.yhat.length - 1];
-    const xgbF = xgb ? xgb[xgb.length - 1] : null;
-    const ens = xgbF != null ? hwF * 0.6 + xgbF * 0.4 : hwF;
-    const ensChg = (ens - last) / last * 100;
-    const ensUp = ensChg >= 0;
-    const clr = isKrx ? (ensUp ? '#f85149' : '#388bfd') : (ensUp ? '#3fb950' : '#f85149');
-    sumEl.innerHTML = `
-      <div style="background:#21262d;border-radius:10px;padding:12px;text-align:center;flex:1;min-width:120px">
-        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">HW 예측 (30일)</div>
-        <div style="font-size:15px;font-weight:700;color:#388bfd">${fmt(hwF, isKrx)}</div>
-      </div>
-      ${xgbF != null ? `<div style="background:#21262d;border-radius:10px;padding:12px;text-align:center;flex:1;min-width:120px">
-        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">XGBoost (30일)</div>
-        <div style="font-size:15px;font-weight:700;color:#d29922">${fmt(xgbF, isKrx)}</div>
-      </div>` : ''}
-      <div style="background:#0d1f4f;border:1px solid #1f4f8e;border-radius:10px;padding:12px;text-align:center;flex:1;min-width:120px">
-        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🤖 AI 앙상블</div>
-        <div style="font-size:17px;font-weight:800;color:#fff">${fmt(ens, isKrx)}</div>
-        <div style="font-size:12px;color:${clr}">${ensUp?'▲':'▼'} ${Math.abs(ensChg).toFixed(2)}%</div>
-      </div>`;
+  // ── 매수 적정가 섹션 ──
+  const bpEl = document.getElementById('buy-price-section');
+  if (bpEl) {
+    if (!bp) {
+      bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
+    } else {
+      const cur = bp.current;
+      const pct = v => ((v - cur) / cur * 100).toFixed(2);
+      const aggPct   = pct(bp.aggressive);
+      const recLPct  = pct(bp.recommended.low);
+      const recHPct  = pct(bp.recommended.high);
+      const conPct   = pct(bp.conservative);
 
-    // Peak Detection (JS에서 계산)
-    if (fc.dates.length > 0) {
-        let maxVal = -Infinity;
-        let maxIdx = -1;
-        const len = Math.min(fc.yhat.length, xgb ? xgb.length : fc.yhat.length);
-        for(let i=0; i<len; i++) {
-            const h = fc.yhat[i];
-            const x = xgb ? xgb[i] : h;
-            const e = x != null ? h * 0.6 + x * 0.4 : h;
-            if (e > maxVal) { maxVal = e; maxIdx = i; }
-        }
-        if (maxIdx >= 0) {
-             sumEl.innerHTML += `
-             <div style="background:#1c2128;border:1px solid #30363d;border-radius:10px;padding:10px;text-align:center;width:100%;display:flex;justify-content:space-between;align-items:center;padding-left:16px;padding-right:16px">
-                <div style="font-size:12px;color:#8b949e">📅 추천 매도 (Peak)</div>
-                <div style="text-align:right">
-                    <span style="font-size:14px;font-weight:700;color:#facc15;margin-right:8px">${fc.dates[maxIdx]}</span>
-                    <span style="font-size:12px;color:#8b949e">최고 ${fmt(maxVal, isKrx)}</span>
-                </div>
-             </div>`;
-        }
+      bpEl.innerHTML = `
+        <div style="background:#21262d;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">현재가</div>
+            <div style="font-size:22px;font-weight:800">${fmt(cur, isKrx)}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">RSI ${bp.rsi} 상태</div>
+            <div style="font-size:13px;font-weight:600;color:#d29922">${bp.rsi_context}</div>
+          </div>
+        </div>
+        <div class="buy-price-grid">
+          <div class="buy-card aggressive">
+            <div class="buy-label">⚡ 공격적 매수</div>
+            <div class="buy-price-val" style="color:#f97316">${fmt(bp.aggressive, isKrx)}</div>
+            <div style="font-size:12px;color:#f97316;margin-bottom:4px">${aggPct}%</div>
+            <div class="buy-basis-box">현재가 대비 단기 눌림 구간<br>ATR 0.5배 기반 · 빠른 진입</div>
+          </div>
+          <div class="buy-card recommended">
+            <div class="buy-label">✅ 추천 매수 구간</div>
+            <div class="buy-price-val" style="color:#3fb950">${fmt(bp.recommended.low, isKrx)}<br><span style="font-size:13px">~ ${fmt(bp.recommended.high, isKrx)}</span></div>
+            <div style="font-size:12px;color:#3fb950;margin-bottom:4px">${recLPct}% ~ ${recHPct}%</div>
+            <div class="buy-basis-box">ATR 기반 최적 진입 구간<br>분할 매수 권장</div>
+          </div>
+          <div class="buy-card conservative">
+            <div class="buy-label">🛡️ 보수적 매수</div>
+            <div class="buy-price-val" style="color:#388bfd">${fmt(bp.conservative, isKrx)}</div>
+            <div style="font-size:12px;color:#388bfd;margin-bottom:4px">${conPct}%</div>
+            <div class="buy-basis-box">강한 지지구간 도달 시 매수<br>최대 안전 마진 확보</div>
+          </div>
+        </div>
+        <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px">
+          <div style="font-size:11px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">📋 예측 근거</div>
+          ${bp.basis.map(b => `<div style="font-size:12px;color:#8b949e;margin-bottom:4px">• ${b}</div>`).join('')}
+        </div>`;
     }
   }
 
-  // 리스크 카드
+  // ── 리스크 카드 ──
   const rgEl = document.getElementById('risk-grid');
-  const riskList = Object.entries(risk);
-  const riskClasses = ['conservative', 'balanced', 'aggressive'];
-  rgEl.innerHTML = riskList.map(([key, sc], i) => `
-    <div class="risk-card ${riskClasses[i]}">
-      <div class="risk-icon">${sc.icon}</div>
-      <div class="risk-name">${sc.label}</div>
-      <div class="risk-desc">${sc.desc}</div>
-      <div class="risk-row"><span class="risk-lbl">🎯 목표가</span><span class="risk-tgt">${fmt(sc.target, isKrx)}</span></div>
-      <div class="risk-row"><span class="risk-lbl">🛑 손절가</span><span class="risk-stp">${fmt(sc.stop, isKrx)}</span></div>
-      <div class="risk-ratio">손익비 ${sc.ratio}</div>
-    </div>`).join('');
+  if (rgEl && risk) {
+    const riskClasses = ['conservative', 'balanced', 'aggressive'];
+    rgEl.innerHTML = Object.entries(risk).map(([, sc], i) => `
+      <div class="risk-card ${riskClasses[i]}">
+        <div class="risk-icon">${sc.icon}</div>
+        <div class="risk-name">${sc.label}</div>
+        <div class="risk-desc">${sc.desc}</div>
+        <div class="risk-row"><span class="risk-lbl">🎯 목표가</span><span class="risk-tgt">${fmt(sc.target, isKrx)}</span></div>
+        <div class="risk-row"><span class="risk-lbl">🛑 손절가</span><span class="risk-stp">${fmt(sc.stop, isKrx)}</span></div>
+        <div class="risk-ratio">손익비 ${sc.ratio}</div>
+      </div>`).join('');
+  }
+}
+
+function renderTechnicalSignals(d) {
+  const el = document.getElementById('indicator-signals-section');
+  if (!el || !d.indicator_signals) return;
+
+  const { signals, summary } = d.indicator_signals;
+
+  const badge = sig => {
+    if (sig === '매수') return '<span class="sig-buy-badge">▲ 매수</span>';
+    if (sig === '매도') return '<span class="sig-sell-badge">▼ 매도</span>';
+    return '<span class="sig-watch-badge">— 관망</span>';
+  };
+
+  const ovClr = summary.overall_signal === '매수' ? '#3fb950'
+              : summary.overall_signal === '매도' ? '#f85149' : '#d29922';
+
+  let html = `
+    <div class="overall-signal-box">
+      <div>
+        <div class="ovs-label">종합 판단 (${summary.total}개 지표 기준)</div>
+        <div style="font-size:20px;font-weight:800;color:${ovClr}">${summary.overall_label}</div>
+      </div>
+      <div class="ovs-counts">
+        <span class="ovs-buy">▲ 매수 ${summary.buy}</span>
+        <span class="ovs-sell">▼ 매도 ${summary.sell}</span>
+        <span class="ovs-watch">— 관망 ${summary.watch}</span>
+      </div>
+    </div>
+    <div class="indicator-grid">`;
+
+  Object.values(signals).forEach(s => {
+    const stClr = s.signal === '매수' ? '#3fb950' : s.signal === '매도' ? '#f85149' : '#d29922';
+    html += `
+      <div class="indicator-item">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+          <span class="ind-name">${s.name}</span>
+          ${badge(s.signal)}
+        </div>
+        <div class="ind-state" style="color:${stClr}">${s.state}</div>
+        <div class="ind-value">${s.value}</div>
+        <div class="ind-desc">${s.desc}</div>
+      </div>`;
+  });
+
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderPivotPoints(d, isKrx) {
+  const el = document.getElementById('pivot-points-section');
+  if (!el || !d.pivot_points || !Object.keys(d.pivot_points).length) {
+    if (el) el.innerHTML = '<p style="font-size:13px;color:#484f58">피봇 포인트 계산 데이터 부족</p>';
+    return;
+  }
+
+  const pp  = d.pivot_points;
+  const cur = d.last_close;
+
+  const methods = [
+    { key: 'classic',    label: '클래식' },
+    { key: 'fibonacci',  label: '피보나치' },
+    { key: 'camarilla',  label: '카마리야' },
+  ];
+  const levels = ['S3','S2','S1','Pivot','R1','R2','R3'];
+
+  // 클래식 기준 가장 가까운 지지/저항
+  const cl = pp.classic || {};
+  let nearestR = Infinity, nearestS = -Infinity;
+  let nearestRKey = null, nearestSKey = null;
+  ['R1','R2','R3'].forEach(k => {
+    if (cl[k] != null && cl[k] > cur && cl[k] < nearestR) { nearestR = cl[k]; nearestRKey = k; }
+  });
+  ['S1','S2','S3'].forEach(k => {
+    if (cl[k] != null && cl[k] < cur && cl[k] > nearestS) { nearestS = cl[k]; nearestSKey = k; }
+  });
+
+  const fmtV = v => (v == null) ? '-' : fmt(v, isKrx);
+
+  let html = `<div style="overflow-x:auto">
+    <table class="pivot-table">
+      <thead>
+        <tr>
+          <th style="text-align:left">방식</th>
+          <th class="pv-s">S3</th><th class="pv-s">S2</th><th class="pv-s">S1</th>
+          <th class="pv-p">Pivot</th>
+          <th class="pv-r">R1</th><th class="pv-r">R2</th><th class="pv-r">R3</th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+  methods.forEach(m => {
+    const data = pp[m.key];
+    if (!data) return;
+    html += `<tr>
+      <td class="pivot-label-col">${m.label}</td>
+      ${levels.map(k => {
+        const val = data[k];
+        const cls = k === 'Pivot' ? 'pv-p' : k.startsWith('R') ? 'pv-r' : 'pv-s';
+        let bg = '';
+        if (m.key === 'classic' && k === nearestRKey) bg = 'class="pv-nr"';
+        if (m.key === 'classic' && k === nearestSKey) bg = 'class="pv-ns"';
+        return `<td class="${cls}" ${bg}>${fmtV(val)}</td>`;
+      }).join('')}
+    </tr>`;
+  });
+
+  html += `</tbody></table></div>`;
+
+  // 전략 힌트
+  if (nearestSKey || nearestRKey) {
+    html += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">`;
+    if (nearestSKey) {
+      const sVal = cl[nearestSKey];
+      const sPct = ((sVal - cur) / cur * 100).toFixed(2);
+      html += `<div style="background:#0d2d1a;border:1px solid #1a4730;border-radius:8px;padding:10px 14px;flex:1;min-width:220px">
+        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🟢 가장 가까운 지지선 (클래식 ${nearestSKey})</div>
+        <div style="font-size:16px;font-weight:700;color:#3fb950">${fmtV(sVal)} <span style="font-size:11px;font-weight:400">(${sPct}%)</span></div>
+        <div style="font-size:11px;color:#8b949e;margin-top:6px">→ ${nearestSKey} 근접 시 <strong>분할 매수</strong> 고려</div>
+      </div>`;
+    }
+    if (nearestRKey) {
+      const rVal = cl[nearestRKey];
+      const rPct = ((rVal - cur) / cur * 100).toFixed(2);
+      html += `<div style="background:#2d0d0d;border:1px solid #4d1515;border-radius:8px;padding:10px 14px;flex:1;min-width:220px">
+        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🔴 가장 가까운 저항선 (클래식 ${nearestRKey})</div>
+        <div style="font-size:16px;font-weight:700;color:#f85149">${fmtV(rVal)} <span style="font-size:11px;font-weight:400">(+${rPct}%)</span></div>
+        <div style="font-size:11px;color:#8b949e;margin-top:6px">→ ${nearestRKey} 돌파 시 <strong>상승 탄력 확인</strong> 후 추가 매수</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  el.innerHTML = html;
 }
 
 function renderNews(d, isKrx) {
@@ -2097,61 +2540,6 @@ function renderCharts(d, isKrx) {
   }
 }
 
-function renderForecastChart(d, isKrx) {
-  const fc = d.forecast;
-  const xgb = d.xgb_forecast;
-  const cd = d.chart_data;
-  const n = cd.dates.length;
-  const fcEl = document.getElementById('forecast-chart');
-  if (!fcEl) return;
-  
-  // 데이터가 없으면 차트 영역 숨김
-  if (!fc) {
-    fcEl.style.display = 'none';
-    return;
-  }
-  fcEl.style.display = 'block';
-
-  const chart = LightweightCharts.createChart(fcEl, {
-    layout: { background: { color: '#161b22' }, textColor: '#8b949e' },
-    grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
-    rightPriceScale: { borderColor: '#30363d' },
-    timeScale: { borderColor: '#30363d', timeVisible: true },
-  });
-  chartInstances['forecast'] = chart;
-
-  // 실제 가격
-  const actualSeries = chart.addLineSeries({ color: '#e6edf3', lineWidth: 1.5, title: '실제' });
-  const histSlice = Math.min(n, 60);
-  actualSeries.setData(
-    cd.close.slice(-histSlice).map((v,i) => ({ time: cd.dates[n-histSlice+i], value: v }))
-    .filter(p => p.value != null)
-  );
-
-  // HW 예측
-  const hwSeries = chart.addLineSeries({
-    color: '#388bfd', lineWidth: 1.5,
-    lineStyle: LightweightCharts.LineStyle.Dashed, title: 'HW'
-  });
-  hwSeries.setData(fc.yhat.map((v,i) => ({ time: fc.dates[i], value: v })));
-
-  // 신뢰구간
-  const upperSeries = chart.addLineSeries({ color: 'rgba(59,130,246,0.2)', lineWidth: 1 });
-  upperSeries.setData(fc.yhat_upper.map((v,i) => ({ time: fc.dates[i], value: v })));
-  const lowerSeries = chart.addLineSeries({ color: 'rgba(59,130,246,0.2)', lineWidth: 1 });
-  lowerSeries.setData(fc.yhat_lower.map((v,i) => ({ time: fc.dates[i], value: v })));
-
-  // XGBoost
-  if (xgb && fc.dates.length === xgb.length) {
-    const xgbSeries = chart.addLineSeries({
-      color: '#d29922', lineWidth: 1.5,
-      lineStyle: LightweightCharts.LineStyle.Dashed, title: 'XGB'
-    });
-    xgbSeries.setData(xgb.map((v,i) => ({ time: fc.dates[i], value: v })));
-  }
-  chart.timeScale().fitContent();
-}
-
 // ── 탭 전환 ──
 function switchTab(tab) {
   currentTab = tab;
@@ -2162,10 +2550,6 @@ function switchTab(tab) {
     const tabs = ['chart','ai','forecast','news'];
     btn.classList.toggle('active', tabs[i] === tab);
   });
-  if (tab === 'forecast' && currentData && !chartInstances['forecast']) {
-    // 탭 전환 애니메이션 고려하여 렌더링 지연
-    setTimeout(() => renderForecastChart(currentData, currentData.market === 'KRX'), 100);
-  }
 }
 
 // ── 스크리너 ──
