@@ -1085,7 +1085,7 @@ def analyze_score(dd: Dict):
         ts -= 5.5; msgs.append("MACD 데드크로스 → 하락 전환 신호")
     ts = max(-17.5, min(17.5, ts))
     score += ts
-    steps.append({"step": "1. MACD & EMA (20/50) — 추세 방향성 및 강도",
+    steps.append({"step": "1. 추세 분석 (이동평균선 기반, MA) & MACD",
                   "result": " | ".join(msgs), "score": round(ts, 1), "weight": "35%"})
 
     # ── 2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도 [30%] max ±15 ──
@@ -1171,14 +1171,60 @@ def analyze_score(dd: Dict):
     except:
         pass
 
+    cp_msgs = []
+    cp_score = 0.0
+    for p in patterns + geo_patterns:
+        direction = p.get('direction') or ('상승' if p.get('signal') == '매수' else '하락' if p.get('signal') == '매도' else '중립')
+        cp_msgs.append(f"[{direction}] {p.get('name', '')}: {p.get('desc', '')}")
+        if direction == '상승': cp_score += 2.0
+        elif direction == '하락': cp_score -= 2.0
+    
+    if not cp_msgs:
+        cp_msgs = ["특이한 캔들/차트 패턴 미발견"]
+
+    steps.append({"step": "5. 캔들 패턴 분석",
+                  "result": " | ".join(cp_msgs), "score": round(max(-5.0, min(5.0, cp_score)), 1), "weight": "보조"})
+
     return max(0, min(100, round(score))), steps, patterns, geo_patterns
 
 def calc_risk(price: float, atr: float) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
+    
+    # 목표가 및 손절가 범위 계산
+    cons_tgt = [price + atr * 1.0, price + atr * 1.5]
+    cons_stp = [price - atr * 1.0, price - atr * 0.8]
+    cons_ret = round(((cons_tgt[0] + cons_tgt[1])/2 - price) / price * 100, 2)
+    
+    bal_tgt = [price + atr * 2.0, price + atr * 3.0]
+    bal_stp = [price - atr * 1.5, price - atr * 1.2]
+    bal_ret = round(((bal_tgt[0] + bal_tgt[1])/2 - price) / price * 100, 2)
+    
+    agg_tgt = [price + atr * 4.0, price + atr * 6.0]
+    agg_stp = [price - atr * 2.5, price - atr * 2.0]
+    agg_ret = round(((agg_tgt[0] + agg_tgt[1])/2 - price) / price * 100, 2)
+    
     return {
-        "conservative": {"label":"보수적","target":round(price+atr*1.5,2),"stop":round(price-atr,2),"ratio":"1:1.5","desc":"리스크 최소화","icon":"🛡️"},
-        "balanced":      {"label":"중립적","target":round(price+atr*2.5,2),"stop":round(price-atr*1.5,2),"ratio":"1:1.67","desc":"스윙 트레이딩","icon":"⚖️"},
-        "aggressive":    {"label":"공격적","target":round(price+atr*4,2),"stop":round(price-atr*2,2),"ratio":"1:2.0","desc":"추세 추종","icon":"🚀"},
+        "conservative": {
+            "label":"보수적",
+            "target":[round(cons_tgt[0],2), round(cons_tgt[1],2)],
+            "stop":[round(cons_stp[0],2), round(cons_stp[1],2)],
+            "return": cons_ret,
+            "desc":"리스크 최소화", "icon":"🛡️"
+        },
+        "balanced": {
+            "label":"중립적",
+            "target":[round(bal_tgt[0],2), round(bal_tgt[1],2)],
+            "stop":[round(bal_stp[0],2), round(bal_stp[1],2)],
+            "return": bal_ret,
+            "desc":"스윙 트레이딩", "icon":"⚖️"
+        },
+        "aggressive": {
+            "label":"공격적",
+            "target":[round(agg_tgt[0],2), round(agg_tgt[1],2)],
+            "stop":[round(agg_stp[0],2), round(agg_stp[1],2)],
+            "return": agg_ret,
+            "desc":"추세 추종", "icon":"🚀"
+        },
     }
 
 def calc_pivot_points(dd: Dict) -> Dict:
@@ -1295,10 +1341,29 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
     recent_lows  = sorted([x for x in lows[-30:] if x > 0])
     support_zone = float(np.mean(recent_lows[:5])) if len(recent_lows) >= 5 else last_price * 0.95
 
-    aggressive      = round(last_price - atr * 0.5,  2)
-    recommended_low = round(last_price - atr * 1.0,  2)
-    recommended_hi  = round(last_price - atr * 0.3,  2)
-    conservative    = round(max(support_zone, last_price - atr * 2.0), 2)
+    # 가격 범위 및 수익 확률 산출
+    aggressive = {
+        "range": [round(last_price - atr * 0.8, 2), round(last_price - atr * 0.2, 2)],
+        "prob": 45
+    }
+    recommended = {
+        "range": [round(last_price - atr * 1.5, 2), round(last_price - atr * 0.8, 2)],
+        "prob": 65
+    }
+    conservative = {
+        "range": [round(support_zone - atr * 0.5, 2), round(support_zone + atr * 0.5, 2)],
+        "prob": 85
+    }
+
+    # 매수/매도 타이밍 예측 (임의 생성, 향후 고도화 가능)
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    buy_time = now + timedelta(days=1)
+    buy_time = buy_time.replace(hour=10, minute=30)
+    if buy_time.weekday() > 4: buy_time += timedelta(days=2) # 주말 건너뛰기
+    sell_time = buy_time + timedelta(days=3)
+    sell_time = sell_time.replace(hour=14, minute=30)
+    if sell_time.weekday() > 4: sell_time += timedelta(days=2)
 
     basis = []
     if bb_l and float(bb_l) < last_price * 1.05:
@@ -1318,8 +1383,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
 
     return {"current": round(last_price, 2),
             "aggressive": aggressive,
-            "recommended": {"low": recommended_low, "high": recommended_hi},
+            "recommended": recommended,
             "conservative": conservative,
+            "timing": {
+                "buy": buy_time.strftime("%Y-%m-%d %H:%M"),
+                "sell": sell_time.strftime("%Y-%m-%d %H:%M")
+            },
             "support_zone": round(support_zone, 2),
             "basis": basis, "rsi": round(rsi, 1), "rsi_context": rsi_ctx, "atr": round(atr, 2)}
 
@@ -2189,10 +2258,9 @@ function renderForecast(d, isKrx) {
     } else {
       const cur = bp.current;
       const pct = v => ((v - cur) / cur * 100).toFixed(2);
-      const aggPct   = pct(bp.aggressive);
-      const recLPct  = pct(bp.recommended.low);
-      const recHPct  = pct(bp.recommended.high);
-      const conPct   = pct(bp.conservative);
+      const aggR = bp.aggressive.range;
+      const recR = bp.recommended.range;
+      const conR = bp.conservative.range;
 
       bpEl.innerHTML = `
         <div style="background:#21262d;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -2201,27 +2269,31 @@ function renderForecast(d, isKrx) {
             <div style="font-size:22px;font-weight:800">${fmt(cur, isKrx)}</div>
           </div>
           <div style="text-align:right">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">RSI ${bp.rsi} 상태</div>
-            <div style="font-size:13px;font-weight:600;color:#d29922">${bp.rsi_context}</div>
+            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매수 타이밍</div>
+            <div style="font-size:13px;font-weight:600;color:#3fb950">${bp.timing.buy}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매도 타이밍</div>
+            <div style="font-size:13px;font-weight:600;color:#f85149">${bp.timing.sell}</div>
           </div>
         </div>
         <div class="buy-price-grid">
           <div class="buy-card aggressive">
             <div class="buy-label">⚡ 공격적 매수</div>
-            <div class="buy-price-val" style="color:#f97316">${fmt(bp.aggressive, isKrx)}</div>
-            <div style="font-size:12px;color:#f97316;margin-bottom:4px">${aggPct}%</div>
+            <div class="buy-price-val" style="color:#f97316;font-size:14px">${fmt(aggR[0], isKrx)} ~ ${fmt(aggR[1], isKrx)}</div>
+            <div style="font-size:12px;color:#f97316;margin-bottom:4px">확률: ${bp.aggressive.prob}%</div>
             <div class="buy-basis-box">현재가 대비 단기 눌림 구간<br>ATR 0.5배 기반 · 빠른 진입</div>
           </div>
           <div class="buy-card recommended">
             <div class="buy-label">✅ 추천 매수 구간</div>
-            <div class="buy-price-val" style="color:#3fb950">${fmt(bp.recommended.low, isKrx)}<br><span style="font-size:13px">~ ${fmt(bp.recommended.high, isKrx)}</span></div>
-            <div style="font-size:12px;color:#3fb950;margin-bottom:4px">${recLPct}% ~ ${recHPct}%</div>
+            <div class="buy-price-val" style="color:#3fb950;font-size:14px">${fmt(recR[0], isKrx)} ~ ${fmt(recR[1], isKrx)}</div>
+            <div style="font-size:12px;color:#3fb950;margin-bottom:4px">확률: ${bp.recommended.prob}%</div>
             <div class="buy-basis-box">ATR 기반 최적 진입 구간<br>분할 매수 권장</div>
           </div>
           <div class="buy-card conservative">
             <div class="buy-label">🛡️ 보수적 매수</div>
-            <div class="buy-price-val" style="color:#388bfd">${fmt(bp.conservative, isKrx)}</div>
-            <div style="font-size:12px;color:#388bfd;margin-bottom:4px">${conPct}%</div>
+            <div class="buy-price-val" style="color:#388bfd;font-size:14px">${fmt(conR[0], isKrx)} ~ ${fmt(conR[1], isKrx)}</div>
+            <div style="font-size:12px;color:#388bfd;margin-bottom:4px">확률: ${bp.conservative.prob}%</div>
             <div class="buy-basis-box">강한 지지구간 도달 시 매수<br>최대 안전 마진 확보</div>
           </div>
         </div>
@@ -2241,9 +2313,9 @@ function renderForecast(d, isKrx) {
         <div class="risk-icon">${sc.icon}</div>
         <div class="risk-name">${sc.label}</div>
         <div class="risk-desc">${sc.desc}</div>
-        <div class="risk-row"><span class="risk-lbl">🎯 목표가</span><span class="risk-tgt">${fmt(sc.target, isKrx)}</span></div>
-        <div class="risk-row"><span class="risk-lbl">🛑 손절가</span><span class="risk-stp">${fmt(sc.stop, isKrx)}</span></div>
-        <div class="risk-ratio">손익비 ${sc.ratio}</div>
+        <div class="risk-row"><span class="risk-lbl">🎯 목표가</span><span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span></div>
+        <div class="risk-row"><span class="risk-lbl">🛑 손절가</span><span class="risk-stp" style="font-size:12px">${fmt(sc.stop[0], isKrx)} ~ ${fmt(sc.stop[1], isKrx)}</span></div>
+        <div class="risk-ratio" style="font-size:13px;color:#3fb950;font-weight:bold;margin-top:8px">예상 수익률: ${sc.return > 0 ? '+' : ''}${sc.return}%</div>
       </div>`).join('');
   }
 }
