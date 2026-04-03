@@ -181,6 +181,8 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["EMA12"] = c.ewm(span=12, adjust=False).mean()
     df["EMA26"] = c.ewm(span=26, adjust=False).mean()
     df["EMA13"] = c.ewm(span=13, adjust=False).mean()
+    df["EMA20"] = c.ewm(span=20, adjust=False).mean()
+    df["EMA50"] = c.ewm(span=50, adjust=False).mean()
     delta = c.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -265,51 +267,21 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         df = obj.history(period=period, interval="1d", auto_adjust=True)
         if df.empty and market == "KRX" and sym.endswith(".KS"):
             sym = sym.replace(".KS", ".KQ")
-            obj = yf.Ticker(sym)
-            df = obj.history(period=period, interval="1d", auto_adjust=True)
+            df = yf.Ticker(sym).history(period=period, interval="1d", auto_adjust=True)
         if df.empty:
-            return None, None, None, f"데이터 없음: {sym}"
-        
+            return None, None, f"데이터 없음: {sym}"
         # MultiIndex 처리 (안전하게)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-        
         # 컬럼명 표준화: 일부 버전에서 소문자로 오는 경우
         df.columns = [c.capitalize() if c.lower() in ("open","high","low","close","volume") else c for c in df.columns]
-        
         # 필수 컬럼 존재 확인
         required_cols = ["Open", "High", "Low", "Close", "Volume"]
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
-            return None, None, None, f"컬럼 누락: {missing}"
-            
+            return None, None, f"컬럼 누락: {missing}"
         df = add_indicators(df)
         df = df.dropna(subset=["Close", "MA20", "RSI"])
-
-        # 현재가 실시간/프리마켓/애프터마켓 반영 로직 (빠른 조회)
-        realtime_price = None
-        market_state = "REGULAR"
-        try:
-            info = obj.info
-            # 미국 주식의 경우 프리마켓/애프터마켓 가격 우선 반영
-            if market == "US":
-                pre_price = info.get("preMarketPrice")
-                post_price = info.get("postMarketPrice")
-                reg_price = info.get("currentPrice") or info.get("regularMarketPrice")
-                
-                if post_price and info.get("marketState") in ["POST", "POSTPOST", "CLOSED"]:
-                    realtime_price = post_price
-                    market_state = "AFTER_MARKET"
-                elif pre_price and info.get("marketState") in ["PRE", "PREPRE"]:
-                    realtime_price = pre_price
-                    market_state = "PRE_MARKET"
-                else:
-                    realtime_price = reg_price
-                    market_state = "REGULAR"
-            else:
-                realtime_price = info.get("currentPrice") or info.get("regularMarketPrice")
-        except Exception:
-            pass
 
         # 뉴스
         news = []
@@ -334,11 +306,9 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
             df2["Date"] = df2["Date"].dt.tz_localize(None)
         df2["Date"] = df2["Date"].dt.strftime("%Y-%m-%d")
         d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
-        
-        realtime_info = {"price": realtime_price, "state": market_state}
-        return d, news, sym, realtime_info
+        return d, news, sym
     except Exception as e:
-        return None, None, None, str(e)
+        return None, None, str(e)
 
 @ttl_cache(600)
 def fetch_naver(code: str):
@@ -1065,76 +1035,134 @@ def detect_patterns(dd: Dict) -> List[Dict]:
     return patterns
 
 def analyze_score(dd: Dict):
+    """
+    가중치 기반 종합 점수 산출
+    - 추세 (35%): MACD & EMA 20/50
+    - 모멘텀 (30%): RSI (14) & ADX (14)
+    - 변동성 (20%): Bollinger Bands (20,2) & ATR (14)
+    - 거래량 (15%): Volume 급증 확인
+    Base 50 + 각 구간 ±(weight/2) → 최종 0~100 클리핑
+    """
     closes = dd.get("Close", [])
     if len(closes) < 20:
         return 50, [], [], []
+
     def v(k):
         a = dd.get(k, [])
         val = a[-1] if a else None
         return float(val) if val is not None else 0.0
-    close, ma20, ma60 = v("Close"), v("MA20"), v("MA60")
-    rsi, macd, sig = v("RSI"), v("MACD"), v("Signal_Line")
-    bb_u, bb_l = v("BB_Upper"), v("BB_Lower")
-    vols = dd.get("Volume", [])
+
+    close  = v("Close")
+    ema20  = v("EMA20");  ema50 = v("EMA50")
+    macd   = v("MACD");   sig   = v("Signal_Line")
+    rsi    = v("RSI")
+    adx    = v("ADX");    dip   = v("DI_Plus");  dim = v("DI_Minus")
+    bb_u   = v("BB_Upper"); bb_l = v("BB_Lower"); bb_m = v("BB_Middle")
+    atr    = v("ATR")
+    opn    = v("Open")
+    vols   = dd.get("Volume", [])
     cur_vol = float(vols[-1]) if vols else 0
     avg_vol = float(np.mean([x for x in vols[-20:] if x])) if vols else 1
-    opn = v("Open")
-    score, steps = 50, []
 
-    # 추세
-    ts, msg = 0, ""
-    if close > ma20:
-        ts += 10
-        if close > ma60:
-            ts += 10
-            if ma20 > ma60: ts += 10; msg = "단기/장기 이동평균 정배열 → 강한 상승 추세"
-            else: msg = "장기 이평선 위 → 상승 기조"
-        else: msg = "20일 이평선 위 → 단기 상승 시도"
+    score = 50.0
+    steps = []
+
+    # ── 1. MACD & EMA (20/50) — 추세 방향성 및 강도 [35%] max ±17.5 ──
+    ts = 0.0; msgs = []
+    if ema20 and ema50:
+        if ema20 > ema50:
+            ts += 7.0; msgs.append(f"EMA20 > EMA50 정배열 → 중기 상승 추세")
+        else:
+            ts -= 7.0; msgs.append(f"EMA20 < EMA50 역배열 → 중기 하락 추세")
+    if ema20 and close:
+        if close > ema20:
+            ts += 5.0; msgs.append("현재가 EMA20 상회 → 단기 강세")
+        else:
+            ts -= 5.0; msgs.append("현재가 EMA20 하회 → 단기 약세")
+    if macd > sig:
+        ts += 5.5; msgs.append("MACD 골든크로스 → 상승 전환 신호")
     else:
-        ts -= 10
-        if close < ma60:
-            ts -= 10
-            if ma20 < ma60: ts -= 10; msg = "역배열 → 하락 압력 강함"
-            else: msg = "장기 이평선 아래 → 하락 추세 우려"
-        else: msg = "20일 이평선 하회 → 조정 중"
+        ts -= 5.5; msgs.append("MACD 데드크로스 → 하락 전환 신호")
+    ts = max(-17.5, min(17.5, ts))
     score += ts
-    steps.append({"step": "1. 추세 분석 (MA)", "result": msg, "score": ts})
+    steps.append({"step": "1. MACD & EMA (20/50) — 추세 방향성 및 강도",
+                  "result": " | ".join(msgs), "score": round(ts, 1), "weight": "35%"})
 
-    # 모멘텀
-    ms, msgs = 0, []
-    if rsi > 70: ms -= 5; msgs.append(f"RSI {rsi:.1f} 과매수")
-    elif rsi < 30: ms += 10; msgs.append(f"RSI {rsi:.1f} 과매도 → 반등 기대")
-    else: msgs.append(f"RSI {rsi:.1f} 중립")
-    if macd > sig: ms += 10; msgs.append("MACD 골든크로스 → 상승 신호")
-    else: ms -= 10; msgs.append("MACD 데드크로스 → 하락 신호")
+    # ── 2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도 [30%] max ±15 ──
+    ms = 0.0; msgs = []
+    if   rsi > 70: ms -= 6.0; msgs.append(f"RSI {rsi:.1f} 과매수 → 하락 압력 주의")
+    elif rsi < 30: ms += 8.0; msgs.append(f"RSI {rsi:.1f} 과매도 → 강한 반등 기대")
+    elif rsi > 55: ms -= 2.0; msgs.append(f"RSI {rsi:.1f} 고점권 — 완만한 하락 압력")
+    elif rsi < 45: ms += 3.0; msgs.append(f"RSI {rsi:.1f} 저점권 → 매수 관심 구간")
+    else:                      msgs.append(f"RSI {rsi:.1f} 중립")
+    if adx > 25:
+        if dip > dim:
+            ms += 7.0; msgs.append(f"ADX {adx:.0f} + +DI 우세 → 강한 상승 추세 신뢰")
+        else:
+            ms -= 7.0; msgs.append(f"ADX {adx:.0f} + -DI 우세 → 강한 하락 추세 신뢰")
+    elif adx > 20:
+        msgs.append(f"ADX {adx:.0f} — 추세 형성 초기")
+    else:
+        msgs.append(f"ADX {adx:.0f} — 횡보 구간 (추세 약함)")
+    ms = max(-15.0, min(15.0, ms))
     score += ms
-    steps.append({"step": "2. 모멘텀 (RSI/MACD)", "result": " | ".join(msgs), "score": ms})
+    steps.append({"step": "2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도",
+                  "result": " | ".join(msgs), "score": round(ms, 1), "weight": "30%"})
 
-    # 거래량/BB
-    vs, vmsgs = 0, []
-    if close > bb_u * 0.98: vs += 5; vmsgs.append("볼린저 상단 터치")
-    elif close < bb_l * 1.02: vs -= 5; vmsgs.append("볼린저 하단 터치")
-    if avg_vol > 0 and cur_vol > avg_vol * 1.5:
-        if close > opn: vs += 10; vmsgs.append("거래량 급증 + 상승 → 신뢰도 높음")
-        else: vs -= 10; vmsgs.append("거래량 급증 + 하락 → 매도 압력")
-    else: vmsgs.append("거래량 평이")
+    # ── 3. Bollinger Bands (20, 2) & ATR (14) — 변동성 및 리스크 관리 [20%] max ±10 ──
+    vs = 0.0; msgs = []
+    if close and bb_u and bb_l and bb_u > bb_l:
+        bb_range = bb_u - bb_l
+        pos = (close - bb_l) / bb_range  # 0~1 위치
+        if close >= bb_u * 0.98:
+            vs -= 5.0; msgs.append("볼린저 상단 터치 → 단기 과매수/저항")
+        elif close <= bb_l * 1.02:
+            vs += 5.0; msgs.append("볼린저 하단 터치 → 단기 과매도/지지")
+        elif pos > 0.7:
+            vs -= 2.0; msgs.append("볼린저 상단권 (70%+) → 매도 압력")
+        elif pos < 0.3:
+            vs += 2.0; msgs.append("볼린저 하단권 (30%-) → 지지 기대")
+        else:
+            msgs.append("볼린저 중간권 → 중립")
+        bb_pct = bb_range / close * 100
+        if bb_pct < 3.0:
+            vs += 3.0; msgs.append(f"밴드 수렴 ({bb_pct:.1f}%) → 큰 방향 돌파 임박")
+        elif atr and close:
+            atr_pct = atr / close * 100
+            if atr_pct > 4.0:
+                vs -= 2.0; msgs.append(f"ATR 고변동 ({atr_pct:.1f}%) → 리스크 증가")
+            else:
+                msgs.append(f"ATR {atr_pct:.1f}% — 적정 변동성")
+    vs = max(-10.0, min(10.0, vs))
     score += vs
-    steps.append({"step": "3. 거래량/변동성", "result": " | ".join(vmsgs), "score": vs})
+    steps.append({"step": "3. Bollinger Bands (20,2) & ATR (14) — 변동성 및 리스크 관리",
+                  "result": " | ".join(msgs), "score": round(vs, 1), "weight": "20%"})
 
-    # 캔들 패턴
+    # ── 4. Volume — 거래량 급증 확인 [15%] max ±7.5 ──
+    gvs = 0.0; msgs = []
+    if avg_vol > 0:
+        ratio = cur_vol / avg_vol
+        if ratio > 2.0:
+            if close > opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
+            else:           gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
+        elif ratio > 1.5:
+            if close > opn: gvs += 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
+            else:           gvs -= 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
+        elif ratio < 0.5:
+            msgs.append(f"거래량 급감 ({ratio:.1f}x) → 신뢰도 낮음")
+        else:
+            msgs.append(f"거래량 평이 ({ratio:.1f}x)")
+    else:
+        msgs.append("거래량 데이터 없음")
+    gvs = max(-7.5, min(7.5, gvs))
+    score += gvs
+    steps.append({"step": "4. Volume — 거래량 급증 확인",
+                  "result": " | ".join(msgs), "score": round(gvs, 1), "weight": "15%"})
+
+    # 캔들 패턴 (점수 반영 없이 정보 제공)
     patterns = detect_patterns(dd)
-    ps = 0; pmsgs = []
-    if patterns:
-        bull = sum(1 for p in patterns if p["direction"] == "상승")
-        bear = sum(1 for p in patterns if p["direction"] == "하락")
-        if bull > bear: ps += 10; pmsgs.append(f"상승 패턴 {bull}개")
-        elif bear > bull: ps -= 10; pmsgs.append(f"하락 패턴 {bear}개")
-        else: pmsgs.append(f"패턴 혼재 {len(patterns)}개")
-    else: pmsgs.append("특이 패턴 없음")
-    score += ps
-    steps.append({"step": "4. 캔들 패턴", "result": " | ".join(pmsgs), "score": ps})
-    
-    # 기하학적 패턴 (점수 반영 X, 정보 제공용)
+
+    # 기하학적 패턴 (점수 반영 없이 정보 제공)
     geo_patterns = []
     try:
         df = pd.DataFrame({k: dd[k] for k in ["Open", "High", "Low", "Close"] if k in dd})
@@ -1143,7 +1171,7 @@ def analyze_score(dd: Dict):
     except:
         pass
 
-    return max(0, min(100, score)), steps, patterns, geo_patterns
+    return max(0, min(100, round(score))), steps, patterns, geo_patterns
 
 def calc_risk(price: float, atr: float) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
@@ -1189,27 +1217,7 @@ def calc_pivot_points(dd: Dict) -> Dict:
         "S1": r(c - rng*1.1/12), "S2": r(c - rng*1.1/6), "S3": r(c - rng*1.1/4),
     }
 
-    # 우디스
-    wp = (h + l + 2*c) / 4
-    woodie = {
-        "Pivot": r(wp),
-        "R1": r(2*wp - l),    "R2": r(wp + rng),     "R3": r(h + 2*(wp - l)),
-        "S1": r(2*wp - h),    "S2": r(wp - rng),     "S3": r(l - 2*(h - wp)),
-    }
-
-    # 디마크
-    if c < o:   x = h + 2*l + c
-    elif c > o: x = 2*h + l + c
-    else:       x = h + l + 2*c
-    dm_piv = x / 4
-    demark = {
-        "Pivot": r(dm_piv),
-        "R1": r(x/2 - l), "R2": None, "R3": None,
-        "S1": r(x/2 - h), "S2": None, "S3": None,
-    }
-
-    return {"classic": classic, "fibonacci": fibonacci,
-            "camarilla": camarilla, "woodie": woodie, "demark": demark}
+    return {"classic": classic, "fibonacci": fibonacci, "camarilla": camarilla}
 
 def calc_indicator_signals(dd: Dict) -> Dict:
     """각 기술적 지표별 현재 상태·매매 시그널·핵심 해석 계산"""
@@ -1230,15 +1238,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         else:            st,sig,desc = "하향 전환", "매도", "%K < %D 데드크로스 → 단기 매도 신호"
         signals["stoch"] = {"name":"STOCH (9,6)", "state":st, "signal":sig, "desc":desc, "value":f"{sk:.1f} / {sd:.1f}"}
 
-    # StochRSI (14)
-    srsi = v("STOCHRSI")
-    if srsi is not None:
-        if   srsi > 80:  st,sig,desc = "과매수",       "매도", "StochRSI 과열 → RSI 모멘텀 약화"
-        elif srsi < 20:  st,sig,desc = "과매도",       "매수", "StochRSI 바닥 → RSI 반등 기대"
-        elif srsi > 50:  st,sig,desc = "상승 모멘텀",  "관망", "중간 이상 — 추세 유지 확인"
-        else:            st,sig,desc = "하락 모멘텀",  "관망", "중간 미만 — 약세 지속 확인"
-        signals["stochrsi"] = {"name":"STOCHRSI (14)", "state":st, "signal":sig, "desc":desc, "value":f"{srsi:.1f}"}
-
     # ADX (14)
     adx = v("ADX"); dip = v("DI_Plus"); dim = v("DI_Minus")
     if adx is not None:
@@ -1252,14 +1251,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         elif adx > 20: st,sig,desc = "추세 발생",    "관망", f"ADX {adx:.0f} — 추세 형성 초기"
         else:          st,sig,desc = "횡보/추세 없음","관망", f"ADX {adx:.0f} — 방향성 불명확, 돌파 대기"
         signals["adx"] = {"name":"ADX (14)", "state":st, "signal":sig, "desc":desc, "value":f"{adx:.1f}"}
-
-    # Williams %R (14)
-    wr = v("WILLR")
-    if wr is not None:
-        if   wr > -20: st,sig,desc = "과매수","매도", "상단 과매수(-20 이상) → 매도 또는 익절 고려"
-        elif wr < -80: st,sig,desc = "과매도","매수", "하단 과매도(-80 이하) → 반등 매수 기회"
-        else:          st,sig,desc = "중립",  "관망", "중간 구간 — 방향성 확인 후 진입"
-        signals["willr"] = {"name":"Williams %R", "state":st, "signal":sig, "desc":desc, "value":f"{wr:.1f}"}
 
     # CCI (14)
     cci = v("CCI")
@@ -1278,43 +1269,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         elif atr_pct > 1.5: st,sig,desc = "보통 변동성","관망", f"일간 변동 ≈{atr_pct:.1f}% — 적정 리스크"
         else:                st,sig,desc = "저변동성",   "관망", f"일간 변동 ≈{atr_pct:.1f}% — 돌파 시 강한 추세 기대"
         signals["atr"] = {"name":"ATR (14)", "state":st, "signal":sig, "desc":desc, "value":f"{atr:.2f}"}
-
-    # Highs/Lows (14)
-    hl14 = v("HL14")
-    if hl14 is not None:
-        hl_pct = hl14 / close * 100
-        if   hl_pct > 8: st,sig,desc = "광폭 변동구간","관망", f"14일 고저폭 {hl_pct:.1f}% — 리스크 높음"
-        elif hl_pct > 4: st,sig,desc = "보통 변동구간","관망", f"14일 고저폭 {hl_pct:.1f}% — 정상 범위"
-        else:            st,sig,desc = "좁은 변동구간","관망", f"14일 고저폭 {hl_pct:.1f}% — 변동성 수렴, 돌파 임박"
-        signals["highs_lows"] = {"name":"Highs/Lows (14)", "state":st, "signal":sig, "desc":desc, "value":f"{hl14:.2f}"}
-
-    # Ultimate Oscillator
-    uo = v("UO")
-    if uo is not None:
-        if   uo > 70: st,sig,desc = "과매수",   "매도", "UO 70+ 과매수 → 매도 고려"
-        elif uo < 30: st,sig,desc = "과매도",   "매수", "UO 30 미만 → 멀티타임 매수 신호"
-        elif uo > 50: st,sig,desc = "상승 우세","관망", "단·중·장기 모두 상승 우세"
-        else:         st,sig,desc = "하락 우세","관망", "단·중·장기 모두 하락 우세"
-        signals["uo"] = {"name":"Ultimate Oscillator", "state":st, "signal":sig, "desc":desc, "value":f"{uo:.1f}"}
-
-    # ROC (12)
-    roc = v("ROC")
-    if roc is not None:
-        if   roc >  5: st,sig,desc = "강한 상승","매수", f"ROC +{roc:.1f}% — 강한 상승 모멘텀"
-        elif roc >  0: st,sig,desc = "약한 상승","관망", f"ROC +{roc:.1f}% — 완만한 상승 중"
-        elif roc > -5: st,sig,desc = "약한 하락","관망", f"ROC {roc:.1f}% — 완만한 하락 중"
-        else:          st,sig,desc = "강한 하락","매도", f"ROC {roc:.1f}% — 강한 하락 모멘텀"
-        signals["roc"] = {"name":"ROC (12)", "state":st, "signal":sig, "desc":desc, "value":f"{roc:.1f}%"}
-
-    # Bull/Bear Power (13)
-    bull = v("BULL_POWER"); bear = v("BEAR_POWER")
-    if bull is not None and bear is not None:
-        if   bull > 0 and bear > 0: st,sig,desc = "강세 (Bull)","매수", "Bull+Bear 모두 양수 — 강한 매수세"
-        elif bull > 0 and bear < 0: st,sig,desc = "중립",       "관망", "Bull 양수 / Bear 음수 — 균형"
-        elif bull < 0 and bear < 0: st,sig,desc = "약세 (Bear)","매도", "Bull+Bear 모두 음수 — 강한 매도세"
-        else:                       st,sig,desc = "약세 전환",  "매도", "Bear Power 양전환 — 매도 압력 증가"
-        signals["bull_bear"] = {"name":"Bull/Bear Power (13)", "state":st, "signal":sig, "desc":desc,
-                                "value":f"B:{bull:.2f} / b:{bear:.2f}"}
 
     buy_n   = sum(1 for s in signals.values() if s["signal"] == "매수")
     sell_n  = sum(1 for s in signals.values() if s["signal"] == "매도")
@@ -1503,78 +1457,13 @@ def route(path: str, params: Dict) -> Dict:
         ticker, market, company = resolve_ticker(raw)
         if not ticker:
             return {"error": f"'{raw}' 종목을 찾을 수 없습니다."}
-        dd, news, sym, rt_info = fetch_stock_data(ticker, market, period)
+        dd, news, sym = fetch_stock_data(ticker, market, period)
         if dd is None:
             return {"error": f"데이터 조회 실패: {sym}"}
-            
-        # 실시간 가격 강제 우회 (10분 캐시 회피)
-        realtime_price = rt_info.get("price") if rt_info else None
-        market_state = rt_info.get("state", "REGULAR")
-        try:
-            # yfinance fast_info나 별도 API로 현재가만 즉시 가져옴
-            t_obj = yf.Ticker(sym)
-            fast_i = t_obj.fast_info
-            curr_p = fast_i.get("last_price")
-            if curr_p:
-                # 미국장인 경우 info에서 pre/post 확인
-                if market == "US":
-                    try:
-                        info_dict = t_obj.info
-                        state = info_dict.get("marketState")
-                        if state in ["POST", "POSTPOST", "CLOSED"] and info_dict.get("postMarketPrice"):
-                            realtime_price = info_dict.get("postMarketPrice")
-                            market_state = "AFTER_MARKET"
-                        elif state in ["PRE", "PREPRE"] and info_dict.get("preMarketPrice"):
-                            realtime_price = info_dict.get("preMarketPrice")
-                            market_state = "PRE_MARKET"
-                        else:
-                            realtime_price = curr_p
-                            market_state = "REGULAR"
-                    except:
-                        realtime_price = curr_p
-                else:
-                    realtime_price = curr_p
-        except Exception:
-            pass
-
         closes = dd.get("Close", [])
-        # 종가 히스토리 기준 가격 (캐시된 지연 데이터)
-        last_hist = float(closes[-1]) if closes else 0
-        prev = float(closes[-2]) if len(closes) > 1 else last_hist
-        
-        # 한국 주식은 네이버 금융을 우선하여 실시간 가격 확보
-        naver = fetch_naver(sym) if market == "KRX" else None
-        if market == "KRX":
-            try:
-                # 캐시를 피하기 위해 가벼운 모바일 페이지나 폴링 전용 요청을 시도
-                code = str(sym).replace(".KS","").replace(".KQ","")
-                # 간단한 실시간 가격 전용 우회 로직
-                m_url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-                m_res = requests.get(m_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
-                if m_res.status_code == 200:
-                    m_data = m_res.json()
-                    if m_data.get("closePrice"):
-                        realtime_price = float(m_data["closePrice"].replace(",", ""))
-                elif naver and naver.get("price"):
-                    realtime_price = float(naver["price"])
-            except:
-                if naver and naver.get("price"):
-                    try: realtime_price = float(naver["price"])
-                    except: pass
-                
-        # 최종 표시 가격 결정
-        last = realtime_price if realtime_price else last_hist
+        last = float(closes[-1]) if closes else 0
+        prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
-        
-        # 환율 (미국 주식용)
-        usd_krw = 1380.0
-        if market == "US":
-            try:
-                # 빠른 환율 조회
-                usd_krw = float(yf.Ticker("USDKRW=X").fast_info.get("last_price", 1380.0))
-            except:
-                pass
-
         score, steps, patterns, geo_patterns = analyze_score(dd)
         
         # 기하학적 패턴을 캔들 패턴 리스트에 통합 (UI 표시용)
@@ -1593,17 +1482,11 @@ def route(path: str, params: Dict) -> Dict:
         pivot_points     = calc_pivot_points(dd)
         indicator_signals= calc_indicator_signals(dd)
         buy_price        = calc_buy_price(dd, last, atr_val)
-        
-        # 한국 주식은 정수 처리, 미국 주식은 소수점 2자리
-        last_display = int(last) if market == "KRX" else round(last, 2)
-        prev_display = int(prev) if market == "KRX" else round(prev, 2)
-
+        naver = fetch_naver(sym) if market == "KRX" else None
         return {
             "symbol": sym, "company": company or sym, "market": market,
-            "last_close": last_display, "prev_close": prev_display,
+            "last_close": round(last, 2), "prev_close": round(prev, 2),
             "pct_change": round(pct, 2),
-            "market_state": market_state,
-            "usd_krw": round(usd_krw, 2) if market == "US" else None,
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
             "atr": round(atr_val, 2),
@@ -1752,7 +1635,7 @@ input::placeholder{color:#484f58}
 .page-header p{font-size:12px;color:#484f58;margin-top:4px}
 
 /* 펀더멘털 */
-.fund-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.fund-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .fund-item{background:#21262d;border-radius:10px;padding:12px}
 .fund-label{font-size:11px;color:#8b949e;margin-bottom:4px}
 .fund-val{font-size:14px;font-weight:600}
@@ -1965,7 +1848,6 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">시가총액</div><div class="fund-val" id="f-mktcap"></div></div>
           <div class="fund-item"><div class="fund-label">PER</div><div class="fund-val" id="f-per"></div></div>
           <div class="fund-item"><div class="fund-label">PBR</div><div class="fund-val" id="f-pbr"></div></div>
-          <div class="fund-item"><div class="fund-label">투자의견</div><div class="fund-val" id="f-opinion"></div></div>
         </div>
       </div>
       <div class="tabs">
@@ -2211,21 +2093,11 @@ function renderResult(d) {
   const up = d.pct_change >= 0;
   const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
 
-  let stateLabel = '';
-  if (d.market_state === 'PRE_MARKET') stateLabel = '<span style="font-size:11px;background:#21262d;padding:2px 6px;border-radius:4px;color:#d29922;margin-left:6px">프리마켓</span>';
-  else if (d.market_state === 'AFTER_MARKET') stateLabel = '<span style="font-size:11px;background:#21262d;padding:2px 6px;border-radius:4px;color:#8b949e;margin-left:6px">애프터마켓</span>';
-
   document.getElementById('r-title').innerHTML =
     `${d.company || d.symbol} <span class="ticker-badge">${d.symbol}</span>`;
   document.getElementById('r-subtitle').textContent =
     `기준일: ${new Date().toLocaleDateString('ko-KR')} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'}`;
-  
-  let priceHtml = fmt(d.last_close, isKrx);
-  if (!isKrx && d.usd_krw) {
-    const krwPrice = (d.last_close * d.usd_krw).toLocaleString('ko-KR', {maximumFractionDigits:0});
-    priceHtml += ` <span style="font-size:13px;color:#8b949e;font-weight:400">(${krwPrice}원)</span>`;
-  }
-  document.getElementById('r-price').innerHTML = priceHtml + stateLabel;
+  document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
   document.getElementById('r-pct').innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
 
   const rsi = d.rsi;
@@ -2241,7 +2113,6 @@ function renderResult(d) {
     document.getElementById('f-mktcap').textContent = d.naver.market_cap || '-';
     document.getElementById('f-per').textContent = d.naver.per || '-';
     document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
-    document.getElementById('f-opinion').textContent = d.naver.opinion || '-';
   } else {
     document.getElementById('r-naver-fund').style.display = 'none';
   }
@@ -2278,10 +2149,14 @@ function renderAI(d, isKrx) {
     const sc = st.score;
     const cls = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
     const label = sc > 0 ? '+' + sc : sc;
+    const weight = st.weight || '';
     return `<div class="step-item">
       <div class="step-header">
         <span class="step-title">${st.step}</span>
-        <span class="step-score ${cls}">${label}점</span>
+        <div style="display:flex;align-items:center;gap:6px">
+          ${weight ? `<span style="font-size:10px;color:#484f58;background:#21262d;padding:1px 6px;border-radius:8px">${weight}</span>` : ''}
+          <span class="step-score ${cls}">${label}점</span>
+        </div>
       </div>
       <div class="step-result">${st.result}</div>
     </div>`;
@@ -2434,8 +2309,6 @@ function renderPivotPoints(d, isKrx) {
     { key: 'classic',    label: '클래식' },
     { key: 'fibonacci',  label: '피보나치' },
     { key: 'camarilla',  label: '카마리야' },
-    { key: 'woodie',     label: '우디스' },
-    { key: 'demark',     label: '디마크' },
   ];
   const levels = ['S3','S2','S1','Pivot','R1','R2','R3'];
 
