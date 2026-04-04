@@ -1355,15 +1355,35 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
         "prob": 85
     }
 
-    # 매수/매도 타이밍 예측 (임의 생성, 향후 고도화 가능)
+    # 매수/매도 타이밍 예측 (동적 계산)
     from datetime import datetime, timedelta
     now = datetime.now()
-    buy_time = now + timedelta(days=1)
+    
+    # RSI 및 MACD에 따른 매수 타이밍 조정
+    macd = dd.get("MACD", [0])[-1]
+    sig = dd.get("Signal_Line", [0])[-1]
+    
+    buy_delay = 1
+    if rsi < 30 and macd > sig: # 강력 매수 조건
+        buy_delay = 0 
+    elif rsi > 70: # 과매수 (눌림 대기)
+        buy_delay = 3
+    elif rsi > 55:
+        buy_delay = 2
+        
+    buy_time = now + timedelta(days=buy_delay)
     buy_time = buy_time.replace(hour=10, minute=30)
-    if buy_time.weekday() > 4: buy_time += timedelta(days=2) # 주말 건너뛰기
-    sell_time = buy_time + timedelta(days=3)
+    while buy_time.weekday() > 4: # 주말 건너뛰기
+        buy_time += timedelta(days=1)
+        
+    # 목표 수익률 달성까지의 예상 기간 (ATR 기반 변동성 고려)
+    target_dist = (aggressive["range"][1] - last_price) if aggressive["range"][1] > last_price else (last_price * 0.05)
+    days_to_target = max(2, int(target_dist / (atr if atr > 0 else 1)))
+    
+    sell_time = buy_time + timedelta(days=days_to_target)
     sell_time = sell_time.replace(hour=14, minute=30)
-    if sell_time.weekday() > 4: sell_time += timedelta(days=2)
+    while sell_time.weekday() > 4:
+        sell_time += timedelta(days=1)
 
     basis = []
     if bb_l and float(bb_l) < last_price * 1.05:
