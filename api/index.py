@@ -28,6 +28,7 @@ import os
 import sys
 import time
 import datetime
+from datetime import datetime as dt, timedelta
 import concurrent.futures
 import math
 import traceback
@@ -96,9 +97,24 @@ def ttl_cache(ttl: int):
                 return _CACHE[key][0]
             r = fn(*args, **kwargs)
             _CACHE[key] = (r, now)
+            # ── 만료 키 정리: 캐시 항목이 500개 초과 시 24시간 지난 키 일괄 삭제 ──
+            if len(_CACHE) > 500:
+                expired = [k for k, (_, t) in list(_CACHE.items()) if now - t > 86400]
+                for k in expired:
+                    _CACHE.pop(k, None)
             return r
         return wrapper
     return deco
+
+@ttl_cache(600)
+def get_usd_krw() -> float:
+    """USD/KRW 환율 조회 (10분 캐시) — 중복 호출 방지용 단일 함수"""
+    try:
+        return float(
+            yf.Ticker("USDKRW=X").history(period="1d")["Close"].iloc[-1]
+        )
+    except Exception:
+        return 1380.0
 
 # =============================================================================
 # Ticker 매핑
@@ -184,8 +200,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["EMA20"] = c.ewm(span=20, adjust=False).mean()
     df["EMA50"] = c.ewm(span=50, adjust=False).mean()
     delta = c.diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    # Wilder's Smoothing (공식 RSI 계산법 — TradingView 동일)
+    gain = delta.where(delta > 0, 0.0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1 / 14, adjust=False).mean()
     df["RSI"] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
     df["MACD"] = df["EMA12"] - df["EMA26"]
     df["Signal_Line"] = df["MACD"].ewm(span=9, adjust=False).mean()
@@ -488,31 +505,30 @@ def fetch_metrics(item):
 
         # KRX Fallback (Naver) - Enhanced with Financials
         if item.get("market_type") == "KRX":
-                try:
-                    # Fetch if any key metric is missing or suspicious
-                    if peg is None or per is None or not roic or debt_ratio == 999 or op_margin == 0:
-                        nv = fetch_naver(item["ticker"])
-                        if nv:
-                            if (per is None or per == 999) and nv.get("per"):
-                                try:
-                                    val = nv["per"]
-                                    if isinstance(val, str) and val != "-": val = float(val.replace(",",""))
-                                    per = float(val)
-                                except: pass
-                            
-                            if (not roic or roic == 0) and nv.get("roe"):
-                                roic = float(nv["roe"]) / 100.0
-                            
-                            if (debt_ratio == 999 or debt_ratio is None) and nv.get("debt"):
-                                debt_ratio = float(nv["debt"])
-                                
-                            if nv.get("op_margin"): op_margin = float(nv["op_margin"])
-                            if nv.get("eps"): eps = float(nv["eps"])
-                            
-                            if peg is None and per and per < 15:
-                                peg = 1.2
-                except:
-                    pass
+            try:
+                # Fetch if any key metric is missing or suspicious
+                if peg is None or per is None or not roic or debt_ratio == 999 or op_margin == 0:
+                    nv = fetch_naver(item["ticker"])
+                    if nv:
+                        if (per is None or per == 999) and nv.get("per"):
+                            try:
+                                val = nv["per"]
+                                if isinstance(val, str) and val != "-": val = float(val.replace(",", ""))
+                                per = float(val)
+                            except:
+                                pass
+                        if (not roic or roic == 0) and nv.get("roe"):
+                            roic = float(nv["roe"]) / 100.0
+                        if (debt_ratio == 999 or debt_ratio is None) and nv.get("debt"):
+                            debt_ratio = float(nv["debt"])
+                        if nv.get("op_margin"):
+                            op_margin = float(nv["op_margin"])
+                        if nv.get("eps"):
+                            eps = float(nv["eps"])
+                        if peg is None and per and per < 15:
+                            peg = 1.2
+            except:
+                pass
 
         if peg is None: peg = 999
         if per is None: per = 999
@@ -865,16 +881,11 @@ def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc
     sort_by    : "price" | "change" | "volume" | "per" | "roe"
     sort_order : "asc" | "desc"
     """
-    try:
-        usd_krw = float(
-            yf.Ticker("USDKRW=X").history(period="1d")["Close"].iloc[-1]
-        )
-    except Exception:
-        usd_krw = 1380.0
+    usd_krw = get_usd_krw()
 
     results = []
-    # 출력 개수를 늘리기 위해 병렬 처리 워커 수를 30에서 50으로 증가시켰습니다 (성능 최적화)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+    # Vercel 1024MB 메모리·60초 제한 대응: max_workers=25 (I/O bound 특성상 속도 동일)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
         futures = {
             executor.submit(fetch_toss_metrics, tkr): tkr
             for tkr in TOSS_US_UNIVERSE
@@ -953,10 +964,7 @@ def fetch_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
      - 국내(KRX): 기존 Quality-GARP 로직 유지
      - 해외(US) : 토스증권 필터 조건 적용
     """
-    try:
-        usd_krw = float(yf.Ticker("USDKRW=X").history(period="1d")["Close"].iloc[-1])
-    except Exception:
-        usd_krw = 1380.0
+    usd_krw = get_usd_krw()
 
     # ── 해외 US: 토스증권 스크리너로 교체 ────────────────────────
     toss_result = fetch_toss_overseas_screener(
@@ -1084,11 +1092,14 @@ class ChartPatternAnalyzer:
             slope_lower = get_slope(last_troughs, self.lows[last_troughs])
             
             # Triangle Patterns
+            # 주가 수준에 맞는 상대적 flat 임계값 (주가의 0.1% per bar)
+            avg_price = float(np.mean(self.closes[-30:])) if len(self.closes) >= 30 else float(np.mean(self.closes))
+            flat_threshold = avg_price * 0.001
             if slope_upper < 0 and slope_lower > 0:
                 patterns.append({'name': '대칭 삼각형 (Symmetrical Triangle)', 'signal': '중립/변동성 축소', 'desc': '곧 큰 방향성이 나올 것입니다.'})
-            elif slope_upper < 0 and abs(slope_lower) < 0.05:
+            elif slope_upper < 0 and abs(slope_lower) < flat_threshold:
                 patterns.append({'name': '하락 삼각형 (Descending Triangle)', 'signal': '매도 (하락형)', 'desc': '지지선 붕괴 위험이 있습니다.'})
-            elif abs(slope_upper) < 0.05 and slope_lower > 0:
+            elif abs(slope_upper) < flat_threshold and slope_lower > 0:
                 patterns.append({'name': '상승 삼각형 (Ascending Triangle)', 'signal': '매수 (상승형)', 'desc': '저항선 돌파 시도가 예상됩니다.'})
                 
             # Wedge Patterns
@@ -1363,7 +1374,7 @@ def analyze_score(dd: Dict):
     adx    = v("ADX");    dip   = v("DI_Plus");  dim = v("DI_Minus")
     bb_u   = v("BB_Upper"); bb_l = v("BB_Lower"); bb_m = v("BB_Middle")
     atr    = v("ATR")
-    opn    = v("Open")
+    last_opn = v("Open")   # scalar float — v()는 항상 마지막 값 반환
     vols   = dd.get("Volume", [])
     cur_vol = float(vols[-1]) if vols else 0
     avg_vol = float(np.mean([x for x in vols[-20:] if x])) if vols else 1
@@ -1446,10 +1457,9 @@ def analyze_score(dd: Dict):
     gvs = 0.0; msgs = []
     if avg_vol > 0:
         ratio = cur_vol / avg_vol
-        # close와 opn의 인덱스 체크 추가
         last_close = close
-        last_opn = float(opn[-1]) if isinstance(opn, list) and len(opn) > 0 else (opn if opn else last_close)
-        
+        last_opn = last_opn if last_opn else last_close   # 데이터 없으면 종가로 대체
+
         if ratio > 2.0:
             if last_close > last_opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
             else:                     gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
@@ -1481,17 +1491,38 @@ def analyze_score(dd: Dict):
 
     cp_msgs = []
     cp_score = 0.0
+    bull_patterns = []
+    bear_patterns = []
+
     for p in patterns + geo_patterns:
         direction = p.get('direction') or ('상승' if p.get('signal') == '매수' else '하락' if p.get('signal') == '매도' else '중립')
         cp_msgs.append(f"[{direction}] {p.get('name', '')}: {p.get('desc', '')}")
-        if direction == '상승': cp_score += 2.0
-        elif direction == '하락': cp_score -= 2.0
-    
+        # ── conf(신뢰도) 기반 차등 가중치 ──────────────────────────
+        # 기하학적 패턴(geo)은 conf 키 없음 → 기본값 80 적용
+        conf = p.get('conf', 80)
+        weight = 3.0 if conf >= 90 else (2.0 if conf >= 80 else 1.0)
+        if direction == '상승':
+            cp_score += weight
+            bull_patterns.append(p)
+        elif direction == '하락':
+            cp_score -= weight
+            bear_patterns.append(p)
+
+    # ── RSI × 캔들 패턴 연동 시너지 (팩터 하이브리드 핵심) ─────────
+    # RSI 과매도 + 상승 패턴 동시 발생 → 추가 가산
+    if rsi < 35 and bull_patterns:
+        cp_score += 1.5
+        cp_msgs.append(f"⚡ RSI 과매도({rsi:.1f}) + 상승 패턴 시너지 → 반전 신호 강화")
+    # RSI 과매수 + 하락 패턴 동시 발생 → 추가 감산
+    elif rsi > 65 and bear_patterns:
+        cp_score -= 1.5
+        cp_msgs.append(f"⚡ RSI 과매수({rsi:.1f}) + 하락 패턴 시너지 → 하락 신호 강화")
+
     if not cp_msgs:
         cp_msgs = ["특이한 캔들/차트 패턴 미발견"]
 
     steps.append({"step": "5. 캔들 패턴 분석",
-                  "result": " | ".join(cp_msgs), "score": round(max(-5.0, min(5.0, cp_score)), 1), "weight": "보조"})
+                  "result": " | ".join(cp_msgs), "score": round(max(-6.0, min(6.0, cp_score)), 1), "weight": "보조"})
 
     return max(0, min(100, round(score))), steps, patterns, geo_patterns
 
@@ -1664,8 +1695,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
     }
 
     # 매수/매도 타이밍 예측 (동적 계산)
-    from datetime import datetime, timedelta
-    now = datetime.now()
+    now = dt.now()
     
     # RSI 및 MACD에 따른 매수 타이밍 조정
     macd = dd.get("MACD", [0])[-1]
@@ -1681,13 +1711,13 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
         
     buy_time = now + timedelta(days=buy_delay)
     buy_time = buy_time.replace(hour=10, minute=30)
-    while buy_time.weekday() > 4: # 주말 건너뛰기
+    while buy_time.weekday() > 4:  # 주말 건너뛰기
         buy_time += timedelta(days=1)
-        
+
     # 목표 수익률 달성까지의 예상 기간 (ATR 기반 변동성 고려)
     target_dist = (aggressive["range"][1] - last_price) if aggressive["range"][1] > last_price else (last_price * 0.05)
     days_to_target = max(2, int(target_dist / (atr if atr > 0 else 1)))
-    
+
     sell_time = buy_time + timedelta(days=days_to_target)
     sell_time = sell_time.replace(hour=14, minute=30)
     while sell_time.weekday() > 4:
@@ -1730,42 +1760,47 @@ def holt_winters_forecast(dd: Dict, days: int = 30):
         dates = dd.get("Date", [])
         if len(closes) < 30: return None
         
-        # Parameters (Fixed for simplicity, or could be optimized via grid search)
-        alpha = 0.8  # Level smoothing factor
-        beta = 0.2   # Trend smoothing factor
-        
+        # ── Holt's Double Exponential Smoothing 파라미터 ──────────────
+        # alpha=0.3: 레벨 평활 (낮을수록 안정적, 노이즈 저감)
+        # beta=0.05: 트렌드 평활 (낮을수록 과도한 기울기 방지)
+        alpha = 0.3
+        beta  = 0.05
+
         # Initialization
         level = closes[0]
         trend = closes[1] - closes[0]
-        
+
         # Fit
         for i in range(1, len(closes)):
             last_level = level
             level = alpha * closes[i] + (1 - alpha) * (level + trend)
             trend = beta * (level - last_level) + (1 - beta) * trend
-        
+
         # Forecast
         forecast = []
         last_d = datetime.datetime.strptime(dates[-1], "%Y-%m-%d") if dates else datetime.datetime.now()
         future_dates = []
         d = last_d
-        
+
         for i in range(1, days + 1):
             d += datetime.timedelta(days=1)
-            while d.weekday() >= 5: d += datetime.timedelta(days=1)
+            while d.weekday() >= 5:
+                d += datetime.timedelta(days=1)
             future_dates.append(d.strftime("%Y-%m-%d"))
-        
-            yhat = level + i * trend
+            # 음수 방지: 주가는 0 이하가 될 수 없음
+            yhat = max(0.01, level + i * trend)
             forecast.append(yhat)
-        
-        # Calculate std for confidence intervals based on recent volatility
-        std = np.std(closes[-30:]) if len(closes) >= 30 else 0
-        
+
+        # ── 신뢰구간 동적화: 기간이 길수록 불확실성 증가 (sqrt 스케일) ──
+        std = np.std(closes[-30:]) if len(closes) >= 30 else closes[-1] * 0.02
+
         return {
             "dates": future_dates,
-            "yhat": [round(float(f), 2) for f in forecast],
-            "yhat_upper": [round(float(f)+1.96*std, 2) for f in forecast],
-            "yhat_lower": [round(float(f)-1.96*std, 2) for f in forecast],
+            "yhat":       [round(float(f), 2) for f in forecast],
+            "yhat_upper": [round(max(0.01, float(f) + 1.96 * std * math.sqrt(i + 1)), 2)
+                           for i, f in enumerate(forecast)],
+            "yhat_lower": [round(max(0.01, float(f) - 1.96 * std * math.sqrt(i + 1)), 2)
+                           for i, f in enumerate(forecast)],
         }
     except Exception:
         return linear_forecast(dd, days)
@@ -1798,11 +1833,16 @@ def linear_forecast(dd: Dict, days: int):
             while d.weekday() >= 5: d += datetime.timedelta(days=1)
             fds.append(d.strftime("%Y-%m-%d"))
             
+        # ── 신뢰구간 동적화: 최근 30일 변동성 + sqrt 스케일 ─────────
+        vol = np.std(closes[-30:]) if len(closes) >= 30 else closes[-1] * 0.03
+
         return {
-            "dates": fds, 
-            "yhat": [round(float(p),2) for p in preds],
-            "yhat_upper": [round(float(p)*1.05,2) for p in preds],
-            "yhat_lower": [round(float(p)*0.95,2) for p in preds]
+            "dates": fds,
+            "yhat":       [round(float(p), 2) for p in preds],
+            "yhat_upper": [round(max(0.01, float(p) + 1.96 * vol * math.sqrt(i + 1)), 2)
+                           for i, p in enumerate(preds)],
+            "yhat_lower": [round(max(0.01, float(p) - 1.96 * vol * math.sqrt(i + 1)), 2)
+                           for i, p in enumerate(preds)],
         }
     except Exception:
         return None
