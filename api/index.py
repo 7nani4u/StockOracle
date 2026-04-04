@@ -758,6 +758,102 @@ def fetch_toss_metrics(ticker: str):
     except Exception:
         return None
 
+def fetch_kr_toss_metrics(item: dict):
+    """
+    국내 주식에 대한 토스증권 필터 조건 적용
+    해외(US) 탭과 동일한 구조로 단일 종목을 검사하고 조건을 만족하면 dict 반환
+    """
+    try:
+        ticker = item["ticker"]
+        t = yf.Ticker(ticker)
+        i = t.info
+        
+        price = i.get("currentPrice") or i.get("regularMarketPrice")
+        if not price or price <= 0: return None
+        
+        mkt_cap = i.get("marketCap", 0)
+        # 1. 시가총액: 1,000억 원 이상
+        if mkt_cap < 100_000_000_000: return None
+            
+        roic = i.get("returnOnEquity")
+        debt_raw = i.get("debtToEquity")
+        per = i.get("trailingPE") or i.get("forwardPE")
+        op_margin = i.get("operatingMargins")
+        earnings_growth = i.get("earningsGrowth")
+        
+        # NAVER 데이터로 덮어쓰기 (yfinance KRX 데이터 오류 보정)
+        try:
+            nv = fetch_naver(ticker)
+            if nv:
+                if nv.get("per") and nv["per"] != "-":
+                    try:
+                        per = float(str(nv["per"]).replace(",",""))
+                    except: pass
+                if nv.get("roe") and nv["roe"] != "-":
+                    roic = float(nv["roe"]) / 100.0
+                if nv.get("debt") and nv["debt"] != "-":
+                    debt_raw = float(nv["debt"])
+                if nv.get("op_margin") and nv["op_margin"] != "-": 
+                    op_margin = float(nv["op_margin"]) / 100.0
+        except:
+            pass
+
+        # 2. 영업이익률: 직전 분기 0% 이상
+        if op_margin is None or op_margin < 0: return None
+            
+        # 3. ROE: 최근 1년(TTM) 10% 이상
+        if roic is None or roic < 0.10: return None
+            
+        # 4. PER: 0배 이상 ~ 20배 이하
+        if per is None or not (0 <= per <= 20): return None
+            
+        # 5. 순이익 증감률: 최근 1년(TTM) 10% 이상 (yfinance 누락 시 스킵하여 통과)
+        if earnings_growth is not None and earnings_growth < 0.10: return None
+            
+        # 6. 부채비율: 직전 분기 100% 이하
+        if debt_raw is None: return None
+        debt_ratio = debt_raw * 100 if debt_raw < 10 else debt_raw
+        if debt_ratio > 100: return None
+            
+        # 7. 신고가 또는 이동평균선: 52주 신고가 근접(prox >= 0.90) 또는 정배열
+        high52 = i.get("fiftyTwoWeekHigh", price)
+        prox = price / high52 if high52 else 0
+        ma50 = i.get("fiftyDayAverage", 0)
+        ma200 = i.get("twoHundredDayAverage", 0)
+        is_ma_aligned = (price >= ma50) and (ma50 >= ma200) and (ma200 > 0)
+        
+        if prox < 0.90 and not is_ma_aligned: return None
+            
+        # 통과 시 결과 반환
+        change_pct = (i.get("regularMarketChangePercent") or 0) * 100
+        sector     = i.get("sector") or i.get("industry") or "Unknown"
+        volume     = i.get("volume") or i.get("averageVolume") or 0
+        rec_key    = (i.get("recommendationKey") or "").lower()
+        analyst_map = {
+            "strong_buy": "적극 매수", "buy": "매수",
+            "hold": "보유", "underperform": "약세", "sell": "매도",
+        }
+        analyst_signal = analyst_map.get(rec_key, "중립")
+        
+        return {
+            "market":       "국내",
+            "ticker":       ticker,
+            "name":         item["name"],
+            "price_val":    price,
+            "change":       change_pct,
+            "market_cap":   mkt_cap,
+            "op_margin":    op_margin,
+            "roe":          roic,
+            "per":          per,
+            "debt_ratio":   debt_ratio,
+            "earnings_growth": round(earnings_growth * 100, 2) if earnings_growth is not None else 0,
+            "sector":       sector,
+            "volume":       volume,
+            "signal":       analyst_signal,
+            "prox52":       round(prox, 2)
+        }
+    except Exception:
+        return None
 
 @ttl_cache(3600)
 def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
@@ -862,71 +958,6 @@ def fetch_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
     except Exception:
         usd_krw = 1380.0
 
-    # ── 국내 KRX (기존 Quality-GARP 로직 유지) ───────────────────
-    kr_candidates = [
-        {"ticker": ticker, "name": name, "market_type": "KRX"}
-        for name, ticker in KR_STOCK_MAP.items()
-    ]
-    kr_processed = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        futures = [executor.submit(fetch_metrics, c) for c in kr_candidates]
-        for f in concurrent.futures.as_completed(futures):
-            res = f.result()
-            if res:
-                kr_processed.append(res)
-
-    kr_results = []
-    if kr_processed:
-        df = pd.DataFrame(kr_processed)
-        if not df.empty:
-            # 토스증권 국내 주식 필터 조건
-            # 1. 시가총액: 1,000억 원 이상
-            # 2. 영업이익률: 직전 분기 0% 이상
-            # 3. ROE: 최근 1년(TTM) 10% 이상
-            # 4. PER: 0배 이상 ~ 20배 이하
-            # 5. 순이익 증감률: 최근 1년(TTM) 10% 이상
-            # 6. 부채비율: 직전 분기 100% 이하
-            # 7. 신고가 또는 이동평균선: 52주 신고가 근접(prox >= 0.90) 또는 이동평균선 정배열
-            cond = (
-                (df["market_cap"] >= 100_000_000_000) &
-                (df["op_margin"].fillna(0) >= 0) &
-                (df["roe"].fillna(0) >= 0.10) &
-                (df["per"].fillna(-1) >= 0) & (df["per"].fillna(999) <= 20) &
-                (df["earnings_growth"].fillna(0) >= 0.10) &
-                (df["debt_ratio"].fillna(999) <= 100) &
-                ((df["prox"].fillna(0) >= 0.90) | (df["is_ma_aligned"] == True))
-            )
-            df = df[cond].copy()
-            if not df.empty:
-                df["total_score"] = df["roe"].rank(ascending=True) + df["prox"].rank(ascending=True)
-                kr_sort = "price_val" if sort_by == "price" else sort_by
-                if kr_sort in df.columns:
-                    df = df.sort_values(kr_sort, ascending=(sort_order == "asc"))
-                for _, row in df.iterrows():
-                    p_str = f"{row['price_val']:,.0f}원"
-                    kr_results.append({
-                        "market":    "국내",
-                        "name":      row["name"],
-                        "ticker":    row["ticker"],
-                        "price":     p_str,
-                        "price_usd": None,
-                        "price_krw": p_str,
-                        "price_val": row["price_val"],
-                        "change":    round(row["change"], 2),
-                        "category":  row["cat"],
-                        "sector":    row["cat"],
-                        "volume":    int(row["volume"]),
-                        "market_cap_b": round(row["market_cap"] / 100_000_000, 2), # 억 원 단위
-                        "op_margin_pct": round(row["op_margin"] * 100, 2) if row["op_margin"] is not None else 0,
-                        "earnings_growth_pct": round(row["earnings_growth"] * 100, 2) if row["earnings_growth"] is not None else 0,
-                        "roe_pct": round(row["roe"] * 100, 2) if row["roe"] is not None else 0,
-                        "per": round(row["per"], 2) if row["per"] != 999 else "-",
-                        "debt_pct": round(row["debt_ratio"], 2),
-                        "prox52": round(row["prox"], 2),
-                        "score":     round(row["total_score"], 2),
-                        "signal":    row["signal"],
-                    })
-
     # ── 해외 US: 토스증권 스크리너로 교체 ────────────────────────
     toss_result = fetch_toss_overseas_screener(
         sort_by=sort_by,
@@ -934,8 +965,59 @@ def fetch_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
     )
     us_results = toss_result.get("data", [])
 
+    # ── 국내 KRX: 토스증권 스크리너 로직 ──────────────────────────
+    kr_processed = []
+    kr_candidates = [
+        {"ticker": ticker, "name": name, "market_type": "KRX"}
+        for name, ticker in KR_STOCK_MAP.items()
+    ]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(fetch_kr_toss_metrics, c): c for c in kr_candidates}
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res is not None:
+                kr_processed.append(res)
+    
+    # ── 정렬 ──────────────────────────────────────────────────
+    sort_key_map = {
+        "price":  "price_val",
+        "change": "change",
+        "volume": "volume",
+        "per":    "per",
+        "roe":    "roe",
+    }
+    sort_field = sort_key_map.get(sort_by, "price_val")
+    ascending  = (sort_order == "asc")
+    kr_results = sorted(kr_processed, key=lambda x: x.get(sort_field, 0), reverse=not ascending)
+
+    # ── 출력 정제 ─────────────────────────────────────────────
+    output = []
+    for item in kr_results:
+        p = item["price_val"]
+        output.append({
+            "market":              "국내",
+            "ticker":              item["ticker"],
+            "name":                item["name"],
+            "price":               f"{p:,.0f}원",
+            "price_usd":           None,
+            "price_krw":           f"{p:,.0f}원",
+            "price_val":           item["price_val"],
+            "change":              item["change"],
+            "category":            item["sector"],
+            "sector":              item["sector"],
+            "volume":              item["volume"],
+            "market_cap_b":        round(item["market_cap"] / 100_000_000, 2), # 억 원 단위
+            "op_margin_pct":       round(item["op_margin"] * 100, 2) if item["op_margin"] is not None else 0,
+            "earnings_growth_pct": item["earnings_growth"],
+            "roe_pct":             round(item["roe"] * 100, 2) if item["roe"] is not None else 0,
+            "per":                 item["per"],
+            "debt_ratio_pct":      item["debt_ratio"],
+            "prox52":              item["prox52"],
+            "signal":              item["signal"],
+        })
+
     return {
-        "data":              kr_results + us_results,
+        "data":              output + us_results,
         "usd_krw":           round(usd_krw, 2),
         "total_overseas":    toss_result.get("total", 0),
         "total_domestic":    len(kr_results),
@@ -2400,11 +2482,6 @@ function renderTechnicalSignals(d) {
       <div>
         <div class="ovs-label">종합 판단 (${summary.total}개 지표 기준)</div>
         <div style="font-size:20px;font-weight:800;color:${ovClr}">${summary.overall_label}</div>
-      </div>
-      <div class="ovs-counts">
-        <span class="ovs-buy">▲ 매수 ${summary.buy}</span>
-        <span class="ovs-sell">▼ 매도 ${summary.sell}</span>
-        <span class="ovs-watch">— 관망 ${summary.watch}</span>
       </div>
     </div>
     <div class="indicator-grid">`;
