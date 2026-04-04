@@ -2085,13 +2085,14 @@ input::placeholder{color:#484f58}
 
 /* 분석 스텝 */
 .step-item{background:#21262d;border-radius:10px;padding:14px;margin-bottom:8px}
-.step-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.step-title{font-size:13px;font-weight:600}
-.step-score{font-size:12px;font-weight:700;padding:2px 8px;border-radius:12px}
+.step-header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.step-title{font-size:13px;font-weight:600;line-height:1.4;flex:1;min-width:0}
+.step-score{font-size:12px;font-weight:700;padding:2px 8px;border-radius:12px;flex-shrink:0;align-self:center}
 .step-score.pos{background:#0d2d1a;color:#3fb950}
 .step-score.neg{background:#2d0d0d;color:#f85149}
 .step-score.neu{background:#21262d;color:#8b949e}
-.step-result{font-size:13px;color:#8b949e;line-height:1.5}
+.step-result{font-size:13px;color:#8b949e;line-height:1.6}
+.step-result-line{display:block;padding:2px 0;word-break:keep-all;overflow-wrap:break-word}
 
 /* 패턴 */
 .pattern-item{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-radius:8px;margin-bottom:6px;font-size:13px}
@@ -2160,8 +2161,8 @@ input::placeholder{color:#484f58}
 
 /* 피봇 포인트 테이블 */
 .pivot-table{width:100%;border-collapse:collapse;font-size:12px}
-.pivot-table th{padding:8px 10px;text-align:center;color:#8b949e;font-size:11px;border-bottom:1px solid #30363d;font-weight:500}
-.pivot-table td{padding:7px 10px;text-align:center;border-bottom:1px solid #21262d}
+.pivot-table th{padding:8px 10px;text-align:center;color:#8b949e;font-size:11px;border-bottom:1px solid #30363d;font-weight:500;white-space:nowrap}
+.pivot-table td{padding:7px 10px;text-align:center;border-bottom:1px solid #21262d;white-space:nowrap}
 .pivot-table tr:last-child td{border-bottom:none}
 .pivot-label-col{color:#8b949e;text-align:left!important;font-weight:500;white-space:nowrap}
 .pv-r{color:#f85149;font-weight:600}
@@ -2700,13 +2701,13 @@ function renderAI(d, isKrx) {
     return `<div class="step-item">
       <div class="step-header">
         <span class="step-title">${st.step}</span>
-        <div style="display:flex;align-items:center;gap:6px">
-          ${weight ? `<span style="font-size:10px;color:#484f58;background:#21262d;padding:1px 6px;border-radius:8px">${weight}</span>` : ''}
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap">
+          ${weight ? `<span style="font-size:10px;color:#484f58;background:#161b22;padding:1px 6px;border-radius:8px">${weight}</span>` : ''}
           <span class="step-score ${cls}">${label}점</span>
         </div>
       </div>
       <div class="step-result">
-        ${st.result.split(' | ').map(line => `<div style="margin-bottom: 4px;">• ${line}</div>`).join('')}
+        ${st.result.split(' | ').filter(l => l.trim()).map(line => `<span class="step-result-line">• ${line}</span>`).join('')}
       </div>
     </div>`;
   }).join('');
@@ -2748,13 +2749,15 @@ function renderForecast(d, isKrx) {
             <div style="font-size:11px;color:#8b949e;margin-bottom:4px">현재가</div>
             <div style="font-size:22px;font-weight:800">${fmt(cur, isKrx)}</div>
           </div>
-          <div style="text-align:right">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매수 타이밍</div>
-            <div style="font-size:13px;font-weight:600;color:#3fb950">${bp.timing.buy}</div>
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매도 타이밍</div>
-            <div style="font-size:13px;font-weight:600;color:#f85149">${bp.timing.sell}</div>
+          <div style="display:flex;gap:16px;align-items:flex-start;flex-shrink:0">
+            <div style="text-align:right">
+              <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매수 타이밍</div>
+              <div style="font-size:13px;font-weight:600;color:#3fb950;white-space:nowrap">${bp.timing.buy}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매도 타이밍</div>
+              <div style="font-size:13px;font-weight:600;color:#f85149;white-space:nowrap">${bp.timing.sell}</div>
+            </div>
           </div>
         </div>
         <div class="buy-price-grid">
