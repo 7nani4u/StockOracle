@@ -638,6 +638,19 @@ TOSS_US_UNIVERSE = [
     "NEE", "SO", "DUK", "AEP", "EXC", "D", "PCG", "ED", "FE",
     # 신흥 성장주 (ADR)
     "GRAB", "SEA", "MELI", "NU", "PDD", "TME",
+    # 추가: S&P 500 등 종목풀 대폭 확장 (토스증권 결과와 유사하게 맞추기 위함)
+    "BRK-B", "UNH", "XOM", "JNJ", "PG", "HD", "CVX", "ABBV", "MRK", "PEP", "KO", "AVGO",
+    "TMO", "ABT", "DHR", "NEE", "LIN", "TXN", "PM", "NKE", "MDT", "UPS", "UNP", "HON",
+    "BMY", "AMGN", "QCOM", "INTC", "IBM", "CAT", "GS", "DE", "LMT", "BA", "SYK", "BLK",
+    "SPGI", "MDLZ", "ADI", "GILD", "MMC", "VRTX", "CVS", "ZTS", "ISRG", "TGT", "NOW",
+    "CB", "BDX", "SO", "SLB", "PNC", "DUK", "MO", "REGN", "CI", "CSX", "EOG", "AON",
+    "APD", "CME", "TFC", "WM", "ITW", "BSX", "KMB", "NOC", "SHW", "CL", "EW", "HUM",
+    "ICE", "EMR", "ETN", "DG", "KLAC", "MCK", "PGR", "FCX", "PSA", "NSC", "GD", "AEP",
+    "EXC", "MCO", "AFL", "SNPS", "CTSH", "PH", "CNC", "SRE", "STZ", "AIG", "TRV", "MET",
+    "ALL", "PRU", "XEL", "WEC", "ES", "D", "ED", "PEG", "AWK", "EIX", "FE", "CMS", "PCG",
+    "ETR", "CNP", "LNT", "NI", "PNW", "DTE", "ATO", "O", "PLD", "AMT", "CCI", "EQIX",
+    "PSA", "SPG", "WELL", "VTR", "AVB", "DLR", "EQR", "BXP", "WY", "ARE", "IRM", "MAA",
+    "EXR", "UDR", "CPT", "ESS", "PEAK", "INVH", "KIM", "REG", "FRT", "OFC", "VNO"
 ]
 
 def fetch_toss_metrics(ticker: str):
