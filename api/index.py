@@ -1142,12 +1142,16 @@ def analyze_score(dd: Dict):
     gvs = 0.0; msgs = []
     if avg_vol > 0:
         ratio = cur_vol / avg_vol
+        # close와 opn의 인덱스 체크 추가
+        last_close = close
+        last_opn = float(opn[-1]) if isinstance(opn, list) and len(opn) > 0 else (opn if opn else last_close)
+        
         if ratio > 2.0:
-            if close > opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
-            else:           gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
+            if last_close > last_opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
+            else:                     gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
         elif ratio > 1.5:
-            if close > opn: gvs += 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
-            else:           gvs -= 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
+            if last_close > last_opn: gvs += 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
+            else:                     gvs -= 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
         elif ratio < 0.5:
             msgs.append(f"거래량 급감 ({ratio:.1f}x) → 신뢰도 낮음")
         else:
@@ -2247,7 +2251,9 @@ function renderAI(d, isKrx) {
           <span class="step-score ${cls}">${label}점</span>
         </div>
       </div>
-      <div class="step-result">${st.result}</div>
+      <div class="step-result">
+        ${st.result.split(' | ').map(line => `<div style="margin-bottom: 4px;">• ${line}</div>`).join('')}
+      </div>
     </div>`;
   }).join('');
 
