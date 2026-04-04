@@ -466,8 +466,9 @@ def fetch_metrics(item):
         
         # Quality Factors
         roic = i.get("returnOnEquity", 0) 
-        debt_ratio = i.get("debtToEquity", 999)
-        if debt_ratio is None: debt_ratio = 999
+        debt_raw = i.get("debtToEquity", 999)
+        if debt_raw is None: debt_raw = 999
+        debt_ratio = debt_raw * 100 if debt_raw < 10 else debt_raw
         
         fcf = i.get("freeCashflow", 0)
         if fcf is None: fcf = i.get("operatingCashflow", -1)
@@ -520,20 +521,29 @@ def fetch_metrics(item):
         high52 = i.get("fiftyTwoWeekHigh", price)
         prox = price / high52 if high52 else 0
         
+        ma50 = i.get("fiftyDayAverage", 0)
+        ma200 = i.get("twoHundredDayAverage", 0)
+        # 정배열 조건 (가격 >= 50일선 >= 200일선)
+        is_ma_aligned = (price >= ma50) and (ma50 >= ma200) and (ma200 > 0)
+        
         # 3-year Profit Check
         is_profitable = (op_margin is not None and op_margin > 0) or (eps is not None and eps > 0)
         
         item["market_cap"] = mkt_cap
         item["roic"] = roic if roic else 0
+        item["roe"] = roic if roic else 0
         item["debt_ratio"] = debt_ratio
         item["fcf"] = fcf
         item["peg"] = peg
         item["per"] = per
         item["prox"] = prox
+        item["is_ma_aligned"] = is_ma_aligned
         item["price_val"] = price
         item["change"] = i.get("regularMarketChangePercent", 0) * 100
         item["volume"] = i.get("volume", 0)
         item["is_profitable"] = is_profitable
+        item["op_margin"] = op_margin
+        item["earnings_growth"] = i.get("earningsGrowth", 0)
         
         return item
     except:
@@ -868,23 +878,27 @@ def fetch_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
     kr_results = []
     if kr_processed:
         df = pd.DataFrame(kr_processed)
-        df = df[df["signal"].isin(["매수", "적극 매수"])]
         if not df.empty:
+            # 토스증권 국내 주식 필터 조건
+            # 1. 시가총액: 1,000억 원 이상
+            # 2. 영업이익률: 직전 분기 0% 이상
+            # 3. ROE: 최근 1년(TTM) 10% 이상
+            # 4. PER: 0배 이상 ~ 20배 이하
+            # 5. 순이익 증감률: 최근 1년(TTM) 10% 이상
+            # 6. 부채비율: 직전 분기 100% 이하
+            # 7. 신고가 또는 이동평균선: 52주 신고가 근접(prox >= 0.90) 또는 이동평균선 정배열
             cond = (
-                (df["roic"] > 0.12) &
-                (df["debt_ratio"] < 100) &
-                (df["fcf"] > 0) &
-                (df["peg"] > 0) & (df["peg"] < 1.5) &
-                (df["per"] < 25) &
-                (df["prox"] >= 0.75) &
-                (df["is_profitable"] == True)
+                (df["market_cap"] >= 100_000_000_000) &
+                (df["op_margin"].fillna(0) >= 0) &
+                (df["roe"].fillna(0) >= 0.10) &
+                (df["per"].fillna(-1) >= 0) & (df["per"].fillna(999) <= 20) &
+                (df["earnings_growth"].fillna(0) >= 0.10) &
+                (df["debt_ratio"].fillna(999) <= 100) &
+                ((df["prox"].fillna(0) >= 0.90) | (df["is_ma_aligned"] == True))
             )
             df = df[cond].copy()
             if not df.empty:
-                df["rank_roic"]  = df["roic"].rank(ascending=True)
-                df["rank_peg"]   = df["peg"].rank(ascending=False)
-                df["rank_prox"]  = df["prox"].rank(ascending=True)
-                df["total_score"] = df["rank_roic"] + df["rank_peg"] + df["rank_prox"]
+                df["total_score"] = df["roe"].rank(ascending=True) + df["prox"].rank(ascending=True)
                 kr_sort = "price_val" if sort_by == "price" else sort_by
                 if kr_sort in df.columns:
                     df = df.sort_values(kr_sort, ascending=(sort_order == "asc"))
@@ -902,6 +916,13 @@ def fetch_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
                         "category":  row["cat"],
                         "sector":    row["cat"],
                         "volume":    int(row["volume"]),
+                        "market_cap_b": round(row["market_cap"] / 100_000_000, 2), # 억 원 단위
+                        "op_margin_pct": round(row["op_margin"] * 100, 2) if row["op_margin"] is not None else 0,
+                        "earnings_growth_pct": round(row["earnings_growth"] * 100, 2) if row["earnings_growth"] is not None else 0,
+                        "roe_pct": round(row["roe"] * 100, 2) if row["roe"] is not None else 0,
+                        "per": round(row["per"], 2) if row["per"] != 999 else "-",
+                        "debt_pct": round(row["debt_ratio"], 2),
+                        "prox52": round(row["prox"], 2),
                         "score":     round(row["total_score"], 2),
                         "signal":    row["signal"],
                     })
@@ -917,7 +938,17 @@ def fetch_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
         "data":              kr_results + us_results,
         "usd_krw":           round(usd_krw, 2),
         "total_overseas":    toss_result.get("total", 0),
-        "filter_conditions": toss_result.get("filter_conditions", {}),
+        "total_domestic":    len(kr_results),
+        "us_filter_conditions": toss_result.get("filter_conditions", {}),
+        "kr_filter_conditions": {
+            "시가총액": "1000억원 이상",
+            "영업이익률": "0% 이상",
+            "ROE": "10% 이상",
+            "PER": "0~20배",
+            "순이익증감률": "10% 이상",
+            "부채비율": "100% 이하",
+            "신고가/이평선": "52주신고가 근접 또는 정배열"
+        },
         "sort_by":           sort_by,
         "sort_order":        sort_order,
     }
@@ -2042,7 +2073,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header">
       <div>
         <h2 style="font-size:22px;font-weight:700;margin-bottom:4px">📋 주식 골라보기</h2>
-        <p style="font-size:12px;color:#8b949e" id="scrn-subtitle">토스증권 동일 필터 적용 결과</p>
+        <p style="font-size:12px;color:#8b949e" id="scrn-subtitle">토스증권 필터 조건 적용 결과</p>
         <p style="font-size:11px;color:#484f58;margin-top:4px" id="scrn-filter-badge"></p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -2097,6 +2128,7 @@ let currentMarket = 'KRX';
 let currentData = null;
 let currentTab = 'chart';
 let screenerData = [];
+let screenerInfo = {}; // 추가
 let scrnMarket = 'domestic';
 let scrnSort = {key:'price', dir:'desc'};
 let chartInstances = {};
@@ -2664,17 +2696,13 @@ async function loadScreener(sortBy, sortOrder) {
     const r = await fetch(url);
     const d = await r.json();
     screenerData = d.data || [];
-    const fc = d.filter_conditions || {};
-    // 소수점 셋째 자리 이상 값은 둘째 자리로 자르기
-    const filterStr = Object.entries(fc).map(([k,v])=>{
-      const fv = String(v).replace(/(\d+\.\d{3,})/g, m => parseFloat(m).toFixed(2));
-      return k + ': ' + fv;
-    }).join(' │ ');
-    document.getElementById('scrn-subtitle').textContent =
-      `토스증권 동일 필터 적용 | USD/KRW: ${(d.usd_krw||0).toLocaleString()} | 해외 ${d.total_overseas||0}종목`;
-    if (document.getElementById('scrn-filter-badge')) {
-      document.getElementById('scrn-filter-badge').textContent = filterStr;
-    }
+    screenerInfo = {
+      usd_krw: d.usd_krw || 0,
+      total_overseas: d.total_overseas || 0,
+      total_domestic: d.total_domestic || 0,
+      us_filter_conditions: d.us_filter_conditions || {},
+      kr_filter_conditions: d.kr_filter_conditions || {}
+    };
     renderScreener();
     document.getElementById('scrn-loading').style.display = 'none';
     document.getElementById('scrn-result').style.display = 'block';
@@ -2705,6 +2733,20 @@ function renderScreener() {
   const marketLabel = scrnMarket === 'domestic' ? '국내' : '해외';
   let filtered = screenerData.filter(s => s.market === marketLabel);
 
+  // Update UI Text
+  const isKrx = scrnMarket === 'domestic';
+  const fc = isKrx ? (screenerInfo.kr_filter_conditions || {}) : (screenerInfo.us_filter_conditions || {});
+  const filterStr = Object.entries(fc).map(([k,v])=>{
+    const fv = String(v).replace(/(\d+\.\d{3,})/g, m => parseFloat(m).toFixed(2));
+    return k + ': ' + fv;
+  }).join(' │ ');
+  const totalCnt = isKrx ? (screenerInfo.total_domestic || filtered.length) : (screenerInfo.total_overseas || 0);
+  document.getElementById('scrn-subtitle').textContent =
+    `토스증권 필터 조건 적용 | USD/KRW: ${(screenerInfo.usd_krw||0).toLocaleString()} | ${marketLabel} ${totalCnt}종목`;
+  if (document.getElementById('scrn-filter-badge')) {
+    document.getElementById('scrn-filter-badge').textContent = filterStr;
+  }
+
   // 국내: 클라이언트 정렬 / 해외: 서버 정렬 결과 그대로
   if (scrnMarket === 'domestic') {
     filtered = filtered.slice().sort((a, b) => {
@@ -2718,11 +2760,13 @@ function renderScreener() {
     });
   }
 
-  const isKrx = scrnMarket === 'domestic';
   const tbody = document.getElementById('scrn-tbody');
 
   if (!filtered.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:#8b949e">필터 조건에 맞는 종목이 없습니다.<br><small style="font-size:11px">토스증권 필터 기준: 시가총액≥10억$ / 영업이익률>0% / ROE≥15% / PER≤25 / 부채비율≤100% / FCF>0</small></td></tr>';
+    const emptyMsg = isKrx ? 
+      '필터 조건에 맞는 종목이 없습니다.<br><small style="font-size:11px">시가총액≥1000억 / 영업이익률>0% / ROE≥10% / PER≤20 / 부채비율≤100% / 모멘텀 정배열</small>' : 
+      '필터 조건에 맞는 종목이 없습니다.<br><small style="font-size:11px">토스증권 필터 기준: 시가총액≥10억$ / 영업이익률>0% / ROE≥15% / PER≤25 / 부채비율≤100% / FCF>0</small>';
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:#8b949e">${emptyMsg}</td></tr>`;
     return;
   }
 
