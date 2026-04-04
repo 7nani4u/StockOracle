@@ -1111,44 +1111,231 @@ class ChartPatternAnalyzer:
         return patterns
 
 def detect_patterns(dd: Dict) -> List[Dict]:
+    """
+    캔들스틱 패턴 인식 — 순수 Python (Vercel 호환, TA-Lib 불필요)
+    기존 8개 + 추가 11개 = 총 19개 패턴
+    [단일] Doji, Hammer, Shooting Star, Marubozu
+    [2봉]  Bullish/Bearish Engulfing, Bullish/Bearish Harami, Harami Cross,
+           Piercing Line, Dark Cloud Cover
+    [3봉]  Morning Star, Evening Star, Three White Soldiers, Three Black Crows,
+           Three Inside Up/Down, Three Outside Up/Down
+    [복합] Rising/Falling Three Methods, Abandoned Baby, Hikkake, Mat Hold
+    """
     patterns = []
-    
-    # 순수 시계열 분석을 통한 캔들스틱 패턴 인식
+
     try:
-        o = [float(x) for x in dd.get("Open", []) if x is not None]
-        h = [float(x) for x in dd.get("High", []) if x is not None]
-        l = [float(x) for x in dd.get("Low", []) if x is not None]
-        c = [float(x) for x in dd.get("Close", []) if x is not None]
-        if len(c) < 3: return []
-        o1,h1,l1,c1 = o[-1],h[-1],l[-1],c[-1]
-        o2,h2,l2,c2 = o[-2],h[-2],l[-2],c[-2]
-        o3,h3,l3,c3 = o[-3],h[-3],l[-3],c[-3]
-        body1 = abs(c1-o1); rng1 = h1-l1 or 0.001
-        body2 = abs(c2-o2); rng2 = h2-l2 or 0.001
-        up_sh1 = h1-max(c1,o1); lo_sh1 = min(c1,o1)-l1
-        bull1 = c1>=o1; bull2 = c2>=o2; bull3 = c3>=o3
-        
-        if body1/rng1 < 0.1:
-            patterns.append({"name":"✖️ Doji","desc":"도지","direction":"중립","conf":100})
-        if lo_sh1 >= body1*2 and up_sh1 <= body1*0.5 and body1>0 and c2>c1:
-            patterns.append({"name":"🔨 Hammer","desc":"해머 (반등 신호)","direction":"상승","conf":100})
-        if up_sh1 >= body1*2 and lo_sh1 <= body1*0.5 and body1>0 and c2<c1:
-            patterns.append({"name":"⭐ Shooting Star","desc":"유성형 (하락 신호)","direction":"하락","conf":100})
-        if bull1 and not bull2 and o1<=c2 and c1>=o2 and body1>body2:
-            patterns.append({"name":"🫂 Bullish Engulfing","desc":"상승 포용형","direction":"상승","conf":100})
-        if not bull1 and bull2 and o1>=c2 and c1<=o2 and body1>body2:
-            patterns.append({"name":"🫂 Bearish Engulfing","desc":"하락 포용형","direction":"하락","conf":100})
-        if bull1 and not bull2 and o1>c2 and c1<o2 and body1<body2*0.5:
-            patterns.append({"name":"🤰 Bullish Harami","desc":"상승 하라미","direction":"상승","conf":100})
-        if body1/rng1 > 0.9 and body1>0:
-            patterns.append({"name":"📏 Marubozu","desc":f"마루보즈({'상승' if bull1 else '하락'})","direction":"상승" if bull1 else "하락","conf":100})
-        if bull3 and body2/rng2 < 0.3 and bull1 and c1 > (o3+c3)/2 and c3 > o3:
-            patterns.append({"name":"🌆 Evening Star","desc":"이브닝스타 (하락 반전)","direction":"하락","conf":100})
-        if not bull3 and body2/rng2 < 0.3 and bull1 and c1 < (o3+c3)/2 and c3 < o3:
-            patterns.append({"name":"🌅 Morning Star","desc":"모닝스타 (상승 반전)","direction":"상승","conf":100})
+        o = [float(x) for x in dd.get("Open",   []) if x is not None]
+        h = [float(x) for x in dd.get("High",   []) if x is not None]
+        l = [float(x) for x in dd.get("Low",    []) if x is not None]
+        c = [float(x) for x in dd.get("Close",  []) if x is not None]
+
+        if len(c) < 5:
+            return []
+
+        n = len(c)
+
+        # ── 인덱스 (최신봉 = i1, 가장 오래된 = i5) ──
+        i1, i2, i3, i4, i5 = n-1, n-2, n-3, n-4, n-5
+
+        o1,h1,l1,c1 = o[i1],h[i1],l[i1],c[i1]
+        o2,h2,l2,c2 = o[i2],h[i2],l[i2],c[i2]
+        o3,h3,l3,c3 = o[i3],h[i3],l[i3],c[i3]
+        o4,h4,l4,c4 = o[i4],h[i4],l[i4],c[i4]
+        o5,h5,l5,c5 = o[i5],h[i5],l[i5],c[i5]
+
+        def body(idx): return abs(c[idx] - o[idx])
+        def rng(idx):  return (h[idx] - l[idx]) or 0.001
+        def mid(idx):  return (o[idx] + c[idx]) / 2
+        def is_bull(idx): return c[idx] >= o[idx]
+
+        body1 = body(i1); rng1 = rng(i1)
+        body2 = body(i2); rng2 = rng(i2)
+        body3 = body(i3); rng3 = rng(i3)
+        body4 = body(i4); rng4 = rng(i4)
+        body5 = body(i5); rng5 = rng(i5)
+
+        up_sh1 = h1 - max(c1, o1)
+        lo_sh1 = min(c1, o1) - l1
+
+        bull1 = is_bull(i1); bull2 = is_bull(i2)
+        bull3 = is_bull(i3); bull4 = is_bull(i4); bull5 = is_bull(i5)
+
+        # 최근 10봉 평균 몸통 (상대적 크기 판단용)
+        avg_body = sum(body(n-1-k) for k in range(min(10, n))) / min(10, n) or 0.001
+
+        # ════════════════════════════════════════
+        #  단일봉 패턴 (1-Candle)
+        # ════════════════════════════════════════
+
+        # 1. Doji — 몸통이 레인지의 10% 미만
+        if body1 / rng1 < 0.1:
+            patterns.append({"name": "✖️ Doji", "desc": "도지 (매수/매도 균형, 방향 전환 가능)", "direction": "중립", "conf": 70})
+
+        # 2. Hammer — 하락 추세 끝 긴 아래 꼬리 (상승 반전)
+        if lo_sh1 >= body1 * 2 and up_sh1 <= body1 * 0.5 and body1 > 0 and not bull2:
+            patterns.append({"name": "🔨 Hammer", "desc": "해머 (하락 후 강한 반등 신호)", "direction": "상승", "conf": 80})
+
+        # 3. Shooting Star — 상승 추세 끝 긴 위 꼬리 (하락 반전)
+        if up_sh1 >= body1 * 2 and lo_sh1 <= body1 * 0.5 and body1 > 0 and bull2:
+            patterns.append({"name": "⭐ Shooting Star", "desc": "유성형 (상승 후 강한 하락 신호)", "direction": "하락", "conf": 80})
+
+        # 4. Marubozu — 꼬리 없는 강한 봉 (추세 지속)
+        if body1 / rng1 > 0.9 and body1 > avg_body * 1.1:
+            patterns.append({"name": "📏 Marubozu", "desc": f"마루보즈 ({'강한 상승 지속' if bull1 else '강한 하락 지속'})", "direction": "상승" if bull1 else "하락", "conf": 80})
+
+        # ════════════════════════════════════════
+        #  2봉 패턴 (2-Candle)
+        # ════════════════════════════════════════
+
+        # 5. Bullish Engulfing — 음봉을 완전히 감싸는 양봉 (상승 반전)
+        if bull1 and not bull2 and o1 <= c2 and c1 >= o2 and body1 > body2:
+            patterns.append({"name": "🫂 Bullish Engulfing", "desc": "상승 포용형 (강한 매수 신호)", "direction": "상승", "conf": 85})
+
+        # 6. Bearish Engulfing — 양봉을 완전히 감싸는 음봉 (하락 반전)
+        if not bull1 and bull2 and o1 >= c2 and c1 <= o2 and body1 > body2:
+            patterns.append({"name": "🫂 Bearish Engulfing", "desc": "하락 포용형 (강한 매도 신호)", "direction": "하락", "conf": 85})
+
+        # 7. Bullish Harami — 큰 음봉 내에 포함된 작은 양봉 (상승 반전 초기)
+        if bull1 and not bull2 and o1 > c2 and c1 < o2 and body1 < body2 * 0.5:
+            patterns.append({"name": "🤰 Bullish Harami", "desc": "상승 하라미 (추세 전환 초기 신호)", "direction": "상승", "conf": 70})
+
+        # 8. Bearish Harami — 큰 양봉 내에 포함된 작은 음봉 (하락 반전 초기)
+        if not bull1 and bull2 and o1 < c2 and c1 > o2 and body1 < body2 * 0.5:
+            patterns.append({"name": "🤰 Bearish Harami", "desc": "하락 하라미 (추세 전환 초기 신호)", "direction": "하락", "conf": 70})
+
+        # 9. Harami Cross — 큰 봉 내의 도지 (강한 추세 전환 경고)
+        if body1 / rng1 < 0.15 and body2 > avg_body * 1.0:
+            if min(c1, o1) > min(c2, o2) and max(c1, o1) < max(c2, o2):
+                dir_hc = "상승" if not bull2 else "하락"
+                patterns.append({"name": "➕ Harami Cross", "desc": f"하라미 크로스 ({dir_hc} 반전 강한 경고)", "direction": dir_hc, "conf": 80})
+
+        # 10. Piercing Line — 하락 후 전일 몸통 절반 초과 상승 (상승 반전)
+        if (not bull2 and body2 > avg_body and bull1
+                and o1 < l2 and c1 > mid(i2) and c1 < o2):
+            patterns.append({"name": "🎯 Piercing Line", "desc": "관통형 (하락 반전, 매수 신호)", "direction": "상승", "conf": 80})
+
+        # 11. Dark Cloud Cover — 상승 후 전일 몸통 절반 아래 하락 (하락 반전)
+        if (bull2 and body2 > avg_body and not bull1
+                and o1 > h2 and c1 < mid(i2) and c1 > c2):
+            patterns.append({"name": "☁️ Dark Cloud Cover", "desc": "암운형 (상승 반전, 매도 신호)", "direction": "하락", "conf": 80})
+
+        # ════════════════════════════════════════
+        #  3봉 패턴 (3-Candle)
+        # ════════════════════════════════════════
+
+        # 12. Morning Star — 음봉 + 도지/소형봉 + 양봉 (강한 상승 반전)
+        if (not bull3 and body3 > avg_body
+                and body2 / rng2 < 0.35
+                and bull1 and c1 > mid(i3)):
+            patterns.append({"name": "🌅 Morning Star", "desc": "모닝스타 (하락 후 강한 상승 반전)", "direction": "상승", "conf": 90})
+
+        # 13. Evening Star — 양봉 + 도지/소형봉 + 음봉 (강한 하락 반전)
+        if (bull3 and body3 > avg_body
+                and body2 / rng2 < 0.35
+                and not bull1 and c1 < mid(i3)):
+            patterns.append({"name": "🌆 Evening Star", "desc": "이브닝스타 (상승 후 강한 하락 반전)", "direction": "하락", "conf": 90})
+
+        # 14. Three White Soldiers — 3연속 양봉, 각 봉이 이전 봉보다 높게 마감
+        if (bull1 and bull2 and bull3
+                and c1 > c2 > c3
+                and o1 > o2 > o3
+                and body1 > avg_body * 0.7 and body2 > avg_body * 0.7 and body3 > avg_body * 0.7
+                and lo_sh1 < body1 * 0.3):
+            patterns.append({"name": "⚪ Three White Soldiers", "desc": "세 백병 (강한 상승 추세 확인)", "direction": "상승", "conf": 90})
+
+        # 15. Three Black Crows — 3연속 음봉, 각 봉이 이전 봉보다 낮게 마감
+        if (not bull1 and not bull2 and not bull3
+                and c1 < c2 < c3
+                and o1 < o2 < o3
+                and body1 > avg_body * 0.7 and body2 > avg_body * 0.7 and body3 > avg_body * 0.7):
+            patterns.append({"name": "🐦 Three Black Crows", "desc": "세 검은 까마귀 (강한 하락 추세 확인)", "direction": "하락", "conf": 90})
+
+        # 16. Three Inside Up — 하라미 확인형 (상승)
+        if (not bull3 and body3 > avg_body
+                and bull2 and o2 > c3 and c2 < o3 and body2 < body3 * 0.6
+                and bull1 and c1 > c2):
+            patterns.append({"name": "📦 Three Inside Up", "desc": "삼내부 상승 (하라미 상승 확인)", "direction": "상승", "conf": 85})
+
+        # 17. Three Inside Down — 하라미 확인형 (하락)
+        if (bull3 and body3 > avg_body
+                and not bull2 and o2 < c3 and c2 > o3 and body2 < body3 * 0.6
+                and not bull1 and c1 < c2):
+            patterns.append({"name": "📤 Three Inside Down", "desc": "삼내부 하락 (하라미 하락 확인)", "direction": "하락", "conf": 85})
+
+        # 18. Three Outside Up — 포용형 확인형 (상승)
+        if (not bull3
+                and bull2 and o2 <= c3 and c2 >= o3 and body2 > body3
+                and bull1 and c1 > c2):
+            patterns.append({"name": "📤 Three Outside Up", "desc": "삼외부 상승 (포용 상승 강세 확인)", "direction": "상승", "conf": 88})
+
+        # 19. Three Outside Down — 포용형 확인형 (하락)
+        if (bull3
+                and not bull2 and o2 >= c3 and c2 <= o3 and body2 > body3
+                and not bull1 and c1 < c2):
+            patterns.append({"name": "📦 Three Outside Down", "desc": "삼외부 하락 (포용 하락 강세 확인)", "direction": "하락", "conf": 88})
+
+        # ════════════════════════════════════════
+        #  복합 패턴 (4~5봉, Gap 포함)
+        # ════════════════════════════════════════
+
+        # 20. Rising Three Methods — 큰 양봉 + 3소형 음봉(범위 내) + 큰 양봉 (상승 지속)
+        if (bull5 and body5 > avg_body * 1.4
+                and not bull4 and not bull3 and not bull2
+                and body4 < body5 * 0.5 and body3 < body5 * 0.5 and body2 < body5 * 0.5
+                and l4 > l5 and l3 > l5 and l2 > l5
+                and h4 < h5 and h3 < h5 and h2 < h5
+                and bull1 and c1 > c5):
+            patterns.append({"name": "📊 Rising Three Methods", "desc": "상승 삼법 (상승 추세 지속 강력 신호)", "direction": "상승", "conf": 90})
+
+        # 21. Falling Three Methods — 큰 음봉 + 3소형 양봉(범위 내) + 큰 음봉 (하락 지속)
+        if (not bull5 and body5 > avg_body * 1.4
+                and bull4 and bull3 and bull2
+                and body4 < body5 * 0.5 and body3 < body5 * 0.5 and body2 < body5 * 0.5
+                and h4 < h5 and h3 < h5 and h2 < h5
+                and l4 > l5 and l3 > l5 and l2 > l5
+                and not bull1 and c1 < c5):
+            patterns.append({"name": "📊 Falling Three Methods", "desc": "하락 삼법 (하락 추세 지속 강력 신호)", "direction": "하락", "conf": 90})
+
+        # 22. Abandoned Baby Bullish — 음봉 + 갭다운 도지 + 갭업 양봉 (초강세 반전)
+        if (not bull3 and body3 > avg_body
+                and body2 / rng2 < 0.15
+                and h2 < l3                   # 갭다운
+                and bull1 and l1 > h2          # 갭업
+                and c1 > mid(i3)):
+            patterns.append({"name": "👶 Abandoned Baby Bull", "desc": "어밴던드 베이비 (갭 반전, 초강세 신호)", "direction": "상승", "conf": 92})
+
+        # 23. Abandoned Baby Bearish — 양봉 + 갭업 도지 + 갭다운 음봉 (초강세 하락)
+        if (bull3 and body3 > avg_body
+                and body2 / rng2 < 0.15
+                and l2 > h3                   # 갭업
+                and not bull1 and h1 < l2      # 갭다운
+                and c1 < mid(i3)):
+            patterns.append({"name": "👶 Abandoned Baby Bear", "desc": "어밴던드 베이비 (갭 반전, 초강세 하락)", "direction": "하락", "conf": 92})
+
+        # 24. Hikkake Bullish — 내부바 하향 속임 후 상승 반전
+        if (h2 < h3 and l2 > l3           # i2 = inside bar
+                and l1 < l2               # i1이 아래로 속임
+                and bull1 and c1 > h2):   # 반전 상승
+            patterns.append({"name": "🎣 Hikkake Bull", "desc": "힛카케 상승 (속임 돌파 후 상승 반전)", "direction": "상승", "conf": 82})
+
+        # 25. Hikkake Bearish — 내부바 상향 속임 후 하락 반전
+        if (h2 < h3 and l2 > l3           # i2 = inside bar
+                and h1 > h2               # i1이 위로 속임
+                and not bull1 and c1 < l2):  # 반전 하락
+            patterns.append({"name": "🎯 Hikkake Bear", "desc": "힛카케 하락 (속임 돌파 후 하락 반전)", "direction": "하락", "conf": 82})
+
+        # 26. Mat Hold — 상승 지속 (Rising 3 Methods 변형, 갭 포함)
+        if (bull5 and body5 > avg_body * 1.2
+                and not bull4
+                and l4 > l5 and h4 < h5     # i4 소형 역방향
+                and not bull3 and not bull2  # 추가 소형 역방향
+                and l3 > l5 and l2 > l5
+                and bull1 and c1 > h5):      # 신고가 돌파 양봉
+            patterns.append({"name": "🤝 Mat Hold", "desc": "매트 홀드 (상승 추세 지속 확인)", "direction": "상승", "conf": 85})
+
     except Exception:
         pass
-        
+
     return patterns
 
 def analyze_score(dd: Dict):
