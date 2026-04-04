@@ -2180,21 +2180,112 @@ input::placeholder{color:#484f58}
 .buy-price-val{font-size:18px;font-weight:800;margin-bottom:4px;word-break:break-all}
 .buy-basis-box{font-size:11px;color:#8b949e;line-height:1.5;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
 
-/* 반응형 */
+/* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
+.two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+
+/* 탭 — 가로 스크롤 (모바일에서 넘침 방지) */
+.tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex-wrap:nowrap}
+.tabs::-webkit-scrollbar{display:none}
+.tab-btn{white-space:nowrap;flex-shrink:0}
+
+/* 스크리너 테이블 래퍼 — 가로 스크롤 */
+.screener-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.screener-table{min-width:680px}
+
+/* 햄버거 버튼 (모바일 전용, 데스크톱은 숨김) */
+#hamburger{
+  display:none;position:fixed;top:12px;left:12px;z-index:400;
+  background:#1f6feb;border:none;border-radius:8px;
+  padding:8px 11px;cursor:pointer;color:#fff;font-size:20px;line-height:1;
+  box-shadow:0 2px 8px rgba(0,0,0,.4);transition:background .15s
+}
+#hamburger:hover{background:#388bfd}
+
+/* 모바일 오버레이 (사이드바 열릴 때 배경 어둡게) */
+#mob-overlay{
+  display:none;position:fixed;inset:0;
+  background:rgba(0,0,0,.55);z-index:150;
+  backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)
+}
+#mob-overlay.on{display:block}
+
+/* ── 태블릿 (≤ 900px) ── */
 @media(max-width:900px){
   .metrics-grid{grid-template-columns:repeat(2,1fr)}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
   .buy-price-grid{grid-template-columns:1fr}
   .indicator-grid{grid-template-columns:1fr}
+  .two-col-grid{grid-template-columns:1fr}
 }
-@media(max-width:640px){
-  #sidebar{width:220px}
-  .metrics-grid{grid-template-columns:1fr 1fr}
+
+/* ── 모바일 (≤ 768px) ── */
+@media(max-width:768px){
+  /* 레이아웃 재구성: flex → block, 스크롤 허용 */
+  body{display:block;height:auto;overflow-y:auto}
+  #main{padding:56px 14px 28px;min-height:100vh}
+
+  /* 햄버거 표시 */
+  #hamburger{display:block}
+
+  /* 사이드바: 슬라이드-인 오버레이 패널 */
+  #sidebar{
+    position:fixed;top:0;left:0;height:100%;width:280px;z-index:200;
+    transform:translateX(-100%);
+    transition:transform .25s cubic-bezier(.4,0,.2,1);
+    box-shadow:6px 0 32px rgba(0,0,0,.6)
+  }
+  #sidebar.open{transform:translateX(0)}
+
+  /* 그리드 1열 */
+  .metrics-grid{grid-template-columns:1fr 1fr;gap:8px}
+  .two-col-grid{grid-template-columns:1fr;gap:10px}
+  .risk-grid{grid-template-columns:1fr}
+  .fund-grid{grid-template-columns:repeat(2,1fr)}
+  .buy-price-grid{grid-template-columns:1fr}
+  .indicator-grid{grid-template-columns:1fr}
+
+  /* 헤더/타이포 */
+  .page-header h2{font-size:18px}
+  .score-num{font-size:36px}
+  .card{padding:14px}
+  .card-title{font-size:12px}
+
+  /* 차트 높이 축소 */
+  #price-chart{height:260px!important}
+  #rsi-chart,#macd-chart{height:130px!important}
+
+  /* 스크리너 헤더 세로 정렬 */
+  .screener-header{flex-direction:column;gap:10px;align-items:flex-start}
+  .screener-header>div:last-child{width:100%;justify-content:flex-start}
+
+  /* 메트릭 카드 */
+  .m-value{font-size:18px}
+}
+
+/* ── 소형 모바일 (≤ 480px) ── */
+@media(max-width:480px){
+  #main{padding:52px 10px 20px}
+  .metrics-grid{grid-template-columns:1fr 1fr;gap:6px}
+  .metric-card{padding:10px}
+  .m-label{font-size:10px}
+  .m-value{font-size:16px}
+  .card{padding:12px;border-radius:10px}
+  .tab-btn{font-size:11px;padding:6px 10px}
+  .page-header h2{font-size:16px}
+  .step-result{font-size:12px}
+  .pattern-item{font-size:12px;padding:6px 10px}
+  .risk-card{padding:12px}
+  .buy-card{padding:12px}
+  .fund-grid{grid-template-columns:1fr 1fr}
 }
 </style>
 </head>
 <body>
+
+<!-- ── 모바일: 햄버거 + 오버레이 ── -->
+<button id="hamburger" onclick="toggleSidebar()" aria-label="메뉴 열기">☰</button>
+<div id="mob-overlay" onclick="closeSidebar()"></div>
 
 <!-- ── 사이드바 ── -->
 <div id="sidebar">
@@ -2249,7 +2340,7 @@ input::placeholder{color:#484f58}
     <div id="state-empty" class="center-state">
       <div class="icon">📊</div>
       <h2>주식 AI 예측 시스템</h2>
-      <p>왼쪽 패널에서 종목명 또는 코드를 입력하고<br><strong style="color:#388bfd">분석 시작</strong> 버튼을 누르세요.</p>
+      <p>종목명 또는 코드를 입력하고<br><strong style="color:#388bfd">분석 시작</strong> 버튼을 누르세요.<br><span style="font-size:12px;color:#484f58">모바일: 왼쪽 상단 ☰ 버튼으로 메뉴를 여세요.</span></p>
       <div class="sample-tags">
         <span class="sample-tag" onclick="quickSearch('삼성전자')" style="cursor:pointer">삼성전자</span>
         <span class="sample-tag" onclick="quickSearch('SK하이닉스')" style="cursor:pointer">SK하이닉스</span>
@@ -2300,7 +2391,7 @@ input::placeholder{color:#484f58}
           <div class="card-title">가격 차트 (캔들 + MA + 볼린저 + 거래량)</div>
           <div id="price-chart" style="height:380px"></div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="two-col-grid" style="gap:12px">
           <div class="card">
             <div class="card-title">RSI (14)</div>
             <div id="rsi-chart" style="height:150px"></div>
@@ -2322,7 +2413,7 @@ input::placeholder{color:#484f58}
 
       <!-- AI 탭 -->
       <div id="tab-ai" style="display:none">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div class="two-col-grid">
           <div>
             <div class="card">
               <div class="card-title">🏆 종합 기술적 점수</div>
@@ -2359,7 +2450,7 @@ input::placeholder{color:#484f58}
 
       <!-- 뉴스 탭 -->
       <div id="tab-news" style="display:none">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div class="two-col-grid">
           <div class="card" id="news-col1">
             <div class="card-title" id="news-col1-title">📰 주요 뉴스</div>
             <div id="news-list"></div>
@@ -2412,7 +2503,7 @@ input::placeholder{color:#484f58}
       데이터 로딩 중...
     </div>
     <div id="scrn-result" style="display:none">
-      <div class="card" style="padding:0;overflow:hidden">
+      <div class="card screener-wrap" style="padding:0;">
         <table class="screener-table">
           <thead><tr>
             <th>#</th>
@@ -2450,6 +2541,22 @@ function showPage(page) {
   document.getElementById('nav-analysis').classList.toggle('active', page === 'analysis');
   document.getElementById('nav-screener').classList.toggle('active', page === 'screener');
   if (page === 'screener' && screenerData.length === 0) loadScreener();
+  closeSidebar();   // 페이지 전환 시 모바일 사이드바 닫기
+}
+
+// ── 모바일 사이드바 토글 ──
+function toggleSidebar() {
+  const sb  = document.getElementById('sidebar');
+  const ov  = document.getElementById('mob-overlay');
+  const isOpen = sb.classList.toggle('open');
+  ov.classList.toggle('on', isOpen);
+  // 사이드바 열릴 때 배경 스크롤 잠금
+  document.body.style.overflow = isOpen ? 'hidden' : '';
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('mob-overlay').classList.remove('on');
+  document.body.style.overflow = '';
 }
 
 // ── 시장 선택 ──
@@ -2464,7 +2571,7 @@ function setMarket(m) {
 
 function quickSearch(name) {
   document.getElementById('ticker-input').value = name;
-  showPage('analysis');
+  showPage('analysis');  // 내부에서 closeSidebar() 호출됨
   analyze();
 }
 
@@ -2488,6 +2595,7 @@ async function loadSentiment(market) {
 
 // ── 분석 ──
 async function analyze() {
+  closeSidebar();   // 모바일에서 분석 시작 시 사이드바 자동 닫기
   const ticker = document.getElementById('ticker-input').value.trim();
   const period = document.getElementById('period-select').value;
   if (!ticker) return;
