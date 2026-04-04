@@ -2041,7 +2041,7 @@ input::placeholder{color:#484f58}
         <p style="font-size:12px;color:#8b949e" id="scrn-subtitle">토스증권 동일 필터 적용 결과</p>
         <p style="font-size:11px;color:#484f58;margin-top:4px" id="scrn-filter-badge"></p>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <select id="scrn-sort-by" onchange="loadScreener(this.value, document.getElementById('scrn-sort-order').value)"
           style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
           <option value="price">현재가 정렬</option>
@@ -2056,7 +2056,7 @@ input::placeholder{color:#484f58}
           <option value="asc">오름차순 ↑</option>
         </select>
         <button onclick="loadScreener(document.getElementById('scrn-sort-by').value, document.getElementById('scrn-sort-order').value)"
-          style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 14px;color:#8b949e;font-size:13px;cursor:pointer">🔄 새로고침</button>
+          style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 14px;color:#8b949e;font-size:13px;cursor:pointer;white-space:nowrap;">🔄 새로고침</button>
       </div>
     </div>
     <div class="tabs">
@@ -2119,6 +2119,7 @@ function setMarket(m) {
 
 function quickSearch(name) {
   document.getElementById('ticker-input').value = name;
+  showPage('analysis');
   analyze();
 }
 
@@ -2307,19 +2308,16 @@ function renderForecast(d, isKrx) {
           <div class="buy-card aggressive">
             <div class="buy-label">⚡ 공격적 매수</div>
             <div class="buy-price-val" style="color:#f97316;font-size:14px">${fmt(aggR[0], isKrx)} ~ ${fmt(aggR[1], isKrx)}</div>
-            <div style="font-size:12px;color:#f97316;margin-bottom:4px">확률: ${bp.aggressive.prob}%</div>
             <div class="buy-basis-box">현재가 대비 단기 눌림 구간<br>ATR 0.5배 기반 · 빠른 진입</div>
           </div>
           <div class="buy-card recommended">
             <div class="buy-label">✅ 추천 매수 구간</div>
             <div class="buy-price-val" style="color:#3fb950;font-size:14px">${fmt(recR[0], isKrx)} ~ ${fmt(recR[1], isKrx)}</div>
-            <div style="font-size:12px;color:#3fb950;margin-bottom:4px">확률: ${bp.recommended.prob}%</div>
             <div class="buy-basis-box">ATR 기반 최적 진입 구간<br>분할 매수 권장</div>
           </div>
           <div class="buy-card conservative">
             <div class="buy-label">🛡️ 보수적 매수</div>
             <div class="buy-price-val" style="color:#388bfd;font-size:14px">${fmt(conR[0], isKrx)} ~ ${fmt(conR[1], isKrx)}</div>
-            <div style="font-size:12px;color:#388bfd;margin-bottom:4px">확률: ${bp.conservative.prob}%</div>
             <div class="buy-basis-box">강한 지지구간 도달 시 매수<br>최대 안전 마진 확보</div>
           </div>
         </div>
