@@ -767,7 +767,8 @@ def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc
         usd_krw = 1380.0
 
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+    # 출력 개수를 늘리기 위해 병렬 처리 워커 수를 30에서 50으로 증가시켰습니다 (성능 최적화)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
         futures = {
             executor.submit(fetch_toss_metrics, tkr): tkr
             for tkr in TOSS_US_UNIVERSE
@@ -788,6 +789,9 @@ def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc
     sort_field = sort_key_map.get(sort_by, "price_val")
     ascending  = (sort_order == "asc")
     results.sort(key=lambda x: (x.get(sort_field) or 0), reverse=not ascending)
+
+    # 상위 90개만 반환
+    results = results[:90]
 
     # ── 출력 정제 ─────────────────────────────────────────────
     output = []
