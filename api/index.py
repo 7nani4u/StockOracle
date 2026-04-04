@@ -547,37 +547,97 @@ def fetch_metrics(item):
 
 # ── 토스증권 해외주식 필터 유니버스 (S&P500 + 글로벌 대형주 + 광산/에너지/금융 등) ──
 TOSS_US_UNIVERSE = [
-    "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", 
-    "CSCO", "INTU", "TXN", "QCOM", "AMD", "AMAT", "LRCX", "KLAC", "MRVL", "NOW", 
-    "SNOW", "PANW", "CRWD", "ZS", "FTNT", "DDOG", "MDB", "TEAM", "BAC", "WFC", 
-    "GS", "MS", "C", "BLK", "SPGI", "MCO", "AXP", "V", "MA", "COF", 
-    "USB", "PNC", "TFC", "MTB", "CFG", "FITB", "RF", "CB", "PGR", "MET", 
-    "PRU", "AFL", "AIG", "HIG", "ALL", "TRV", "MMC", "AON", "MSCI", "ICE", 
-    "CME", "NDAQ", "UNH", "LLY", "ABBV", "MRK", "ABT", "TMO", "DHR", "SYK", 
-    "BSX", "ISRG", "MDT", "EW", "ZTS", "VRTX", "REGN", "BIIB", "GILD", "AMGN", 
-    "BMY", "PFE", "CVS", "MCK", "CAH", "HCA", "CNC", "ELV", "CI", "COST", 
-    "TGT", "HD", "LOW", "TJX", "ROST", "BBY", "DG", "DLTR", "MCD", "SBUX", 
-    "YUM", "CMG", "DPZ", "QSR", "PG", "KO", "PEP", "CL", "MO", "PM", 
-    "BTI", "NKE", "VFC", "HBI", "AMZN", "BKNG", "EXPE", "ABNB", "LYFT", "UBER", 
-    "CVX", "COP", "EOG", "SLB", "OXY", "MPC", "VLO", "PSX", "HES", "DVN", 
-    "FANG", "APA", "BKR", "HAL", "VZ", "TMUS", "CMCSA", "NFLX", "DIS", "WBD", 
-    "PARA", "CHTR", "DISH", "SIRI", "GE", "HON", "RTX", "LMT", "NOC", "GD", 
-    "TXT", "HII", "CAT", "DE", "EMR", "ETN", "ITW", "PH", "ROK", "DOV", 
-    "FTV", "UPS", "FDX", "EXPD", "GWW", "FAST", "MMM", "ITT", "XYL", "REXR", 
-    "EFX", "AMT", "CCI", "EQIX", "SPG", "O", "WELL", "SO", "DUK", "AEP", 
-    "EXC", "D", "PCG", "ED", "FE", "SEA", "MELI", "NU", "PDD", "TME", 
-    "CVE", "ANSCW", "MITK", "PRCH", "CHSCM", "KYTX", "NVA", "UNFI", "HNNA", "CENTA", 
-    "RZLT", "RECT", "UHT", "ETO", "INDB", "NVMI", "RYZ", "AVNW", "PDI", "IRIX", 
-    "ACNT", "NSA", "YALA", "NWG", "CEPT", "GVA", "UK", "SMPL", "DAL", "SOLV", 
-    "CCS", "GENK", "USAC", "VRE", "NBIX", "WDFC", "VLN", "CRACW", "PUBM", "RRBI", 
-    "MVST", "AKBA", "NOA", "GAB", "VNO", "TSCO", "CPA", "ADAM", "ANNX", "MVBF", 
-    "PACHW", "BKE", "MMD", "XOM", "SAJ", "PAM", "SDHY", "IMVT", "XSLLW", "MWH", 
-    "YHNAU", "CVLT", "CCLDO", "GRFS", "WY", "MRNOW", "ECVT", "TDW", "HIO", "PFAI", 
-    "SUPN", "FTRE", "NCNO", "VWAVW", "VGM", "NSC", "J", "LYTS", "FMN", "JKS", 
-    "PHIN", "CPRX", "GIS", "SIG", "AIO", "EXK", "NWPX", "TMTS", "PARR", "FMC", 
-    "GNRC", "AROW", "BMN", "TALKW", "ACGL", "NHPAP", "FIGS", "INGN", "TPG", "SCNI", 
-    "ARX", "PAMT", "AXR", "PMT", "IPW", "WALDW", "YOUL", "BNAI", "FKWL", "AOS", 
-    
+    # 미국 대형 기술주
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "AVGO", "ORCL", "ADBE",
+    "CRM", "CSCO", "INTU", "TXN", "QCOM", "AMD", "AMAT", "LRCX", "KLAC", "MRVL",
+    "NOW", "SNOW", "PANW", "CRWD", "ZS", "FTNT", "DDOG", "MDB", "TEAM",
+    # 금융주
+    "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SPGI", "MCO", "AXP",
+    "V", "MA", "COF", "USB", "PNC", "TFC", "MTB", "CFG", "FITB", "RF",
+    "CB", "PGR", "MET", "PRU", "AFL", "AIG", "HIG", "ALL", "TRV", "MMC",
+    "AON", "MSCI", "ICE", "CME", "NDAQ",
+    # 헬스케어/제약
+    "JNJ", "UNH", "LLY", "ABBV", "MRK", "ABT", "TMO", "DHR", "SYK", "BSX",
+    "ISRG", "MDT", "EW", "ZTS", "VRTX", "REGN", "BIIB", "GILD", "AMGN", "BMY",
+    "PFE", "CVS", "MCK", "CAH", "HCA", "CNC", "ELV", "CI",
+    # 소비재/유통
+    "WMT", "COST", "TGT", "HD", "LOW", "TJX", "ROST", "BBY", "DG", "DLTR",
+    "MCD", "SBUX", "YUM", "CMG", "DPZ", "QSR",
+    "PG", "KO", "PEP", "CL", "MO", "PM", "BTI", "NKE", "VFC", "HBI",
+    "AMZN", "BKNG", "EXPE", "ABNB", "LYFT", "UBER",
+    # 에너지
+    "XOM", "CVX", "COP", "EOG", "SLB", "OXY", "MPC", "VLO", "PSX", "HES",
+    "DVN", "FANG", "APA", "BKR", "HAL",
+    # 광업/금/원자재 (스크린샷에 다수 포함된 섹터)
+    "NEM",   # 뉴몬트 (Newmont)
+    "AEM",   # 애그니코 이글 마인스 (Agnico Eagle Mines)
+    "GOLD",  # 배릭 마이닝 코퍼레이션 (Barrick Gold)
+    "AU",    # 앵글로골드 아샨티 (AngloGold Ashanti ADR)
+    "GFI",   # 골드 필즈 (Gold Fields ADR)
+    "KGC",   # 킨로스 골드 (Kinross Gold)
+    "WPM",   # 휠튼 프레셔스 메탈 (Wheaton Precious Metals)
+    "RGLD",  # 로열 골드 (Royal Gold)
+    "FNV",   # 프랑코-네바다 (Franco-Nevada)
+    "OR",    # 오시스코 로열티 (Osisko Gold Royalties)
+    "EGO",   # 엘도라도 골드 (Eldorado Gold)
+    "AGI",   # 알라모스 골드 (Alamos Gold)
+    "HMY",   # 하모니 골드 (Harmony Gold ADR)
+    "IAG",   # IAMGOLD
+    "BVN",   # 부에나벤투라 (Buenaventura ADR)
+    "VALE",  # 발레 (Vale ADR)
+    "RIO",   # 리오 틴토 (Rio Tinto ADR)
+    "BHP",   # BHP 그룹 (BHP ADR)
+    "SCCO",  # 서던 코퍼 (Southern Copper)
+    "FCX",   # 프리포트-맥모란 (Freeport-McMoRan)
+    "AA",    # 알코아 (Alcoa)
+    "CLF",   # 클리프스 내추럴 (Cleveland-Cliffs)
+    "MP",    # MP 머티리얼즈 (MP Materials)
+    "NUE",   # 뉴코어 (Nucor)
+    "STLD",  # 스틸 다이내믹스 (Steel Dynamics)
+    "X",     # US 스틸 (U.S. Steel)
+    # ADR / 글로벌 대형주
+    "TSM",   # TSMC
+    "ASML",  # ASML
+    "SAP",   # SAP
+    "NTES",  # 넷이즈 (NetEase ADR)
+    "BIDU",  # 바이두 (Baidu ADR)
+    "JD",    # JD닷컴 (JD.com ADR)
+    "BABA",  # 알리바바 (Alibaba ADR)
+    "NVO",   # 노보 노르디스크 (Novo Nordisk ADR)
+    "AZN",   # 아스트라제네카 (AstraZeneca ADR)
+    "UL",    # 유니레버 (Unilever ADR)
+    "NESN",  # 네슬레 (OTC)
+    "TTE",   # 토탈에너지 (TotalEnergies ADR)
+    "BP",    # BP ADR
+    "SHEL",  # 쉘 (Shell ADR)
+    "GSK",   # GSK ADR
+    "SNY",   # 사노피 (Sanofi ADR)
+    "RHHBY", # 로슈 (Roche ADR)
+    "DEO",   # 디아지오 (Diageo ADR)
+    "SONY",  # 소니 (Sony ADR)
+    "TM",    # 도요타 (Toyota ADR)
+    "HMC",   # 혼다 (Honda ADR)
+    "NSANY", # 닛산 (Nissan ADR)
+    "MUFG",  # 미쓰비시 UFJ ADR
+    "SMFG",  # 스미토모 미쓰이 ADR
+    "KB",    # KB금융 ADR
+    "SHG",   # 신한지주 ADR
+    "PKX",   # POSCO ADR
+    "LG",    # LG ADR (OTC)
+    # 통신/미디어
+    "T", "VZ", "TMUS", "CMCSA", "NFLX", "DIS", "WBD", "PARA",
+    "CHTR", "DISH", "SIRI",
+    # 산업재/항공우주
+    "BA", "GE", "HON", "RTX", "LMT", "NOC", "GD", "TXT", "HII",
+    "CAT", "DE", "EMR", "ETN", "ITW", "PH", "ROK", "DOV", "FTV",
+    "UPS", "FDX", "EXPD", "GWW", "FAST",
+    "MMM", "ITT", "XYL", "REXR", "EFX",
+    # 부동산
+    "PLD", "AMT", "CCI", "EQIX", "SPG", "O", "WELL",
+    # 전력/유틸리티
+    "NEE", "SO", "DUK", "AEP", "EXC", "D", "PCG", "ED", "FE",
+    # 신흥 성장주 (ADR)
+    "GRAB", "SEA", "MELI", "NU", "PDD", "TME",
 ]
 
 def fetch_toss_metrics(ticker: str):
@@ -707,13 +767,16 @@ def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc
         usd_krw = 1380.0
 
     results = []
-    # yfinance SQLite 멀티스레드 락을 방지하기 위해 20개의 스레드로 병렬 처리 (Rate Limit 방지)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        futures = [executor.submit(fetch_toss_metrics, tkr) for tkr in TOSS_US_UNIVERSE]
-        for f in concurrent.futures.as_completed(futures):
-            res_data = f.result()
-            if res_data:
-                results.append(res_data)
+    # 출력 개수를 늘리기 위해 병렬 처리 워커 수를 30에서 50으로 증가시켰습니다 (성능 최적화)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        futures = {
+            executor.submit(fetch_toss_metrics, tkr): tkr
+            for tkr in TOSS_US_UNIVERSE
+        }
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res is not None:
+                results.append(res)
 
     # ── 정렬 ──────────────────────────────────────────────────
     sort_key_map = {
@@ -726,6 +789,9 @@ def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc
     sort_field = sort_key_map.get(sort_by, "price_val")
     ascending  = (sort_order == "asc")
     results.sort(key=lambda x: (x.get(sort_field) or 0), reverse=not ascending)
+
+    # 상위 90개만 반환
+    results = results[:90]
 
     # ── 출력 정제 ─────────────────────────────────────────────
     output = []
@@ -1023,7 +1089,7 @@ def analyze_score(dd: Dict):
         ts -= 5.5; msgs.append("MACD 데드크로스 → 하락 전환 신호")
     ts = max(-17.5, min(17.5, ts))
     score += ts
-    steps.append({"step": "1. MACD & EMA (20/50) — 추세 방향성 및 강도",
+    steps.append({"step": "1. 추세 분석 (이동평균선 기반, MA) & MACD",
                   "result": " | ".join(msgs), "score": round(ts, 1), "weight": "35%"})
 
     # ── 2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도 [30%] max ±15 ──
@@ -1080,12 +1146,16 @@ def analyze_score(dd: Dict):
     gvs = 0.0; msgs = []
     if avg_vol > 0:
         ratio = cur_vol / avg_vol
+        # close와 opn의 인덱스 체크 추가
+        last_close = close
+        last_opn = float(opn[-1]) if isinstance(opn, list) and len(opn) > 0 else (opn if opn else last_close)
+        
         if ratio > 2.0:
-            if close > opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
-            else:           gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
+            if last_close > last_opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
+            else:                     gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
         elif ratio > 1.5:
-            if close > opn: gvs += 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
-            else:           gvs -= 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
+            if last_close > last_opn: gvs += 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
+            else:                     gvs -= 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
         elif ratio < 0.5:
             msgs.append(f"거래량 급감 ({ratio:.1f}x) → 신뢰도 낮음")
         else:
@@ -1109,14 +1179,60 @@ def analyze_score(dd: Dict):
     except:
         pass
 
+    cp_msgs = []
+    cp_score = 0.0
+    for p in patterns + geo_patterns:
+        direction = p.get('direction') or ('상승' if p.get('signal') == '매수' else '하락' if p.get('signal') == '매도' else '중립')
+        cp_msgs.append(f"[{direction}] {p.get('name', '')}: {p.get('desc', '')}")
+        if direction == '상승': cp_score += 2.0
+        elif direction == '하락': cp_score -= 2.0
+    
+    if not cp_msgs:
+        cp_msgs = ["특이한 캔들/차트 패턴 미발견"]
+
+    steps.append({"step": "5. 캔들 패턴 분석",
+                  "result": " | ".join(cp_msgs), "score": round(max(-5.0, min(5.0, cp_score)), 1), "weight": "보조"})
+
     return max(0, min(100, round(score))), steps, patterns, geo_patterns
 
 def calc_risk(price: float, atr: float) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
+    
+    # 목표가 및 손절가 범위 계산
+    cons_tgt = [price + atr * 1.0, price + atr * 1.5]
+    cons_stp = [price - atr * 1.0, price - atr * 0.8]
+    cons_ret = round(((cons_tgt[0] + cons_tgt[1])/2 - price) / price * 100, 2)
+    
+    bal_tgt = [price + atr * 2.0, price + atr * 3.0]
+    bal_stp = [price - atr * 1.5, price - atr * 1.2]
+    bal_ret = round(((bal_tgt[0] + bal_tgt[1])/2 - price) / price * 100, 2)
+    
+    agg_tgt = [price + atr * 4.0, price + atr * 6.0]
+    agg_stp = [price - atr * 2.5, price - atr * 2.0]
+    agg_ret = round(((agg_tgt[0] + agg_tgt[1])/2 - price) / price * 100, 2)
+    
     return {
-        "conservative": {"label":"보수적","target":round(price+atr*1.5,2),"stop":round(price-atr,2),"ratio":"1:1.5","desc":"리스크 최소화","icon":"🛡️"},
-        "balanced":      {"label":"중립적","target":round(price+atr*2.5,2),"stop":round(price-atr*1.5,2),"ratio":"1:1.67","desc":"스윙 트레이딩","icon":"⚖️"},
-        "aggressive":    {"label":"공격적","target":round(price+atr*4,2),"stop":round(price-atr*2,2),"ratio":"1:2.0","desc":"추세 추종","icon":"🚀"},
+        "conservative": {
+            "label":"보수적",
+            "target":[round(cons_tgt[0],2), round(cons_tgt[1],2)],
+            "stop":[round(cons_stp[0],2), round(cons_stp[1],2)],
+            "return": cons_ret,
+            "desc":"리스크 최소화", "icon":"🛡️"
+        },
+        "balanced": {
+            "label":"중립적",
+            "target":[round(bal_tgt[0],2), round(bal_tgt[1],2)],
+            "stop":[round(bal_stp[0],2), round(bal_stp[1],2)],
+            "return": bal_ret,
+            "desc":"스윙 트레이딩", "icon":"⚖️"
+        },
+        "aggressive": {
+            "label":"공격적",
+            "target":[round(agg_tgt[0],2), round(agg_tgt[1],2)],
+            "stop":[round(agg_stp[0],2), round(agg_stp[1],2)],
+            "return": agg_ret,
+            "desc":"추세 추종", "icon":"🚀"
+        },
     }
 
 def calc_pivot_points(dd: Dict) -> Dict:
@@ -1233,10 +1349,49 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
     recent_lows  = sorted([x for x in lows[-30:] if x > 0])
     support_zone = float(np.mean(recent_lows[:5])) if len(recent_lows) >= 5 else last_price * 0.95
 
-    aggressive      = round(last_price - atr * 0.5,  2)
-    recommended_low = round(last_price - atr * 1.0,  2)
-    recommended_hi  = round(last_price - atr * 0.3,  2)
-    conservative    = round(max(support_zone, last_price - atr * 2.0), 2)
+    # 가격 범위 및 수익 확률 산출
+    aggressive = {
+        "range": [round(last_price - atr * 0.8, 2), round(last_price - atr * 0.2, 2)],
+        "prob": 45
+    }
+    recommended = {
+        "range": [round(last_price - atr * 1.5, 2), round(last_price - atr * 0.8, 2)],
+        "prob": 65
+    }
+    conservative = {
+        "range": [round(support_zone - atr * 0.5, 2), round(support_zone + atr * 0.5, 2)],
+        "prob": 85
+    }
+
+    # 매수/매도 타이밍 예측 (동적 계산)
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    
+    # RSI 및 MACD에 따른 매수 타이밍 조정
+    macd = dd.get("MACD", [0])[-1]
+    sig = dd.get("Signal_Line", [0])[-1]
+    
+    buy_delay = 1
+    if rsi < 30 and macd > sig: # 강력 매수 조건
+        buy_delay = 0 
+    elif rsi > 70: # 과매수 (눌림 대기)
+        buy_delay = 3
+    elif rsi > 55:
+        buy_delay = 2
+        
+    buy_time = now + timedelta(days=buy_delay)
+    buy_time = buy_time.replace(hour=10, minute=30)
+    while buy_time.weekday() > 4: # 주말 건너뛰기
+        buy_time += timedelta(days=1)
+        
+    # 목표 수익률 달성까지의 예상 기간 (ATR 기반 변동성 고려)
+    target_dist = (aggressive["range"][1] - last_price) if aggressive["range"][1] > last_price else (last_price * 0.05)
+    days_to_target = max(2, int(target_dist / (atr if atr > 0 else 1)))
+    
+    sell_time = buy_time + timedelta(days=days_to_target)
+    sell_time = sell_time.replace(hour=14, minute=30)
+    while sell_time.weekday() > 4:
+        sell_time += timedelta(days=1)
 
     basis = []
     if bb_l and float(bb_l) < last_price * 1.05:
@@ -1256,8 +1411,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
 
     return {"current": round(last_price, 2),
             "aggressive": aggressive,
-            "recommended": {"low": recommended_low, "high": recommended_hi},
+            "recommended": recommended,
             "conservative": conservative,
+            "timing": {
+                "buy": buy_time.strftime("%Y-%m-%d %H:%M"),
+                "sell": sell_time.strftime("%Y-%m-%d %H:%M")
+            },
             "support_zone": round(support_zone, 2),
             "basis": basis, "rsi": round(rsi, 1), "rsi_context": rsi_ctx, "atr": round(atr, 2)}
 
@@ -1886,7 +2045,7 @@ input::placeholder{color:#484f58}
         <p style="font-size:12px;color:#8b949e" id="scrn-subtitle">토스증권 동일 필터 적용 결과</p>
         <p style="font-size:11px;color:#484f58;margin-top:4px" id="scrn-filter-badge"></p>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <select id="scrn-sort-by" onchange="loadScreener(this.value, document.getElementById('scrn-sort-order').value)"
           style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
           <option value="price">현재가 정렬</option>
@@ -1901,7 +2060,7 @@ input::placeholder{color:#484f58}
           <option value="asc">오름차순 ↑</option>
         </select>
         <button onclick="loadScreener(document.getElementById('scrn-sort-by').value, document.getElementById('scrn-sort-order').value)"
-          style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 14px;color:#8b949e;font-size:13px;cursor:pointer">🔄 새로고침</button>
+          style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 14px;color:#8b949e;font-size:13px;cursor:pointer;white-space:nowrap;">🔄 새로고침</button>
       </div>
     </div>
     <div class="tabs">
@@ -1964,6 +2123,7 @@ function setMarket(m) {
 
 function quickSearch(name) {
   document.getElementById('ticker-input').value = name;
+  showPage('analysis');
   analyze();
 }
 
@@ -2096,7 +2256,9 @@ function renderAI(d, isKrx) {
           <span class="step-score ${cls}">${label}점</span>
         </div>
       </div>
-      <div class="step-result">${st.result}</div>
+      <div class="step-result">
+        ${st.result.split(' | ').map(line => `<div style="margin-bottom: 4px;">• ${line}</div>`).join('')}
+      </div>
     </div>`;
   }).join('');
 
@@ -2127,10 +2289,9 @@ function renderForecast(d, isKrx) {
     } else {
       const cur = bp.current;
       const pct = v => ((v - cur) / cur * 100).toFixed(2);
-      const aggPct   = pct(bp.aggressive);
-      const recLPct  = pct(bp.recommended.low);
-      const recHPct  = pct(bp.recommended.high);
-      const conPct   = pct(bp.conservative);
+      const aggR = bp.aggressive.range;
+      const recR = bp.recommended.range;
+      const conR = bp.conservative.range;
 
       bpEl.innerHTML = `
         <div style="background:#21262d;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -2139,27 +2300,28 @@ function renderForecast(d, isKrx) {
             <div style="font-size:22px;font-weight:800">${fmt(cur, isKrx)}</div>
           </div>
           <div style="text-align:right">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">RSI ${bp.rsi} 상태</div>
-            <div style="font-size:13px;font-weight:600;color:#d29922">${bp.rsi_context}</div>
+            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매수 타이밍</div>
+            <div style="font-size:13px;font-weight:600;color:#3fb950">${bp.timing.buy}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매도 타이밍</div>
+            <div style="font-size:13px;font-weight:600;color:#f85149">${bp.timing.sell}</div>
           </div>
         </div>
         <div class="buy-price-grid">
           <div class="buy-card aggressive">
             <div class="buy-label">⚡ 공격적 매수</div>
-            <div class="buy-price-val" style="color:#f97316">${fmt(bp.aggressive, isKrx)}</div>
-            <div style="font-size:12px;color:#f97316;margin-bottom:4px">${aggPct}%</div>
+            <div class="buy-price-val" style="color:#f97316;font-size:14px">${fmt(aggR[0], isKrx)} ~ ${fmt(aggR[1], isKrx)}</div>
             <div class="buy-basis-box">현재가 대비 단기 눌림 구간<br>ATR 0.5배 기반 · 빠른 진입</div>
           </div>
           <div class="buy-card recommended">
             <div class="buy-label">✅ 추천 매수 구간</div>
-            <div class="buy-price-val" style="color:#3fb950">${fmt(bp.recommended.low, isKrx)}<br><span style="font-size:13px">~ ${fmt(bp.recommended.high, isKrx)}</span></div>
-            <div style="font-size:12px;color:#3fb950;margin-bottom:4px">${recLPct}% ~ ${recHPct}%</div>
+            <div class="buy-price-val" style="color:#3fb950;font-size:14px">${fmt(recR[0], isKrx)} ~ ${fmt(recR[1], isKrx)}</div>
             <div class="buy-basis-box">ATR 기반 최적 진입 구간<br>분할 매수 권장</div>
           </div>
           <div class="buy-card conservative">
             <div class="buy-label">🛡️ 보수적 매수</div>
-            <div class="buy-price-val" style="color:#388bfd">${fmt(bp.conservative, isKrx)}</div>
-            <div style="font-size:12px;color:#388bfd;margin-bottom:4px">${conPct}%</div>
+            <div class="buy-price-val" style="color:#388bfd;font-size:14px">${fmt(conR[0], isKrx)} ~ ${fmt(conR[1], isKrx)}</div>
             <div class="buy-basis-box">강한 지지구간 도달 시 매수<br>최대 안전 마진 확보</div>
           </div>
         </div>
@@ -2179,9 +2341,9 @@ function renderForecast(d, isKrx) {
         <div class="risk-icon">${sc.icon}</div>
         <div class="risk-name">${sc.label}</div>
         <div class="risk-desc">${sc.desc}</div>
-        <div class="risk-row"><span class="risk-lbl">🎯 목표가</span><span class="risk-tgt">${fmt(sc.target, isKrx)}</span></div>
-        <div class="risk-row"><span class="risk-lbl">🛑 손절가</span><span class="risk-stp">${fmt(sc.stop, isKrx)}</span></div>
-        <div class="risk-ratio">손익비 ${sc.ratio}</div>
+        <div class="risk-row"><span class="risk-lbl">🎯 목표가</span><span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span></div>
+        <div class="risk-row"><span class="risk-lbl">🛑 손절가</span><span class="risk-stp" style="font-size:12px">${fmt(sc.stop[0], isKrx)} ~ ${fmt(sc.stop[1], isKrx)}</span></div>
+        <div class="risk-ratio" style="font-size:13px;color:#3fb950;font-weight:bold;margin-top:8px">예상 수익률: ${sc.return > 0 ? '+' : ''}${sc.return}%</div>
       </div>`).join('');
   }
 }
