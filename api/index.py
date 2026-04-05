@@ -3442,7 +3442,7 @@ function renderScreener() {
   document.getElementById('scrn-subtitle').textContent =
     `토스증권 필터 조건 적용 | USD/KRW: ${(screenerInfo.usd_krw||0).toLocaleString()} | ${marketLabel} ${totalCnt}종목`;
   
-  // 필터 조건 뱃지 업데이트 (DOM 요소가 없으면 생성)
+  // 필터 조건 뱃지 업데이트 (DOM 요소가 없으면 생성, 있으면 텍스트만 교체)
   let badgeEl = document.getElementById('scrn-filter-badge');
   if (!badgeEl) {
     const subtitleEl = document.getElementById('scrn-subtitle');
@@ -3451,6 +3451,9 @@ function renderScreener() {
     badgeEl.style.cssText = 'margin-top: 8px; font-size: 11px; color: #8b949e; background: #21262d; padding: 8px 12px; border-radius: 8px; line-height: 1.5; word-break: keep-all; border: 1px solid #30363d;';
     subtitleEl.parentNode.insertBefore(badgeEl, subtitleEl.nextSibling);
   }
+  
+  // 기존 내용 지우고 새로 설정 (중복 방지)
+  badgeEl.innerHTML = '';
   badgeEl.textContent = filterStr || '적용된 필터 조건이 없습니다.';
 
   // 국내: 클라이언트 정렬 / 해외: 서버 정렬 결과 그대로
