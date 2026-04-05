@@ -1062,21 +1062,23 @@ def fetch_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
             "signal":              item["signal"],
         })
 
+    kr_filter_conditions = {
+        "시장": "국내(KRX)",
+        "시가총액": "1000억원 이상",
+        "영업이익률": "직전 분기 0% 이상",
+        "ROE": "최근 1년(TTM) 10% 이상",
+        "PER": "0~20배",
+        "순이익증감": "최근 1년(TTM) 10% 이상",
+        "부채비율": "직전 분기 0% ~ 100%",
+    }
+
     return {
         "data":              output + us_results,
         "usd_krw":           round(usd_krw, 2),
         "total_overseas":    toss_result.get("total", 0),
         "total_domestic":    len(kr_results),
         "us_filter_conditions": toss_result.get("filter_conditions", {}),
-        "kr_filter_conditions": {
-            "시가총액": "1000억원 이상",
-            "영업이익률": "0% 이상",
-            "ROE": "10% 이상",
-            "PER": "0~20배",
-            "순이익증감률": "10% 이상",
-            "부채비율": "100% 이하",
-            "신고가/이평선": "52주신고가 근접 또는 정배열"
-        },
+        "kr_filter_conditions": kr_filter_conditions,
         "sort_by":           sort_by,
         "sort_order":        sort_order,
     }
@@ -3426,21 +3428,30 @@ function sortScreener(key) {
 
 function renderScreener() {
   const marketLabel = scrnMarket === 'domestic' ? '국내' : '해외';
+  const isKrx = scrnMarket === 'domestic';
   let filtered = screenerData.filter(s => s.market === marketLabel);
 
-  // Update UI Text
-  const isKrx = scrnMarket === 'domestic';
+  // 필터 조건 문자열 생성
   const fc = isKrx ? (screenerInfo.kr_filter_conditions || {}) : (screenerInfo.us_filter_conditions || {});
   const filterStr = Object.entries(fc).map(([k,v])=>{
     const fv = String(v).replace(/(\d+\.\d{3,})/g, m => parseFloat(m).toFixed(2));
-    return k + ': ' + fv;
+    return `${k}: ${fv}`;
   }).join(' │ ');
+
   const totalCnt = isKrx ? (screenerInfo.total_domestic || filtered.length) : (screenerInfo.total_overseas || 0);
   document.getElementById('scrn-subtitle').textContent =
     `토스증권 필터 조건 적용 | USD/KRW: ${(screenerInfo.usd_krw||0).toLocaleString()} | ${marketLabel} ${totalCnt}종목`;
-  if (document.getElementById('scrn-filter-badge')) {
-    document.getElementById('scrn-filter-badge').textContent = filterStr;
+  
+  // 필터 조건 뱃지 업데이트 (DOM 요소가 없으면 생성)
+  let badgeEl = document.getElementById('scrn-filter-badge');
+  if (!badgeEl) {
+    const subtitleEl = document.getElementById('scrn-subtitle');
+    badgeEl = document.createElement('div');
+    badgeEl.id = 'scrn-filter-badge';
+    badgeEl.style.cssText = 'margin-top: 8px; font-size: 11px; color: #8b949e; background: #21262d; padding: 8px 12px; border-radius: 8px; line-height: 1.5; word-break: keep-all; border: 1px solid #30363d;';
+    subtitleEl.parentNode.insertBefore(badgeEl, subtitleEl.nextSibling);
   }
+  badgeEl.textContent = filterStr || '적용된 필터 조건이 없습니다.';
 
   // 국내: 클라이언트 정렬 / 해외: 서버 정렬 결과 그대로
   if (scrnMarket === 'domestic') {
