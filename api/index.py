@@ -835,48 +835,22 @@ def fetch_kr_toss_metrics(item: dict):
         op_margin = i.get("operatingMargins")
         earnings_growth = i.get("earningsGrowth")
         
-        # NAVER 데이터로 덮어쓰기 (yfinance KRX 데이터 오류 보정)
-        try:
-            nv = fetch_naver(ticker)
-            if nv:
-                if nv.get("per") and nv["per"] != "-":
-                    try:
-                        per = float(str(nv["per"]).replace(",",""))
-                    except: pass
-                if nv.get("roe") and nv["roe"] != "-":
-                    roic = float(nv["roe"]) / 100.0
-                if nv.get("debt") and nv["debt"] != "-":
-                    debt_raw = float(nv["debt"])
-                if nv.get("op_margin") and nv["op_margin"] != "-": 
-                    op_margin = float(nv["op_margin"]) / 100.0
-        except:
-            pass
-
-        # 2. 영업이익률: 직전 분기 0% 이상
-        if op_margin is None or op_margin < 0: return None
+        # 2. 영업이익률: 직전 분기 0% 이상 (데이터 없으면 패스)
+        if op_margin is not None and op_margin < 0: return None
             
-        # 3. ROE: 최근 1년(TTM) 10% 이상
-        if roic is None or roic < 0.10: return None
+        # 3. ROE: 최근 1년(TTM) 10% 이상 (데이터 없으면 패스)
+        if roic is not None and roic < 0.10: return None
             
-        # 4. PER: 0배 초과 ~ 20배 이하 (PER=0은 무수익/음수 EPS → 탈락)
-        if per is None or not (0 < per <= 20): return None
+        # 4. PER: 0배 초과 ~ 20배 이하 (데이터 없으면 패스)
+        if per is not None and not (0 < per <= 20): return None
             
-        # 5. 순이익 증감률: 최근 1년(TTM) 10% 이상 (yfinance 누락 시 스킵하여 통과)
+        # 5. 순이익 증감률: 최근 1년(TTM) 10% 이상 (데이터 없으면 패스)
         if earnings_growth is not None and earnings_growth < 0.10: return None
             
-        # 6. 부채비율: 직전 분기 100% 이하
-        if debt_raw is None: return None
-        debt_ratio = debt_raw * 100 if debt_raw < 10 else debt_raw
-        if debt_ratio > 100: return None
-            
-        # 7. 신고가 또는 이동평균선: 52주 신고가 근접(prox >= 0.90) 또는 정배열
-        high52 = i.get("fiftyTwoWeekHigh", price)
-        prox = price / high52 if high52 else 0
-        ma50 = i.get("fiftyDayAverage", 0)
-        ma200 = i.get("twoHundredDayAverage", 0)
-        is_ma_aligned = (price >= ma50) and (ma50 >= ma200) and (ma200 > 0)
-        
-        if prox < 0.90 and not is_ma_aligned: return None
+        # 6. 부채비율: 직전 분기 100% 이하 (데이터 없으면 패스)
+        if debt_raw is not None:
+            debt_ratio = debt_raw * 100 if debt_raw < 10 else debt_raw
+            if debt_ratio > 100: return None
             
         # 통과 시 결과 반환
         change_pct = (i.get("regularMarketChangePercent") or 0) * 100
@@ -888,6 +862,8 @@ def fetch_kr_toss_metrics(item: dict):
             "hold": "보유", "underperform": "약세", "sell": "매도",
         }
         analyst_signal = analyst_map.get(rec_key, "중립")
+        high52 = i.get("fiftyTwoWeekHigh") or price
+        prox = price / high52 if high52 else 0
         
         return {
             "market":       "국내",
