@@ -346,9 +346,20 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
                 pass
 
         df2 = df.reset_index()
+        # 분봉 데이터인 경우 인덱스 이름이 "Datetime"일 수 있으므로 "Date"로 통일
+        if "Datetime" in df2.columns:
+            df2.rename(columns={"Datetime": "Date"}, inplace=True)
+            
         if hasattr(df2["Date"].dtype, "tz") and df2["Date"].dtype.tz:
             df2["Date"] = df2["Date"].dt.tz_localize(None)
-        df2["Date"] = df2["Date"].dt.strftime("%Y-%m-%d")
+            
+        # Lightweight Charts가 인식할 수 있도록 날짜를 yyyy-mm-dd 문자열 또는 Unix Timestamp 형식으로 반환해야 함
+        # 일봉은 %Y-%m-%d 문자열로, 분봉은 Unix Timestamp(초 단위)로 변환
+        if period in ["1d", "3d", "1wk", "2wk", "1mo"]:
+            df2["Date"] = df2["Date"].astype("int64") // 10**9
+        else:
+            df2["Date"] = df2["Date"].dt.strftime("%Y-%m-%d")
+            
         d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
         return d, news, sym
     except Exception as e:
@@ -1702,14 +1713,14 @@ def analyze_score(dd: Dict):
     ai_msgs.append(f"📉 하락 시나리오: {bb_l:,.0f} 하향 이탈 및 MACD 데드크로스 발생 시 즉각적인 리스크 관리 (손절선 -3~5%)")
     ai_msgs.append(f"➡️ 횡보 시나리오: {bb_l:,.0f} ~ {bb_u:,.0f} 밴드 내 박스권 트레이딩 (하단 지지 확인 후 진입, 상단 저항 시 청산)")
 
-    steps.append({
+    ai_strategy = {
         "step": "💡 AI 종합 진단 및 트레이딩 전략",
         "result": " | ".join(ai_msgs),
         "score": round(score - 50, 1), 
         "weight": "종합"
-    })
+    }
 
-    return score, steps, patterns, geo_patterns
+    return score, steps, patterns, geo_patterns, ai_strategy
 
 def calc_risk(price: float, atr: float) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
@@ -2145,7 +2156,7 @@ def route(path: str, params: Dict) -> Dict:
         last = float(closes[-1]) if closes else 0
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
-        score, steps, patterns, geo_patterns = analyze_score(dd)
+        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd)
         
         # 기하학적 패턴을 캔들 패턴 리스트에 통합 (UI 표시용)
         for gp in geo_patterns:
@@ -2171,7 +2182,7 @@ def route(path: str, params: Dict) -> Dict:
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
             "atr": round(atr_val, 2),
-            "score": score, "analysis_steps": steps,
+            "score": score, "analysis_steps": steps, "ai_strategy": ai_strategy,
             "candlestick_patterns": patterns,
             "chart_data": {
                 "dates": dd.get("Date", []),
@@ -2689,6 +2700,10 @@ input::placeholder{color:#484f58}
       <!-- 예측 탭 -->
       <div id="tab-forecast" style="display:none">
         <div class="card">
+          <div class="card-title">💡 AI 종합 진단 및 트레이딩 전략</div>
+          <div id="ai-strategy-section"></div>
+        </div>
+        <div class="card">
           <div class="card-title">🎯 현재가 기준 매수 적정 가격 예측</div>
           <div id="buy-price-section"></div>
         </div>
@@ -2948,21 +2963,6 @@ function renderAI(d, isKrx) {
     const label = sc > 0 ? '+' + sc : sc;
     const weight = st.weight || '';
     
-    // AI 종합 진단 리포트는 좀 더 눈에 띄게 스타일링
-    if (st.step.includes("AI 종합 진단")) {
-      return `<div class="step-item" style="border: 1px solid #1f6feb; background: rgba(31, 111, 235, 0.05);">
-        <div class="step-header">
-          <span class="step-title" style="color:#1f6feb; font-size:14px; font-weight:700;">${st.step}</span>
-        </div>
-        <div class="step-result" style="color:#e6edf3;">
-          ${st.result.split(' | ').filter(l => l.trim()).map(line => {
-            if (line.startsWith('[')) return `<div style="margin-top:8px; font-weight:bold; color:#8b949e;">${line}</div>`;
-            return `<div style="margin-top:4px; margin-left:8px;">${line}</div>`;
-          }).join('')}
-        </div>
-      </div>`;
-    }
-
     return `<div class="step-item">
       <div class="step-header">
         <span class="step-title">${st.step}</span>
@@ -2995,6 +2995,22 @@ function renderAI(d, isKrx) {
 function renderForecast(d, isKrx) {
   const risk = d.risk_scenarios;
   const bp   = d.buy_price;
+  const ai   = d.ai_strategy;
+
+  // ── AI 종합 진단 및 트레이딩 전략 섹션 ──
+  const aiEl = document.getElementById('ai-strategy-section');
+  if (aiEl && ai) {
+    aiEl.innerHTML = `
+      <div style="background: rgba(31, 111, 235, 0.05); border-radius:10px; padding:16px; margin-bottom:16px; border: 1px solid #1f6feb;">
+        <div style="color:#e6edf3; font-size: 14px; line-height: 1.6;">
+          ${ai.result.split(' | ').filter(l => l.trim()).map(line => {
+            if (line.startsWith('[')) return `<div style="margin-top:12px; font-weight:bold; color:#388bfd; font-size: 15px;">${line}</div>`;
+            return `<div style="margin-top:6px; margin-left:8px;">${line}</div>`;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
 
   // ── 매수 적정가 섹션 ──
   const bpEl = document.getElementById('buy-price-section');
@@ -3293,9 +3309,7 @@ function renderCharts(d, isKrx) {
     for (let i = 0; i < n; i++) {
       if (cd.volume[i] != null) {
         const isBull = (cd.close[i] || 0) >= (cd.open[i] || 0);
-        // 버그 수정: hex 코드에 .replace()로 rgba 변환 안 됨 → volUpClr/volDnClr 변수 사용
-        volData.push({ time: cd.dates[i], value: cd.volume[i],
-          color: isBull ? volUpClr : volDnClr });
+        volData.push({ time: cd.dates[i], value: cd.volume[i], color: isBull ? volUpClr : volDnClr });
       }
     }
     volSeries.setData(volData);
@@ -3318,9 +3332,9 @@ function renderCharts(d, isKrx) {
     const rsiStartIdx = Math.min(20, Math.max(0, n - 2));
     if (rsiStartIdx < n - 1) {
       const l70 = chart.addLineSeries({ color: 'rgba(248,81,73,0.5)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed });
-      l70.setData([{ time: cd.dates[rsiStartIdx], value: 70 }, { time: cd.dates[n-1], value: 70 }]);
+      l70.setData([{ time: cd.dates[0], value: 70 }, { time: cd.dates[n-1], value: 70 }]);
       const l30 = chart.addLineSeries({ color: 'rgba(56,139,253,0.5)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed });
-      l30.setData([{ time: cd.dates[rsiStartIdx], value: 30 }, { time: cd.dates[n-1], value: 30 }]);
+      l30.setData([{ time: cd.dates[0], value: 30 }, { time: cd.dates[n-1], value: 30 }]);
     }
     chart.timeScale().fitContent();
   }
