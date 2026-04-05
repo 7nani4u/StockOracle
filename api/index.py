@@ -2582,9 +2582,9 @@ input::placeholder{color:#484f58}
       <option value="3d">초단기 (3일)</option>
       <option value="1wk">초단기 (1주)</option>
       <option value="2wk">단기 (2주)</option>
-      <option value="1mo">단기 (1개월)</option>
+      <option value="1mo" selected>단기 (1개월)</option>
       <option value="6mo">6개월</option>
-      <option value="1y" selected>1년</option>
+      <option value="1y">1년</option>
       <option value="2y">2년</option>
       <option value="5y">5년</option>
     </select>
@@ -3472,9 +3472,7 @@ function renderScreener() {
   const tbody = document.getElementById('scrn-tbody');
 
   if (!filtered.length) {
-    const emptyMsg = isKrx ? 
-      '필터 조건에 맞는 종목이 없습니다.<br><small style="font-size:11px">시가총액≥1000억 / 영업이익률>0% / ROE≥10% / PER≤20 / 부채비율≤100% / 모멘텀 정배열</small>' : 
-      '필터 조건에 맞는 종목이 없습니다.<br><small style="font-size:11px">토스증권 필터 기준: 시가총액≥10억$ / 영업이익률>0% / ROE≥15% / PER≤25 / 부채비율≤100% / FCF>0</small>';
+    const emptyMsg = '필터 조건에 맞는 종목이 없습니다.';
     tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:#8b949e">${emptyMsg}</td></tr>`;
     return;
   }
