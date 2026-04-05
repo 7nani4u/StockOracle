@@ -192,20 +192,24 @@ def resolve_ticker(q: str):
 # =============================================================================
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     c = df["Close"]
-    for w in [5, 20, 50, 60, 120]:
+    
+    # 핵심 추세 지표
+    for w in [5, 20, 60, 120]:
         df[f"MA{w}"] = c.rolling(w).mean()
-    df["EMA12"] = c.ewm(span=12, adjust=False).mean()
-    df["EMA26"] = c.ewm(span=26, adjust=False).mean()
-    df["EMA13"] = c.ewm(span=13, adjust=False).mean()
     df["EMA20"] = c.ewm(span=20, adjust=False).mean()
     df["EMA50"] = c.ewm(span=50, adjust=False).mean()
+    
+    # MACD (12, 26, 9)
+    ema12 = c.ewm(span=12, adjust=False).mean()
+    ema26 = c.ewm(span=26, adjust=False).mean()
+    df["MACD"] = ema12 - ema26
+    df["Signal_Line"] = df["MACD"].ewm(span=9, adjust=False).mean()
+
     delta = c.diff()
     # Wilder's Smoothing (공식 RSI 계산법 — TradingView 동일)
     gain = delta.where(delta > 0, 0.0).ewm(alpha=1 / 14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1 / 14, adjust=False).mean()
     df["RSI"] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
-    df["MACD"] = df["EMA12"] - df["EMA26"]
-    df["Signal_Line"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["BB_Middle"] = c.rolling(20).mean()
     bb_std = c.rolling(20).std()
     df["BB_Upper"] = df["BB_Middle"] + 2 * bb_std
@@ -220,21 +224,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["%K"] = (c - low14) / denom * 100
     df["%D"] = df["%K"].rolling(3).mean()
 
-    # STOCH (9,6)
-    low9 = df["Low"].rolling(9).min()
-    high9 = df["High"].rolling(9).max()
-    df["STOCH_K"] = (c - low9) / (high9 - low9).replace(0, np.nan) * 100
-    df["STOCH_D"] = df["STOCH_K"].rolling(6).mean()
-
-    # Williams %R (14)
-    df["WILLR"] = (high14 - c) / (high14 - low14).replace(0, np.nan) * -100
-
-    # CCI (14)
-    tp = (df["High"] + df["Low"] + c) / 3
-    tp_ma = tp.rolling(14).mean()
-    tp_mad = tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
-    df["CCI"] = (tp - tp_ma) / (0.015 * tp_mad.replace(0, np.nan))
-
     # ADX (14)
     dm_plus = df["High"].diff()
     dm_minus = -df["Low"].diff()
@@ -246,34 +235,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     dx = (df["DI_Plus"] - df["DI_Minus"]).abs() / (df["DI_Plus"] + df["DI_Minus"]).replace(0, np.nan) * 100
     df["ADX"] = dx.rolling(14).mean()
 
-    # StochRSI (14)
-    rsi_s = df["RSI"]
-    rsi_low14  = rsi_s.rolling(14).min()
-    rsi_high14 = rsi_s.rolling(14).max()
-    df["STOCHRSI"] = (rsi_s - rsi_low14) / (rsi_high14 - rsi_low14).replace(0, np.nan) * 100
-
-    # ROC (12)
-    df["ROC"] = c.pct_change(12) * 100
-
-    # Bull / Bear Power (13)
-    df["BULL_POWER"] = df["High"] - df["EMA13"]
-    df["BEAR_POWER"] = df["Low"]  - df["EMA13"]
-
-    # Ultimate Oscillator (7/14/28)
-    prev_c = df["Close"].shift(1)
-    bp_uo  = c - pd.concat([df["Low"], prev_c], axis=1).min(axis=1)
-    tr_uo  = pd.concat([df["High"], prev_c], axis=1).max(axis=1) \
-           - pd.concat([df["Low"],  prev_c], axis=1).min(axis=1)
-    avg7  = bp_uo.rolling(7).sum()  / tr_uo.rolling(7).sum().replace(0, np.nan)
-    avg14 = bp_uo.rolling(14).sum() / tr_uo.rolling(14).sum().replace(0, np.nan)
-    avg28 = bp_uo.rolling(28).sum() / tr_uo.rolling(28).sum().replace(0, np.nan)
-    df["UO"] = 100 * (4 * avg7 + 2 * avg14 + avg28) / 7
-
-    # Highs / Lows (14) range
-    df["HL14"] = high14 - low14
-
-    # ── 신규 지표 (주식 시장 최적화) ────────────────────────────────────
-
     # OBV (On-Balance Volume) — 거래량 기반 추세 확인
     _obv_dir = np.sign(c.diff()).fillna(0)
     df["OBV"] = (df["Volume"] * _obv_dir).cumsum()
@@ -284,41 +245,11 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
         lambda x: float(np.argmax(x)) / _ap * 100, raw=True)
     df["AROON_DOWN"] = df["Low"].rolling(_ap + 1).apply(
         lambda x: float(np.argmin(x)) / _ap * 100, raw=True)
-    df["AROON_OSC"]  = df["AROON_UP"] - df["AROON_DOWN"]
-
-    # TRIX (15) — 3중 지수평활 모멘텀 (노이즈 필터링 강함)
-    _e1 = c.ewm(span=15, adjust=False).mean()
-    _e2 = _e1.ewm(span=15, adjust=False).mean()
-    _e3 = _e2.ewm(span=15, adjust=False).mean()
-    df["TRIX"] = _e3.pct_change() * 100
 
     # Buy Pressure (14일 상승일 거래량 비중, 0–100%)
     _vol = df["Volume"].replace(0, np.nan)
     _up_vol = df["Volume"].where(c >= c.shift(1), 0.0)
     df["BUY_PRESSURE"] = _up_vol.rolling(14).sum() / _vol.rolling(14).sum() * 100
-
-    # Liquidity Score (0–10, 60일 정규화 회전율/ATR 비율)
-    _turnover = (_vol * c).fillna(0)
-    _atr_liq  = pd.concat([df["High"] - df["Low"],
-                           (df["High"] - c.shift()).abs(),
-                           (df["Low"]  - c.shift()).abs()], axis=1).max(axis=1)
-    _liq_raw  = _turnover / (_atr_liq.rolling(20).mean() * c + 1e-10)
-    _liq_min  = _liq_raw.rolling(60).min()
-    _liq_max  = _liq_raw.rolling(60).max()
-    df["LIQ_SCORE"] = (_liq_raw - _liq_min) / (_liq_max - _liq_min + 1e-10) * 10
-
-    # WMA(20) — 선형 가중 이동평균 (최근 바에 더 높은 가중치)
-    _w20 = np.arange(1, 21, dtype=float)
-    df["WMA20"] = c.rolling(20).apply(lambda x: np.dot(x, _w20) / _w20.sum(), raw=True)
-
-    # DEMA(20) — 이중 지수 이동평균 (EMA 대비 후행성 감소)
-    _d1 = df["EMA20"]
-    _d2 = _d1.ewm(span=20, adjust=False).mean()
-    df["DEMA20"] = 2 * _d1 - _d2
-
-    # TEMA(20) — 삼중 지수 이동평균 (최소 후행성, 노이즈에 민감)
-    _d3 = _d2.ewm(span=20, adjust=False).mean()
-    df["TEMA20"] = 3 * _d1 - 3 * _d2 + _d3
 
     # PSAR (Parabolic SAR, af=0.02, max=0.2) — 추세 방향 + 반전 신호
     _hs = df["High"].values.astype(float)
@@ -356,12 +287,31 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
     sym = ticker.strip().upper()
     if market == "KRX" and sym.isdigit():
         sym = f"{sym}.KS"
+        
+    interval = "1d"
+    yf_period = period
+    if period == "1d":
+        yf_period = "1d"
+        interval = "5m"
+    elif period == "3d":
+        yf_period = "5d"
+        interval = "15m"
+    elif period == "1wk":
+        yf_period = "5d"
+        interval = "30m"
+    elif period == "2wk":
+        yf_period = "1mo"
+        interval = "1h"
+    elif period == "1mo":
+        yf_period = "1mo"
+        interval = "1h"
+
     try:
         obj = yf.Ticker(sym)
-        df = obj.history(period=period, interval="1d", auto_adjust=True)
+        df = obj.history(period=yf_period, interval=interval, auto_adjust=True)
         if df.empty and market == "KRX" and sym.endswith(".KS"):
             sym = sym.replace(".KS", ".KQ")
-            df = yf.Ticker(sym).history(period=period, interval="1d", auto_adjust=True)
+            df = yf.Ticker(sym).history(period=yf_period, interval=interval, auto_adjust=True)
         if df.empty:
             return None, None, f"데이터 없음: {sym}"
         # MultiIndex 처리 (안전하게)
@@ -1438,12 +1388,9 @@ def classify_market_state(dd: Dict, close: float, rsi: float,
              and float(obv[-1]) > float(obv[-5])
     psar_arr  = dd.get("PSAR_DIR", [])
     psar_bull = psar_arr[-1] == 1.0 if psar_arr and psar_arr[-1] is not None else None
-    tema_arr  = dd.get("TEMA20", [])
-    tema_v    = float(tema_arr[-1]) if tema_arr and tema_arr[-1] is not None else None
 
     above_ma20 = close > ma20 * 0.995
     above_ma50 = close > ma50 * 0.995
-    above_tema = (close > tema_v) if tema_v else above_ma20
     strong     = adx > 25
 
     # 1순위: 강한 추세 (ADX + DI 방향 + MA 정배열 + PSAR 일치)
@@ -1460,9 +1407,9 @@ def classify_market_state(dd: Dict, close: float, rsi: float,
     if not strong and rsi > 55 and not obv_up:
         return "⚠️ 분배 구간 (Distribution)"
     # 4순위: RSI + PSAR 극단 → 반전 가능
-    if rsi < 30 or (rsi < 38 and psar_bull is True and not above_tema):
+    if rsi < 30 or (rsi < 38 and psar_bull is True and not above_ma20):
         return "↩️ 상승 반전 가능 (Bullish Reversal)"
-    if rsi > 70 or (rsi > 62 and psar_bull is False and above_tema):
+    if rsi > 70 or (rsi > 62 and psar_bull is False and above_ma20):
         return "↩️ 하락 반전 가능 (Bearish Reversal)"
     return "➡️ 횡보 구간 (Consolidation)"
 
@@ -1694,21 +1641,19 @@ def analyze_score(dd: Dict):
         elif bp_v < 45 and rsi > 60:
             sx -= 1.0; msgs.append(f"매수압력 {bp_v:.0f}% + RSI 고점 → 상승 동력 약화")
 
-    # PSAR + TEMA 정합성 확인
+    # PSAR + EMA 정합성 확인
     psar_d_arr = dd.get("PSAR_DIR", [])
-    tema_a_arr = dd.get("TEMA20", [])
     _pdir = float(psar_d_arr[-1]) if psar_d_arr and psar_d_arr[-1] is not None else None
-    _tema = float(tema_a_arr[-1]) if tema_a_arr and tema_a_arr[-1] is not None else None
-    if _pdir is not None and _tema is not None:
-        above_tema = close > _tema
-        if _pdir == 1.0 and above_tema:
-            sx += 0.5; msgs.append("PSAR 상승 + TEMA 상회 → 추세 지표 일치")
-        elif _pdir == -1.0 and not above_tema:
-            sx -= 0.5; msgs.append("PSAR 하락 + TEMA 하회 → 추세 지표 일치")
-        elif _pdir == 1.0 and not above_tema:
-            msgs.append("PSAR 상승·TEMA 하회 혼조 → 전환 초기 또는 일시 눌림")
-        elif _pdir == -1.0 and above_tema:
-            msgs.append("PSAR 하락·TEMA 상회 혼조 → 단기 반등 중 추세 이탈 주의")
+    if _pdir is not None and ema20 is not None:
+        above_ema = close > ema20
+        if _pdir == 1.0 and above_ema:
+            sx += 0.5; msgs.append("PSAR 상승 + EMA20 상회 → 추세 지표 일치")
+        elif _pdir == -1.0 and not above_ema:
+            sx -= 0.5; msgs.append("PSAR 하락 + EMA20 하회 → 추세 지표 일치")
+        elif _pdir == 1.0 and not above_ema:
+            msgs.append("PSAR 상승·EMA20 하회 혼조 → 전환 초기 또는 일시 눌림")
+        elif _pdir == -1.0 and above_ema:
+            msgs.append("PSAR 하락·EMA20 상회 혼조 → 단기 반등 중 추세 이탈 주의")
 
     # 시장 상태 분류
     market_state = classify_market_state(dd, close, rsi, adx, dip, dim)
@@ -1717,11 +1662,54 @@ def analyze_score(dd: Dict):
     if not msgs:
         msgs = ["크로스 지표 분석 데이터 부족"]
 
-    steps.append({"step": "6. 크로스 지표 종합 (OBV·Aroon·TRIX 수렴)",
+    steps.append({"step": "6. 크로스 지표 종합 (OBV·Aroon 수렴)",
                   "result": " | ".join(msgs),
                   "score": round(max(-6.0, min(6.0, sx)), 1), "weight": "보조"})
 
-    return max(0, min(100, round(score))), steps, patterns, geo_patterns
+    score = max(0.0, min(100.0, round(score)))
+
+    # ── [AI 종합 진단 및 미래 예측 시나리오 추가] ──
+    ai_msgs = []
+    
+    # 1. 핵심 요약 및 매수/매도 타이밍 조건
+    if score >= 65:
+        ai_msgs.append("[핵심 요약] BUY (매수 우위)")
+        ai_msgs.append(f"👉 매수 타이밍: 현재가({close:,.0f}) 부근 혹은 단기 눌림목({ema20:,.0f} 지지) 시 분할 매수")
+        ai_msgs.append(f"👉 매도 타이밍: RSI가 70을 초과하거나 볼린저 상단({bb_u:,.0f}) 도달 시 비중 축소")
+    elif score <= 40:
+        ai_msgs.append("[핵심 요약] SELL (매도 우위 / 리스크 관리)")
+        ai_msgs.append(f"👉 매수 타이밍: RSI 과매도(30 이하) 진입 및 지지선({bb_l:,.0f})에서 명확한 반등 캔들 확인 후")
+        ai_msgs.append(f"👉 매도 타이밍: 반등 시 EMA20({ema20:,.0f}) 저항선 부근에서 비중 축소")
+    else:
+        ai_msgs.append("[핵심 요약] HOLD (관망 / 중립)")
+        ai_msgs.append(f"👉 매수 타이밍: ADX가 25를 돌파하며 방향성이 나오거나 볼린저 하단({bb_l:,.0f}) 터치 시")
+        ai_msgs.append(f"👉 매도 타이밍: 박스권 상단({bb_u:,.0f}) 도달 시 수익 실현")
+
+    # 2. 근거 (지표 해석)
+    reasons = []
+    if ema20 and ema50 and ema20 > ema50: reasons.append("단기 이평선 정배열")
+    elif ema20 and ema50 and ema20 < ema50: reasons.append("단기 이평선 역배열")
+    if macd > sig: reasons.append("MACD 상승 다이버전스")
+    if rsi < 40: reasons.append("RSI 단기 저평가 매수권")
+    elif rsi > 60: reasons.append("RSI 단기 고평가 매도권")
+    if _pdir == 1.0: reasons.append("PSAR 상승 추세 유지")
+    elif _pdir == -1.0: reasons.append("PSAR 하락 추세 유지")
+    ai_msgs.append(f"🔍 종합 판단 근거: {', '.join(reasons) if reasons else '복합적 횡보장세 요소 작용'}")
+
+    # 3. 시나리오별 대응 전략
+    ai_msgs.append("[시나리오별 대응 전략]")
+    ai_msgs.append(f"📈 상승 시나리오: 강한 거래량(이전 대비 1.5배 이상)을 동반하여 {bb_u:,.0f} 상향 돌파 시 추세 추종 (목표가 +5~10%)")
+    ai_msgs.append(f"📉 하락 시나리오: {bb_l:,.0f} 하향 이탈 및 MACD 데드크로스 발생 시 즉각적인 리스크 관리 (손절선 -3~5%)")
+    ai_msgs.append(f"➡️ 횡보 시나리오: {bb_l:,.0f} ~ {bb_u:,.0f} 밴드 내 박스권 트레이딩 (하단 지지 확인 후 진입, 상단 저항 시 청산)")
+
+    steps.append({
+        "step": "💡 AI 종합 진단 및 트레이딩 전략",
+        "result": " | ".join(ai_msgs),
+        "score": round(score - 50, 1), 
+        "weight": "종합"
+    })
+
+    return score, steps, patterns, geo_patterns
 
 def calc_risk(price: float, atr: float) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
@@ -1811,15 +1799,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
     close = v("Close") or 1.0
     signals = {}
 
-    # STOCH (9,6)
-    sk = v("STOCH_K"); sd = v("STOCH_D")
-    if sk is not None and sd is not None:
-        if   sk > 80:    st,sig,desc = "과매수",    "매도", "스토캐스틱 과매수 → 하락 전환 경계"
-        elif sk < 20:    st,sig,desc = "과매도",    "매수", "과매도 구간 → 단기 반등 기대"
-        elif sk > sd:    st,sig,desc = "상향 전환", "매수", "%K > %D 골든크로스 → 단기 매수 신호"
-        else:            st,sig,desc = "하향 전환", "매도", "%K < %D 데드크로스 → 단기 매도 신호"
-        signals["stoch"] = {"name":"STOCH (9,6)", "state":st, "signal":sig, "desc":desc, "value":f"{sk:.1f} / {sd:.1f}"}
-
     # ADX (14)
     adx = v("ADX"); dip = v("DI_Plus"); dim = v("DI_Minus")
     if adx is not None:
@@ -1833,15 +1812,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         elif adx > 20: st,sig,desc = "추세 발생",    "관망", f"ADX {adx:.0f} — 추세 형성 초기"
         else:          st,sig,desc = "횡보/추세 없음","관망", f"ADX {adx:.0f} — 방향성 불명확, 돌파 대기"
         signals["adx"] = {"name":"ADX (14)", "state":st, "signal":sig, "desc":desc, "value":f"{adx:.1f}"}
-
-    # CCI (14)
-    cci = v("CCI")
-    if cci is not None:
-        if   cci >  100: st,sig,desc = "과매수",     "매도", "CCI +100 초과 → 고점 매도 신호"
-        elif cci < -100: st,sig,desc = "과매도",     "매수", "CCI -100 미만 → 저점 매수 신호"
-        elif cci >    0: st,sig,desc = "상승 모멘텀","관망", "양수 유지 — 상승 추세 지속 중"
-        else:            st,sig,desc = "하락 모멘텀","관망", "음수 — 하락 추세 지속 중"
-        signals["cci"] = {"name":"CCI (14)", "state":st, "signal":sig, "desc":desc, "value":f"{cci:.1f}"}
 
     # ATR (14)
     atr = v("ATR")
@@ -1894,18 +1864,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         signals["aroon"] = {"name":"Aroon (25)", "state":st, "signal":sig, "desc":desc,
                             "value":f"↑{au:.0f} / ↓{ad:.0f}"}
 
-    # TRIX (15) — 3중 평활 모멘텀, 방향 + 가속도 해석
-    trix_arr = dd.get("TRIX", [])
-    trix = float(trix_arr[-1]) if trix_arr and trix_arr[-1] is not None else None
-    if trix is not None:
-        trix_p = float(trix_arr[-2]) if len(trix_arr) >= 2 and trix_arr[-2] is not None else trix
-        if   trix > 0 and trix > trix_p: st,sig,desc = "상승 가속","매수",f"TRIX {trix:.4f}% 양전 + 상승 — 3중 평활 기준 추세 강화"
-        elif trix > 0 and trix <= trix_p: st,sig,desc = "상승 둔화","관망",f"TRIX {trix:.4f}% 양전 + 감소 — 추세 약화 조짐"
-        elif trix < 0 and trix < trix_p: st,sig,desc = "하락 가속","매도",f"TRIX {trix:.4f}% 음전 + 하락 — 추세 악화"
-        else:                             st,sig,desc = "하락 둔화","관망",f"TRIX {trix:.4f}% 음전 + 감소폭 줄어 — 하락 속도 감소"
-        signals["trix"] = {"name":"TRIX (15)", "state":st, "signal":sig, "desc":desc,
-                           "value":f"{trix:.4f}%"}
-
     # Buy Pressure (14일 상승일 거래량 비중)
     bp = v("BUY_PRESSURE")
     if bp is not None:
@@ -1915,15 +1873,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         else:         st,sig,desc = "강한 매도세","매도",f"상승일 거래량 비중 {bp:.1f}% — 14일 매도 우위"
         signals["buy_pressure"] = {"name":"Buy Pressure (14)", "state":st, "signal":sig, "desc":desc,
                                    "value":f"{bp:.1f}%"}
-
-    # Liquidity Score (0–10)
-    liq = v("LIQ_SCORE")
-    if liq is not None:
-        if   liq >= 7: st,sig,desc = "고유동성",  "관망",f"유동성 {liq:.1f}/10 — 슬리피지 최소, 진입·청산 용이"
-        elif liq >= 4: st,sig,desc = "중간 유동성","관망",f"유동성 {liq:.1f}/10 — 분할 주문 권장"
-        else:          st,sig,desc = "저유동성",  "관망",f"유동성 {liq:.1f}/10 — 거래량 확인 후 진입, 스프레드 주의"
-        signals["liquidity"] = {"name":"Liquidity Score", "state":st, "signal":sig, "desc":desc,
-                                "value":f"{liq:.1f}/10"}
 
     # ── 추세형 이동평균 지표 ──────────────────────────────────────────────
 
@@ -1943,45 +1892,6 @@ def calc_indicator_signals(dd: Dict) -> Dict:
             else:       st,sig,desc = "하락 추세", "매도", f"가격 < SAR {psar_disp} — 하락 추세 지속"
         signals["psar"] = {"name":"PSAR (0.02/0.2)", "state":st, "signal":sig, "desc":desc,
                            "value":f"{'▲' if psar_dir == 1.0 else '▼'} {psar_disp}"}
-
-    # TEMA (20) — 삼중 지수 이동평균, 최소 후행성
-    tema_v = v("TEMA20"); tema_arr = dd.get("TEMA20", [])
-    if tema_v is not None and tema_v > 0:
-        tema_prev = float(tema_arr[-2]) if len(tema_arr) >= 2 and tema_arr[-2] is not None else tema_v
-        above_t = close > tema_v; slope_t = tema_v > tema_prev
-        gap_t   = (close - tema_v) / tema_v * 100
-        if   above_t and slope_t:   st,sig,desc = "상승 추세", "매수", "가격 > TEMA + 기울기↑ — 단기 상승 모멘텀 강"
-        elif above_t:               st,sig,desc = "상승 둔화", "관망", "가격 > TEMA, 기울기↓ — 상승 모멘텀 약화"
-        elif not above_t and not slope_t: st,sig,desc = "하락 추세", "매도", "가격 < TEMA + 기울기↓ — 단기 하락 지속"
-        else:                       st,sig,desc = "반전 모색", "관망", "가격 < TEMA, 기울기↑ — 하락 속도 감소"
-        signals["tema"] = {"name":"TEMA (20)", "state":st, "signal":sig, "desc":desc,
-                           "value":f"{tema_v:.2f} ({gap_t:+.1f}%)"}
-
-    # DEMA (20) — 이중 지수 이동평균, EMA 대비 후행성 완화
-    dema_v = v("DEMA20"); dema_arr = dd.get("DEMA20", [])
-    if dema_v is not None and dema_v > 0:
-        dema_prev = float(dema_arr[-2]) if len(dema_arr) >= 2 and dema_arr[-2] is not None else dema_v
-        above_d = close > dema_v; slope_d = dema_v > dema_prev
-        gap_d   = (close - dema_v) / dema_v * 100
-        if   above_d and slope_d:   st,sig,desc = "중기 상승", "매수", "가격 > DEMA + 기울기↑ — 단중기 상승 정렬"
-        elif above_d:               st,sig,desc = "상승 유지", "관망", "가격 > DEMA, 기울기↓ — 추세 약화 모니터"
-        elif not above_d and not slope_d: st,sig,desc = "중기 하락", "매도", "가격 < DEMA + 기울기↓ — 중기 하락 추세"
-        else:                       st,sig,desc = "저점 모색", "관망", "가격 < DEMA, 기울기↑ — 하락 둔화"
-        signals["dema"] = {"name":"DEMA (20)", "state":st, "signal":sig, "desc":desc,
-                           "value":f"{dema_v:.2f} ({gap_d:+.1f}%)"}
-
-    # WMA (20) — 선형 가중 이동평균 (최근 바 가중치 강조)
-    wma_v = v("WMA20"); wma_arr = dd.get("WMA20", [])
-    if wma_v is not None and wma_v > 0:
-        wma_prev = float(wma_arr[-2]) if len(wma_arr) >= 2 and wma_arr[-2] is not None else wma_v
-        above_w = close > wma_v; slope_w = wma_v > wma_prev
-        gap_w   = (close - wma_v) / wma_v * 100
-        if   above_w and slope_w:   st,sig,desc = "상승 추세", "매수", "가격 > WMA + 기울기↑ — 선형가중 기준 상승 확인"
-        elif above_w:               st,sig,desc = "상승 둔화", "관망", "가격 > WMA, 기울기↓ — 단기 모멘텀 감소"
-        elif not above_w and not slope_w: st,sig,desc = "하락 추세", "매도", "가격 < WMA + 기울기↓ — 하락 우위"
-        else:                       st,sig,desc = "전환 가능", "관망", "가격 < WMA, 기울기↑ — 하락 속도 감소"
-        signals["wma"] = {"name":"WMA (20)", "state":st, "signal":sig, "desc":desc,
-                          "value":f"{wma_v:.2f} ({gap_w:+.1f}%)"}
 
     # 시장 상태 분류
     adx_v = v("ADX") or 0.0; dip_v = v("DI_Plus") or 0.0; dim_v = v("DI_Minus") or 0.0
@@ -2061,17 +1971,17 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
     if bb_l and float(bb_l) < last_price * 1.05:
         basis.append(f"볼린저 하단 지지선 근접 (≈{round(float(bb_l), 2):,})")
     if ma20 and abs(float(ma20) - last_price) / last_price < 0.15:
-        basis.append(f"MA20 이동평균 지지 (≈{round(float(ma20), 2):,})")
+        basis.append(f"단기 생명선(MA20) 지지 (≈{round(float(ma20), 2):,})")
     if ma60 and abs(float(ma60) - last_price) / last_price < 0.20:
-        basis.append(f"MA60 이동평균 지지 (≈{round(float(ma60), 2):,})")
-    basis.append(f"ATR(14) 변동성 기반 구간 설정 (ATR ~{round(atr, 2):,})")
-    basis.append(f"최근 30일 저점 지지구간 (~{round(support_zone, 2):,})")
+        basis.append(f"중기 추세선(MA60) 지지 (≈{round(float(ma60), 2):,})")
+    basis.append(f"일간 변동성(ATR) 기반 구간 분할 (ATR ≈{round(atr, 2):,})")
+    basis.append(f"최근 30일 핵심 매물대/저점 지지구간 (≈{round(support_zone, 2):,})")
 
-    if   rsi < 30:  rsi_ctx = "RSI 과매도 — 적극 매수 구간"
-    elif rsi < 45:  rsi_ctx = "RSI 저점권 — 매수 유리"
-    elif rsi > 70:  rsi_ctx = "RSI 과매수 — 추가 눌림 후 매수"
-    elif rsi > 55:  rsi_ctx = "RSI 고점권 — 눌림 확인 후 분할 매수"
-    else:           rsi_ctx = "RSI 중립 — 지지선 확인 후 진입"
+    if   rsi < 30:  rsi_ctx = "RSI 과매도 — 적극 매수 관점"
+    elif rsi < 45:  rsi_ctx = "RSI 저점권 — 매수 유리, 분할 진입"
+    elif rsi > 70:  rsi_ctx = "RSI 과매수 — 신규 진입 보류, 눌림 대기"
+    elif rsi > 55:  rsi_ctx = "RSI 고점권 — 보수적 접근, 확인 후 진입"
+    else:           rsi_ctx = "RSI 중립 — 지지/저항선 돌파 확인 후 진입"
 
     return {"current": round(last_price, 2),
             "aggressive": aggressive,
@@ -2655,6 +2565,11 @@ input::placeholder{color:#484f58}
            style="margin-bottom:10px" onkeydown="if(event.key==='Enter')analyze()">
     <span class="sb-label">분석 기간</span>
     <select id="period-select" style="margin-bottom:12px">
+      <option value="1d">초단기 (1일)</option>
+      <option value="3d">초단기 (3일)</option>
+      <option value="1wk">초단기 (1주)</option>
+      <option value="2wk">단기 (2주)</option>
+      <option value="1mo">단기 (1개월)</option>
       <option value="6mo">6개월</option>
       <option value="1y" selected>1년</option>
       <option value="2y">2년</option>
@@ -3016,15 +2931,15 @@ function renderResult(d) {
 
 function renderAI(d, isKrx) {
   const s = d.score;
-  const sClr = s >= 70 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
-  const sBarClr = s >= 70 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
+  const sClr = s >= 65 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
+  const sBarClr = s >= 65 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
   document.getElementById('ai-score').innerHTML = `<span style="color:${sClr}">${s}</span>`;
   const bar = document.getElementById('ai-score-bar');
   bar.style.width = s + '%'; bar.style.background = sBarClr;
   document.getElementById('ai-score-desc').textContent =
-    s >= 70 ? '✅ 상승 우위 — 매수 신호 강함'
-    : s >= 40 ? '⚖️ 중립 — 추세 확인 필요'
-    : '⚠️ 하락 우위 — 리스크 주의';
+    s >= 65 ? '✅ BUY (매수 우위)'
+    : s >= 40 ? '⚖️ HOLD (관망 / 중립)'
+    : '⚠️ SELL (매도 우위 / 리스크 관리)';
 
   const stepsList = document.getElementById('steps-list');
   stepsList.innerHTML = d.analysis_steps.map(st => {
@@ -3032,6 +2947,22 @@ function renderAI(d, isKrx) {
     const cls = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
     const label = sc > 0 ? '+' + sc : sc;
     const weight = st.weight || '';
+    
+    // AI 종합 진단 리포트는 좀 더 눈에 띄게 스타일링
+    if (st.step.includes("AI 종합 진단")) {
+      return `<div class="step-item" style="border: 1px solid #1f6feb; background: rgba(31, 111, 235, 0.05);">
+        <div class="step-header">
+          <span class="step-title" style="color:#1f6feb; font-size:14px; font-weight:700;">${st.step}</span>
+        </div>
+        <div class="step-result" style="color:#e6edf3;">
+          ${st.result.split(' | ').filter(l => l.trim()).map(line => {
+            if (line.startsWith('[')) return `<div style="margin-top:8px; font-weight:bold; color:#8b949e;">${line}</div>`;
+            return `<div style="margin-top:4px; margin-left:8px;">${line}</div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }
+
     return `<div class="step-item">
       <div class="step-header">
         <span class="step-title">${st.step}</span>
@@ -3597,7 +3528,7 @@ def replace_nan_with_none(obj):
         return obj.isoformat()
     return obj
 
-VALID_PERIODS = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
+VALID_PERIODS = {"1d", "3d", "1wk", "2wk", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
 
 def _send(handler_self, data: Any, status: int = 200, content_type: str = "application/json"):
     path = getattr(handler_self, 'path', '/').split('?')[0].rstrip('/') or '/'
