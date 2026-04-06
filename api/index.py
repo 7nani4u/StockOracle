@@ -103,6 +103,21 @@ try:
 except:
     pass
 
+# yfinance SQLite 캐시 에러 방지를 위해 메모리 DB 사용 (peewee SqliteDatabase)
+try:
+    from peewee import SqliteDatabase
+    class SafeMemDB(SqliteDatabase):
+        def connect(self, reuse_if_open=False):
+            try:
+                super().connect(reuse_if_open=True)
+            except Exception:
+                pass
+    db = SafeMemDB(':memory:')
+    yf.cache.get_tz_cache().db = db
+    yf.cache.get_cookie_cache().db = db
+except:
+    pass
+
 warnings.filterwarnings("ignore")
 
 # ── 의존성 ───────────────────────────────────────────────────────────────────
@@ -2341,15 +2356,30 @@ def route(path: str, params: Dict) -> Dict:
         naver = fetch_naver(sym) if market == "KRX" else None
         
         # 현재가 보정: 한국 시장인 경우 네이버 금융의 최신 현재가를 최우선으로 사용
-        if naver and naver.get("price"):
+        # 미국 시장은 yfinance의 info 객체를 활용해 실시간 데이터 보정
+        if market == "KRX" and naver and naver.get("price"):
             try:
                 real_price = float(naver["price"])
                 # 네이버 현재가와 yfinance 종가의 차이가 30% 이내일 때만 보정 (액면분할 등 비정상적 차이 방지)
                 if abs(real_price - last) / last < 0.3:
                     last = real_price
-                    # 변동률도 네이버 기준으로 재계산
                     if prev > 0:
                         pct = (last - prev) / prev * 100
+            except:
+                pass
+        elif market == "US":
+            try:
+                info = yf.Ticker(sym).info
+                real_price = info.get("currentPrice") or info.get("regularMarketPrice")
+                if real_price and real_price > 0:
+                    if abs(real_price - last) / last < 0.3:
+                        last = float(real_price)
+                        # 이전 종가도 보정
+                        real_prev = info.get("previousClose")
+                        if real_prev and real_prev > 0:
+                            prev = float(real_prev)
+                        if prev > 0:
+                            pct = (last - prev) / prev * 100
             except:
                 pass
                 
