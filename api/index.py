@@ -36,9 +36,16 @@ import warnings
 import functools
 import tempfile
 import re
+import certifi
+import ssl
 from typing import Optional, Dict, Any, List, Tuple
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
+
+# 환경에 따른 SSL 문제 해결용 (curl_cffi 관련 오류 회피)
+os.environ["YFINANCE_DISABLE_HTTP2"] = "1"
+os.environ["CURL_CA_BUNDLE"] = certifi.where()
+os.environ["SSL_CERT_FILE"] = certifi.where()
 
 # ── /tmp 강제 사용 (Vercel은 /tmp 외 쓰기 금지) ───────────────────────────────
 if os.name == 'nt':
@@ -48,9 +55,10 @@ else:
     # Vercel / Linux 환경
     TMP_DIR = "/tmp"
 
-os.environ.setdefault("TMPDIR", TMP_DIR)
-os.environ.setdefault("HOME", TMP_DIR)
-os.environ.setdefault("XDG_CACHE_HOME", os.path.join(TMP_DIR, "cache"))
+os.environ["TMPDIR"] = TMP_DIR
+os.environ["HOME"] = TMP_DIR
+os.environ["XDG_CACHE_HOME"] = os.path.join(TMP_DIR, "cache")
+os.environ["YF_CACHE_DIR"] = os.path.join(TMP_DIR, "yf_cache")
 
 try:
     import platformdirs
@@ -61,6 +69,23 @@ try:
     platformdirs.user_cache_dir = _tmp
     platformdirs.user_cache_path = _tmp
 except ImportError:
+    pass
+
+import yfinance as yf
+
+# yfinance SQLite 캐시 에러 방지를 위해 메모리 DB 사용 (peewee SqliteDatabase)
+try:
+    from peewee import SqliteDatabase
+    class SafeMemDB(SqliteDatabase):
+        def connect(self, reuse_if_open=False):
+            try:
+                super().connect(reuse_if_open=True)
+            except Exception:
+                pass
+    db = SafeMemDB(':memory:')
+    yf.cache.get_tz_cache().db = db
+    yf.cache.get_cookie_cache().db = db
+except:
     pass
 
 warnings.filterwarnings("ignore")
@@ -308,24 +333,53 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
 
     try:
         obj = yf.Ticker(sym)
-        df = obj.history(period=yf_period, interval=interval, auto_adjust=True)
-        if df.empty and market == "KRX" and sym.endswith(".KS"):
+        
+        # 1. 1차 시도: 요청받은 분봉 단위로 조회
+        try:
+            df = obj.history(period=yf_period, interval=interval, auto_adjust=True)
+        except TypeError as e:
+            # yfinance 내부에서 분봉 데이터가 없을 때 발생하는 TypeError 방어
+            if "NoneType" in str(e):
+                df = pd.DataFrame()
+            else:
+                raise e
+        
+        # 코스닥 종목(.KS -> .KQ) 교체 후 재시도 로직
+        if (df is None or df.empty) and market == "KRX" and sym.endswith(".KS"):
             sym = sym.replace(".KS", ".KQ")
-            df = yf.Ticker(sym).history(period=yf_period, interval=interval, auto_adjust=True)
+            try:
+                df = yf.Ticker(sym).history(period=yf_period, interval=interval, auto_adjust=True)
+            except TypeError as e:
+                if "NoneType" in str(e):
+                    df = pd.DataFrame()
+                else:
+                    raise e
             
-        # 데이터가 부족한 경우(소형주 분봉 미지원 등) 일봉으로 Fallback
-        if len(df) < 20 and interval != "1d":
+        # 2. 2차 시도: 분봉 조회가 실패하거나 데이터가 부족한 경우 일봉으로 Fallback
+        # TypeError: 'NoneType' object is not subscriptable 오류가 발생한 경우 df가 빈 DataFrame일 수 있음
+        if (df is None or df.empty or len(df) < 20) and interval != "1d":
             interval = "1d"
-            df = yf.Ticker(sym).history(period="6mo", interval=interval, auto_adjust=True)
+            try:
+                df = yf.Ticker(sym).history(period="6mo", interval=interval, auto_adjust=True)
+            except TypeError as e:
+                if "NoneType" in str(e):
+                    df = pd.DataFrame()
+                else:
+                    raise e
             
         # 지표 계산을 위해 충분한 과거 데이터가 필요하므로, 
         # 일봉인 경우 무조건 6개월 이상의 데이터를 가져와서 지표를 계산한 후 잘라냄
         if interval == "1d" and period in ["1d", "3d", "1wk", "2wk", "1mo", "3mo"]:
-            # 이미 6mo 이상 가져왔을 수 있으므로 확인
-            if len(df) < 60:
-                df = yf.Ticker(sym).history(period="6mo", interval="1d", auto_adjust=True)
+            if df is None or df.empty or len(df) < 60:
+                try:
+                    df = yf.Ticker(sym).history(period="6mo", interval="1d", auto_adjust=True)
+                except TypeError as e:
+                    if "NoneType" in str(e):
+                        df = pd.DataFrame()
+                    else:
+                        raise e
                 
-        if df.empty:
+        if df is None or df.empty:
             return None, None, f"데이터 없음: {sym}"
         # MultiIndex 처리 (안전하게)
         if isinstance(df.columns, pd.MultiIndex):
@@ -2243,6 +2297,20 @@ def route(path: str, params: Dict) -> Dict:
         buy_price        = calc_buy_price(dd, last, atr_val)
         target_price     = calc_target_price(dd, last, atr_val, period)
         naver = fetch_naver(sym) if market == "KRX" else None
+        
+        # 현재가 보정: 한국 시장인 경우 네이버 금융의 최신 현재가를 최우선으로 사용
+        if naver and naver.get("price"):
+            try:
+                real_price = float(naver["price"])
+                # 네이버 현재가와 yfinance 종가의 차이가 30% 이내일 때만 보정 (액면분할 등 비정상적 차이 방지)
+                if abs(real_price - last) / last < 0.3:
+                    last = real_price
+                    # 변동률도 네이버 기준으로 재계산
+                    if prev > 0:
+                        pct = (last - prev) / prev * 100
+            except:
+                pass
+                
         return {
             "symbol": sym, "company": company or sym, "market": market,
             "last_close": round(last, 2), "prev_close": round(prev, 2),
