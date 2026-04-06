@@ -35,6 +35,7 @@ import traceback
 import warnings
 import functools
 import tempfile
+import shutil
 import re
 import certifi
 import ssl
@@ -44,8 +45,22 @@ from urllib.parse import urlparse, parse_qs, quote
 
 # 환경에 따른 SSL 문제 해결용 (curl_cffi 관련 오류 회피)
 os.environ["YFINANCE_DISABLE_HTTP2"] = "1"
-os.environ["CURL_CA_BUNDLE"] = certifi.where()
-os.environ["SSL_CERT_FILE"] = certifi.where()
+
+# Windows 환경에서 한글 경로(예: C:\Users\박성곤\...)가 포함될 경우 curl_cffi가 CA 인증서를 못 찾는 오류 방지
+cert_path = certifi.where()
+if os.name == 'nt' and not cert_path.isascii():
+    safe_cert_path = "C:\\Users\\Public\\cacert.pem"
+    try:
+        if not os.path.exists(safe_cert_path):
+            shutil.copy2(cert_path, safe_cert_path)
+        cert_path = safe_cert_path
+        
+        # curl_cffi 내부에서 certifi.where()를 호출할 때 우회된 경로를 반환하도록 몽키패치
+        certifi.where = lambda: safe_cert_path
+    except Exception:
+        pass
+os.environ["CURL_CA_BUNDLE"] = cert_path
+os.environ["SSL_CERT_FILE"] = cert_path
 
 # ── /tmp 강제 사용 (Vercel은 /tmp 외 쓰기 금지) ───────────────────────────────
 if os.name == 'nt':
@@ -73,18 +88,18 @@ except ImportError:
 
 import yfinance as yf
 
-# yfinance SQLite 캐시 에러 방지를 위해 메모리 DB 사용 (peewee SqliteDatabase)
+# yfinance 내부에서 curl_cffi.curl이 이미 임포트되었을 수 있으므로 명시적으로 덮어쓰기
 try:
-    from peewee import SqliteDatabase
-    class SafeMemDB(SqliteDatabase):
-        def connect(self, reuse_if_open=False):
-            try:
-                super().connect(reuse_if_open=True)
-            except Exception:
-                pass
-    db = SafeMemDB(':memory:')
-    yf.cache.get_tz_cache().db = db
-    yf.cache.get_cookie_cache().db = db
+    import curl_cffi.curl
+    if cert_path and cert_path != curl_cffi.curl.DEFAULT_CACERT:
+        curl_cffi.curl.DEFAULT_CACERT = cert_path
+except Exception:
+    pass
+
+# yfinance SQLite 캐시 에러 방지 (DB 파일 생성/접근 완전 차단)
+try:
+    yf.cache.get_tz_cache().dummy = True
+    yf.cache.get_cookie_cache().dummy = True
 except:
     pass
 
@@ -331,12 +346,34 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         yf_period = "1mo"
         interval = "1h"
 
+    # 지표 계산(MA60, MA120 등)을 위해 항상 요청 기간보다 충분히 긴 과거 데이터를 가져오도록 매핑
+    fetch_period = yf_period
+    if interval == "1d":
+        if period in ["1d", "3d", "1wk", "2wk", "1mo", "3mo", "6mo"]:
+            fetch_period = "1y"
+        elif period == "1y":
+            fetch_period = "2y"
+        elif period == "2y":
+            fetch_period = "5y"
+        elif period == "5y":
+            fetch_period = "10y"
+    else:
+        # 분봉 데이터일 때도 과거 지표 계산을 위해 넉넉하게 가져옴
+        if interval == "5m":
+            fetch_period = "5d"  # 1일 요청 시 5일치 가져와서 자름
+        elif interval == "15m":
+            fetch_period = "1mo" # 3일 요청 시 1달치
+        elif interval == "30m":
+            fetch_period = "1mo" # 1주 요청 시 1달치
+        elif interval == "1h":
+            fetch_period = "3mo" # 2주, 1달 요청 시 3달치
+
     try:
         obj = yf.Ticker(sym)
         
         # 1. 1차 시도: 요청받은 분봉 단위로 조회
         try:
-            df = obj.history(period=yf_period, interval=interval, auto_adjust=True)
+            df = obj.history(period=fetch_period, interval=interval, auto_adjust=True)
         except TypeError as e:
             # yfinance 내부에서 분봉 데이터가 없을 때 발생하는 TypeError 방어
             if "NoneType" in str(e):
@@ -348,7 +385,7 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         if (df is None or df.empty) and market == "KRX" and sym.endswith(".KS"):
             sym = sym.replace(".KS", ".KQ")
             try:
-                df = yf.Ticker(sym).history(period=yf_period, interval=interval, auto_adjust=True)
+                df = yf.Ticker(sym).history(period=fetch_period, interval=interval, auto_adjust=True)
             except TypeError as e:
                 if "NoneType" in str(e):
                     df = pd.DataFrame()
@@ -359,26 +396,15 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         # TypeError: 'NoneType' object is not subscriptable 오류가 발생한 경우 df가 빈 DataFrame일 수 있음
         if (df is None or df.empty or len(df) < 20) and interval != "1d":
             interval = "1d"
+            fetch_period = "1y"  # 일봉 Fallback 시 지표 계산을 위해 1y 사용
             try:
-                df = yf.Ticker(sym).history(period="6mo", interval=interval, auto_adjust=True)
+                df = yf.Ticker(sym).history(period=fetch_period, interval=interval, auto_adjust=True)
             except TypeError as e:
                 if "NoneType" in str(e):
                     df = pd.DataFrame()
                 else:
                     raise e
             
-        # 지표 계산을 위해 충분한 과거 데이터가 필요하므로, 
-        # 일봉인 경우 무조건 6개월 이상의 데이터를 가져와서 지표를 계산한 후 잘라냄
-        if interval == "1d" and period in ["1d", "3d", "1wk", "2wk", "1mo", "3mo"]:
-            if df is None or df.empty or len(df) < 60:
-                try:
-                    df = yf.Ticker(sym).history(period="6mo", interval="1d", auto_adjust=True)
-                except TypeError as e:
-                    if "NoneType" in str(e):
-                        df = pd.DataFrame()
-                    else:
-                        raise e
-                
         if df is None or df.empty:
             return None, None, f"데이터 없음: {sym}"
         # MultiIndex 처리 (안전하게)
@@ -396,17 +422,33 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         df = df.dropna(subset=["Close"])
         
         # 원래 요청한 기간(period)에 맞게 데이터 자르기 (지표 계산 후)
-        # 단, Fallback으로 일봉을 가져왔을 때, 너무 길면 UI에서 보기 안 좋으므로
-        # period에 맞춰서 최근 데이터만 필터링
+        # 일봉/분봉 조회일 경우 지표 계산용 과거 데이터를 잘라내고 원래 원했던 기간만큼만 필터링
         if interval == "1d":
+            if period == "1d": df = df.tail(5)
+            elif period == "3d" or period == "1wk": df = df.tail(10)
+            elif period == "2wk" or period == "1mo": df = df.tail(25)
+            elif period == "3mo": df = df.tail(65)
+            elif period == "6mo": df = df.tail(130)
+            elif period == "1y": df = df.tail(252)
+            elif period == "2y": df = df.tail(504)
+            elif period == "5y": df = df.tail(1260)
+        else:
+            # 분봉일 때 원래 요청 기간에 맞춰 필터링 (영업일 기준)
+            unique_dates = pd.Series(df.index.date).unique()
             if period == "1d":
-                df = df.tail(5) # 1일치 일봉은 너무 적으므로 최근 5일
-            elif period == "3d" or period == "1wk":
-                df = df.tail(10)
-            elif period == "2wk" or period == "1mo":
-                df = df.tail(25)
-            elif period == "3mo":
-                df = df.tail(65)
+                target_dates = unique_dates[-1:]
+            elif period == "3d":
+                target_dates = unique_dates[-3:]
+            elif period == "1wk":
+                target_dates = unique_dates[-5:] # 1주는 약 5영업일
+            elif period == "2wk":
+                target_dates = unique_dates[-10:] # 2주는 약 10영업일
+            elif period == "1mo":
+                target_dates = unique_dates[-21:] # 1달은 약 21영업일
+            else:
+                target_dates = unique_dates
+            
+            df = df[np.isin(df.index.date, target_dates)]
 
         # 뉴스
         news = []
@@ -436,10 +478,10 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
             
         # Lightweight Charts가 인식할 수 있도록 날짜를 yyyy-mm-dd 문자열 또는 Unix Timestamp 형식으로 반환해야 함
         # 일봉은 %Y-%m-%d 문자열로, 분봉은 Unix Timestamp(초 단위)로 변환
-        if period in ["1d", "3d", "1wk", "2wk", "1mo"]:
-            df2["Date"] = df2["Date"].astype("int64") // 10**9
-        else:
+        if interval == "1d":
             df2["Date"] = df2["Date"].dt.strftime("%Y-%m-%d")
+        else:
+            df2["Date"] = df2["Date"].astype("int64") // 10**9
             
         d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
         return d, news, sym
