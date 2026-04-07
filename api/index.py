@@ -161,15 +161,21 @@ def ttl_cache(ttl: int):
         return wrapper
     return deco
 
-@ttl_cache(600)
+@ttl_cache(60)  # 1분 캐시
 def get_usd_krw() -> float:
-    """USD/KRW 환율 조회 (10분 캐시) — 중복 호출 방지용 단일 함수"""
+    """USD/KRW 환율 조회 (1분 캐시) — 중복 호출 방지용 단일 함수"""
     try:
-        return float(
-            yf.Ticker("USDKRW=X").history(period="1d")["Close"].iloc[-1]
-        )
+        # 1분봉으로 당일 최신 환율 조회
+        df = yf.Ticker("USDKRW=X").history(period="1d", interval="1m")
+        if not df.empty:
+            return float(df["Close"].iloc[-1])
+        # Fallback: 5일 일봉
+        df = yf.Ticker("USDKRW=X").history(period="5d")
+        if not df.empty:
+            return float(df["Close"].iloc[-1])
     except Exception:
-        return 1380.0
+        pass
+    return 1380.0
 
 # =============================================================================
 # Ticker 매핑
@@ -337,7 +343,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-@ttl_cache(600)
+@ttl_cache(120)   # 2분
 def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
     sym = ticker.strip().upper()
     if market == "KRX" and sym.isdigit():
@@ -504,12 +510,50 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         print(f"[StockOracle Error] fetch_stock_data 예외 발생: {e}")
         return None, None, f"조회 중 예외 발생: {str(e)}"
 
-@ttl_cache(600)
+@ttl_cache(60)  # 1분 캐시
 def fetch_naver(code: str):
     code = str(code).replace(".KS","").replace(".KQ","")
     url = f"https://finance.naver.com/item/main.naver?code={code}"
-    r = {"price":None,"market_cap":None,"per":None,"pbr":None,"opinion":None,"news":[],"disclosures":[]}
+    r = {"price":None,"prev_close":None,"market_cap":None,"per":None,"pbr":None,"opinion":None,"news":[],"disclosures":[]}
     try:
+        # JSON API로 현재가 및 전일종가 조회 (1분 캐시)
+        # 1차 시도: Mobile JSON API
+        try:
+            m_url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+            m_resp = requests.get(m_url, timeout=5)
+            if m_resp.status_code == 200:
+                m_data = m_resp.json()
+                cur_val = m_data.get("closePrice")
+                if cur_val:
+                    r["price"] = cur_val.replace(",", "")
+                    # compareToPreviousClosePrice 값 추출 로직
+                    diff_val = m_data.get("compareToPreviousClosePrice", "0").replace(",", "")
+                    # compareToPreviousPrice.code가 5(하락)이면 빼주고, 그 외는 더함
+                    code_type = m_data.get("compareToPreviousPrice", {}).get("code", "3")
+                    if code_type == "5":
+                        r["prev_close"] = str(float(r["price"]) + float(diff_val))
+                    else:
+                        r["prev_close"] = str(float(r["price"]) - float(diff_val))
+        except Exception as e:
+            pass
+
+        # 2차 시도: 기존 polling API (Mobile API 실패 시)
+        if not r["price"]:
+            json_url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+            try:
+                j_resp = requests.get(json_url, timeout=5)
+                j_data = j_resp.json()
+                if j_data and "datas" in j_data and len(j_data["datas"]) > 0:
+                    item = j_data["datas"][0]
+                    cur_val = item.get("closePriceRaw")
+                    diff_val = item.get("compareToPreviousClosePriceRaw")
+                    if cur_val:
+                        r["price"] = cur_val
+                        if diff_val:
+                            r["prev_close"] = str(float(cur_val) - float(diff_val))
+            except Exception as e:
+                print(f"Naver JSON API Error: {e}")
+
         # User-Agent 업데이트 및 타임아웃 증가
         hdrs = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -520,9 +564,10 @@ def fetch_naver(code: str):
         
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 가격 (class 변경 가능성 대비)
-        el = soup.select_one(".no_today .blind")
-        if el: r["price"] = el.text.replace(",","")
+        # 가격 (JSON 실패시 Fallback)
+        if not r["price"]:
+            el = soup.select_one(".no_today .blind")
+            if el: r["price"] = el.text.replace(",","")
         
         # 주요 지표
         for k, s in [("market_cap","#_market_sum"),("per","#_per"),("pbr","#_pbr")]:
@@ -640,9 +685,10 @@ def fetch_metrics(item):
     try:
         t = yf.Ticker(item["ticker"])
         i = t.info
+        fi = t.fast_info
         
         # Basic Price Data
-        price = i.get("currentPrice") or i.get("regularMarketPrice")
+        price = fi.last_price if hasattr(fi, 'last_price') else (i.get("currentPrice") or i.get("regularMarketPrice"))
         if not price: return None
         
         # Metadata Update
@@ -854,11 +900,12 @@ def fetch_toss_metrics(ticker: str):
     try:
         t = yf.Ticker(ticker)
         i = t.info
+        fi = t.fast_info
         if not i or i.get("quoteType") == "MUTUALFUND":
             return None
 
         # ── 현재가 ──────────────────────────────────────────────
-        price = (i.get("currentPrice")
+        price = (fi.last_price if hasattr(fi, 'last_price') else None) or (i.get("currentPrice")
                  or i.get("regularMarketPrice")
                  or i.get("previousClose"))
         if not price or price <= 0:
@@ -960,8 +1007,9 @@ def fetch_kr_toss_metrics(item: dict):
         ticker = item["ticker"]
         t = yf.Ticker(ticker)
         i = t.info
+        fi = t.fast_info
         
-        price = i.get("currentPrice") or i.get("regularMarketPrice")
+        price = (fi.last_price if hasattr(fi, 'last_price') else None) or i.get("currentPrice") or i.get("regularMarketPrice")
         if not price or price <= 0: return None
         
         mkt_cap = i.get("marketCap", 0)
@@ -2356,30 +2404,52 @@ def route(path: str, params: Dict) -> Dict:
         naver = fetch_naver(sym) if market == "KRX" else None
         
         # 현재가 보정: 한국 시장인 경우 네이버 금융의 최신 현재가를 최우선으로 사용
-        # 미국 시장은 yfinance의 info 객체를 활용해 실시간 데이터 보정
+        # 미국 시장은 yfinance의 fast_info 객체를 활용해 실시간 데이터 보정
         if market == "KRX" and naver and naver.get("price"):
             try:
                 real_price = float(naver["price"])
                 # 네이버 현재가와 yfinance 종가의 차이가 30% 이내일 때만 보정 (액면분할 등 비정상적 차이 방지)
-                if abs(real_price - last) / last < 0.3:
+                if last > 0 and abs(real_price - last) / last < 0.3:
                     last = real_price
+                    # 전일종가를 네이버에서 가져온 prev_close로 교체
+                    nv_prev = naver.get("prev_close")
+                    if nv_prev:
+                        try:
+                            prev = float(nv_prev)  # 실제 전일종가 사용
+                        except Exception:
+                            pass
                     if prev > 0:
                         pct = (last - prev) / prev * 100
             except:
                 pass
         elif market == "US":
             try:
-                info = yf.Ticker(sym).info
-                real_price = info.get("currentPrice") or info.get("regularMarketPrice")
-                if real_price and real_price > 0:
-                    if abs(real_price - last) / last < 0.3:
-                        last = float(real_price)
-                        # 이전 종가도 보정
-                        real_prev = info.get("previousClose")
-                        if real_prev and real_prev > 0:
-                            prev = float(real_prev)
-                        if prev > 0:
-                            pct = (last - prev) / prev * 100
+                fast_info = yf.Ticker(sym).fast_info
+                # hasattr를 통해 안전하게 last_price 조회
+                if hasattr(fast_info, 'last_price'):
+                    real_price = fast_info.last_price
+                    if real_price and real_price > 0:
+                        if last > 0 and abs(real_price - last) / last < 0.3:
+                            last = float(real_price)
+                            # 이전 종가도 보정
+                            if hasattr(fast_info, 'previous_close'):
+                                real_prev = fast_info.previous_close
+                                if real_prev and real_prev > 0:
+                                    prev = float(real_prev)
+                            if prev > 0:
+                                pct = (last - prev) / prev * 100
+                else:
+                    # fallback: info 객체 사용
+                    info = yf.Ticker(sym).info
+                    real_price = info.get("currentPrice") or info.get("regularMarketPrice")
+                    if real_price and real_price > 0:
+                        if last > 0 and abs(real_price - last) / last < 0.3:
+                            last = float(real_price)
+                            real_prev = info.get("previousClose")
+                            if real_prev and real_prev > 0:
+                                prev = float(real_prev)
+                            if prev > 0:
+                                pct = (last - prev) / prev * 100
             except:
                 pass
                 
