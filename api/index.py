@@ -2087,61 +2087,88 @@ def calc_indicator_signals(dd: Dict) -> Dict:
                         "overall_signal":ov_sig,"overall_label":ov_lbl,
                         "market_state": market_state}}
 
-def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
-    """매수 적정 가격 예측 (지지선·변동성·기술적 지표 기반)"""
+def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict) -> Dict:
+    """매수 적정 가격 예측 (지지선·변동성·기술적 종합 점수·시그널 기반)"""
     lows   = [float(x) for x in dd.get("Low",   []) if x is not None]
     rsi    = float((dd.get("RSI",   [50])[-1]) or 50)
     bb_l   = dd.get("BB_Lower",    [None])[-1]
+    bb_u   = dd.get("BB_Upper",    [None])[-1]
     ma20   = dd.get("MA20",        [None])[-1]
     ma60   = dd.get("MA60",        [None])[-1]
+    macd   = float(dd.get("MACD", [0])[-1] or 0)
+    sig    = float(dd.get("Signal_Line", [0])[-1] or 0)
+    
     if not atr or np.isnan(atr):
         atr = last_price * 0.02
 
     recent_lows  = sorted([x for x in lows[-30:] if x > 0])
     support_zone = float(np.mean(recent_lows[:5])) if len(recent_lows) >= 5 else last_price * 0.95
 
-    # 가격 범위 및 수익 확률 산출
+    # 가격 범위 산출
     aggressive = {
         "range": [round(last_price - atr * 0.8, 2), round(last_price - atr * 0.2, 2)],
-        "prob": 45
     }
     recommended = {
         "range": [round(last_price - atr * 1.5, 2), round(last_price - atr * 0.8, 2)],
-        "prob": 65
     }
     conservative = {
         "range": [round(support_zone - atr * 0.5, 2), round(support_zone + atr * 0.5, 2)],
-        "prob": 85
     }
 
-    # 매수/매도 타이밍 예측 (동적 계산)
+    # ── 매수/매도 타이밍 예측 (종합 분석 적용) ──
     now = dt.now()
     
-    # RSI 및 MACD에 따른 매수 타이밍 조정
-    macd = float(dd.get("MACD", [0])[-1] or 0)
-    sig  = float(dd.get("Signal_Line", [0])[-1] or 0)
-
+    # 1) 매수 타이밍 산출 (buy_delay)
+    # 기술적 지표 시그널 중 매수(Buy) 비율 파악
+    signals_dict = indicator_signals.get("signals", {})
+    buy_count = sum(1 for s in signals_dict.values() if s.get("signal") in ["매수", "적극 매수"])
+    total_count = len(signals_dict)
+    buy_ratio = buy_count / total_count if total_count > 0 else 0
+    
     buy_delay = 1
-    if rsi < 30 and macd > sig: # 강력 매수 조건
-        buy_delay = 0 
-    elif rsi > 70: # 과매수 (눌림 대기)
+    # 매우 강력한 매수 (종합점수 70 이상, 시그널 매수 비율 60% 이상, RSI 과매도권)
+    if score >= 70 and buy_ratio >= 0.6:
+        buy_delay = 0
+    elif rsi < 30 and macd > sig:
+        buy_delay = 0
+    # 관망/매도장 (점수 낮거나 과매수) -> 대기 기간 증가
+    elif score < 40 or rsi > 70:
         buy_delay = 3
-    elif rsi > 55:
+    elif score < 50 or rsi > 60:
         buy_delay = 2
-        
+
     buy_time = now + timedelta(days=buy_delay)
     buy_time = buy_time.replace(hour=10, minute=30)
     while buy_time.weekday() > 4:  # 주말 건너뛰기
         buy_time += timedelta(days=1)
 
-    # 목표 수익률 달성까지의 예상 기간 (ATR 기반 변동성 고려)
-    target_dist = (aggressive["range"][1] - last_price) if aggressive["range"][1] > last_price else (last_price * 0.05)
-    days_to_target = max(2, int(target_dist / (atr if atr > 0 else 1)))
+    # 2) 매도 타이밍 산출 (days_to_target)
+    # 현재가가 목표(볼린저 상단 등)에 도달하기까지의 예상 거리
+    target_dist = (float(bb_u) - last_price) if bb_u and float(bb_u) > last_price else (last_price * 0.05)
+    
+    # 강한 상승장일수록 목표 도달이 빠르고, 하락장일수록 오래 걸리거나 반등이 짧음
+    base_days = target_dist / (atr if atr > 0 else 1)
+    if score >= 70:
+        days_to_target = max(1, int(base_days * 0.7)) # 빠르게 도달
+    elif score <= 40:
+        days_to_target = max(3, int(base_days * 1.5)) # 지연됨
+    else:
+        days_to_target = max(2, int(base_days))
 
     sell_time = buy_time + timedelta(days=days_to_target)
     sell_time = sell_time.replace(hour=14, minute=30)
     while sell_time.weekday() > 4:
         sell_time += timedelta(days=1)
+
+    # 3) 상태별 텍스트
+    if buy_delay == 0:
+        buy_timing_str = f"즉각 진입 가능 (현재 장세 유리, 점수: {round(score)}점)"
+    elif buy_delay == 1:
+        buy_timing_str = f"단기 눌림목 대기 후 진입 ({buy_time.strftime('%m/%d')} 경)"
+    else:
+        buy_timing_str = f"관망 후 지지선 확인 진입 ({buy_time.strftime('%m/%d')} 이후)"
+        
+    sell_timing_str = f"단기 저항/목표가 도달 예상 ({sell_time.strftime('%m/%d')} 경)"
 
     basis = []
     if bb_l and float(bb_l) < last_price * 1.05:
@@ -2152,6 +2179,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
         basis.append(f"중기 추세선(MA60) 지지 (≈{round(float(ma60), 2):,})")
     basis.append(f"일간 변동성(ATR) 기반 구간 분할 (ATR ≈{round(atr, 2):,})")
     basis.append(f"최근 30일 핵심 매물대/저점 지지구간 (≈{round(support_zone, 2):,})")
+    basis.append(f"AI 종합 진단 점수 ({round(score)}점) 및 시그널({buy_count}/{total_count} 매수) 반영")
 
     if   rsi < 30:  rsi_ctx = "RSI 과매도 — 적극 매수 관점"
     elif rsi < 45:  rsi_ctx = "RSI 저점권 — 매수 유리, 분할 진입"
@@ -2164,8 +2192,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float) -> Dict:
             "recommended": recommended,
             "conservative": conservative,
             "timing": {
-                "buy": buy_time.strftime("%Y-%m-%d %H:%M"),
-                "sell": sell_time.strftime("%Y-%m-%d %H:%M")
+                "buy": buy_timing_str,
+                "sell": sell_timing_str
             },
             "support_zone": round(support_zone, 2),
             "basis": basis, "rsi": round(rsi, 1), "rsi_context": rsi_ctx, "atr": round(atr, 2)}
@@ -2399,7 +2427,7 @@ def route(path: str, params: Dict) -> Dict:
         risk             = calc_risk(last, atr_val)
         pivot_points     = calc_pivot_points(dd)
         indicator_signals= calc_indicator_signals(dd)
-        buy_price        = calc_buy_price(dd, last, atr_val)
+        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals)
         target_price     = calc_target_price(dd, last, atr_val, period)
         naver = fetch_naver(sym) if market == "KRX" else None
         
