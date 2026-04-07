@@ -1887,8 +1887,10 @@ def analyze_score(dd: Dict):
 
     return score, steps, patterns, geo_patterns, ai_strategy
 
-def calc_risk(price: float, atr: float) -> Dict:
+def calc_risk(price: float, atr: float, market: str = "KRX") -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
+    
+    rnd = 4 if market == "US" else 2
     
     # 목표가 및 손절가 범위 계산
     cons_tgt = [price + atr * 1.0, price + atr * 1.5]
@@ -1906,22 +1908,22 @@ def calc_risk(price: float, atr: float) -> Dict:
     return {
         "conservative": {
             "label":"보수적",
-            "target":[round(cons_tgt[0],2), round(cons_tgt[1],2)],
-            "stop":[round(cons_stp[0],2), round(cons_stp[1],2)],
+            "target":[round(cons_tgt[0], rnd), round(cons_tgt[1], rnd)],
+            "stop":[round(cons_stp[0], rnd), round(cons_stp[1], rnd)],
             "return": cons_ret,
             "desc":"리스크 최소화", "icon":"🛡️"
         },
         "balanced": {
             "label":"중립적",
-            "target":[round(bal_tgt[0],2), round(bal_tgt[1],2)],
-            "stop":[round(bal_stp[0],2), round(bal_stp[1],2)],
+            "target":[round(bal_tgt[0], rnd), round(bal_tgt[1], rnd)],
+            "stop":[round(bal_stp[0], rnd), round(bal_stp[1], rnd)],
             "return": bal_ret,
             "desc":"스윙 트레이딩", "icon":"⚖️"
         },
         "aggressive": {
             "label":"공격적",
-            "target":[round(agg_tgt[0],2), round(agg_tgt[1],2)],
-            "stop":[round(agg_stp[0],2), round(agg_stp[1],2)],
+            "target":[round(agg_tgt[0], rnd), round(agg_tgt[1], rnd)],
+            "stop":[round(agg_stp[0], rnd), round(agg_stp[1], rnd)],
             "return": agg_ret,
             "desc":"추세 추종", "icon":"🚀"
         },
@@ -2087,7 +2089,7 @@ def calc_indicator_signals(dd: Dict) -> Dict:
                         "overall_signal":ov_sig,"overall_label":ov_lbl,
                         "market_state": market_state}}
 
-def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict) -> Dict:
+def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict, market: str = "KRX") -> Dict:
     """매수 적정 가격 예측 (지지선·변동성·기술적 종합 점수·시그널 기반)"""
     lows   = [float(x) for x in dd.get("Low",   []) if x is not None]
     rsi    = float((dd.get("RSI",   [50])[-1]) or 50)
@@ -2100,19 +2102,21 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     
     if not atr or np.isnan(atr):
         atr = last_price * 0.02
+        
+    rnd = 4 if market == "US" else 2
 
     recent_lows  = sorted([x for x in lows[-30:] if x > 0])
     support_zone = float(np.mean(recent_lows[:5])) if len(recent_lows) >= 5 else last_price * 0.95
 
     # 가격 범위 산출
     aggressive = {
-        "range": [round(last_price - atr * 0.8, 2), round(last_price - atr * 0.2, 2)],
+        "range": [round(last_price - atr * 0.8, rnd), round(last_price - atr * 0.2, rnd)],
     }
     recommended = {
-        "range": [round(last_price - atr * 1.5, 2), round(last_price - atr * 0.8, 2)],
+        "range": [round(last_price - atr * 1.5, rnd), round(last_price - atr * 0.8, rnd)],
     }
     conservative = {
-        "range": [round(support_zone - atr * 0.5, 2), round(support_zone + atr * 0.5, 2)],
+        "range": [round(support_zone - atr * 0.5, rnd), round(support_zone + atr * 0.5, rnd)],
     }
 
     # ── 매수/매도 타이밍 예측 (종합 분석 적용) ──
@@ -2187,7 +2191,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     elif rsi > 55:  rsi_ctx = "RSI 고점권 — 보수적 접근, 확인 후 진입"
     else:           rsi_ctx = "RSI 중립 — 지지/저항선 돌파 확인 후 진입"
 
-    return {"current": round(last_price, 2),
+    return {"current": round(last_price, rnd),
             "aggressive": aggressive,
             "recommended": recommended,
             "conservative": conservative,
@@ -2195,10 +2199,10 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 "buy": buy_timing_str,
                 "sell": sell_timing_str
             },
-            "support_zone": round(support_zone, 2),
-            "basis": basis, "rsi": round(rsi, 1), "rsi_context": rsi_ctx, "atr": round(atr, 2)}
+            "support_zone": round(support_zone, rnd),
+            "basis": basis, "rsi": round(rsi, 1), "rsi_context": rsi_ctx, "atr": round(atr, rnd)}
 
-def calc_target_price(dd: Dict, last_price: float, atr: float, period: str) -> Dict:
+def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, market: str = "KRX") -> Dict:
     """향후 주가 상승 가능 범위(목표가) 예측"""
     ma20 = float(dd.get("MA20", [0])[-1] or 0)
     ma60 = float(dd.get("MA60", [0])[-1] or 0)
@@ -2209,6 +2213,8 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str) -> D
     
     if not atr or np.isnan(atr):
         atr = last_price * 0.02
+        
+    rnd = 4 if market == "US" else 2
 
     # 추세 강도 분석 (-2 ~ 2)
     trend_strength = 0
@@ -2250,12 +2256,13 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str) -> D
     max_return = (max_target - last_price) / last_price * 100
 
     return {
-        "min_price": round(min_target, 2),
-        "max_price": round(max_target, 2),
+        "min_price": round(min_target, rnd),
+        "max_price": round(max_target, rnd),
         "min_return": round(min_return, 1),
         "max_return": round(max_return, 1),
         "period": pred_period,
-        "reason": reason
+        "reason": reason,
+        "trend_strength": trend_strength
     }
 
 def holt_winters_forecast(dd: Dict, days: int = 30):
@@ -2424,11 +2431,11 @@ def route(path: str, params: Dict) -> Dict:
             
         atrs = dd.get("ATR", [])
         atr_val = float(atrs[-1]) if atrs and atrs[-1] else last * 0.02
-        risk             = calc_risk(last, atr_val)
+        risk             = calc_risk(last, atr_val, market)
         pivot_points     = calc_pivot_points(dd)
         indicator_signals= calc_indicator_signals(dd)
-        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals)
-        target_price     = calc_target_price(dd, last, atr_val, period)
+        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market)
+        target_price     = calc_target_price(dd, last, atr_val, period, market)
         naver = fetch_naver(sym) if market == "KRX" else None
         
         # 현재가 보정: 한국 시장인 경우 네이버 금융의 최신 현재가를 최우선으로 사용
@@ -3207,8 +3214,9 @@ function setState(s) {
 
 // ── 렌더링 ──
 function fmt(v, isKrx) {
-  return isKrx ? v.toLocaleString('ko-KR',{maximumFractionDigits:0}) + '원'
-               : '$' + v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if (v == null || isNaN(v)) return '-';
+  return isKrx ? Number(v).toLocaleString('ko-KR',{maximumFractionDigits:0}) + '원'
+               : '$' + Number(v).toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4});
 }
 
 function renderResult(d) {
