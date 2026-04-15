@@ -680,15 +680,75 @@ US_TICKERS = [
     "AIG", "HIG", "PLTR", "IONQ", "JOBY", "ACHR", "SOFI", "AFRM", "UPST", "RIVN", "LCID", "NKLA", "DNA", "PATH"
 ]
 
-@ttl_cache(3600)
+def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
+    """
+    현재 시간(US Eastern Time 기준)과 서머타임(DST) 적용 여부를 고려하여
+    카카오페이증권 장 구분(데이, 프리, 정규, 애프터)에 맞는 최적의 현재가와 세션명, 전일종가를 반환.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        us_tz = ZoneInfo("America/New_York")
+    except ImportError:
+        import pytz
+        us_tz = pytz.timezone("America/New_York")
+        
+    now_et = dt.now(us_tz)
+    time_float = now_et.hour + now_et.minute / 60.0
+    
+    info = ticker_obj.info
+    
+    # yfinance 가격 데이터 수집
+    regular_price = info.get("regularMarketPrice")
+    current_price = info.get("currentPrice")
+    pre_price = info.get("preMarketPrice")
+    post_price = info.get("postMarketPrice")
+    prev_close = info.get("previousClose")
+    
+    # fast_info를 통한 최신 체결가 (가장 빠름)
+    fast_last_price = None
+    try:
+        fi = ticker_obj.fast_info
+        if hasattr(fi, 'last_price'):
+            fast_last_price = fi.last_price
+        if not prev_close and hasattr(fi, 'previous_close'):
+            prev_close = fi.previous_close
+    except:
+        pass
+
+    # 시장 세션 판별 및 최우선 가격 추출 (카카오페이증권 기준)
+    if 4.0 <= time_float < 9.5:
+        session_name = "프리마켓"
+        price = pre_price or fast_last_price or current_price or regular_price
+    elif 9.5 <= time_float < 16.0:
+        session_name = "정규장"
+        price = fast_last_price or current_price or regular_price
+    elif 16.0 <= time_float < 20.0:
+        session_name = "애프터마켓"
+        price = post_price or fast_last_price or current_price or regular_price
+    else:
+        session_name = "데이마켓"
+        # yfinance는 24시간 대체거래소(Blue Ocean 등) 시세를 공식 지원하지 않을 수 있음.
+        # 따라서 데이마켓 중에는 가장 최근에 갱신된 애프터마켓 종가나 정규장 종가를 참조.
+        price = post_price or regular_price or prev_close
+
+    if price is None:
+        price = prev_close or 0.0
+        
+    return float(price), session_name, float(prev_close) if prev_close else 0.0
+
+@ttl_cache(60)
 def fetch_metrics(item):
     try:
         t = yf.Ticker(item["ticker"])
         i = t.info
-        fi = t.fast_info
         
         # Basic Price Data
-        price = fi.last_price if hasattr(fi, 'last_price') else (i.get("currentPrice") or i.get("regularMarketPrice"))
+        if item["market_type"] == "US":
+            price, _, _ = get_us_realtime_price(t)
+        else:
+            fi = t.fast_info
+            price = fi.last_price if hasattr(fi, 'last_price') else (i.get("currentPrice") or i.get("regularMarketPrice"))
+            
         if not price: return None
         
         # Metadata Update
@@ -3164,7 +3224,10 @@ async function loadSentiment(market) {
   w.innerHTML = '<div class="sent-name">로딩 중...</div>';
   try {
     const r = await fetch(`/api/sentiment?market=${market}`);
-    const d = await r.json();
+    if (!r.ok) throw new Error("서버 오류");
+    const text = await r.text();
+    let d;
+    try { d = JSON.parse(text); } catch(e) { throw new Error("응답 파싱 실패"); }
     if (d.error) { w.innerHTML = '<div class="sent-name" style="color:#484f58">조회 실패</div>'; return; }
     const isUp = d.change >= 0;
     const clr = market === 'KRX' ? (isUp ? '#f85149' : '#388bfd') : (isUp ? '#3fb950' : '#f85149');
@@ -3187,7 +3250,13 @@ async function analyze() {
   destroyCharts();
   try {
     const r = await fetch(`/api/stock?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${currentMarket}`);
-    const d = await r.json();
+    let text = await r.text();
+    let d;
+    try {
+      d = JSON.parse(text);
+    } catch(e) {
+      throw new Error(`API 응답이 올바르지 않습니다. (상태: ${r.status}, 서버 오류나 타임아웃일 수 있습니다.)`);
+    }
     if (d.error) { setState('error'); document.getElementById('error-msg').textContent = d.error; return; }
     currentData = d;
     if (d.market) {
@@ -3738,7 +3807,13 @@ async function loadScreener(sortBy, sortOrder) {
   try {
     const url = `/api/screener?sort_by=${sb}&sort_order=${so}`;
     const r = await fetch(url);
-    const d = await r.json();
+    const text = await r.text();
+    let d;
+    try {
+      d = JSON.parse(text);
+    } catch(e) {
+      throw new Error(`API 응답 오류 (상태: ${r.status})`);
+    }
     screenerData = d.data || [];
     screenerInfo = {
       usd_krw: d.usd_krw || 0,
