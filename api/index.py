@@ -132,29 +132,16 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 
-# yfinance 타임아웃 및 차단 방지를 위한 전역 세션(User-Agent) 설정
-_session = requests.Session()
-_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-})
-_session.verify = True
+# yfinance 타임아웃 및 차단 방지를 위한 전역 설정 (session 래핑 제거)
+import yfinance.utils
+import yfinance.data
+import curl_cffi
 
-# 기존 yfinance 클래스들을 패치하여 _session을 기본으로 사용하도록 래핑
-_original_Ticker = yf.Ticker
-def _patched_Ticker(*args, **kwargs):
-    if 'session' not in kwargs:
-        kwargs['session'] = _session
-    return _original_Ticker(*args, **kwargs)
-yf.Ticker = _patched_Ticker
+# yfinance가 curl_cffi를 사용할 때 IPv6 등에서 발생하는 타임아웃 오류를 방지하기 위해 
+# curl_cffi의 기본 옵션을 수정하여 IPv4를 강제하거나 타임아웃을 늘릴 수 있습니다.
+# 여기서는 세션을 덮어쓰지 않고 yfinance가 기본적으로 생성하는 Session 객체에 의존합니다.
+# 단, Windows 등에서 발생하는 인증서 문제는 여전히 우회 적용
 
-_original_download = yf.download
-def _patched_download(*args, **kwargs):
-    if 'session' not in kwargs:
-        kwargs['session'] = _session
-    return _original_download(*args, **kwargs)
-yf.download = _patched_download
 # from scipy.signal import argrelextrema
 
 # 통계/학습 라이브러리 제거 (Vercel 용량 제한 대응)
