@@ -1,7 +1,6 @@
 # StockOracle (Vercel Edition)
 
 Vercel 서버리스 환경에 최적화된 AI 기반 주식 분석 시스템입니다.
-
 Python으로 구현되어 26개 캔들스틱 패턴을 인식하고 핵심 기술적 지표를 산출합니다.
 
 ---
