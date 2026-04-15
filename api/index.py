@@ -135,12 +135,27 @@ from bs4 import BeautifulSoup
 # yfinance 타임아웃 및 차단 방지를 위한 전역 설정 (session 래핑 제거)
 import yfinance.utils
 import yfinance.data
-import curl_cffi
+import curl_cffi.curl
 
-# yfinance가 curl_cffi를 사용할 때 IPv6 등에서 발생하는 타임아웃 오류를 방지하기 위해 
-# curl_cffi의 기본 옵션을 수정하여 IPv4를 강제하거나 타임아웃을 늘릴 수 있습니다.
-# 여기서는 세션을 덮어쓰지 않고 yfinance가 기본적으로 생성하는 Session 객체에 의존합니다.
-# 단, Windows 등에서 발생하는 인증서 문제는 여전히 우회 적용
+# IPv6 네트워크 지연으로 인한 타임아웃(curl: 28) 오류를 방지하기 위해 
+# curl_cffi의 setopt 메서드를 몽키패치하여 IPv4를 강제로 사용하도록 설정합니다.
+_original_setopt = curl_cffi.curl.Curl.setopt
+
+def _patched_setopt(self, option, value):
+    # CurlOpt.URL = 10002
+    if option == curl_cffi.curl.CurlOpt.URL:
+        # IPv4 강제 (CurlOpt.IPRESOLVE = 113, CURL_IPRESOLVE_V4 = 1)
+        _original_setopt(self, curl_cffi.curl.CurlOpt.IPRESOLVE, 1)
+        # 타임아웃 기본값 연장 (CurlOpt.TIMEOUT_MS = 115)
+        _original_setopt(self, curl_cffi.curl.CurlOpt.TIMEOUT_MS, 30000)
+    
+    # yfinance가 설정하는 timeout 값이 30초보다 작으면 30초로 덮어쓰기
+    if option == curl_cffi.curl.CurlOpt.TIMEOUT_MS and value < 30000:
+        value = 30000
+        
+    return _original_setopt(self, option, value)
+
+curl_cffi.curl.Curl.setopt = _patched_setopt
 
 # from scipy.signal import argrelextrema
 
