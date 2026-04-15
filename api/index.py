@@ -96,6 +96,11 @@ try:
 except Exception:
     pass
 
+# yfinance 내부 curl_cffi 사용 강제 비활성화 (타임아웃, curl: 28 오류 방지)
+import yfinance.utils
+if hasattr(yfinance.utils, '_HAS_CURL_CFFI'):
+    yfinance.utils._HAS_CURL_CFFI = False
+
 # yfinance SQLite 캐시 에러 방지 (DB 파일 생성/접근 완전 차단)
 try:
     yf.cache.get_tz_cache().dummy = True
@@ -126,6 +131,30 @@ import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
+
+# yfinance 타임아웃 및 차단 방지를 위한 전역 세션(User-Agent) 설정
+_session = requests.Session()
+_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+})
+_session.verify = True
+
+# 기존 yfinance 클래스들을 패치하여 _session을 기본으로 사용하도록 래핑
+_original_Ticker = yf.Ticker
+def _patched_Ticker(*args, **kwargs):
+    if 'session' not in kwargs:
+        kwargs['session'] = _session
+    return _original_Ticker(*args, **kwargs)
+yf.Ticker = _patched_Ticker
+
+_original_download = yf.download
+def _patched_download(*args, **kwargs):
+    if 'session' not in kwargs:
+        kwargs['session'] = _session
+    return _original_download(*args, **kwargs)
+yf.download = _patched_download
 # from scipy.signal import argrelextrema
 
 # 통계/학습 라이브러리 제거 (Vercel 용량 제한 대응)
