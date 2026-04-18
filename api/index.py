@@ -2940,9 +2940,32 @@ input::placeholder{color:#484f58}
   .buy-card{padding:12px}
   .fund-grid{grid-template-columns:1fr 1fr}
 }
+
+/* ── Pull-to-Refresh 인디케이터 ── */
+#ptr-indicator{
+  position:fixed;top:0;left:0;right:0;z-index:600;
+  display:flex;align-items:center;justify-content:center;
+  height:0;overflow:hidden;
+  background:#1f6feb;color:#fff;
+  font-size:13px;font-weight:600;
+  transition:height .2s ease,opacity .2s ease;
+  will-change:height
+}
+.ptr-spinner{
+  width:16px;height:16px;
+  border:2px solid rgba(255,255,255,.35);
+  border-top-color:#fff;
+  border-radius:50%;
+  animation:ptr-spin .7s linear infinite;
+  margin-right:8px;flex-shrink:0
+}
+@keyframes ptr-spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
+
+<!-- ── Pull-to-Refresh 인디케이터 ── -->
+<div id="ptr-indicator"><span id="ptr-text">↓ 당겨서 새로고침</span></div>
 
 <!-- ── 모바일: 햄버거 + 오버레이 ── -->
 <button id="hamburger" onclick="toggleSidebar()" aria-label="메뉴 열기">☰</button>
@@ -3474,19 +3497,19 @@ function renderForecast(d, isKrx) {
       const conR = bp.conservative.range;
 
       bpEl.innerHTML = `
-        <div style="background:#21262d;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-          <div>
+        <div style="background:#21262d;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
+          <div style="flex-shrink:0">
             <div style="font-size:11px;color:#8b949e;margin-bottom:4px">현재가</div>
             <div style="font-size:22px;font-weight:800">${fmt(cur, isKrx)}</div>
           </div>
-          <div style="display:flex;gap:16px;align-items:flex-start;flex-shrink:0">
-            <div style="text-align:right">
+          <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;min-width:0">
+            <div style="min-width:0">
               <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매수 타이밍</div>
-              <div style="font-size:13px;font-weight:600;color:#3fb950;white-space:nowrap">${bp.timing.buy}</div>
+              <div style="font-size:13px;font-weight:600;color:#3fb950;word-break:keep-all;white-space:normal;line-height:1.4">${bp.timing.buy}</div>
             </div>
-            <div style="text-align:right">
+            <div style="min-width:0">
               <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매도 타이밍</div>
-              <div style="font-size:13px;font-weight:600;color:#f85149;white-space:nowrap">${bp.timing.sell}</div>
+              <div style="font-size:13px;font-weight:600;color:#f85149;word-break:keep-all;white-space:normal;line-height:1.4">${bp.timing.sell}</div>
             </div>
           </div>
         </div>
@@ -3974,6 +3997,67 @@ function renderScreener() {
 
 // ── 초기화 ──
 loadSentiment('KRX');
+
+// ── Pull-to-Refresh (모바일) ──
+(function(){
+  var startY = 0, curY = 0, pulling = false;
+  var THRESHOLD = 72;
+  var el = document.getElementById('ptr-indicator');
+  var txt = document.getElementById('ptr-text');
+  if (!el || !txt) return;
+
+  function scrollTop(){
+    return window.pageYOffset || document.documentElement.scrollTop || 0;
+  }
+
+  document.addEventListener('touchstart', function(e){
+    if (scrollTop() === 0){
+      startY = e.touches[0].clientY;
+      pulling = true;
+    }
+  }, {passive:true});
+
+  document.addEventListener('touchmove', function(e){
+    if (!pulling) return;
+    curY = e.touches[0].clientY;
+    var dy = curY - startY;
+    if (dy > 0 && scrollTop() === 0){
+      var h = Math.min(dy * 0.45, 52);
+      el.style.height = h + 'px';
+      el.style.opacity = Math.min(dy / THRESHOLD, 1);
+      txt.textContent = dy >= THRESHOLD ? '↑ 놓으면 새로고침' : '↓ 당겨서 새로고침';
+    }
+  }, {passive:true});
+
+  document.addEventListener('touchend', function(e){
+    if (!pulling) return;
+    pulling = false;
+    var dy = (e.changedTouches[0].clientY - startY);
+
+    if (dy >= THRESHOLD && scrollTop() === 0){
+      el.style.height = '48px';
+      el.style.opacity = '1';
+      txt.innerHTML = '<span class="ptr-spinner"></span>새로고침 중...';
+
+      var hasResult = document.getElementById('state-result') &&
+                      document.getElementById('state-result').style.display !== 'none';
+      var done = function(){
+        el.style.height = '0';
+        el.style.opacity = '0';
+        txt.textContent = '↓ 당겨서 새로고침';
+      };
+      if (hasResult){
+        var p = analyze();
+        if (p && typeof p.finally === 'function') p.finally(done); else setTimeout(done, 1200);
+      } else {
+        setTimeout(done, 700);
+      }
+    } else {
+      el.style.height = '0';
+      el.style.opacity = '0';
+    }
+  }, {passive:true});
+})();
 </script>
 </body>
 </html>"""
