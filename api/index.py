@@ -4000,9 +4000,9 @@ loadSentiment('KRX');
 
 // ── Pull-to-Refresh (모바일) ──
 (function(){
-  var startY = 0, curY = 0, pulling = false;
+  var startY = 0, pulling = false;
   var THRESHOLD = 72;
-  var el = document.getElementById('ptr-indicator');
+  var el  = document.getElementById('ptr-indicator');
   var txt = document.getElementById('ptr-text');
   if (!el || !txt) return;
 
@@ -4010,51 +4010,75 @@ loadSentiment('KRX');
     return window.pageYOffset || document.documentElement.scrollTop || 0;
   }
 
+  // 현재 활성 페이지 감지 (analysis | screener)
+  function getActivePage(){
+    var s = document.getElementById('page-screener');
+    return (s && s.style.display !== 'none') ? 'screener' : 'analysis';
+  }
+
+  function resetIndicator(){
+    el.style.height  = '0';
+    el.style.opacity = '0';
+    txt.textContent  = '↓ 당겨서 새로고침';
+  }
+
+  function doRefresh(){
+    el.style.height  = '48px';
+    el.style.opacity = '1';
+    txt.innerHTML    = '<span class="ptr-spinner"></span>새로고침 중...';
+
+    var page     = getActivePage();
+    var savedTab = currentTab;   // 현재 탭 저장 (chart|ai|forecast|news)
+    var p;
+
+    if (page === 'screener') {
+      // 스크리너 페이지: loadScreener() 재호출
+      p = loadScreener();
+    } else {
+      // 분석 페이지: 결과가 있을 때만 재분석
+      var resultEl = document.getElementById('state-result');
+      var hasResult = resultEl && resultEl.style.display !== 'none';
+      if (hasResult) {
+        p = analyze().then(function(){
+          // renderResult() 가 switchTab('chart') 로 리셋하므로
+          // Promise 이행 직후 저장해 둔 탭으로 복원
+          switchTab(savedTab);
+        });
+      }
+    }
+
+    if (p && typeof p.finally === 'function') {
+      p.finally(resetIndicator);
+    } else {
+      setTimeout(resetIndicator, 700);
+    }
+  }
+
   document.addEventListener('touchstart', function(e){
     if (scrollTop() === 0){
-      startY = e.touches[0].clientY;
+      startY  = e.touches[0].clientY;
       pulling = true;
     }
   }, {passive:true});
 
   document.addEventListener('touchmove', function(e){
     if (!pulling) return;
-    curY = e.touches[0].clientY;
-    var dy = curY - startY;
+    var dy = e.touches[0].clientY - startY;
     if (dy > 0 && scrollTop() === 0){
-      var h = Math.min(dy * 0.45, 52);
-      el.style.height = h + 'px';
+      el.style.height  = Math.min(dy * 0.45, 52) + 'px';
       el.style.opacity = Math.min(dy / THRESHOLD, 1);
-      txt.textContent = dy >= THRESHOLD ? '↑ 놓으면 새로고침' : '↓ 당겨서 새로고침';
+      txt.textContent  = dy >= THRESHOLD ? '↑ 놓으면 새로고침' : '↓ 당겨서 새로고침';
     }
   }, {passive:true});
 
   document.addEventListener('touchend', function(e){
     if (!pulling) return;
     pulling = false;
-    var dy = (e.changedTouches[0].clientY - startY);
-
+    var dy = e.changedTouches[0].clientY - startY;
     if (dy >= THRESHOLD && scrollTop() === 0){
-      el.style.height = '48px';
-      el.style.opacity = '1';
-      txt.innerHTML = '<span class="ptr-spinner"></span>새로고침 중...';
-
-      var hasResult = document.getElementById('state-result') &&
-                      document.getElementById('state-result').style.display !== 'none';
-      var done = function(){
-        el.style.height = '0';
-        el.style.opacity = '0';
-        txt.textContent = '↓ 당겨서 새로고침';
-      };
-      if (hasResult){
-        var p = analyze();
-        if (p && typeof p.finally === 'function') p.finally(done); else setTimeout(done, 1200);
-      } else {
-        setTimeout(done, 700);
-      }
+      doRefresh();
     } else {
-      el.style.height = '0';
-      el.style.opacity = '0';
+      resetIndicator();
     }
   }, {passive:true});
 })();
