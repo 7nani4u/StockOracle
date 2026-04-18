@@ -2883,7 +2883,9 @@ input::placeholder{color:#484f58}
 /* ── 모바일 (≤ 768px) ── */
 @media(max-width:768px){
   /* 레이아웃 재구성: flex → block, 스크롤 허용 */
-  body{display:block;height:auto;overflow-y:auto}
+  /* overscroll-behavior:none → 브라우저 네이티브 PTR(전체 새로고침) 차단 */
+  body{display:block;height:auto;overflow-y:auto;overscroll-behavior-y:none}
+  html{overscroll-behavior-y:none}
   #main{padding:56px 14px 28px;min-height:100vh}
 
   /* 햄버거 표시 */
@@ -4000,87 +4002,121 @@ loadSentiment('KRX');
 
 // ── Pull-to-Refresh (모바일) ──
 (function(){
-  var startY = 0, pulling = false;
-  var THRESHOLD = 72;
-  var el  = document.getElementById('ptr-indicator');
-  var txt = document.getElementById('ptr-text');
+  var THRESHOLD  = 72;   // 트리거까지 필요한 최소 드래그 거리(px)
+  var el         = document.getElementById('ptr-indicator');
+  var txt        = document.getElementById('ptr-text');
   if (!el || !txt) return;
 
-  function scrollTop(){
-    return window.pageYOffset || document.documentElement.scrollTop || 0;
+  var startY   = 0;
+  var pulling  = false;   // touchstart 에서 PTR 후보로 등록됨
+  var dragging = false;   // 실제로 아래로 당기고 있는 중
+  var busy     = false;   // 새로고침 실행 중 (중복 방지)
+
+  // ── 스크롤 최상단 여부 판별 ──
+  // 모바일: body 스크롤 / 데스크탑: #main 스크롤 → 둘 다 확인
+  function atTop() {
+    var bodyTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    var mainEl  = document.getElementById('main');
+    var mainTop = mainEl ? mainEl.scrollTop : 0;
+    return bodyTop === 0 && mainTop === 0;
   }
 
-  // 현재 활성 페이지 감지 (analysis | screener)
-  function getActivePage(){
+  // ── 현재 활성 페이지 ──
+  function getActivePage() {
     var s = document.getElementById('page-screener');
     return (s && s.style.display !== 'none') ? 'screener' : 'analysis';
   }
 
-  function resetIndicator(){
+  // ── 인디케이터 초기화 ──
+  function resetIndicator() {
+    busy = false;
     el.style.height  = '0';
     el.style.opacity = '0';
-    txt.textContent  = '↓ 당겨서 새로고침';
+    setTimeout(function(){ txt.textContent = '↓ 당겨서 새로고침'; }, 200);
   }
 
-  function doRefresh(){
+  // ── 새로고침 실행 ──
+  function doRefresh() {
+    busy = true;
     el.style.height  = '48px';
     el.style.opacity = '1';
     txt.innerHTML    = '<span class="ptr-spinner"></span>새로고침 중...';
 
     var page     = getActivePage();
-    var savedTab = currentTab;   // 현재 탭 저장 (chart|ai|forecast|news)
+    var savedTab = currentTab;   // 현재 탭 저장
     var p;
 
     if (page === 'screener') {
-      // 스크리너 페이지: loadScreener() 재호출
       p = loadScreener();
     } else {
-      // 분석 페이지: 결과가 있을 때만 재분석
-      var resultEl = document.getElementById('state-result');
+      var resultEl  = document.getElementById('state-result');
       var hasResult = resultEl && resultEl.style.display !== 'none';
       if (hasResult) {
-        p = analyze().then(function(){
-          // renderResult() 가 switchTab('chart') 로 리셋하므로
-          // Promise 이행 직후 저장해 둔 탭으로 복원
-          switchTab(savedTab);
-        });
+        // analyze() 완료 후 renderResult() 가 강제로 switchTab('chart') 하므로
+        // .then() 에서 저장해 둔 탭으로 즉시 복원
+        p = analyze().then(function(){ switchTab(savedTab); });
       }
     }
 
     if (p && typeof p.finally === 'function') {
       p.finally(resetIndicator);
     } else {
-      setTimeout(resetIndicator, 700);
+      setTimeout(resetIndicator, 600);
     }
   }
 
-  document.addEventListener('touchstart', function(e){
-    if (scrollTop() === 0){
-      startY  = e.touches[0].clientY;
-      pulling = true;
+  // ── touchstart ──
+  document.addEventListener('touchstart', function(e) {
+    if (busy) return;
+    if (atTop()) {
+      startY   = e.touches[0].clientY;
+      pulling  = true;
+      dragging = false;
     }
-  }, {passive:true});
+  }, { passive: true });
 
-  document.addEventListener('touchmove', function(e){
-    if (!pulling) return;
+  // ── touchmove  (passive:false → preventDefault 가능) ──
+  // passive:false 는 브라우저 네이티브 PTR(전체 새로고침)을 막는 데 필수
+  document.addEventListener('touchmove', function(e) {
+    if (!pulling || busy) return;
     var dy = e.touches[0].clientY - startY;
-    if (dy > 0 && scrollTop() === 0){
-      el.style.height  = Math.min(dy * 0.45, 52) + 'px';
-      el.style.opacity = Math.min(dy / THRESHOLD, 1);
-      txt.textContent  = dy >= THRESHOLD ? '↑ 놓으면 새로고침' : '↓ 당겨서 새로고침';
-    }
-  }, {passive:true});
 
-  document.addEventListener('touchend', function(e){
+    if (dy > 0 && atTop()) {
+      // 아래로 당기는 중 → 네이티브 스크롤·PTR 억제
+      e.preventDefault();
+      dragging = true;
+      el.style.height  = Math.min(dy * 0.45, 52) + 'px';
+      el.style.opacity = String(Math.min(dy / THRESHOLD, 1));
+      txt.textContent  = dy >= THRESHOLD ? '↑ 놓으면 새로고침' : '↓ 당겨서 새로고침';
+    } else if (dy <= 0) {
+      // 위로 올리면 PTR 취소
+      pulling  = false;
+      dragging = false;
+      resetIndicator();
+    }
+  }, { passive: false });
+
+  // ── touchend ──
+  document.addEventListener('touchend', function(e) {
     if (!pulling) return;
     pulling = false;
+
+    if (!dragging) return;   // 실제 당김 없이 끝남
+    dragging = false;
+
     var dy = e.changedTouches[0].clientY - startY;
-    if (dy >= THRESHOLD && scrollTop() === 0){
+    if (dy >= THRESHOLD) {
       doRefresh();
     } else {
       resetIndicator();
     }
-  }, {passive:true});
+  }, { passive: true });
+
+  // ── touchcancel (전화·알림 등 인터럽트) ──
+  document.addEventListener('touchcancel', function() {
+    pulling = dragging = false;
+    if (!busy) resetIndicator();
+  }, { passive: true });
 })();
 </script>
 </body>
