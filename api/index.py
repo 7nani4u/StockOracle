@@ -1728,7 +1728,13 @@ def analyze_score(dd: Dict, market: str = "KRX"):
 
     closes = dd.get("Close", [])
     if len(closes) < 20:
-        return 50, [], [], []
+        fallback_strategy = {
+            "step": "💡 AI 종합 진단 및 트레이딩 전략",
+            "result": "데이터 부족으로 분석 불가",
+            "score": 0,
+            "weight": "종합"
+        }
+        return 50, [], [], [], fallback_strategy
 
     def v(k):
         a = dd.get(k, [])
@@ -2554,16 +2560,25 @@ def route(path: str, params: Dict) -> Dict:
         # Market Regime 필터 적용
         regime = check_market_regime(market)
         if regime == "BEAR":
-            ai_strategy = "시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"
+            if isinstance(ai_strategy, dict):
+                ai_strategy["result"] += " | [시장 상태] 시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"
+            else:
+                ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"}
             score = min(score, 40) # 하락장에서는 점수 강제 하향
         elif regime == "BULL":
-            ai_strategy += " (시장 전체 상승장(BULL) 진행 중: 적극 매수 유리)"
+            if isinstance(ai_strategy, dict):
+                ai_strategy["result"] += " | [시장 상태] 시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"
+            else:
+                ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"}
             
         # 부채비율 검증 로직 적용
         try:
             info = yf.Ticker(sym).info
             if not validate_financial_health(info):
-                ai_strategy += " ⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"
+                if isinstance(ai_strategy, dict):
+                    ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"
+                else:
+                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"}
                 score = min(score, 45)
         except:
             pass
