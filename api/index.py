@@ -1680,15 +1680,52 @@ def classify_market_state(dd: Dict, close: float, rsi: float,
         return "↩️ 하락 반전 가능 (Bearish Reversal)"
     return "➡️ 횡보 구간 (Consolidation)"
 
-def analyze_score(dd: Dict):
+def get_market_weights(market: str) -> dict:
+    """시장별 최적화된 팩터 가중치 반환"""
+    if market == "US":
+        return {"trend": 40.0, "momentum": 25.0, "volatility": 15.0, "volume": 10.0, "quality": 10.0}
+    else:
+        return {"trend": 20.0, "momentum": 35.0, "volatility": 25.0, "volume": 20.0, "quality": 0.0}
+
+def check_market_regime(market: str) -> str:
+    """시장 전체의 추세를 판단하여 투자 비중 조절 신호 발생"""
+    index_ticker = "^KS11" if market == "KRX" else "^GSPC"
+    try:
+        df = yf.Ticker(index_ticker).history(period="6mo")
+        if df.empty or len(df) < 120:
+            return "NEUTRAL"
+        current_close = df['Close'].iloc[-1]
+        ma60 = df['Close'].rolling(60).mean().iloc[-1]
+        ma120 = df['Close'].rolling(120).mean().iloc[-1]
+        
+        if current_close < ma120 and ma60 < ma120:
+            return "BEAR"
+        elif current_close > ma60 > ma120:
+            return "BULL"
+        else:
+            return "NEUTRAL"
+    except:
+        return "NEUTRAL"
+
+def validate_financial_health(ticker_info: dict) -> bool:
+    """투자 전략 수립 시 부채 비율(레버리지) 반드시 확인"""
+    debt_to_equity = ticker_info.get("debtToEquity")
+    if debt_to_equity is None:
+        return False
+    debt_pct = debt_to_equity * 100 if debt_to_equity < 10 else debt_to_equity
+    return debt_pct <= 150.0
+
+def analyze_score(dd: Dict, market: str = "KRX"):
     """
-    가중치 기반 종합 점수 산출
-    - 추세 (35%): MACD & EMA 20/50
-    - 모멘텀 (30%): RSI (14) & ADX (14)
-    - 변동성 (20%): Bollinger Bands (20,2) & ATR (14)
-    - 거래량 (15%): Volume 급증 확인
-    Base 50 + 각 구간 ±(weight/2) → 최종 0~100 클리핑
+    가중치 기반 종합 점수 산출 (시장별 동적 가중치 적용)
     """
+    weights = get_market_weights(market)
+    w_trend = weights["trend"]
+    w_mom = weights["momentum"]
+    w_vol = weights["volatility"]
+    w_volm = weights["volume"]
+    w_qual = weights["quality"]
+
     closes = dd.get("Close", [])
     if len(closes) < 20:
         return 50, [], [], []
@@ -1713,109 +1750,113 @@ def analyze_score(dd: Dict):
     score = 50.0
     steps = []
 
-    # ── 1. 추세 분석 — EMA(20/50) & MACD & PSAR [35%] max ±17.5 ──
+    # ── 1. 추세 분석 — EMA(20/50) & MACD & PSAR ──
     ts = 0.0; msgs = []
+    max_ts = w_trend / 2.0
     if ema20 and ema50:
         if ema20 > ema50:
-            ts += 6.0; msgs.append("EMA20 > EMA50 정배열 → 중기 상승 추세")
+            ts += max_ts * 0.35; msgs.append("EMA20 > EMA50 정배열 → 중기 상승 추세")
         else:
-            ts -= 6.0; msgs.append("EMA20 < EMA50 역배열 → 중기 하락 추세")
+            ts -= max_ts * 0.35; msgs.append("EMA20 < EMA50 역배열 → 중기 하락 추세")
     if ema20 and close:
         if close > ema20:
-            ts += 4.5; msgs.append("현재가 EMA20 상회 → 단기 강세")
+            ts += max_ts * 0.25; msgs.append("현재가 EMA20 상회 → 단기 강세")
         else:
-            ts -= 4.5; msgs.append("현재가 EMA20 하회 → 단기 약세")
+            ts -= max_ts * 0.25; msgs.append("현재가 EMA20 하회 → 단기 약세")
     if macd > sig:
-        ts += 4.5; msgs.append("MACD 골든크로스 → 상승 전환 신호")
+        ts += max_ts * 0.25; msgs.append("MACD 골든크로스 → 상승 전환 신호")
     else:
-        ts -= 4.5; msgs.append("MACD 데드크로스 → 하락 전환 신호")
-    psar_dir = v("PSAR_DIR")   # v()가 None→0.0 반환; 유효값은 1.0 또는 -1.0
+        ts -= max_ts * 0.25; msgs.append("MACD 데드크로스 → 하락 전환 신호")
+    psar_dir = v("PSAR_DIR")
     psar_dir_arr = dd.get("PSAR_DIR", [])
     _prev_pdir = float(psar_dir_arr[-2]) if len(psar_dir_arr) >= 2 and psar_dir_arr[-2] is not None else psar_dir
     if psar_dir == 1.0:
-        ts += 2.5
+        ts += max_ts * 0.15
         msgs.append("PSAR 상승" + (" 전환 (신규)" if _prev_pdir != 1.0 else " 추세 지속"))
     elif psar_dir == -1.0:
-        ts -= 2.5
+        ts -= max_ts * 0.15
         msgs.append("PSAR 하락" + (" 전환 (신규)" if _prev_pdir != -1.0 else " 추세 지속"))
-    ts = max(-17.5, min(17.5, ts))
+    ts = max(-max_ts, min(max_ts, ts))
     score += ts
     steps.append({"step": "1. 추세 분석 (EMA·MACD·PSAR)",
-                  "result": " | ".join(msgs), "score": round(ts, 1), "weight": "35%"})
+                  "result": " | ".join(msgs), "score": round(ts, 1), "weight": f"{w_trend}%"})
 
-    # ── 2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도 [30%] max ±15 ──
+    # ── 2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도 ──
     ms = 0.0; msgs = []
-    if   rsi > 70: ms -= 6.0; msgs.append(f"RSI {rsi:.1f} 과매수 → 하락 압력 주의")
-    elif rsi < 30: ms += 8.0; msgs.append(f"RSI {rsi:.1f} 과매도 → 강한 반등 기대")
-    elif rsi > 55: ms -= 2.0; msgs.append(f"RSI {rsi:.1f} 고점권 — 완만한 하락 압력")
-    elif rsi < 45: ms += 3.0; msgs.append(f"RSI {rsi:.1f} 저점권 → 매수 관심 구간")
+    max_ms = w_mom / 2.0
+    if   rsi > 70: ms -= max_ms * 0.4; msgs.append(f"RSI {rsi:.1f} 과매수 → 하락 압력 주의")
+    elif rsi < 30: ms += max_ms * 0.5; msgs.append(f"RSI {rsi:.1f} 과매도 → 강한 반등 기대")
+    elif rsi > 55: ms -= max_ms * 0.1; msgs.append(f"RSI {rsi:.1f} 고점권 — 완만한 하락 압력")
+    elif rsi < 45: ms += max_ms * 0.2; msgs.append(f"RSI {rsi:.1f} 저점권 → 매수 관심 구간")
     else:                      msgs.append(f"RSI {rsi:.1f} 중립")
     if adx > 25:
         if dip > dim:
-            ms += 7.0; msgs.append(f"ADX {adx:.0f} + +DI 우세 → 강한 상승 추세 신뢰")
+            ms += max_ms * 0.5; msgs.append(f"ADX {adx:.0f} + +DI 우세 → 강한 상승 추세 신뢰")
         else:
-            ms -= 7.0; msgs.append(f"ADX {adx:.0f} + -DI 우세 → 강한 하락 추세 신뢰")
+            ms -= max_ms * 0.5; msgs.append(f"ADX {adx:.0f} + -DI 우세 → 강한 하락 추세 신뢰")
     elif adx > 20:
         msgs.append(f"ADX {adx:.0f} — 추세 형성 초기")
     else:
         msgs.append(f"ADX {adx:.0f} — 횡보 구간 (추세 약함)")
-    ms = max(-15.0, min(15.0, ms))
+    ms = max(-max_ms, min(max_ms, ms))
     score += ms
     steps.append({"step": "2. RSI (14) & ADX (14) — 모멘텀 및 추세 신뢰도",
-                  "result": " | ".join(msgs), "score": round(ms, 1), "weight": "30%"})
+                  "result": " | ".join(msgs), "score": round(ms, 1), "weight": f"{w_mom}%"})
 
-    # ── 3. Bollinger Bands (20, 2) & ATR (14) — 변동성 및 리스크 관리 [20%] max ±10 ──
+    # ── 3. Bollinger Bands (20, 2) & ATR (14) — 변동성 및 리스크 관리 ──
     vs = 0.0; msgs = []
+    max_vs = w_vol / 2.0
     if close and bb_u and bb_l and bb_u > bb_l:
         bb_range = bb_u - bb_l
         pos = (close - bb_l) / bb_range  # 0~1 위치
         if close >= bb_u * 0.98:
-            vs -= 5.0; msgs.append("볼린저 상단 터치 → 단기 과매수/저항")
+            vs -= max_vs * 0.5; msgs.append("볼린저 상단 터치 → 단기 과매수/저항")
         elif close <= bb_l * 1.02:
-            vs += 5.0; msgs.append("볼린저 하단 터치 → 단기 과매도/지지")
+            vs += max_vs * 0.5; msgs.append("볼린저 하단 터치 → 단기 과매도/지지")
         elif pos > 0.7:
-            vs -= 2.0; msgs.append("볼린저 상단권 (70%+) → 매도 압력")
+            vs -= max_vs * 0.2; msgs.append("볼린저 상단권 (70%+) → 매도 압력")
         elif pos < 0.3:
-            vs += 2.0; msgs.append("볼린저 하단권 (30%-) → 지지 기대")
+            vs += max_vs * 0.2; msgs.append("볼린저 하단권 (30%-) → 지지 기대")
         else:
             msgs.append("볼린저 중간권 → 중립")
         bb_pct = bb_range / close * 100
         if bb_pct < 3.0:
-            vs += 3.0; msgs.append(f"밴드 수렴 ({bb_pct:.1f}%) → 큰 방향 돌파 임박")
+            vs += max_vs * 0.3; msgs.append(f"밴드 수렴 ({bb_pct:.1f}%) → 큰 방향 돌파 임박")
         elif atr and close:
             atr_pct = atr / close * 100
             if atr_pct > 4.0:
-                vs -= 2.0; msgs.append(f"ATR 고변동 ({atr_pct:.1f}%) → 리스크 증가")
+                vs -= max_vs * 0.2; msgs.append(f"ATR 고변동 ({atr_pct:.1f}%) → 리스크 증가")
             else:
                 msgs.append(f"ATR {atr_pct:.1f}% — 적정 변동성")
-    vs = max(-10.0, min(10.0, vs))
+    vs = max(-max_vs, min(max_vs, vs))
     score += vs
     steps.append({"step": "3. Bollinger Bands (20,2) & ATR (14) — 변동성 및 리스크 관리",
-                  "result": " | ".join(msgs), "score": round(vs, 1), "weight": "20%"})
+                  "result": " | ".join(msgs), "score": round(vs, 1), "weight": f"{w_vol}%"})
 
-    # ── 4. Volume — 거래량 급증 확인 [15%] max ±7.5 ──
+    # ── 4. Volume — 거래량 급증 확인 ──
     gvs = 0.0; msgs = []
+    max_gvs = w_volm / 2.0
     if avg_vol > 0:
         ratio = cur_vol / avg_vol
         last_close = close
         last_opn = last_opn if last_opn else last_close   # 데이터 없으면 종가로 대체
 
         if ratio > 2.0:
-            if last_close > last_opn: gvs += 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
-            else:                     gvs -= 7.5; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
+            if last_close > last_opn: gvs += max_gvs; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
+            else:                     gvs -= max_gvs; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
         elif ratio > 1.5:
-            if last_close > last_opn: gvs += 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
-            else:                     gvs -= 4.0; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
+            if last_close > last_opn: gvs += max_gvs * 0.5; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
+            else:                     gvs -= max_gvs * 0.5; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
         elif ratio < 0.5:
             msgs.append(f"거래량 급감 ({ratio:.1f}x) → 신뢰도 낮음")
         else:
             msgs.append(f"거래량 평이 ({ratio:.1f}x)")
     else:
         msgs.append("거래량 데이터 없음")
-    gvs = max(-7.5, min(7.5, gvs))
+    gvs = max(-max_gvs, min(max_gvs, gvs))
     score += gvs
     steps.append({"step": "4. Volume — 거래량 급증 확인",
-                  "result": " | ".join(msgs), "score": round(gvs, 1), "weight": "15%"})
+                  "result": " | ".join(msgs), "score": round(gvs, 1), "weight": f"{w_volm}%"})
 
     # 캔들 패턴 (점수 반영 없이 정보 제공)
     patterns = detect_patterns(dd)
@@ -2508,7 +2549,24 @@ def route(path: str, params: Dict) -> Dict:
         last = float(closes[-1]) if closes else 0
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
-        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd)
+        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market)
+        
+        # Market Regime 필터 적용
+        regime = check_market_regime(market)
+        if regime == "BEAR":
+            ai_strategy = "시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"
+            score = min(score, 40) # 하락장에서는 점수 강제 하향
+        elif regime == "BULL":
+            ai_strategy += " (시장 전체 상승장(BULL) 진행 중: 적극 매수 유리)"
+            
+        # 부채비율 검증 로직 적용
+        try:
+            info = yf.Ticker(sym).info
+            if not validate_financial_health(info):
+                ai_strategy += " ⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"
+                score = min(score, 45)
+        except:
+            pass
         
         # 기하학적 패턴을 캔들 패턴 리스트에 통합 (UI 표시용)
         for gp in geo_patterns:
