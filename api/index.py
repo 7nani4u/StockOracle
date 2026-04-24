@@ -3120,9 +3120,6 @@ input::placeholder{color:#484f58}
 .sent-val{font-size:20px;font-weight:700;margin:3px 0}
 .sent-chg{font-size:12px;font-weight:500}
 .sent-badge{display:inline-block;margin-top:6px;font-size:10px;padding:2px 8px;border-radius:20px;background:#21262d;border:1px solid #30363d;color:#8b949e}
-.sb-footer{padding:12px;margin-top:auto;border-top:1px solid #30363d}
-.sb-footer p{font-size:10px;color:#484f58;line-height:1.5}
-
 /* 메인 */
 #main{flex:1;overflow-y:auto;background:#0d1117;padding:24px}
 
@@ -3131,8 +3128,6 @@ input::placeholder{color:#484f58}
 .center-state .icon{font-size:56px}
 .center-state h2{font-size:22px;font-weight:700}
 .center-state p{color:#8b949e;font-size:14px;line-height:1.6;max-width:380px}
-.sample-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;justify-content:center}
-.sample-tag{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 14px;font-size:13px;color:#8b949e}
 .spinner{width:40px;height:40px;border:4px solid #21262d;border-top-color:#1f6feb;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -3170,24 +3165,34 @@ input::placeholder{color:#484f58}
 .fund-val{font-size:14px;font-weight:600}
 
 /* 스코어 */
-.score-wrap{display:flex;align-items:flex-end;gap:8px;margin-bottom:10px}
+.score-wrap{display:flex;align-items:flex-end;justify-content:center;gap:8px;margin-bottom:10px;text-align:center}
 .score-num{font-size:52px;font-weight:800;line-height:1}
 .score-bar-bg{background:#21262d;border-radius:6px;height:10px;overflow:hidden}
 .score-bar-fill{height:10px;border-radius:6px;transition:width .6s ease}
 
+/* AI 진단 레이아웃 */
+.ai-diagnosis-layout{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:18px;align-items:stretch}
+.ai-summary-grid{display:grid;grid-template-columns:minmax(320px,380px) minmax(0,1fr);gap:18px;align-items:start}
+.ai-summary-stack{display:flex;flex-direction:column;gap:18px}
+.ai-insight-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;align-items:stretch}
+.ai-score-card,.ai-patterns-card,.ai-report-card,.ai-flow-card{margin-bottom:0}
+.ai-score-card .score-bar-bg{max-width:320px;margin:0 auto}
+.ai-score-card #ai-score-desc{text-align:center;line-height:1.6}
+#steps-list,#patterns-list{display:flex;flex-direction:column;gap:10px}
+
 /* 분석 스텝 */
-.step-item{background:#21262d;border-radius:10px;padding:14px;margin-bottom:8px}
-.step-header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap}
-.step-title{font-size:13px;font-weight:600;line-height:1.4;flex:1;min-width:0}
+.step-item{background:#21262d;border-radius:12px;padding:16px;margin-bottom:0;border:1px solid #30363d}
+.step-header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.step-title{font-size:13px;font-weight:600;line-height:1.5;flex:1;min-width:0}
 .step-score{font-size:12px;font-weight:700;padding:2px 8px;border-radius:12px;flex-shrink:0;align-self:center}
 .step-score.pos{background:#0d2d1a;color:#3fb950}
 .step-score.neg{background:#2d0d0d;color:#f85149}
 .step-score.neu{background:#21262d;color:#8b949e}
-.step-result{font-size:13px;color:#8b949e;line-height:1.6}
-.step-result-line{display:block;padding:2px 0;word-break:keep-all;overflow-wrap:break-word}
+.step-result{font-size:13px;color:#8b949e;line-height:1.7;display:flex;flex-direction:column;gap:6px}
+.step-result-line{display:block;word-break:keep-all;overflow-wrap:break-word}
 
 /* 패턴 */
-.pattern-item{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-radius:8px;margin-bottom:6px;font-size:13px}
+.pattern-item{display:flex;flex-direction:column;justify-content:flex-start;align-items:flex-start;gap:6px;padding:12px 14px;border-radius:10px;margin-bottom:0;font-size:13px}
 .pattern-bull{background:#0d2d1a;border:1px solid #1a4730}
 .pattern-bear{background:#2d0d0d;border:1px solid #4d1515}
 .pattern-neu{background:#21262d;border:1px solid #30363d}
@@ -3302,6 +3307,11 @@ input::placeholder{color:#484f58}
 }
 #mob-overlay.on{display:block}
 
+@media(max-width:1100px){
+  .ai-summary-grid{grid-template-columns:1fr}
+  .ai-insight-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
 /* ── 태블릿 (≤ 900px) ── */
 @media(max-width:900px){
   .metrics-grid{grid-template-columns:repeat(2,1fr)}
@@ -3309,7 +3319,9 @@ input::placeholder{color:#484f58}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
   .buy-price-grid{grid-template-columns:1fr}
   .indicator-grid{grid-template-columns:1fr}
+  .ai-summary-grid,.ai-insight-grid{grid-template-columns:1fr}
   .two-col-grid{grid-template-columns:1fr}
+  .ai-insight-grid{grid-template-columns:1fr}
 }
 
 /* ── 모바일 (≤ 768px) ── */
@@ -3339,6 +3351,7 @@ input::placeholder{color:#484f58}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
   .buy-price-grid{grid-template-columns:1fr}
   .indicator-grid{grid-template-columns:1fr}
+  .ai-summary-grid,.ai-insight-grid{grid-template-columns:1fr}
 
   /* 헤더/타이포 */
   .page-header h2{font-size:18px}
@@ -3369,7 +3382,7 @@ input::placeholder{color:#484f58}
   .tab-btn{font-size:11px;padding:6px 10px}
   .page-header h2{font-size:16px}
   .step-result{font-size:12px}
-  .pattern-item{font-size:12px;padding:6px 10px}
+  .pattern-item{font-size:12px;padding:10px 12px}
   .risk-card{padding:12px}
   .buy-card{padding:12px}
   .fund-grid{grid-template-columns:1fr 1fr}
@@ -3494,11 +3507,6 @@ input::placeholder{color:#484f58}
   </div>
 
   <div class="sb-section" id="analysis-controls">
-    <span class="sb-label" style="margin-bottom:10px;display:block">시장 선택</span>
-    <div class="mkt-btns" style="margin-bottom:12px">
-      <button class="mkt-btn active" id="mkt-krx" onclick="setMarket('KRX')">🇰🇷 한국</button>
-      <button class="mkt-btn" id="mkt-us" onclick="setMarket('US')">🇺🇸 미국</button>
-    </div>
     <span class="sb-label">종목명 / 코드</span>
     <input type="text" id="ticker-input" value="삼성전자" placeholder="예: 삼성전자, 005930, TSLA"
            style="margin-bottom:10px" onkeydown="if(event.key==='Enter')analyze()">
@@ -3517,9 +3525,6 @@ input::placeholder{color:#484f58}
     <button id="analyze-btn" onclick="analyze()">🔍 분석 시작</button>
   </div>
 
-  <div class="sb-footer">
-    <p>⚠️ 본 시스템은 참고용이며, 투자 결정의 책임은 본인에게 있습니다.</p>
-  </div>
 </div>
 
 <!-- ── 메인 ── -->
@@ -3527,20 +3532,6 @@ input::placeholder{color:#484f58}
   <!-- 분석 페이지 -->
   <div id="page-analysis">
     <div id="state-empty">
-      <!-- 안내 & 샘플 종목 (최상단) -->
-      <div style="padding:14px 0 16px;border-bottom:1px solid #21262d;margin-bottom:16px">
-        <p style="color:#8b949e;font-size:13px;margin-bottom:10px">
-          ☰ 사이드바에서 종목명을 입력하거나 아래 종목을 눌러 바로 분석하세요
-        </p>
-        <div class="sample-tags">
-          <span class="sample-tag" onclick="quickSearch('삼성전자')" style="cursor:pointer">🇰🇷 삼성전자</span>
-          <span class="sample-tag" onclick="quickSearch('SK하이닉스')" style="cursor:pointer">🇰🇷 SK하이닉스</span>
-          <span class="sample-tag" onclick="quickSearch('카카오')" style="cursor:pointer">🇰🇷 카카오</span>
-          <span class="sample-tag" onclick="quickSearch('NVDA')" style="cursor:pointer">🇺🇸 NVDA</span>
-          <span class="sample-tag" onclick="quickSearch('TSLA')" style="cursor:pointer">🇺🇸 TSLA</span>
-          <span class="sample-tag" onclick="quickSearch('애플')" style="cursor:pointer">🇺🇸 AAPL</span>
-        </div>
-      </div>
       <!-- ⭐ 오늘의 핵심 -->
       <div id="market-core">
         <div class="core-loading" id="core-loading">
@@ -3645,44 +3636,45 @@ input::placeholder{color:#484f58}
 
       <!-- AI 탭 -->
       <div id="tab-ai" style="display:none">
-        <div class="two-col-grid">
-          <div>
-            <div class="card">
-              <div class="card-title">🏆 종합 기술적 점수</div>
-              <div class="score-wrap">
-                <div class="score-num" id="ai-score"></div>
-                <span style="color:#8b949e;font-size:18px;margin-bottom:6px">/ 100점</span>
+        <div class="ai-diagnosis-layout">
+          <div class="ai-summary-grid">
+            <div class="ai-summary-stack">
+              <div class="card ai-score-card">
+                <div class="card-title">🏆 종합 기술적 점수</div>
+                <div class="score-wrap">
+                  <div class="score-num" id="ai-score"></div>
+                  <span style="color:#8b949e;font-size:18px;margin-bottom:6px">/ 100점</span>
+                </div>
+                <div class="score-bar-bg"><div class="score-bar-fill" id="ai-score-bar"></div></div>
+                <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:10px"></p>
               </div>
-              <div class="score-bar-bg"><div class="score-bar-fill" id="ai-score-bar"></div></div>
-              <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:8px"></p>
+              <div class="card ai-patterns-card">
+                <div class="card-title">🕯️ 캔들스틱 패턴</div>
+                <div id="patterns-list"></div>
+              </div>
             </div>
-            <div class="card">
-              <div class="card-title">🕯️ 캔들스틱 패턴</div>
-              <div id="patterns-list"></div>
+            <div class="card ai-report-card">
+              <div class="card-title">📝 단계별 분석 리포트</div>
+              <div id="steps-list"></div>
             </div>
           </div>
-          <div class="card">
-            <div class="card-title">📝 단계별 분석 리포트</div>
-            <div id="steps-list"></div>
-          </div>
-        </div>
-        <!-- 🌊 흐름 분석 (AI 탭 통합) -->
-        <div style="border-top:1px solid #21262d;padding-top:4px;margin-top:4px">
-          <div class="card">
-            <div class="card-title">📡 3-신호 분석 매트릭스</div>
-            <div class="signal-matrix" id="flow-matrix"></div>
-            <div style="text-align:center;margin:10px 0">
-              <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
+          <div class="ai-insight-grid">
+            <div class="card ai-flow-card">
+              <div class="card-title">📡 3-신호 분석 매트릭스</div>
+              <div class="signal-matrix" id="flow-matrix"></div>
+              <div style="text-align:center;margin:10px 0">
+                <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
+              </div>
+              <div style="font-size:13px;color:#8b949e;text-align:center;line-height:1.7" id="flow-rationale"></div>
             </div>
-            <div style="font-size:13px;color:#8b949e;text-align:center;line-height:1.6" id="flow-rationale"></div>
-          </div>
-          <div class="card">
-            <div class="card-title">📊 52주 위치 & 거래량 신호</div>
-            <div id="flow-pos-content"></div>
-          </div>
-          <div class="card" id="flow-sector-card">
-            <div class="card-title">🏭 섹터 / 업종 정보</div>
-            <div id="flow-sector-content"></div>
+            <div class="card ai-flow-card">
+              <div class="card-title">📊 52주 위치 & 거래량 신호</div>
+              <div id="flow-pos-content"></div>
+            </div>
+            <div class="card ai-flow-card" id="flow-sector-card">
+              <div class="card-title">🏭 섹터 / 업종 정보</div>
+              <div id="flow-sector-content"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -3767,9 +3759,6 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
-      <div style="border-top:1px solid #21262d;margin-top:20px;padding-top:12px">
-        <p style="font-size:11px;color:#484f58">⚠️ 본 분석은 AI 기술적 지표 기반 참고용 자료입니다. 투자 결정의 책임은 본인에게 있습니다.</p>
-      </div>
     </div>
   </div>
 
@@ -3867,10 +3856,7 @@ function closeSidebar() {
 // ── 시장 선택 ──
 function setMarket(m) {
   currentMarket = m;
-  document.getElementById('mkt-krx').classList.toggle('active', m === 'KRX');
-  document.getElementById('mkt-us').classList.toggle('active', m === 'US');
   document.getElementById('ticker-input').placeholder = m === 'KRX' ? '예: 삼성전자, 005930' : '예: 애플, TSLA, NVDA';
-  document.getElementById('ticker-input').value = m === 'KRX' ? '삼성전자' : '애플';
   loadSentiment(m);
 }
 
@@ -3923,8 +3909,8 @@ async function analyze() {
     currentData = d;
     if (d.market) {
       currentMarket = d.market;
-      document.getElementById('mkt-krx').classList.toggle('active', d.market === 'KRX');
-      document.getElementById('mkt-us').classList.toggle('active', d.market === 'US');
+      document.getElementById('ticker-input').placeholder = d.market === 'KRX' ? '예: 삼성전자, 005930' : '예: 애플, TSLA, NVDA';
+      loadSentiment(d.market);
     }
     renderResult(d);
     setState('result');
