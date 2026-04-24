@@ -2985,6 +2985,89 @@ def route(path: str, params: Dict) -> Dict:
         t, m, c = resolve_ticker(q)
         return {"ticker": t, "market": m, "company": c} if t else {"error": f"'{q}' 미발견"}
 
+    # ── market_briefing 통합 엔드포인트 ─────────────────────────────────────
+    # k-ant-daily 로직을 이식한 3가지 분석 모듈
+    # /api/market/summary  → ⭐ 오늘의 핵심 (거시 지표 + 뉴스 무드)
+    # /api/market/sectors  → 🏭 섹터 흐름 (종목 리스트 기반 섹터 집계)
+    # /api/market/stocks   → 📈 종목별 분석 (3-신호 매트릭스 + 검증)
+
+    if path == "/api/market/summary":
+        try:
+            import sys as _sys
+            import os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.data_fetcher import fetch_macro_context
+            from market_briefing.core_summary import build_core_summary
+            ctx = fetch_macro_context()
+            return build_core_summary(ctx)
+        except Exception as e:
+            return {"error": f"거시 요약 조회 실패: {e}"}
+
+    if path == "/api/market/sectors":
+        # ?codes=005930,000660,...  &markets=KOSPI,KOSPI,...
+        # &proxies=^SOX:005930,NVDA:000660,...  (선택)
+        try:
+            import sys as _sys
+            import os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.data_fetcher import fetch_stock_list_snapshot
+            from market_briefing.sector_flow import build_sector_flow
+            import yaml as _yaml
+
+            codes_raw   = params.get("codes", "")
+            markets_raw = params.get("markets", "")
+            sectors_raw = params.get("sectors", "")
+            codes   = [c.strip() for c in codes_raw.split(",") if c.strip()]
+            markets_list = [m.strip() for m in markets_raw.split(",") if m.strip()]
+            sectors_list = [s.strip() for s in sectors_raw.split(",") if s.strip()]
+            if not codes:
+                return {"error": "codes 파라미터 필요 (예: ?codes=005930,000660)"}
+            stock_cfgs = []
+            for i, code in enumerate(codes):
+                stock_cfgs.append({
+                    "code":   code,
+                    "market": markets_list[i] if i < len(markets_list) else "KOSPI",
+                    "sector": sectors_list[i] if i < len(sectors_list) else None,
+                })
+            snapshots = fetch_stock_list_snapshot(stock_cfgs)
+            return build_sector_flow(snapshots)
+        except Exception as e:
+            return {"error": f"섹터 흐름 조회 실패: {e}"}
+
+    if path == "/api/market/stocks":
+        # ?codes=005930,000660,...  필수
+        # &markets=KOSPI,KOSPI,...  선택 (순서 대응)
+        # &evening=1               선택 (저녁 검증 모드: 당일 종가로 적중 판정)
+        try:
+            import sys as _sys
+            import os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.data_fetcher import fetch_stock_list_snapshot
+            from market_briefing.stock_analyzer import build_stock_report
+
+            codes_raw   = params.get("codes", "")
+            markets_raw = params.get("markets", "")
+            evening_mode = params.get("evening", "0") == "1"
+            codes        = [c.strip() for c in codes_raw.split(",") if c.strip()]
+            markets_list = [m.strip() for m in markets_raw.split(",") if m.strip()]
+            if not codes:
+                return {"error": "codes 파라미터 필요 (예: ?codes=005930,000660)"}
+            stock_cfgs = [
+                {
+                    "code":   code,
+                    "market": markets_list[i] if i < len(markets_list) else "KOSPI",
+                }
+                for i, code in enumerate(codes)
+            ]
+            snapshots = fetch_stock_list_snapshot(stock_cfgs)
+            # 저녁 모드: 스냅샷 quote 를 evening_quotes 로 사용 (당일 종가 반영)
+            evening_quotes = None
+            if evening_mode:
+                evening_quotes = {s["code"]: s.get("quote", {}) for s in snapshots}
+            return build_stock_report(snapshots, evening_quotes=evening_quotes)
+        except Exception as e:
+            return {"error": f"종목별 분석 조회 실패: {e}"}
+
     # HTML 서빙 (모든 나머지 경로)
     return None  # None이면 HTML 반환
 
