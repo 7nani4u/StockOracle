@@ -3383,6 +3383,78 @@ input::placeholder{color:#484f58}
   margin-right:8px;flex-shrink:0
 }
 @keyframes ptr-spin{to{transform:rotate(360deg)}}
+
+/* ── ⭐ 오늘의 핵심 ── */
+#market-core{margin-bottom:24px}
+.core-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.core-title{font-size:16px;font-weight:700}
+.mood-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
+.mood-positive{background:#0d2d1a;color:#3fb950;border:1px solid #1a4730}
+.mood-neutral{background:#21262d;color:#8b949e;border:1px solid #30363d}
+.mood-negative{background:#2d0d0d;color:#f85149;border:1px solid #4d1515}
+.core-indices{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.core-index-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px}
+.ci-name{font-size:11px;color:#8b949e;margin-bottom:4px}
+.ci-val{font-size:18px;font-weight:700}
+.ci-chg{font-size:12px;font-weight:500;margin-top:2px}
+.overnight-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:12px;scrollbar-width:none}
+.overnight-strip::-webkit-scrollbar{display:none}
+.ov-chip{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 12px;white-space:nowrap;flex-shrink:0}
+.ov-name{font-size:10px;color:#8b949e;margin-bottom:3px}
+.ov-val{font-size:13px;font-weight:600}
+.ov-chg{font-size:11px;font-weight:500}
+.core-news-item{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;margin-bottom:6px}
+.cn-impact{font-size:11px;font-weight:600;padding:2px 7px;border-radius:10px;white-space:nowrap;flex-shrink:0;margin-top:1px}
+.cn-positive{background:#0d2d1a;color:#3fb950}
+.cn-negative{background:#2d0d0d;color:#f85149}
+.cn-neutral{background:#21262d;color:#8b949e}
+.cn-title{font-size:13px;color:#e6edf3;text-decoration:none;line-height:1.4}
+.cn-title:hover{text-decoration:underline;color:#388bfd}
+.cn-meta{font-size:11px;color:#484f58;margin-top:2px}
+.core-loading{text-align:center;padding:32px;color:#8b949e;font-size:13px}
+.core-section-label{font-size:11px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
+
+/* ── 🌊 흐름 분석 탭 ── */
+.signal-matrix{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.sig-cell{background:#21262d;border-radius:10px;padding:12px;text-align:center}
+.sig-cell-label{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.sig-cell-val{font-size:14px;font-weight:700}
+.sig-up{color:#f85149}.sig-down{color:#388bfd}.sig-neutral{color:#8b949e}
+.rec-badge-lg{display:inline-block;padding:8px 20px;border-radius:20px;font-size:15px;font-weight:700;margin-bottom:8px}
+.rec-strong-buy{background:#0d2d1a;color:#3fb950;border:1px solid #1a4730}
+.rec-buy{background:#0d2020;color:#238636;border:1px solid #155724}
+.rec-hold{background:#2d2200;color:#d29922;border:1px solid #4a3800}
+.rec-sell{background:#2d1515;color:#f85149;border:1px solid #4d1515}
+.rec-strong-sell{background:#2d0d0d;color:#f85149;border:2px solid #f85149}
+.flow-pos-bar-bg{background:#21262d;border-radius:6px;height:8px;overflow:hidden;margin-top:6px}
+.flow-pos-bar-fill{height:8px;border-radius:6px;background:#1f6feb;transition:width .6s ease}
+
+/* ── 🌙 저녁 검증 모드 ── */
+#evening-mode-btn{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:6px 12px;font-size:12px;color:#8b949e;cursor:pointer;transition:all .15s;white-space:nowrap}
+#evening-mode-btn.active{background:#161d2c;border-color:#2a3f6f;color:#79b8ff}
+.ev-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+.ev-card{border-radius:12px;padding:16px;border:1px solid transparent}
+.ev-hit{background:#0d2d1a;border-color:#1a4730}
+.ev-partial{background:#2d2200;border-color:#4a3800}
+.ev-miss{background:#2d0d0d;border-color:#4d1515}
+.ev-neutral{background:#21262d;border-color:#30363d}
+.ev-label{font-size:11px;color:#8b949e;margin-bottom:6px}
+.ev-val{font-size:20px;font-weight:700}
+.ev-note{font-size:12px;color:#8b949e;margin-top:4px;line-height:1.4}
+.ev-outcome-badge{font-size:12px;font-weight:600;padding:4px 12px;border-radius:12px}
+.ev-hit-badge{background:#0d2d1a;color:#3fb950}
+.ev-partial-badge{background:#2d2200;color:#d29922}
+.ev-miss-badge{background:#2d0d0d;color:#f85149}
+.ev-na-badge{background:#21262d;color:#8b949e}
+.ev-sig-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#21262d;border-radius:8px;margin-bottom:6px}
+.ev-sig-row:last-child{margin-bottom:0}
+
+@media(max-width:900px){
+  .core-indices{grid-template-columns:repeat(2,1fr)}
+  .signal-matrix{grid-template-columns:1fr}
+  .ev-result-grid{grid-template-columns:1fr}
+}
+@media(max-width:480px){.core-indices{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
@@ -3449,17 +3521,47 @@ input::placeholder{color:#484f58}
 <div id="main">
   <!-- 분석 페이지 -->
   <div id="page-analysis">
-    <div id="state-empty" class="center-state">
-      <div class="icon">📊</div>
-      <h2>주식 AI 예측 시스템</h2>
-      <p>종목명 또는 코드를 입력하고<br><strong style="color:#388bfd">분석 시작</strong> 버튼을 누르세요.<br><span style="font-size:12px;color:#484f58">모바일: 왼쪽 상단 ☰ 버튼으로 메뉴를 여세요.</span></p>
-      <div class="sample-tags">
-        <span class="sample-tag" onclick="quickSearch('삼성전자')" style="cursor:pointer">삼성전자</span>
-        <span class="sample-tag" onclick="quickSearch('SK하이닉스')" style="cursor:pointer">SK하이닉스</span>
-        <span class="sample-tag" onclick="quickSearch('NVDA')" style="cursor:pointer">NVDA</span>
-        <span class="sample-tag" onclick="quickSearch('TSLA')" style="cursor:pointer">TSLA</span>
-        <span class="sample-tag" onclick="quickSearch('애플')" style="cursor:pointer">애플</span>
-        <span class="sample-tag" onclick="quickSearch('카카오')" style="cursor:pointer">카카오</span>
+    <div id="state-empty">
+      <!-- ⭐ 오늘의 핵심 -->
+      <div id="market-core">
+        <div class="core-loading" id="core-loading">
+          <div class="spinner" style="margin:0 auto 10px"></div>
+          시장 현황 로딩 중...
+        </div>
+        <div id="core-content" style="display:none">
+          <div class="core-header">
+            <span class="core-title">⭐ 오늘의 핵심</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span id="core-mood-badge" class="mood-badge mood-neutral">—</span>
+              <span id="core-vix-badge" style="display:none;font-size:11px;padding:3px 8px;border-radius:10px;background:#2d0d0d;color:#f85149;border:1px solid #4d1515"></span>
+              <button onclick="loadMarketCore()" title="새로고침" style="background:none;border:1px solid #30363d;border-radius:6px;padding:4px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄</button>
+            </div>
+          </div>
+          <div class="core-section-label">국내 지수</div>
+          <div class="core-indices" id="core-indices"></div>
+          <div class="core-section-label">간밤 해외 시장</div>
+          <div class="overnight-strip" id="core-overnight"></div>
+          <div class="core-section-label">주요 뉴스</div>
+          <div id="core-news"></div>
+        </div>
+        <div id="core-error" style="display:none;text-align:center;padding:24px;color:#484f58;font-size:13px">
+          시장 데이터 조회 실패
+          <button onclick="loadMarketCore()" style="background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer;margin-left:8px">재시도</button>
+        </div>
+      </div>
+      <!-- 샘플 종목 -->
+      <div style="margin-top:20px;padding:16px 0;border-top:1px solid #21262d">
+        <p style="color:#8b949e;font-size:12px;margin-bottom:10px">
+          ☰ 사이드바에서 종목명을 입력하거나 아래 종목을 눌러 바로 분석하세요
+        </p>
+        <div class="sample-tags">
+          <span class="sample-tag" onclick="quickSearch('삼성전자')" style="cursor:pointer">삼성전자</span>
+          <span class="sample-tag" onclick="quickSearch('SK하이닉스')" style="cursor:pointer">SK하이닉스</span>
+          <span class="sample-tag" onclick="quickSearch('NVDA')" style="cursor:pointer">NVDA</span>
+          <span class="sample-tag" onclick="quickSearch('TSLA')" style="cursor:pointer">TSLA</span>
+          <span class="sample-tag" onclick="quickSearch('애플')" style="cursor:pointer">애플</span>
+          <span class="sample-tag" onclick="quickSearch('카카오')" style="cursor:pointer">카카오</span>
+        </div>
       </div>
     </div>
     <div id="state-loading" class="center-state" style="display:none">
@@ -3473,7 +3575,10 @@ input::placeholder{color:#484f58}
     </div>
     <div id="state-result" style="display:none">
       <div class="page-header">
-        <h2 id="r-title"></h2>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+          <h2 id="r-title"></h2>
+          <button id="evening-mode-btn" onclick="toggleEveningMode()" style="display:none">🌙 저녁 검증</button>
+        </div>
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
@@ -3490,11 +3595,13 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">PBR</div><div class="fund-val" id="f-pbr"></div></div>
         </div>
       </div>
-      <div class="tabs">
+      <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트 분석</button>
         <button class="tab-btn" onclick="switchTab('ai')">🧠 AI 진단</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 미래 예측</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스/공시</button>
+        <button class="tab-btn" id="tab-flow-btn" onclick="switchTab('flow')" style="display:none">🌊 흐름 분석</button>
+        <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">🌙 저녁 검증</button>
       </div>
 
       <!-- 차트 탭 -->
@@ -3579,6 +3686,73 @@ input::placeholder{color:#484f58}
             <div class="card-title">📋 최근 공시</div>
             <div id="disclosure-list"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- 🌊 흐름 분석 탭 -->
+      <div id="tab-flow" style="display:none">
+        <div class="card">
+          <div class="card-title">📡 3-신호 분석 매트릭스</div>
+          <div class="signal-matrix" id="flow-matrix"></div>
+          <div style="text-align:center;margin-bottom:10px">
+            <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
+          </div>
+          <div style="font-size:13px;color:#8b949e;text-align:center;line-height:1.6" id="flow-rationale"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">📊 52주 위치 & 거래량 신호</div>
+          <div id="flow-pos-content"></div>
+        </div>
+        <div class="card" id="flow-sector-card">
+          <div class="card-title">🏭 섹터 흐름 연관 정보</div>
+          <div id="flow-sector-content"></div>
+        </div>
+      </div>
+
+      <!-- 🌙 저녁 검증 탭 -->
+      <div id="tab-evening" style="display:none">
+        <div id="evening-loading" style="text-align:center;padding:32px;color:#8b949e;display:none">
+          <div class="spinner" style="margin:0 auto 10px"></div>
+          저녁 검증 데이터 로딩 중...
+        </div>
+        <div id="evening-content" style="display:none">
+          <div class="card">
+            <div class="card-title">⚖️ 예측 vs 실제 비교</div>
+            <div class="ev-result-grid">
+              <div class="ev-card ev-neutral">
+                <div class="ev-label">🌅 아침 예측</div>
+                <div class="ev-val" id="ev-pred-rec">—</div>
+                <div class="ev-note" id="ev-pred-conf"></div>
+              </div>
+              <div class="ev-card ev-neutral" id="ev-actual-card">
+                <div class="ev-label">📊 실제 종가 등락</div>
+                <div class="ev-val" id="ev-actual-pct">—</div>
+                <div class="ev-note" id="ev-actual-dir"></div>
+              </div>
+              <div class="ev-card ev-neutral" id="ev-verdict-card">
+                <div class="ev-label">🎯 판정</div>
+                <div style="margin-bottom:6px"><span id="ev-verdict-badge" class="ev-outcome-badge ev-na-badge">대기</span></div>
+                <div class="ev-note" id="ev-verdict-note"></div>
+              </div>
+            </div>
+            <div style="font-size:12px;color:#484f58;border-top:1px solid #21262d;padding-top:10px">
+              💡 장 마감(15:30) 이후 실제 종가 데이터로 아침 예측을 자동 검증합니다.
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">🔍 신호 기여 분석</div>
+            <div id="ev-signal-breakdown"></div>
+          </div>
+        </div>
+        <div id="evening-error" style="display:none;text-align:center;padding:24px;color:#484f58;font-size:13px">
+          저녁 검증 데이터 조회 실패 — 장 마감(15:30) 이후 또는 KRX 종목에서 사용 가능합니다
+        </div>
+        <div id="evening-guide" style="text-align:center;padding:32px;color:#8b949e;font-size:13px">
+          <div style="font-size:32px;margin-bottom:12px">🌙</div>
+          <div style="font-weight:600;margin-bottom:8px">저녁 검증 모드</div>
+          <div style="line-height:1.6">장 마감 이후 <strong>🌙 저녁 검증</strong> 버튼을 클릭하면<br>
+            아침 예측과 실제 종가를 비교 검증합니다.<br>
+            <span style="font-size:11px;color:#484f58">KRX 종목 전용 · 15:30 이후 사용 가능</span></div>
         </div>
       </div>
 
@@ -3743,6 +3917,23 @@ async function analyze() {
     }
     renderResult(d);
     setState('result');
+    // 흐름 분석 탭: 항상 표시 (JS 내 데이터로 즉시 렌더)
+    renderFlowTab(d);
+    document.getElementById('tab-flow-btn').style.display = '';
+    // 저녁 검증 버튼: KRX 종목만 표시 (6자리 코드 추출 가능 시)
+    const krxCode = extractKrxCode(d.symbol);
+    const eveningBtn = document.getElementById('evening-mode-btn');
+    const eveningTabBtn = document.getElementById('tab-evening-btn');
+    if (d.market === 'KRX' && krxCode) {
+      eveningBtn.style.display = '';
+      eveningBtn.classList.remove('active');
+      eveningTabBtn.style.display = '';
+    } else {
+      eveningBtn.style.display = 'none';
+      eveningTabBtn.style.display = 'none';
+    }
+    // 저녁 검증 탭 초기화 (이전 결과 제거)
+    resetEveningTab();
   } catch(e) {
     setState('error');
     document.getElementById('error-msg').textContent = 'API 서버 오류: ' + e.message;
@@ -3752,9 +3943,11 @@ async function analyze() {
 }
 
 function setState(s) {
+  // 'empty': block (오늘의 핵심 레이아웃) | 'loading','error': flex (중앙 정렬) | 'result': block
+  const displayMap = { empty: 'block', loading: 'flex', error: 'flex', result: 'block' };
   ['empty','loading','error','result'].forEach(n => {
     const el = document.getElementById('state-' + n);
-    if (el) el.style.display = n === s ? (s === 'result' ? 'block' : 'flex') : 'none';
+    if (el) el.style.display = n === s ? displayMap[n] : 'none';
   });
 }
 
@@ -4312,15 +4505,31 @@ function renderCharts(d, isKrx) {
 }
 
 // ── 탭 전환 ──
+const ALL_TABS = ['chart','ai','forecast','news','flow','evening'];
 function switchTab(tab) {
   currentTab = tab;
-  ['chart','ai','forecast','news'].forEach(t => {
-    document.getElementById('tab-' + t).style.display = t === tab ? 'block' : 'none';
+  ALL_TABS.forEach(t => {
+    const el = document.getElementById('tab-' + t);
+    if (el) el.style.display = t === tab ? 'block' : 'none';
   });
-  document.querySelectorAll('#state-result .tabs .tab-btn').forEach((btn, i) => {
-    const tabs = ['chart','ai','forecast','news'];
-    btn.classList.toggle('active', tabs[i] === tab);
+  // 버튼 active 상태 (display:none 버튼도 포함)
+  document.querySelectorAll('#result-tabs .tab-btn').forEach(btn => {
+    const onclick = btn.getAttribute('onclick') || '';
+    const m = onclick.match(/switchTab\('(\w+)'\)/);
+    if (m) btn.classList.toggle('active', m[1] === tab);
   });
+  // 저녁 검증 탭 첫 진입 시 가이드 표시
+  if (tab === 'evening') {
+    const content = document.getElementById('evening-content');
+    const guide   = document.getElementById('evening-guide');
+    const loading = document.getElementById('evening-loading');
+    const err     = document.getElementById('evening-error');
+    if (content && content.style.display === 'none' &&
+        loading && loading.style.display === 'none' &&
+        err     && err.style.display === 'none') {
+      if (guide) guide.style.display = 'block';
+    }
+  }
 }
 
 // ── 스크리너 ──
@@ -4467,8 +4676,367 @@ function renderScreener() {
   }).join('');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ⭐ 오늘의 핵심 — 거시 시장 요약
+// ═══════════════════════════════════════════════════════════════
+async function loadMarketCore() {
+  document.getElementById('core-loading').style.display = 'block';
+  document.getElementById('core-content').style.display = 'none';
+  document.getElementById('core-error').style.display = 'none';
+  try {
+    const r = await fetch('/api/market/summary');
+    if (!r.ok) throw new Error('서버 오류 ' + r.status);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderMarketCore(d);
+    document.getElementById('core-loading').style.display = 'none';
+    document.getElementById('core-content').style.display = 'block';
+  } catch(e) {
+    document.getElementById('core-loading').style.display = 'none';
+    document.getElementById('core-error').style.display = 'block';
+    console.warn('[market-core] 로드 실패:', e.message);
+  }
+}
+
+function renderMarketCore(d) {
+  // 무드 배지
+  const moodMap = { positive: ['mood-positive','🟢 우호'], neutral: ['mood-neutral','🟡 혼조'], negative: ['mood-negative','🔴 부담'] };
+  const [moodCls, moodTxt] = moodMap[d.market_mood] || moodMap.neutral;
+  const badge = document.getElementById('core-mood-badge');
+  badge.className = 'mood-badge ' + moodCls;
+  badge.textContent = moodTxt;
+
+  // VIX 신호
+  const vixBadge = document.getElementById('core-vix-badge');
+  const vixMap = { extreme_fear: '😱 극단 공포 (VIX≥30)', fear: '😨 공포 (VIX≥20)', complacency: '😴 과열 (VIX≤13)', normal: null };
+  const vixTxt = vixMap[d.vix_signal];
+  if (vixTxt) { vixBadge.textContent = vixTxt; vixBadge.style.display = ''; }
+  else { vixBadge.style.display = 'none'; }
+
+  // 국내 지수
+  const indices = d.indices || {};
+  const indicesEl = document.getElementById('core-indices');
+  const idxOrder = ['KOSPI','KOSDAQ','KOSPI200'];
+  indicesEl.innerHTML = idxOrder.map(k => {
+    const idx = indices[k]; if (!idx) return '';
+    const up = idx.direction === 'up';
+    const clr = up ? '#f85149' : idx.direction === 'down' ? '#388bfd' : '#8b949e';
+    return `<div class="core-index-card">
+      <div class="ci-name">${k}</div>
+      <div class="ci-val">${idx.value || '—'}</div>
+      <div class="ci-chg" style="color:${clr}">${up?'▲':'▼'} ${idx.change_pct || idx.change_abs || ''}</div>
+    </div>`;
+  }).join('');
+
+  // 간밤 해외
+  const overnight = d.overnight || [];
+  const ovEl = document.getElementById('core-overnight');
+  const priority = ['S&P 500','나스닥','VIX','WTI 원유','금','달러인덱스','비트코인'];
+  const sorted = overnight.slice().sort((a,b) => {
+    const ia = priority.indexOf(a.name), ib = priority.indexOf(b.name);
+    return (ia<0?99:ia) - (ib<0?99:ib);
+  });
+  ovEl.innerHTML = sorted.map(o => {
+    const up = o.direction === 'up';
+    const dn = o.direction === 'down';
+    const clr = up ? '#f85149' : dn ? '#388bfd' : '#8b949e';
+    return `<div class="ov-chip">
+      <div class="ov-name">${o.name}</div>
+      <div class="ov-val">${o.value}</div>
+      <div class="ov-chg" style="color:${clr}">${up?'▲':dn?'▼':'—'} ${o.change||''}</div>
+    </div>`;
+  }).join('');
+
+  // 주요 뉴스 (최대 6건)
+  const news = (d.top_news || []).slice(0, 6);
+  const newsEl = document.getElementById('core-news');
+  if (!news.length) {
+    newsEl.innerHTML = '<p style="font-size:13px;color:#484f58">뉴스를 불러올 수 없습니다.</p>';
+    return;
+  }
+  const impCls = { positive:'cn-positive', negative:'cn-negative', neutral:'cn-neutral' };
+  const impTxt = { positive:'호재', negative:'악재', neutral:'중립' };
+  newsEl.innerHTML = news.map(n => {
+    const imp = n.impact || 'neutral';
+    return `<div class="core-news-item">
+      <span class="cn-impact ${impCls[imp]||'cn-neutral'}">${impTxt[imp]||'중립'}</span>
+      <div>
+        <a class="cn-title" href="${n.link||'#'}" target="_blank">${n.title||''}</a>
+        <div class="cn-meta">${n.source||''} ${n.date ? '· '+n.date : ''}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 🌊 흐름 분석 탭 — /api/stock 데이터로 즉시 렌더 (추가 API 호출 없음)
+// ═══════════════════════════════════════════════════════════════
+function extractKrxCode(symbol) {
+  if (!symbol) return null;
+  const m = String(symbol).match(/^(\d{6})\.(KS|KQ)$/);
+  return m ? m[1] : null;
+}
+
+function renderFlowTab(d) {
+  const isKrx = d.market === 'KRX';
+  const closes = (d.chart_data || {}).close || [];
+  const ma20arr = (d.chart_data || {}).ma20 || [];
+  const n = closes.length;
+
+  // ── Signal 1: 뉴스 감성 (뉴스 제목 키워드 기반) ──
+  const posKw = /상승|급등|강세|반등|신고가|호실적|수주|승인|흑자|수혜|성장|호재/;
+  const negKw = /하락|급락|약세|부진|적자|감소|제재|우려|손실|위기|논란|규제/;
+  const newsArr = (d.naver ? (d.naver.news || []) : (d.news || []));
+  let posN = 0, negN = 0;
+  newsArr.forEach(nw => { const t = nw.title||''; if(posKw.test(t))posN++; if(negKw.test(t))negN++; });
+  const newsSent = posN > negN ? 'positive' : negN > posN ? 'negative' : 'neutral';
+  const newsSentLbl = {positive:'긍정', negative:'부정', neutral:'중립'}[newsSent];
+  const newsSentClr = {positive:'sig-up', negative:'sig-down', neutral:'sig-neutral'}[newsSent];
+
+  // ── Signal 2: 추세 방향 (MA20 기울기) ──
+  let trendDir = 'neutral', trendLbl = '혼조', trendClr = 'sig-neutral';
+  if (ma20arr.length >= 5) {
+    const recent = ma20arr.filter(v => v != null).slice(-5);
+    if (recent.length >= 2) {
+      const slope = (recent[recent.length-1] - recent[0]) / recent[0] * 100;
+      if (slope > 0.5) { trendDir='up'; trendLbl='상승 추세'; trendClr='sig-up'; }
+      else if (slope < -0.5) { trendDir='down'; trendLbl='하락 추세'; trendClr='sig-down'; }
+    }
+  }
+
+  // ── Signal 3: RSI 기반 과매수/과매도 위치 ──
+  const rsi = d.rsi || 50;
+  let posZone = 'neutral', posZoneLbl = '중립 구간', posZoneClr = 'sig-neutral';
+  if (rsi > 70) { posZone='high_zone'; posZoneLbl='과매수 (RSI ' + rsi.toFixed(0) + ')'; posZoneClr='sig-down'; }
+  else if (rsi < 30) { posZone='low_zone'; posZoneLbl='과매도 (RSI ' + rsi.toFixed(0) + ')'; posZoneClr='sig-up'; }
+  else { posZoneLbl = 'RSI ' + rsi.toFixed(0) + ' (중립)'; }
+
+  // ── 3-신호 → 추천 ──
+  const score = d.score || 50;
+  let rec, recLbl, recCls, conf, rationale;
+  const upSig = [newsSent==='positive', trendDir==='up', posZone==='low_zone'].filter(Boolean).length;
+  const dnSig = [newsSent==='negative', trendDir==='down', posZone==='high_zone'].filter(Boolean).length;
+  if      (upSig === 3)               { rec='strong_buy';  recLbl='강한 상승 기대'; recCls='rec-strong-buy'; conf='높음'; rationale='3개 신호 모두 상승 일치'; }
+  else if (upSig === 2 && score >= 50){ rec='buy';          recLbl='상승 기대';      recCls='rec-buy';        conf='중간'; rationale='2개 상승 신호 · 기술적 점수 양호'; }
+  else if (dnSig === 3)               { rec='strong_sell'; recLbl='강한 하락 경계'; recCls='rec-strong-sell'; conf='높음'; rationale='3개 신호 모두 하락 일치'; }
+  else if (dnSig === 2 && score < 50) { rec='sell';         recLbl='하락 경계';      recCls='rec-sell';       conf='중간'; rationale='2개 하락 신호 · 기술적 점수 미흡'; }
+  else                                { rec='hold';         recLbl='관망';           recCls='rec-hold';        conf='낮음'; rationale='신호 혼재 — 추가 확인 필요'; }
+
+  // 기술적 점수 보정
+  if (rec==='buy'  && score >= 65) { rec='strong_buy';  recLbl='강한 상승 기대'; recCls='rec-strong-buy'; conf='높음'; rationale += ' · 기술 점수 ' + score + '점'; }
+  if (rec==='sell' && score <= 35) { rec='strong_sell'; recLbl='강한 하락 경계'; recCls='rec-strong-sell'; conf='높음'; rationale += ' · 기술 점수 ' + score + '점'; }
+
+  // 신호 매트릭스 렌더
+  document.getElementById('flow-matrix').innerHTML = `
+    <div class="sig-cell">
+      <div class="sig-cell-label">📰 뉴스 감성</div>
+      <div class="sig-cell-val ${newsSentClr}">${newsSentLbl}</div>
+      <div style="font-size:11px;color:#484f58;margin-top:4px">호재 ${posN}건 · 악재 ${negN}건</div>
+    </div>
+    <div class="sig-cell">
+      <div class="sig-cell-label">📈 MA20 추세</div>
+      <div class="sig-cell-val ${trendClr}">${trendLbl}</div>
+      <div style="font-size:11px;color:#484f58;margin-top:4px">기술점수 ${score}점</div>
+    </div>
+    <div class="sig-cell">
+      <div class="sig-cell-label">🎯 RSI 위치</div>
+      <div class="sig-cell-val ${posZoneClr}">${posZoneLbl}</div>
+      <div style="font-size:11px;color:#484f58;margin-top:4px">
+        ${rsi>70?'과매수 구간':'rsi<30'?'과매도 구간':'중립 구간'}
+      </div>
+    </div>`;
+  document.getElementById('flow-rec-badge').className = 'rec-badge-lg ' + recCls;
+  document.getElementById('flow-rec-badge').textContent = recLbl + ' · 신뢰도 ' + conf;
+  document.getElementById('flow-rationale').textContent = rationale;
+
+  // 52주 위치 & 거래량
+  const posContent = document.getElementById('flow-pos-content');
+  if (posContent) {
+    const cd = d.chart_data || {};
+    const allCloses = cd.close || [];
+    const h52 = allCloses.length ? Math.max(...allCloses.filter(Boolean)) : null;
+    const l52 = allCloses.length ? Math.min(...allCloses.filter(Boolean)) : null;
+    const last = d.last_close;
+    let pos52Pct = null;
+    if (h52 && l52 && h52 > l52) pos52Pct = ((last - l52) / (h52 - l52) * 100).toFixed(1);
+    const fromHigh = h52 ? ((last - h52) / h52 * 100).toFixed(2) : null;
+    posContent.innerHTML = `
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        ${pos52Pct !== null ? `
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:11px;color:#8b949e;margin-bottom:6px">52주 위치</div>
+          <div class="flow-pos-bar-bg"><div class="flow-pos-bar-fill" style="width:${pos52Pct}%"></div></div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#484f58;margin-top:4px">
+            <span>저점 ${isKrx ? Number(l52).toLocaleString()+'원' : '$'+Number(l52).toFixed(2)}</span>
+            <span style="color:#e6edf3;font-weight:600">${pos52Pct}%</span>
+            <span>고점 ${isKrx ? Number(h52).toLocaleString()+'원' : '$'+Number(h52).toFixed(2)}</span>
+          </div>
+        </div>` : ''}
+        ${fromHigh !== null ? `
+        <div style="background:#21262d;border-radius:10px;padding:12px;min-width:120px;text-align:center">
+          <div style="font-size:11px;color:#8b949e;margin-bottom:4px">고점 대비</div>
+          <div style="font-size:16px;font-weight:700;color:${fromHigh>=0?'#3fb950':'#f85149'}">${fromHigh}%</div>
+        </div>` : ''}
+        <div style="background:#21262d;border-radius:10px;padding:12px;min-width:120px;text-align:center">
+          <div style="font-size:11px;color:#8b949e;margin-bottom:4px">거래량</div>
+          <div style="font-size:15px;font-weight:700">${(d.volume||0).toLocaleString()}</div>
+        </div>
+      </div>`;
+  }
+
+  // 섹터 정보 (스크리너 데이터 활용)
+  const sectorCard = document.getElementById('flow-sector-card');
+  const sectorContent = document.getElementById('flow-sector-content');
+  if (sectorCard && sectorContent && d.naver) {
+    const sector = d.naver.sector || '';
+    const industry = d.naver.industry || '';
+    if (sector || industry) {
+      sectorContent.innerHTML = `
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${sector ? `<div style="background:#21262d;border-radius:8px;padding:8px 14px;font-size:13px">🏭 섹터: <strong>${sector}</strong></div>` : ''}
+          ${industry ? `<div style="background:#21262d;border-radius:8px;padding:8px 14px;font-size:13px">🏢 업종: <strong>${industry}</strong></div>` : ''}
+        </div>
+        <p style="font-size:12px;color:#484f58;margin-top:10px">💡 동일 섹터 종목 비교는 스크리너(📋)에서 확인하세요.</p>`;
+      sectorCard.style.display = 'block';
+    } else {
+      sectorCard.style.display = 'none';
+    }
+  } else if (sectorCard) {
+    sectorCard.style.display = 'none';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 🌙 저녁 검증 모드
+// ═══════════════════════════════════════════════════════════════
+let eveningModeActive = false;
+
+function resetEveningTab() {
+  eveningModeActive = false;
+  const btn = document.getElementById('evening-mode-btn');
+  if (btn) btn.classList.remove('active');
+  ['evening-loading','evening-content','evening-error'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  const guide = document.getElementById('evening-guide');
+  if (guide) guide.style.display = '';
+}
+
+async function toggleEveningMode() {
+  if (!currentData) return;
+  const krxCode = extractKrxCode(currentData.symbol);
+  if (!krxCode) return;
+
+  eveningModeActive = !eveningModeActive;
+  const btn = document.getElementById('evening-mode-btn');
+  btn.classList.toggle('active', eveningModeActive);
+
+  switchTab('evening');
+
+  if (!eveningModeActive) {
+    resetEveningTab();
+    return;
+  }
+
+  // 저녁 검증 데이터 로드
+  const guide   = document.getElementById('evening-guide');
+  const loading = document.getElementById('evening-loading');
+  const content = document.getElementById('evening-content');
+  const err     = document.getElementById('evening-error');
+  if (guide)   guide.style.display = 'none';
+  if (loading) loading.style.display = 'block';
+  if (content) content.style.display = 'none';
+  if (err)     err.style.display = 'none';
+
+  try {
+    const market = currentData.market === 'KRX' ? 'KOSPI' : 'KOSPI';
+    const r = await fetch(`/api/market/stocks?codes=${krxCode}&markets=${market}&evening=1`);
+    if (!r.ok) throw new Error('서버 오류 ' + r.status);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderEveningVerification(d, krxCode);
+    if (loading) loading.style.display = 'none';
+    if (content) content.style.display = 'block';
+  } catch(e) {
+    if (loading) loading.style.display = 'none';
+    if (err) {
+      err.style.display = 'block';
+      err.textContent = '저녁 검증 실패: ' + e.message + ' — 장 마감(15:30) 이후 사용 가능합니다';
+    }
+    console.warn('[evening] 로드 실패:', e.message);
+  }
+}
+
+function renderEveningVerification(d, krxCode) {
+  const stocks = d.stocks || [];
+  const stock = stocks.find(s => s.code === krxCode) || stocks[0];
+  if (!stock) {
+    document.getElementById('evening-error').style.display = 'block';
+    document.getElementById('evening-content').style.display = 'none';
+    return;
+  }
+
+  // 예측
+  const rec = stock.recommendation || 'hold';
+  const recLbl = {strong_buy:'강한 상승 기대',buy:'상승 기대',hold:'관망',sell:'하락 경계',strong_sell:'강한 하락 경계'}[rec] || rec;
+  const conf = stock.confidence || 'medium';
+  const confLbl = {high:'높음',medium:'중간',low:'낮음'}[conf] || conf;
+  document.getElementById('ev-pred-rec').textContent = recLbl;
+  document.getElementById('ev-pred-conf').textContent = '신뢰도: ' + confLbl + ' · 근거: ' + (stock.rationale || '');
+
+  // 실제 종가
+  const quote = stock.quote || {};
+  const actualPct = quote.change_pct_num;
+  const actualDir = quote.direction || 'flat';
+  if (actualPct != null) {
+    const up = actualPct > 0;
+    const clr = up ? '#f85149' : actualPct < 0 ? '#388bfd' : '#8b949e';
+    document.getElementById('ev-actual-pct').innerHTML =
+      `<span style="color:${clr}">${up?'▲':actualPct<0?'▼':'—'} ${Math.abs(actualPct).toFixed(2)}%</span>`;
+    document.getElementById('ev-actual-dir').textContent = quote.price ? '종가: ' + quote.price : '';
+  } else {
+    document.getElementById('ev-actual-pct').textContent = '—';
+    document.getElementById('ev-actual-dir').textContent = '종가 데이터 없음';
+  }
+
+  // 판정 결과
+  const result = stock.result || {};
+  const outcome = result.outcome || 'n/a';
+  const outcomeMap = {
+    hit:     ['ev-hit-badge',     '적중 ✅'],
+    partial: ['ev-partial-badge', '부분 ⚖️'],
+    miss:    ['ev-miss-badge',    '실패 ❌'],
+    'n/a':   ['ev-na-badge',      '데이터 없음'],
+  };
+  const [outCls, outTxt] = outcomeMap[outcome] || outcomeMap['n/a'];
+  const verdictBadge = document.getElementById('ev-verdict-badge');
+  verdictBadge.className = 'ev-outcome-badge ' + outCls;
+  verdictBadge.textContent = outTxt;
+  document.getElementById('ev-verdict-note').textContent = result.note || '';
+
+  // 판정 카드 색상
+  const verdictCard = document.getElementById('ev-verdict-card');
+  const cardCls = {hit:'ev-hit', partial:'ev-partial', miss:'ev-miss', 'n/a':'ev-neutral'};
+  verdictCard.className = 'ev-card ' + (cardCls[outcome] || 'ev-neutral');
+
+  // 신호 기여 분석
+  const breakdown = document.getElementById('ev-signal-breakdown');
+  const rows = [
+    ['뉴스 감성', {positive:'긍정',negative:'부정',neutral:'중립'}[stock.news_sentiment||'neutral'] || '—'],
+    ['간밤 신호', {up:'상승 강세',down:'하락 약세',neutral:'중립'}[stock.overnight_signal_dir||'neutral'] || '—'],
+    ['52주 위치', {high_zone:'고가권 경계',low_zone:'저가권 반등 기대',neutral:'중립 구간'}[stock.price_zone||'neutral'] || '—'],
+    ['거래량', stock.volume_spike ? '🚨 급증 (2× 이상)' : '정상'],
+    ['기술 점수', currentData ? String(currentData.score) + '점' : '—'],
+  ];
+  breakdown.innerHTML = rows.map(([label, val]) =>
+    `<div class="ev-sig-row"><span style="font-size:12px;color:#8b949e">${label}</span><span style="font-size:13px;font-weight:600">${val}</span></div>`
+  ).join('');
+}
+
 // ── 초기화 ──
 loadSentiment('KRX');
+loadMarketCore();  // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
 
 // ── Pull-to-Refresh (모바일) ──
 (function(){

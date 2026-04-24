@@ -12,3 +12,8 @@ feedparser>=6.0.10
 
 # ── 유틸리티 ──────────────────────────────────────────────────
 lxml>=4.9.0
+
+# ── market_briefing 모듈 의존성 ──────────────────────────────
+# (requests, bs4, yfinance, lxml 은 위에서 이미 선언됨)
+# Vercel Python 런타임: certifi 는 자동 포함되나 명시 권장
+certifi>=2024.2.2
