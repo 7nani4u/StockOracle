@@ -2866,7 +2866,18 @@ def route(path: str, params: Dict) -> Dict:
         buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market)
         target_price     = calc_target_price(dd, last, atr_val, period, market)
         naver = fetch_naver(sym) if market == "KRX" else None
-        
+
+        # US 주식 보강 데이터 (Finnhub / Alpha Vantage / Tiingo)
+        us_enriched = None
+        if market == "US":
+            try:
+                import sys as _sys, os as _os
+                _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+                from market_briefing.us_enricher import fetch_us_enriched
+                us_enriched = fetch_us_enriched(sym)
+            except Exception:
+                pass
+
         # 현재가 보정: 한국 시장인 경우 네이버 금융의 최신 현재가를 최우선으로 사용
         # 미국 시장은 yfinance의 fast_info 객체를 활용해 실시간 데이터 보정
         if market == "KRX" and naver and naver.get("price"):
@@ -2946,7 +2957,7 @@ def route(path: str, params: Dict) -> Dict:
             "indicator_signals": indicator_signals,
             "buy_price": buy_price,
             "target_price": target_price,
-            "news": news or [], "naver": naver,
+            "news": news or [], "naver": naver, "us_enriched": us_enriched,
         }
 
     if path == "/api/screener":
@@ -3397,12 +3408,6 @@ input::placeholder{color:#484f58}
 .ci-name{font-size:11px;color:#8b949e;margin-bottom:4px}
 .ci-val{font-size:18px;font-weight:700}
 .ci-chg{font-size:12px;font-weight:500;margin-top:2px}
-.overnight-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:12px;scrollbar-width:none}
-.overnight-strip::-webkit-scrollbar{display:none}
-.ov-chip{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 12px;white-space:nowrap;flex-shrink:0}
-.ov-name{font-size:10px;color:#8b949e;margin-bottom:3px}
-.ov-val{font-size:13px;font-weight:600}
-.ov-chg{font-size:11px;font-weight:500}
 .core-news-item{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;margin-bottom:6px}
 .cn-impact{font-size:11px;font-weight:600;padding:2px 7px;border-radius:10px;white-space:nowrap;flex-shrink:0;margin-top:1px}
 .cn-positive{background:#0d2d1a;color:#3fb950}
@@ -3430,8 +3435,6 @@ input::placeholder{color:#484f58}
 .flow-pos-bar-fill{height:8px;border-radius:6px;background:#1f6feb;transition:width .6s ease}
 
 /* ── 🌙 저녁 검증 모드 ── */
-#evening-mode-btn{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:6px 12px;font-size:12px;color:#8b949e;cursor:pointer;transition:all .15s;white-space:nowrap}
-#evening-mode-btn.active{background:#161d2c;border-color:#2a3f6f;color:#79b8ff}
 .ev-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
 .ev-card{border-radius:12px;padding:16px;border:1px solid transparent}
 .ev-hit{background:#0d2d1a;border-color:#1a4730}
@@ -3472,6 +3475,8 @@ input::placeholder{color:#484f58}
     <h1>📈 주식 AI 예측</h1>
     <p>KRX / US 기술적 분석 시스템</p>
   </div>
+
+  <button onclick="setState('empty');closeSidebar()" style="width:100%;text-align:left;padding:9px 12px;margin-bottom:8px;background:#21262d;border:1px solid #30363d;border-radius:8px;color:#8b949e;font-size:13px;cursor:pointer">🏠 메인 홈페이지로 이동</button>
 
   <div class="sb-section">
     <span class="sb-label">메뉴</span>
@@ -3522,6 +3527,20 @@ input::placeholder{color:#484f58}
   <!-- 분석 페이지 -->
   <div id="page-analysis">
     <div id="state-empty">
+      <!-- 안내 & 샘플 종목 (최상단) -->
+      <div style="padding:14px 0 16px;border-bottom:1px solid #21262d;margin-bottom:16px">
+        <p style="color:#8b949e;font-size:13px;margin-bottom:10px">
+          ☰ 사이드바에서 종목명을 입력하거나 아래 종목을 눌러 바로 분석하세요
+        </p>
+        <div class="sample-tags">
+          <span class="sample-tag" onclick="quickSearch('삼성전자')" style="cursor:pointer">🇰🇷 삼성전자</span>
+          <span class="sample-tag" onclick="quickSearch('SK하이닉스')" style="cursor:pointer">🇰🇷 SK하이닉스</span>
+          <span class="sample-tag" onclick="quickSearch('카카오')" style="cursor:pointer">🇰🇷 카카오</span>
+          <span class="sample-tag" onclick="quickSearch('NVDA')" style="cursor:pointer">🇺🇸 NVDA</span>
+          <span class="sample-tag" onclick="quickSearch('TSLA')" style="cursor:pointer">🇺🇸 TSLA</span>
+          <span class="sample-tag" onclick="quickSearch('애플')" style="cursor:pointer">🇺🇸 AAPL</span>
+        </div>
+      </div>
       <!-- ⭐ 오늘의 핵심 -->
       <div id="market-core">
         <div class="core-loading" id="core-loading">
@@ -3539,28 +3558,12 @@ input::placeholder{color:#484f58}
           </div>
           <div class="core-section-label">국내 지수</div>
           <div class="core-indices" id="core-indices"></div>
-          <div class="core-section-label">간밤 해외 시장</div>
-          <div class="overnight-strip" id="core-overnight"></div>
           <div class="core-section-label">주요 뉴스</div>
           <div id="core-news"></div>
         </div>
         <div id="core-error" style="display:none;text-align:center;padding:24px;color:#484f58;font-size:13px">
           시장 데이터 조회 실패
           <button onclick="loadMarketCore()" style="background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer;margin-left:8px">재시도</button>
-        </div>
-      </div>
-      <!-- 샘플 종목 -->
-      <div style="margin-top:20px;padding:16px 0;border-top:1px solid #21262d">
-        <p style="color:#8b949e;font-size:12px;margin-bottom:10px">
-          ☰ 사이드바에서 종목명을 입력하거나 아래 종목을 눌러 바로 분석하세요
-        </p>
-        <div class="sample-tags">
-          <span class="sample-tag" onclick="quickSearch('삼성전자')" style="cursor:pointer">삼성전자</span>
-          <span class="sample-tag" onclick="quickSearch('SK하이닉스')" style="cursor:pointer">SK하이닉스</span>
-          <span class="sample-tag" onclick="quickSearch('NVDA')" style="cursor:pointer">NVDA</span>
-          <span class="sample-tag" onclick="quickSearch('TSLA')" style="cursor:pointer">TSLA</span>
-          <span class="sample-tag" onclick="quickSearch('애플')" style="cursor:pointer">애플</span>
-          <span class="sample-tag" onclick="quickSearch('카카오')" style="cursor:pointer">카카오</span>
         </div>
       </div>
     </div>
@@ -3577,7 +3580,6 @@ input::placeholder{color:#484f58}
       <div class="page-header">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:4px">
           <h2 id="r-title"></h2>
-          <button id="evening-mode-btn" onclick="toggleEveningMode()" style="display:none">🌙 저녁 검증</button>
         </div>
         <p id="r-subtitle"></p>
       </div>
@@ -3595,13 +3597,24 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">PBR</div><div class="fund-val" id="f-pbr"></div></div>
         </div>
       </div>
+      <div id="r-us-fund" style="display:none" class="card">
+        <div class="card-title">🏢 기업 펀더멘털 (Alpha Vantage)</div>
+        <div class="fund-grid">
+          <div class="fund-item"><div class="fund-label">섹터</div><div class="fund-val" id="f-us-sector" style="font-size:12px"></div></div>
+          <div class="fund-item"><div class="fund-label">PER</div><div class="fund-val" id="f-us-per"></div></div>
+          <div class="fund-item"><div class="fund-label">PBR</div><div class="fund-val" id="f-us-pbr"></div></div>
+          <div class="fund-item"><div class="fund-label">EPS</div><div class="fund-val" id="f-us-eps"></div></div>
+          <div class="fund-item"><div class="fund-label">베타</div><div class="fund-val" id="f-us-beta"></div></div>
+          <div class="fund-item"><div class="fund-label">시총</div><div class="fund-val" id="f-us-mktcap"></div></div>
+        </div>
+        <div id="f-us-sentiment" style="display:none;margin-top:10px;font-size:12px;color:#8b949e"></div>
+      </div>
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트 분석</button>
         <button class="tab-btn" onclick="switchTab('ai')">🧠 AI 진단</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 미래 예측</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스/공시</button>
-        <button class="tab-btn" id="tab-flow-btn" onclick="switchTab('flow')" style="display:none">🌊 흐름 분석</button>
-        <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">🌙 저녁 검증</button>
+        <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">📋 KRX 전용</button>
       </div>
 
       <!-- 차트 탭 -->
@@ -3653,6 +3666,25 @@ input::placeholder{color:#484f58}
             <div id="steps-list"></div>
           </div>
         </div>
+        <!-- 🌊 흐름 분석 (AI 탭 통합) -->
+        <div style="border-top:1px solid #21262d;padding-top:4px;margin-top:4px">
+          <div class="card">
+            <div class="card-title">📡 3-신호 분석 매트릭스</div>
+            <div class="signal-matrix" id="flow-matrix"></div>
+            <div style="text-align:center;margin:10px 0">
+              <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
+            </div>
+            <div style="font-size:13px;color:#8b949e;text-align:center;line-height:1.6" id="flow-rationale"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">📊 52주 위치 & 거래량 신호</div>
+            <div id="flow-pos-content"></div>
+          </div>
+          <div class="card" id="flow-sector-card">
+            <div class="card-title">🏭 섹터 / 업종 정보</div>
+            <div id="flow-sector-content"></div>
+          </div>
+        </div>
       </div>
 
       <!-- 예측 탭 -->
@@ -3689,31 +3721,11 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
-      <!-- 🌊 흐름 분석 탭 -->
-      <div id="tab-flow" style="display:none">
-        <div class="card">
-          <div class="card-title">📡 3-신호 분석 매트릭스</div>
-          <div class="signal-matrix" id="flow-matrix"></div>
-          <div style="text-align:center;margin-bottom:10px">
-            <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
-          </div>
-          <div style="font-size:13px;color:#8b949e;text-align:center;line-height:1.6" id="flow-rationale"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">📊 52주 위치 & 거래량 신호</div>
-          <div id="flow-pos-content"></div>
-        </div>
-        <div class="card" id="flow-sector-card">
-          <div class="card-title">🏭 섹터 흐름 연관 정보</div>
-          <div id="flow-sector-content"></div>
-        </div>
-      </div>
-
-      <!-- 🌙 저녁 검증 탭 -->
+      <!-- 📋 KRX 전용 탭 -->
       <div id="tab-evening" style="display:none">
         <div id="evening-loading" style="text-align:center;padding:32px;color:#8b949e;display:none">
           <div class="spinner" style="margin:0 auto 10px"></div>
-          저녁 검증 데이터 로딩 중...
+          KRX 검증 데이터 로딩 중...
         </div>
         <div id="evening-content" style="display:none">
           <div class="card">
@@ -3745,14 +3757,13 @@ input::placeholder{color:#484f58}
           </div>
         </div>
         <div id="evening-error" style="display:none;text-align:center;padding:24px;color:#484f58;font-size:13px">
-          저녁 검증 데이터 조회 실패 — 장 마감(15:30) 이후 또는 KRX 종목에서 사용 가능합니다
+          KRX 검증 데이터 조회 실패 — 장 마감(15:30) 이후 사용 가능합니다
         </div>
         <div id="evening-guide" style="text-align:center;padding:32px;color:#8b949e;font-size:13px">
-          <div style="font-size:32px;margin-bottom:12px">🌙</div>
-          <div style="font-weight:600;margin-bottom:8px">저녁 검증 모드</div>
-          <div style="line-height:1.6">장 마감 이후 <strong>🌙 저녁 검증</strong> 버튼을 클릭하면<br>
-            아침 예측과 실제 종가를 비교 검증합니다.<br>
-            <span style="font-size:11px;color:#484f58">KRX 종목 전용 · 15:30 이후 사용 가능</span></div>
+          <div style="font-size:32px;margin-bottom:12px">📋</div>
+          <div style="font-weight:600;margin-bottom:8px">KRX 종목 전용 분석</div>
+          <div style="line-height:1.6">KRX 종목 검색 시 자동으로 예측 검증 데이터를 불러옵니다.<br>
+            <span style="font-size:11px;color:#484f58">장 마감(15:30) 이후 실제 종가 데이터가 반영됩니다</span></div>
         </div>
       </div>
 
@@ -3917,23 +3928,19 @@ async function analyze() {
     }
     renderResult(d);
     setState('result');
-    // 흐름 분석 탭: 항상 표시 (JS 내 데이터로 즉시 렌더)
+    // 흐름 분석: AI 탭에 통합, 항상 즉시 렌더
     renderFlowTab(d);
-    document.getElementById('tab-flow-btn').style.display = '';
-    // 저녁 검증 버튼: KRX 종목만 표시 (6자리 코드 추출 가능 시)
+    // KRX 전용 탭: KRX 종목만 표시 + 자동 데이터 로드
     const krxCode = extractKrxCode(d.symbol);
-    const eveningBtn = document.getElementById('evening-mode-btn');
     const eveningTabBtn = document.getElementById('tab-evening-btn');
     if (d.market === 'KRX' && krxCode) {
-      eveningBtn.style.display = '';
-      eveningBtn.classList.remove('active');
       eveningTabBtn.style.display = '';
+      resetEveningTab();
+      loadKrxVerification(krxCode);  // 자동 로드
     } else {
-      eveningBtn.style.display = 'none';
       eveningTabBtn.style.display = 'none';
+      resetEveningTab();
     }
-    // 저녁 검증 탭 초기화 (이전 결과 제거)
-    resetEveningTab();
   } catch(e) {
     setState('error');
     document.getElementById('error-msg').textContent = 'API 서버 오류: ' + e.message;
@@ -3983,8 +3990,30 @@ function renderResult(d) {
     document.getElementById('f-mktcap').textContent = d.naver.market_cap || '-';
     document.getElementById('f-per').textContent = d.naver.per || '-';
     document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
+    document.getElementById('r-us-fund').style.display = 'none';
+  } else if (!isKrx && d.us_enriched && d.us_enriched.overview && d.us_enriched.overview.sector) {
+    document.getElementById('r-naver-fund').style.display = 'none';
+    document.getElementById('r-us-fund').style.display = 'block';
+    const ov = d.us_enriched.overview;
+    document.getElementById('f-us-sector').textContent = ov.sector || '-';
+    document.getElementById('f-us-per').textContent = ov.per || '-';
+    document.getElementById('f-us-pbr').textContent = ov.pbr || '-';
+    document.getElementById('f-us-eps').textContent = ov.eps ? '$' + ov.eps : '-';
+    document.getElementById('f-us-beta').textContent = ov.beta ? Number(ov.beta).toFixed(2) : '-';
+    const mc = ov.market_cap && Number(ov.market_cap) > 0
+      ? '$' + (Number(ov.market_cap) / 1e9).toFixed(1) + 'B' : '-';
+    document.getElementById('f-us-mktcap').textContent = mc;
+    const sentEl = document.getElementById('f-us-sentiment');
+    const sent = d.us_enriched.sentiment || {};
+    if (sent.bullish_pct != null) {
+      const bull = (Number(sent.bullish_pct) * 100).toFixed(0);
+      const bear = (Number(sent.bearish_pct || 0) * 100).toFixed(0);
+      sentEl.style.display = 'block';
+      sentEl.innerHTML = `뉴스 감성: <span style="color:#3fb950">▲ ${bull}%</span> / <span style="color:#f85149">▼ ${bear}%</span><span style="color:#484f58;margin-left:8px">(${sent.article_count||0}건/주)</span>`;
+    } else { sentEl.style.display = 'none'; }
   } else {
     document.getElementById('r-naver-fund').style.display = 'none';
+    document.getElementById('r-us-fund').style.display = 'none';
   }
 
   // AI 진단
@@ -4353,7 +4382,9 @@ function renderNews(d, isKrx) {
   const discEl = document.getElementById('disclosure-col');
   const col1Title = document.getElementById('news-col1-title');
 
-  const newsArr = d.naver ? d.naver.news : d.news;
+  const finnhubNews = !isKrx && d.us_enriched && (d.us_enriched.news || []).length > 0
+    ? d.us_enriched.news : null;
+  const newsArr = d.naver ? d.naver.news : (finnhubNews || d.news);
   if (isKrx && d.naver) {
     col1Title.textContent = '📰 주요 뉴스 (네이버)';
     discEl.style.display = 'block';
@@ -4369,14 +4400,20 @@ function renderNews(d, isKrx) {
         </div>`).join('')
       : '<p style="font-size:13px;color:#484f58">공시 없음</p>';
   } else {
-    col1Title.textContent = '📰 관련 뉴스 (Google RSS)';
+    col1Title.textContent = finnhubNews ? '📰 관련 뉴스 (Finnhub)' : '📰 관련 뉴스 (Google RSS)';
     discEl.style.display = 'none';
   }
+  const renderNewsItem = (n) => {
+    const link = n.link || n.url || '#';
+    const src  = n.publisher || n.source || '';
+    const dt   = n.date || (n.published ? (n.published+'').slice(0,16) : '');
+    return `<div class="news-item"><span class="news-dot">📄</span><div>
+      <a class="news-a" href="${link}" target="_blank">${n.title||''}</a>
+      ${(src||dt) ? `<div class="news-meta">${src}${src&&dt?' · ':''}${dt}</div>` : ''}
+    </div></div>`;
+  };
   newsList.innerHTML = (newsArr || []).length > 0
-    ? (newsArr || []).map(n => `<div class="news-item"><span class="news-dot">📄</span><div>
-        <a class="news-a" href="${n.link}" target="_blank">${n.title}</a>
-        ${n.publisher ? `<div class="news-meta">${n.publisher}${n.published ? ' · ' + (n.published+'').slice(0,16) : ''}</div>` : ''}
-      </div></div>`).join('')
+    ? (newsArr || []).map(renderNewsItem).join('')
     : '<p style="font-size:13px;color:#484f58">뉴스가 없습니다.</p>';
 }
 
@@ -4505,7 +4542,7 @@ function renderCharts(d, isKrx) {
 }
 
 // ── 탭 전환 ──
-const ALL_TABS = ['chart','ai','forecast','news','flow','evening'];
+const ALL_TABS = ['chart','ai','forecast','news','evening'];
 function switchTab(tab) {
   currentTab = tab;
   ALL_TABS.forEach(t => {
@@ -4728,25 +4765,6 @@ function renderMarketCore(d) {
     </div>`;
   }).join('');
 
-  // 간밤 해외
-  const overnight = d.overnight || [];
-  const ovEl = document.getElementById('core-overnight');
-  const priority = ['S&P 500','나스닥','VIX','WTI 원유','금','달러인덱스','비트코인'];
-  const sorted = overnight.slice().sort((a,b) => {
-    const ia = priority.indexOf(a.name), ib = priority.indexOf(b.name);
-    return (ia<0?99:ia) - (ib<0?99:ib);
-  });
-  ovEl.innerHTML = sorted.map(o => {
-    const up = o.direction === 'up';
-    const dn = o.direction === 'down';
-    const clr = up ? '#f85149' : dn ? '#388bfd' : '#8b949e';
-    return `<div class="ov-chip">
-      <div class="ov-name">${o.name}</div>
-      <div class="ov-val">${o.value}</div>
-      <div class="ov-chg" style="color:${clr}">${up?'▲':dn?'▼':'—'} ${o.change||''}</div>
-    </div>`;
-  }).join('');
-
   // 주요 뉴스 (최대 6건)
   const news = (d.top_news || []).slice(0, 6);
   const newsEl = document.getElementById('core-news');
@@ -4783,15 +4801,26 @@ function renderFlowTab(d) {
   const ma20arr = (d.chart_data || {}).ma20 || [];
   const n = closes.length;
 
-  // ── Signal 1: 뉴스 감성 (뉴스 제목 키워드 기반) ──
-  const posKw = /상승|급등|강세|반등|신고가|호실적|수주|승인|흑자|수혜|성장|호재/;
-  const negKw = /하락|급락|약세|부진|적자|감소|제재|우려|손실|위기|논란|규제/;
-  const newsArr = (d.naver ? (d.naver.news || []) : (d.news || []));
-  let posN = 0, negN = 0;
-  newsArr.forEach(nw => { const t = nw.title||''; if(posKw.test(t))posN++; if(negKw.test(t))negN++; });
-  const newsSent = posN > negN ? 'positive' : negN > posN ? 'negative' : 'neutral';
-  const newsSentLbl = {positive:'긍정', negative:'부정', neutral:'중립'}[newsSent];
-  const newsSentClr = {positive:'sig-up', negative:'sig-down', neutral:'sig-neutral'}[newsSent];
+  // ── Signal 1: 뉴스 감성 ──
+  let newsSent, newsSentLbl, newsSentClr, posN = 0, negN = 0;
+  const finnSent = !isKrx && d.us_enriched && d.us_enriched.sentiment;
+  if (finnSent && finnSent.bullish_pct != null) {
+    // Finnhub 감성 점수 활용 (US)
+    const bull = Number(finnSent.bullish_pct);
+    newsSent = bull > 0.55 ? 'positive' : bull < 0.4 ? 'negative' : 'neutral';
+    newsSentLbl = {positive:'긍정 (Finnhub)', negative:'부정 (Finnhub)', neutral:'중립 (Finnhub)'}[newsSent];
+    posN = Math.round(bull * 100);
+    negN = 100 - posN;
+  } else {
+    // 키워드 기반 (KRX / Finnhub 없을 때)
+    const posKw = /상승|급등|강세|반등|신고가|호실적|수주|승인|흑자|수혜|성장|호재/;
+    const negKw = /하락|급락|약세|부진|적자|감소|제재|우려|손실|위기|논란|규제/;
+    const newsArr = (d.naver ? (d.naver.news || []) : (d.news || []));
+    newsArr.forEach(nw => { const t = nw.title||''; if(posKw.test(t))posN++; if(negKw.test(t))negN++; });
+    newsSent = posN > negN ? 'positive' : negN > posN ? 'negative' : 'neutral';
+    newsSentLbl = {positive:'긍정', negative:'부정', neutral:'중립'}[newsSent];
+  }
+  newsSentClr = {positive:'sig-up', negative:'sig-down', neutral:'sig-neutral'}[newsSent];
 
   // ── Signal 2: 추세 방향 (MA20 기울기) ──
   let trendDir = 'neutral', trendLbl = '혼조', trendClr = 'sig-neutral';
@@ -4827,11 +4856,14 @@ function renderFlowTab(d) {
   if (rec==='sell' && score <= 35) { rec='strong_sell'; recLbl='강한 하락 경계'; recCls='rec-strong-sell'; conf='높음'; rationale += ' · 기술 점수 ' + score + '점'; }
 
   // 신호 매트릭스 렌더
+  const newsSub = finnSent && finnSent.bullish_pct != null
+    ? `긍정 ${posN}% · 부정 ${negN}%`
+    : `호재 ${posN}건 · 악재 ${negN}건`;
   document.getElementById('flow-matrix').innerHTML = `
     <div class="sig-cell">
       <div class="sig-cell-label">📰 뉴스 감성</div>
       <div class="sig-cell-val ${newsSentClr}">${newsSentLbl}</div>
-      <div style="font-size:11px;color:#484f58;margin-top:4px">호재 ${posN}건 · 악재 ${negN}건</div>
+      <div style="font-size:11px;color:#484f58;margin-top:4px">${newsSub}</div>
     </div>
     <div class="sig-cell">
       <div class="sig-cell-label">📈 MA20 추세</div>
@@ -4907,14 +4939,12 @@ function renderFlowTab(d) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 🌙 저녁 검증 모드
+// 📋 KRX 전용 탭
 // ═══════════════════════════════════════════════════════════════
 let eveningModeActive = false;
 
 function resetEveningTab() {
   eveningModeActive = false;
-  const btn = document.getElementById('evening-mode-btn');
-  if (btn) btn.classList.remove('active');
   ['evening-loading','evening-content','evening-error'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -4923,23 +4953,9 @@ function resetEveningTab() {
   if (guide) guide.style.display = '';
 }
 
-async function toggleEveningMode() {
-  if (!currentData) return;
-  const krxCode = extractKrxCode(currentData.symbol);
+async function loadKrxVerification(krxCode) {
   if (!krxCode) return;
-
-  eveningModeActive = !eveningModeActive;
-  const btn = document.getElementById('evening-mode-btn');
-  btn.classList.toggle('active', eveningModeActive);
-
-  switchTab('evening');
-
-  if (!eveningModeActive) {
-    resetEveningTab();
-    return;
-  }
-
-  // 저녁 검증 데이터 로드
+  eveningModeActive = true;
   const guide   = document.getElementById('evening-guide');
   const loading = document.getElementById('evening-loading');
   const content = document.getElementById('evening-content');
@@ -4948,10 +4964,8 @@ async function toggleEveningMode() {
   if (loading) loading.style.display = 'block';
   if (content) content.style.display = 'none';
   if (err)     err.style.display = 'none';
-
   try {
-    const market = currentData.market === 'KRX' ? 'KOSPI' : 'KOSPI';
-    const r = await fetch(`/api/market/stocks?codes=${krxCode}&markets=${market}&evening=1`);
+    const r = await fetch(`/api/market/stocks?codes=${krxCode}&markets=KOSPI&evening=1`);
     if (!r.ok) throw new Error('서버 오류 ' + r.status);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
@@ -4962,9 +4976,9 @@ async function toggleEveningMode() {
     if (loading) loading.style.display = 'none';
     if (err) {
       err.style.display = 'block';
-      err.textContent = '저녁 검증 실패: ' + e.message + ' — 장 마감(15:30) 이후 사용 가능합니다';
+      err.textContent = 'KRX 검증 실패: ' + e.message + ' — 장 마감(15:30) 이후 사용 가능합니다';
     }
-    console.warn('[evening] 로드 실패:', e.message);
+    console.warn('[krx-tab] 로드 실패:', e.message);
   }
 }
 
