@@ -767,6 +767,65 @@ def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
         
     return float(price), session_name, float(prev_close) if prev_close else 0.0
 
+
+@ttl_cache(120)  # 2분 캐시 — 장중 수급 변화 대응
+def fetch_investor_flow(ticker: str) -> dict | None:
+    """토스증권 공개 API에서 투자자별 순매수 + 외국인 보유율 조회 (KRX 전용).
+
+    Returns:
+        {date, 개인, 외국인, 기관, 연기금, 금융투자, 투신, 사모, 보험, 은행, 기타금융, 기타법인, 외국인비율}
+        or None on failure
+    """
+    code = str(ticker).replace(".KS", "").replace(".KQ", "").strip()
+    if not code.isdigit() or len(code) != 6:
+        return None
+    url = (
+        "https://wts-info-api.tossinvest.com/api/v1/stock-infos/trade/trend/trading-trend"
+        f"?productCode=A{code}&size=60"
+    )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Origin":  "https://tossinvest.com",
+        "Referer": "https://tossinvest.com/",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=6)
+        resp.raise_for_status()
+        body = resp.json().get("body", [])
+        if not body:
+            return None
+        row = body[0]
+    except Exception:
+        return None
+
+    def _i(v):
+        try: return int(v or 0)
+        except (TypeError, ValueError): return 0
+
+    def _f(v):
+        try: return round(float(v or 0), 2)
+        except (TypeError, ValueError): return 0.0
+
+    return {
+        "date":      str(row.get("baseDate", "")),
+        "개인":      _i(row.get("netIndividualsBuyVolume")),
+        "외국인":    _i(row.get("netForeignerBuyVolume")),
+        "기관":      _i(row.get("netInstitutionBuyVolume")),
+        "연기금":    _i(row.get("netPensionFundBuyVolume")),
+        "금융투자":  _i(row.get("netFinancialInvestmentBuyVolume")),
+        "투신":      _i(row.get("netTrustBuyVolume")),
+        "사모":      _i(row.get("netPrivateEquityFundBuyVolume")),
+        "보험":      _i(row.get("netInsuranceBuyVolume")),
+        "은행":      _i(row.get("netBankBuyVolume")),
+        "기타금융":  _i(row.get("netOtherFinancialInstitutionsBuyVolume")),
+        "기타법인":  _i(row.get("netOtherCorporationBuyVolume")),
+        "외국인비율": _f(row.get("foreignerRatio")),
+    }
+
+
 @ttl_cache(60)
 def fetch_metrics(item):
     try:
@@ -2917,6 +2976,38 @@ def route(path: str, params: Dict) -> Dict:
         target_price     = calc_target_price(dd, last, atr_val, period, market)
         naver = fetch_naver(sym) if market == "KRX" else None
 
+        # ── 투자자 수급 (KRX 전용, 토스증권 API) ───────────────────────────
+        investor_flow = None
+        if market == "KRX":
+            try:
+                investor_flow = fetch_investor_flow(sym)
+                if investor_flow:
+                    foreign  = investor_flow.get("외국인", 0)
+                    inst     = investor_flow.get("기관", 0)
+                    pension  = investor_flow.get("연기금", 0)
+                    # 방향성 신호 → 점수 소폭 보정 (상한 ±5)
+                    adj = 0
+                    if foreign > 0: adj += 2
+                    elif foreign < 0: adj -= 2
+                    if inst > 0: adj += 2
+                    elif inst < 0: adj -= 2
+                    if pension > 0: adj += 1   # 연기금은 신뢰도 높음
+                    elif pension < 0: adj -= 1
+                    adj = max(-5, min(5, adj))
+                    score = max(0, min(100, score + adj))
+                    # AI 전략 텍스트에 수급 메모 추가
+                    flow_notes = []
+                    if foreign != 0:
+                        flow_notes.append(f"외국인 {foreign:+,}주")
+                    if inst != 0:
+                        flow_notes.append(f"기관 {inst:+,}주")
+                    if pension != 0:
+                        flow_notes.append(f"연기금 {pension:+,}주")
+                    if flow_notes and isinstance(ai_strategy, dict):
+                        ai_strategy["result"] += " | [투자자 수급] " + " / ".join(flow_notes)
+            except Exception:
+                pass
+
         # US 주식 보강 데이터 (Finnhub / Alpha Vantage / Tiingo)
         us_enriched = None
         if market == "US":
@@ -3008,6 +3099,7 @@ def route(path: str, params: Dict) -> Dict:
             "buy_price": buy_price,
             "target_price": target_price,
             "news": news or [], "naver": naver, "us_enriched": us_enriched,
+            "investor_flow": investor_flow,
         }
 
     if path == "/api/screener":
@@ -3587,6 +3679,33 @@ input::placeholder{color:#484f58}
 /* ── 단계별 리포트 내 캔들 패턴 카드 ── */
 .step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
 
+/* ── 투자자 수급 카드 ── */
+.investor-main-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.investor-main-item{
+  background:#161b22;border:1px solid #30363d;border-radius:10px;
+  padding:12px 10px;text-align:center
+}
+.investor-sub-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.investor-sub-item{
+  background:#0d1117;border:1px solid #21262d;border-radius:8px;
+  padding:8px 6px;text-align:center
+}
+.investor-label{font-size:11px;color:#8b949e;margin-bottom:4px}
+.investor-val{font-size:15px;font-weight:700}
+.investor-val-lg{font-size:18px;font-weight:800}
+.investor-pos{color:#3fb950}
+.investor-neg{color:#f85149}
+.investor-neu{color:#8b949e}
+.investor-ratio{font-size:11px;color:#8b949e;margin-top:3px}
+@media(max-width:900px){
+  .investor-main-grid{grid-template-columns:repeat(3,1fr)}
+  .investor-sub-grid{grid-template-columns:repeat(4,1fr)}
+}
+@media(max-width:600px){
+  .investor-main-grid{grid-template-columns:repeat(3,1fr)}
+  .investor-sub-grid{grid-template-columns:repeat(2,1fr)}
+}
+
 /* ── 🌙 저녁 검증 모드 ── */
 .ev-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
 .ev-card{border-radius:12px;padding:16px;border:1px solid transparent}
@@ -3815,7 +3934,12 @@ input::placeholder{color:#484f58}
             <div class="card-title">📝 단계별 분석 리포트</div>
             <div id="steps-list"></div>
           </div>
-          <!-- 3행: 섹터 / 업종 정보 (캔들·52주 섹션 제거 후 단독 카드) -->
+          <!-- 3행: 투자자 수급 (KRX 전용, JS가 표시/숨김 제어) -->
+          <div class="card" id="investor-flow-card" style="display:none">
+            <div class="card-title">💰 투자자 수급</div>
+            <div id="investor-flow-content"></div>
+          </div>
+          <!-- 4행: 섹터 / 업종 정보 (캔들·52주 섹션 제거 후 단독 카드) -->
           <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
             <div class="card-title">🏭 섹터 / 업종 정보</div>
             <div id="flow-sector-content"></div>
@@ -4181,6 +4305,64 @@ function renderAI(d, isKrx) {
       ${inlinePatterns}
     </div>`;
   }).join('');
+
+  renderInvestorFlow(d, isKrx);
+}
+
+// ── 투자자 수급 렌더 (KRX 전용) ────────────────────────────────────────────
+function renderInvestorFlow(d, isKrx) {
+  const card = document.getElementById('investor-flow-card');
+  if (!card) return;
+  const flow = d.investor_flow;
+  if (!isKrx || !flow) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const fmtV = v => v === 0 ? '—' : (v > 0 ? '+' : '') + v.toLocaleString();
+  const cls  = v => v > 0 ? 'investor-pos' : v < 0 ? 'investor-neg' : 'investor-neu';
+
+  const mainItem = (label, val, extra = '') => `
+    <div class="investor-main-item">
+      <div class="investor-label">${label}</div>
+      <div class="investor-val investor-val-lg ${cls(val)}">${fmtV(val)}</div>
+      ${extra}
+    </div>`;
+
+  const subItem = (label, val) => `
+    <div class="investor-sub-item">
+      <div class="investor-label">${label}</div>
+      <div class="investor-val ${cls(val)}">${fmtV(val)}</div>
+    </div>`;
+
+  const ratio = flow['외국인비율'];
+  const ratioHtml = ratio > 0
+    ? `<div class="investor-ratio">보유율 ${ratio.toFixed(2)}%</div>`
+    : '';
+
+  const dateStr = flow.date
+    ? flow.date.replace(/(\d{4})(\d{2})(\d{2})/, '$1.$2.$3')
+    : '—';
+
+  document.getElementById('investor-flow-content').innerHTML = `
+    <div style="font-size:11px;color:#484f58;margin-bottom:12px">
+      기준일: ${dateStr} &nbsp;·&nbsp; 단위: 주(株) &nbsp;·&nbsp; 순매수(+) / 순매도(−)
+    </div>
+    <div class="investor-main-grid">
+      ${mainItem('외국인', flow['외국인'], ratioHtml)}
+      ${mainItem('기관', flow['기관'])}
+      ${mainItem('개인', flow['개인'])}
+    </div>
+    <div style="font-size:11px;color:#8b949e;font-weight:600;margin-bottom:8px">기관 세부 내역</div>
+    <div class="investor-sub-grid">
+      ${subItem('연기금', flow['연기금'])}
+      ${subItem('금융투자', flow['금융투자'])}
+      ${subItem('투신', flow['투신'])}
+      ${subItem('사모', flow['사모'])}
+      ${subItem('보험', flow['보험'])}
+      ${subItem('은행', flow['은행'])}
+      ${subItem('기타금융', flow['기타금융'])}
+      ${subItem('기타법인', flow['기타법인'])}
+    </div>
+  `;
 }
 
 function renderForecast(d, isKrx) {
