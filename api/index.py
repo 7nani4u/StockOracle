@@ -1768,6 +1768,91 @@ def _us_surge_score(a, pm_change_pct):
     return score
 
 @ttl_cache(14400)  # 4시간 캐시
+def fetch_kr_longterm_reco():
+    """국내(KRX) 장기 투자 추천 Top 3 (추세 추종 + 칼만 필터)"""
+    try:
+        # KR_STOCK_MAP: {이름: ticker.KS/.KQ}
+        name_map = {v: k for k, v in KR_STOCK_MAP.items()}  # ticker → 이름
+        kr_tickers = list(KR_STOCK_MAP.values())
+        all_dl = kr_tickers + ["^KS11"]   # KOSPI 지수 benchmark
+        raw = yf.download(all_dl, period="1y", interval="1d",
+                          progress=False, auto_adjust=True, threads=True)
+        if raw.empty:
+            return {"error": "데이터 없음", "items": []}
+        kospi_df = None
+        if isinstance(raw.columns, pd.MultiIndex):
+            if "^KS11" in raw.columns.get_level_values(1):
+                kospi_df = raw.xs("^KS11", axis=1, level=1).dropna(how="all")
+        candidates = []
+        for tkr in kr_tickers:
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if tkr not in raw.columns.get_level_values(1): continue
+                    df = raw.xs(tkr, axis=1, level=1).dropna(how="all")
+                else:
+                    df = raw.copy()
+                if len(df) < 60: continue
+                a = _us_analyze_ticker(df, kospi_df)
+                if not a: continue
+                score = _us_longterm_score(a)
+                if score < 0: continue
+                candidates.append((tkr, score, a))
+            except Exception:
+                continue
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        results = []
+        for tkr, score, a in candidates[:3]:
+            rsi = a.get("rsi"); macd = a.get("macd"); adx = a.get("adx")
+            rs = a.get("rs"); w52 = a.get("week52"); klt = a.get("kalman_lt")
+            obv = a.get("obv"); sq = a.get("squeeze")
+            cl = a.get("close", 0)
+            atr_v = a.get("atr") or 0
+            if atr_v > 0:
+                target = round(cl + atr_v * 2.0, 0)
+                stop = round(cl - atr_v * 2.0, 0)
+            else:
+                target = round(cl * 1.08, 0)
+                stop = round(cl * 0.92, 0)
+            reasons = []
+            if adx and adx["direction"] == "bullish":
+                reasons.append(f"ADX {adx['adx']:.1f} — 상승 추세 확인")
+            if rs and rs["rs20"] > 0:
+                reasons.append(f"KOSPI 대비 20일 +{rs['rs20']:.1f}% 아웃퍼폼")
+            if macd and macd["macd"] > macd["signal"]:
+                reasons.append("MACD 상승 모멘텀 유지")
+            if klt and cl:
+                exp_ret = ((klt["predicted"] - cl) / cl) * 100
+                reasons.append(f"칼만 40일 예측 {klt['predicted']:,.0f}원 ({'+' if exp_ret >= 0 else ''}{exp_ret:.1f}%)")
+            if obv and obv["trend"] == "accumulation":
+                reasons.append("OBV 매집 구간 — 세력 매수 중")
+            if sq and not sq["on"] and sq["momentum"] > 0:
+                reasons.append("Squeeze 해제 — 상승 돌파 진행")
+            if rsi:
+                reasons.append(f"RSI {rsi['v']:.1f} — 건강한 모멘텀 구간")
+            if w52:
+                reasons.append(f"52주 {w52['pos']:.0f}% 위치 — 성장 여력")
+            results.append({
+                "ticker": tkr,
+                "name": name_map.get(tkr, tkr),
+                "close": cl,
+                "change_pct": a.get("change_pct", 0),
+                "score": score,
+                "confidence": "High" if score >= 70 else "Medium",
+                "target_price": target,
+                "stop_loss": stop,
+                "holding_period": "1-3개월",
+                "reasons": reasons[:5],
+                "currency": "KRW",
+                "rsi": rsi["v"] if rsi else None,
+                "adx": adx["adx"] if adx else None,
+                "rs20": rs["rs20"] if rs else None,
+                "kalman_predicted": klt["predicted"] if klt else None,
+            })
+        return {"items": results, "ts": int(time.time())}
+    except Exception as e:
+        return {"error": str(e), "items": []}
+
+@ttl_cache(14400)  # 4시간 캐시
 def fetch_us_longterm_reco():
     """장기 투자 추천 Top 3 (추세 추종 + 칼만 필터)"""
     try:
@@ -3792,6 +3877,9 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as e:
             return {"error": f"종목별 분석 조회 실패: {e}"}
 
+    if path == "/api/kr/longterm":
+        return fetch_kr_longterm_reco()
+
     if path == "/api/us/longterm":
         return fetch_us_longterm_reco()
 
@@ -4489,6 +4577,7 @@ input::placeholder{color:#484f58}
     <div style="display:flex;flex-direction:column;gap:4px">
       <button class="mkt-btn active" style="text-align:left;padding:10px 12px" id="nav-analysis" onclick="showPage('analysis')">🔍 종목 상세 분석</button>
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-screener" onclick="showPage('screener')">📋 주식 골라보기</button>
+      <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-recommendations" onclick="showPage('recommendations')">⚡ 개장 급등 추천</button>
     </div>
     <button class="alert-bell-btn" onclick="openAlertsSheet()" aria-label="알림 관리">
       🔔 알림 관리
@@ -4566,45 +4655,7 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
-      <!-- 3. 🌟 장기 투자 추천 (US) -->
-      <div id="us-longterm" class="home-section">
-        <div id="us-lt-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
-          <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
-          장기 추천 분석 중...
-        </div>
-        <div id="us-lt-content" style="display:none">
-          <div class="us-reco-header">
-            <span class="us-reco-title">🌟 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">추세 추종·칼만 필터 Top 3</span></span>
-            <button onclick="loadUsLongterm(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
-          </div>
-          <div class="us-reco-cards" id="us-lt-cards"></div>
-        </div>
-        <div id="us-lt-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
-          데이터를 불러오지 못했습니다
-          <button onclick="loadUsLongterm(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
-        </div>
-      </div>
-
-      <!-- 4. ⚡ 개장 급등 추천 (US) -->
-      <div id="us-surge" class="home-section">
-        <div id="us-surge-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
-          <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
-          개장 급등 종목 스캔 중...
-        </div>
-        <div id="us-surge-content" style="display:none">
-          <div class="us-reco-header">
-            <span class="us-reco-title">⚡ 개장 급등 추천 <span style="font-size:11px;color:#484f58;font-weight:400">PM 스캔·ATR 기반 Top 3</span></span>
-            <button onclick="loadUsSurge(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
-          </div>
-          <div class="us-reco-cards" id="us-surge-cards"></div>
-        </div>
-        <div id="us-surge-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
-          데이터를 불러오지 못했습니다
-          <button onclick="loadUsSurge(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
-        </div>
-      </div>
-
-      <!-- 5. 📰 주요 뉴스 (배경·원인) -->
+      <!-- 3. 📰 주요 뉴스 (배경·원인) -->
       <div id="market-news" class="home-section" style="display:none">
         <div class="home-section-header">
           <span class="home-section-title">📰 주요 뉴스</span>
@@ -4884,6 +4935,73 @@ input::placeholder{color:#484f58}
       </div>
     </div>
   </div>
+
+  <!-- ── 추천 페이지 ── -->
+  <div id="page-recommendations" style="display:none">
+    <div class="screener-header" style="margin-bottom:20px">
+      <div>
+        <h2 style="font-size:22px;font-weight:700;margin-bottom:4px">⚡ 개장 급등 추천</h2>
+        <p style="font-size:12px;color:#8b949e">추세 추종·칼만 필터 장기 추천 및 PM 모멘텀 기반 당일 급등 추천</p>
+      </div>
+    </div>
+
+    <!-- 국내 장기 투자 추천 -->
+    <div class="home-section" style="margin-bottom:16px">
+      <div id="kr-lt-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
+        <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
+        국내 장기 추천 분석 중...
+      </div>
+      <div id="kr-lt-content" style="display:none">
+        <div class="us-reco-header">
+          <span class="us-reco-title">🇰🇷 국내 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">추세 추종·칼만 필터 Top 3</span></span>
+          <button onclick="loadKrLongterm(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
+        </div>
+        <div class="us-reco-cards" id="kr-lt-cards"></div>
+      </div>
+      <div id="kr-lt-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
+        데이터를 불러오지 못했습니다
+        <button onclick="loadKrLongterm(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
+      </div>
+    </div>
+
+    <!-- 미국 장기 투자 추천 -->
+    <div class="home-section" style="margin-bottom:16px">
+      <div id="us-lt-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
+        <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
+        미국 장기 추천 분석 중...
+      </div>
+      <div id="us-lt-content" style="display:none">
+        <div class="us-reco-header">
+          <span class="us-reco-title">🇺🇸 미국 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">추세 추종·칼만 필터 Top 3</span></span>
+          <button onclick="loadUsLongterm(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
+        </div>
+        <div class="us-reco-cards" id="us-lt-cards"></div>
+      </div>
+      <div id="us-lt-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
+        데이터를 불러오지 못했습니다
+        <button onclick="loadUsLongterm(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
+      </div>
+    </div>
+
+    <!-- 미국 개장 급등 추천 -->
+    <div class="home-section">
+      <div id="us-surge-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
+        <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
+        미국 개장 급등 종목 스캔 중...
+      </div>
+      <div id="us-surge-content" style="display:none">
+        <div class="us-reco-header">
+          <span class="us-reco-title">🇺🇸 미국 개장 급등 추천 <span style="font-size:11px;color:#484f58;font-weight:400">PM 스캔·ATR 기반 Top 3</span></span>
+          <button onclick="loadUsSurge(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
+        </div>
+        <div class="us-reco-cards" id="us-surge-cards"></div>
+      </div>
+      <div id="us-surge-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
+        데이터를 불러오지 못했습니다
+        <button onclick="loadUsSurge(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -4898,13 +5016,22 @@ let scrnSort = {key:'price', dir:'desc'};
 let chartInstances = {};
 
 // ── 페이지 전환 ──
+var _recoLoaded = false;  // 추천 페이지 첫 로드 여부
 function showPage(page) {
   document.getElementById('page-analysis').style.display = page === 'analysis' ? 'block' : 'none';
   document.getElementById('page-screener').style.display = page === 'screener' ? 'block' : 'none';
+  document.getElementById('page-recommendations').style.display = page === 'recommendations' ? 'block' : 'none';
   document.getElementById('analysis-controls').style.display = page === 'analysis' ? 'block' : 'none';
   document.getElementById('nav-analysis').classList.toggle('active', page === 'analysis');
   document.getElementById('nav-screener').classList.toggle('active', page === 'screener');
+  document.getElementById('nav-recommendations').classList.toggle('active', page === 'recommendations');
   if (page === 'screener' && screenerData.length === 0) loadScreener();
+  if (page === 'recommendations' && !_recoLoaded) {
+    _recoLoaded = true;
+    loadKrLongterm();
+    setTimeout(function() { loadUsLongterm(); }, 1000);
+    setTimeout(function() { loadUsSurge(); }, 2000);
+  }
   closeSidebar();   // 페이지 전환 시 모바일 사이드바 닫기
 }
 
@@ -6657,6 +6784,78 @@ function initAlerts() {
   });
 }
 
+// ── 국내 장기 투자 추천 ───────────────────────────────────────────
+async function loadKrLongterm(force) {
+  var ldg = document.getElementById('kr-lt-loading');
+  var cnt = document.getElementById('kr-lt-content');
+  var err = document.getElementById('kr-lt-error');
+  if (ldg) { ldg.style.display = 'block'; }
+  if (cnt) { cnt.style.display = 'none'; }
+  if (err) { err.style.display = 'none'; }
+  try {
+    var r = await fetch('/api/kr/longterm');
+    var d = await r.json();
+    if (ldg) ldg.style.display = 'none';
+    if (d.error && !(d.items && d.items.length)) {
+      if (err) err.style.display = 'block';
+      return;
+    }
+    renderKrLongtermCards(d.items || []);
+    if (cnt) cnt.style.display = 'block';
+  } catch(e) {
+    if (ldg) ldg.style.display = 'none';
+    if (err) err.style.display = 'block';
+  }
+}
+
+function renderKrLongtermCards(items) {
+  var el = document.getElementById('kr-lt-cards');
+  if (!el) return;
+  if (!items.length) {
+    el.innerHTML = '<div class="us-reco-empty">현재 국내 장기 추천 조건에 부합하는 종목이 없습니다.<br>칼만 상승 추세 + 복합 기술 조건을 충족하는 국내 종목이 발견되면 표시됩니다.</div>';
+    return;
+  }
+  el.innerHTML = items.map(function(it) {
+    var pctCls = (it.change_pct || 0) >= 0 ? 'grn' : 'red';
+    var pctSign = (it.change_pct || 0) >= 0 ? '+' : '';
+    var badgeCls = it.confidence === 'High' ? 'us-reco-badge-high' : 'us-reco-badge-med';
+    var badgeTxt = it.confidence === 'High' ? '확신도 높음' : '확신도 보통';
+    var reasons = (it.reasons || []).map(function(r) {
+      return '<div class="us-reco-reason">' + r + '</div>';
+    }).join('');
+    var kpred = it.kalman_predicted;
+    var kpredHtml = '';
+    if (kpred && it.close) {
+      var kret = (((kpred - it.close) / it.close) * 100).toFixed(1);
+      kpredHtml = '<div class="us-reco-pi"><div class="us-reco-pi-label">칼만 40일 예측</div>' +
+        '<div class="us-reco-pi-val">' + kpred.toLocaleString() + '원 <span style="font-size:11px;color:#8b949e">' +
+        (parseFloat(kret) >= 0 ? '+' : '') + kret + '%</span></div></div>';
+    }
+    return '<div class="us-reco-card">' +
+      '<div class="us-reco-card-header">' +
+        '<div><span class="us-reco-ticker">' + (it.name || it.ticker) + '</span>' +
+          '<span style="font-size:10px;color:#484f58;margin-left:6px;font-family:monospace">' + it.ticker + '</span></div>' +
+        '<div style="display:flex;align-items:center;gap:6px">' +
+          '<span class="us-reco-score">점수 ' + it.score + '</span>' +
+          '<span class="us-reco-badge ' + badgeCls + '">' + badgeTxt + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="us-reco-prices">' +
+        '<div class="us-reco-pi"><div class="us-reco-pi-label">현재가</div>' +
+          '<div class="us-reco-pi-val">' + (it.close || 0).toLocaleString() + '원' +
+          ' <span class="' + pctCls + '" style="font-size:12px">' + pctSign + (it.change_pct || 0).toFixed(2) + '%</span></div></div>' +
+        '<div class="us-reco-pi"><div class="us-reco-pi-label">목표가</div>' +
+          '<div class="us-reco-pi-val grn">' + (it.target_price || 0).toLocaleString() + '원</div></div>' +
+        '<div class="us-reco-pi"><div class="us-reco-pi-label">손절가</div>' +
+          '<div class="us-reco-pi-val red">' + (it.stop_loss || 0).toLocaleString() + '원</div></div>' +
+        kpredHtml +
+      '</div>' +
+      '<div class="us-reco-reasons">' + reasons + '</div>' +
+      '<div class="us-reco-holding">⏱ 보유기간 ' + (it.holding_period || '') + '</div>' +
+    '</div>';
+  }).join('');
+}
+
 // ── US 장기 투자 추천 ─────────────────────────────────────────────
 async function loadUsLongterm(force) {
   var ldg = document.getElementById('us-lt-loading');
@@ -6800,9 +6999,6 @@ function renderUsSurgeCards(items, note) {
 loadMarketCore();   // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
 loadSectorFlow();   // 🏭 섹터 흐름 자동 로드
 initAlerts();       // 🔔 알림 시스템 초기화
-// US 추천 (3초 지연: 시장 현황·섹터 요청과 경쟁 방지)
-setTimeout(function() { loadUsLongterm(); }, 3000);
-setTimeout(function() { loadUsSurge(); }, 4000);
 
 // ── Pull-to-Refresh (모바일) ──
 (function(){
