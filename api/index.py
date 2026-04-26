@@ -3826,7 +3826,7 @@ def route(path: str, params: Dict) -> Dict:
             snapshots = fetch_stock_list_snapshot(stock_cfgs)
             return build_sector_flow(snapshots)
         except Exception as e:
-            return {"error": f"섹터 흐름 조회 실패: {e}"}
+            return {"error": f"업종별 흐름 조회 실패: {e}"}
 
     if path == "/api/market/sector-summary":
         # 코드 파라미터 없이 기본 대표 종목으로 섹터 흐름 반환
@@ -3841,7 +3841,7 @@ def route(path: str, params: Dict) -> Dict:
             snapshots = fetch_stock_list_quote_only(_SECTOR_DEFAULT_STOCKS)
             return build_sector_flow(snapshots)
         except Exception as e:
-            return {"error": f"섹터 흐름 조회 실패: {e}"}
+            return {"error": f"업종별 흐름 조회 실패: {e}"}
 
     if path == "/api/market/stocks":
         # ?codes=005930,000660,...  필수
@@ -4226,16 +4226,21 @@ input::placeholder{color:#484f58}
 
   /* 메트릭 카드 */
   .m-value{font-size:18px}
-  /* 768px 이하: 2열 */
-  .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* 768px 이하: 3열 (세로가 짧아도 카드당 여유 확보) */
+  .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
 }
 
 /* ── 소형 모바일 (≤ 480px) ── */
 @media(max-width:480px){
   #main{padding:52px 10px 20px}
   .metrics-grid{grid-template-columns:1fr 1fr;gap:6px}
-  /* 480px 이하: 2열 */
-  .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* 480px 이하: 2열, 카드 패딩 축소로 내용 확보 */
+  .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+  .sector-card{padding:9px 8px;border-radius:10px}
+  .sector-card-emoji{font-size:14px}
+  .sector-card-name{font-size:11px}
+  .sector-card-pct{font-size:12px}
+  .sector-card-mood{font-size:10px;padding:2px 5px}
   .metric-card{padding:10px}
   .m-label{font-size:10px}
   .m-value{font-size:16px}
@@ -4341,31 +4346,34 @@ input::placeholder{color:#484f58}
 .flow-pos-bar-bg{background:#21262d;border-radius:6px;height:8px;overflow:hidden;margin-top:6px}
 .flow-pos-bar-fill{height:8px;border-radius:6px;background:#1f6feb;transition:width .6s ease}
 
-/* ── 🏭 섹터 흐름 (메인 페이지) ── */
+/* ── 🏭 업종별 흐름 (메인 페이지) ── */
 #sector-flow{margin-top:16px}
 .sector-flow-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .sector-flow-title{font-size:14px;font-weight:700;color:#e6edf3}
 
-/* 7열 고정 그리드 — 14종목 → 7×2 레이아웃 */
+/* 7열 그리드 — 데스크탑 기준; 반응형은 하단 @media 참고 */
 .sector-cards{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
 
 /* 카드 기본 스타일 */
 .sector-card{
   background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;
-  cursor:pointer;user-select:none;
+  cursor:pointer;user-select:none;overflow:hidden;min-width:0;
   transition:border-color .15s,background .15s
 }
 .sector-card:hover{border-color:#388bfd;background:#1a2233}
 .sector-card.expanded{border-color:#388bfd;background:#161e2e}
 
 /* 카드 내부 요소 */
-.sector-card-head{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.sector-card-emoji{font-size:16px;flex-shrink:0}
-.sector-card-name{font-size:12px;font-weight:600;color:#e6edf3;line-height:1.3}
+.sector-card-head{display:flex;align-items:flex-start;gap:5px;margin-bottom:6px;min-width:0}
+.sector-card-emoji{font-size:15px;flex-shrink:0;line-height:1.3}
+/* flex 자식이 넘치지 않도록 min-width:0 필수 */
+.sector-card-head>div{min-width:0;overflow:hidden}
+.sector-card-name{font-size:12px;font-weight:600;color:#e6edf3;line-height:1.3;
+  word-break:break-word;overflow-wrap:break-word}
 .sector-card-cnt{font-size:10px;color:#484f58;margin-top:1px;transition:color .15s}
 .sector-card:hover .sector-card-cnt,.sector-card.expanded .sector-card-cnt{color:#388bfd}
 .sector-card-pct{font-size:13px;font-weight:700;margin-bottom:5px}
-.sector-card-mood{font-size:11px;padding:2px 7px;border-radius:8px;display:inline-block;font-weight:500}
+.sector-card-mood{font-size:11px;padding:2px 6px;border-radius:8px;display:inline-block;font-weight:500;max-width:100%}
 .sector-mood-pos{background:#0d2d1a;color:#3fb950}
 .sector-mood-neg{background:#2d0d0d;color:#f85149}
 .sector-mood-neu{background:#21262d;color:#8b949e}
@@ -4636,21 +4644,21 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
-      <!-- 2. 🏭 섹터 흐름 -->
+      <!-- 2. 🏭 업종별 흐름 -->
       <div id="sector-flow" class="home-section">
         <div id="sector-flow-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
           <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
-          섹터 데이터 로딩 중...
+          업종별 흐름 로딩 중...
         </div>
         <div id="sector-flow-content" style="display:none">
           <div class="sector-flow-header">
-            <span class="sector-flow-title">🏭 섹터 흐름</span>
+            <span class="sector-flow-title">🏭 업종별 흐름</span>
             <button onclick="loadSectorFlow()" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
           </div>
           <div class="sector-cards" id="sector-cards"></div>
         </div>
         <div id="sector-flow-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
-          섹터 데이터를 불러오지 못했습니다
+          업종별 흐름 데이터를 불러오지 못했습니다
           <button onclick="loadSectorFlow()" class="home-section-refresh" style="margin-left:6px">재시도</button>
         </div>
       </div>
@@ -6108,7 +6116,7 @@ function renderMarketCore(d) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 🏭 섹터 흐름 — 메인 페이지 자동 로드
+// 🏭 업종별 흐름 — 메인 페이지 자동 로드
 // ═══════════════════════════════════════════════════════════════
 async function loadSectorFlow() {
   const elLoad = document.getElementById('sector-flow-loading');
@@ -6176,7 +6184,7 @@ function _buildSectorCardHtml(s) {
   </div>`;
 }
 
-// ── 섹터 흐름 전체 렌더 ────────────────────────────────────────────────────
+// ── 업종별 흐름 전체 렌더 ────────────────────────────────────────────────────
 function renderSectorFlow(d) {
   const cardsEl = document.getElementById('sector-cards');
   if (!cardsEl) return;
@@ -6997,7 +7005,7 @@ function renderUsSurgeCards(items, note) {
 
 // ── 초기화 ──
 loadMarketCore();   // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
-loadSectorFlow();   // 🏭 섹터 흐름 자동 로드
+loadSectorFlow();   // 🏭 업종별 흐름 자동 로드
 initAlerts();       // 🔔 알림 시스템 초기화
 
 // ── Pull-to-Refresh (모바일) ──
