@@ -2801,6 +2801,27 @@ def xgb_forecast(dd: Dict, days: int = 30):
         return None
 
 # =============================================================================
+# 섹터 흐름 기본 종목 목록 (메인 페이지 /api/market/sector-summary 용)
+# =============================================================================
+_SECTOR_DEFAULT_STOCKS: list = [
+    {"code": "005930", "market": "KOSPI", "sector": "반도체"},   # 삼성전자
+    {"code": "000660", "market": "KOSPI", "sector": "반도체"},   # SK하이닉스
+    {"code": "035420", "market": "KOSPI", "sector": "인터넷"},   # NAVER
+    {"code": "035720", "market": "KOSPI", "sector": "인터넷"},   # 카카오
+    {"code": "005380", "market": "KOSPI", "sector": "자동차"},   # 현대차
+    {"code": "000270", "market": "KOSPI", "sector": "자동차"},   # 기아
+    {"code": "068270", "market": "KOSPI", "sector": "바이오"},   # 셀트리온
+    {"code": "207940", "market": "KOSPI", "sector": "바이오"},   # 삼성바이오로직스
+    {"code": "105560", "market": "KOSPI", "sector": "금융"},     # KB금융
+    {"code": "086790", "market": "KOSPI", "sector": "금융"},     # 하나금융지주
+    {"code": "373220", "market": "KOSPI", "sector": "배터리"},   # LG에너지솔루션
+    {"code": "006400", "market": "KOSPI", "sector": "배터리"},   # 삼성SDI
+    {"code": "017670", "market": "KOSPI", "sector": "통신"},     # SK텔레콤
+    {"code": "030200", "market": "KOSPI", "sector": "통신"},     # KT
+    {"code": "003550", "market": "KOSPI", "sector": "에너지"},   # LG
+]
+
+# =============================================================================
 # 라우팅
 # =============================================================================
 def route(path: str, params: Dict) -> Dict:
@@ -3045,6 +3066,20 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as e:
             return {"error": f"섹터 흐름 조회 실패: {e}"}
 
+    if path == "/api/market/sector-summary":
+        # 코드 파라미터 없이 기본 대표 종목으로 섹터 흐름 반환
+        # 메인 페이지 자동 로드용 — 캐시 s-maxage=600 (10분)
+        try:
+            import sys as _sys
+            import os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.data_fetcher import fetch_stock_list_snapshot
+            from market_briefing.sector_flow import build_sector_flow
+            snapshots = fetch_stock_list_snapshot(_SECTOR_DEFAULT_STOCKS)
+            return build_sector_flow(snapshots)
+        except Exception as e:
+            return {"error": f"섹터 흐름 조회 실패: {e}"}
+
     if path == "/api/market/stocks":
         # ?codes=005930,000660,...  필수
         # &markets=KOSPI,KOSPI,...  선택 (순서 대응)
@@ -3173,7 +3208,7 @@ input::placeholder{color:#484f58}
 .ai-flow-card{display:flex;flex-direction:column;gap:14px}
 .ai-score-card .score-bar-bg{max-width:320px}
 .ai-score-card #ai-score-desc{line-height:1.7}
-#steps-list,#patterns-list,#flow-pos-content,#flow-sector-content{display:flex;flex-direction:column;gap:12px}
+#steps-list,#flow-sector-content{display:flex;flex-direction:column;gap:12px}
 .flow-rationale-text{font-size:13px;color:#8b949e;text-align:center;line-height:1.8;word-break:keep-all;overflow-wrap:anywhere}
 .empty-note{font-size:13px;color:#484f58;line-height:1.7;text-align:left}
 
@@ -3468,6 +3503,26 @@ input::placeholder{color:#484f58}
 .flow-pos-bar-bg{background:#21262d;border-radius:6px;height:8px;overflow:hidden;margin-top:6px}
 .flow-pos-bar-fill{height:8px;border-radius:6px;background:#1f6feb;transition:width .6s ease}
 
+/* ── 🏭 섹터 흐름 (메인 페이지) ── */
+#sector-flow{margin-top:16px}
+.sector-flow-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.sector-flow-title{font-size:13px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.05em}
+.sector-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.sector-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;transition:border-color .15s}
+.sector-card:hover{border-color:#388bfd}
+.sector-card-head{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.sector-card-emoji{font-size:16px}
+.sector-card-name{font-size:12px;font-weight:600;color:#e6edf3}
+.sector-card-cnt{font-size:10px;color:#484f58}
+.sector-card-pct{font-size:13px;font-weight:700;margin-bottom:5px}
+.sector-card-mood{font-size:11px;padding:2px 7px;border-radius:8px;display:inline-block;font-weight:500}
+.sector-mood-pos{background:#0d2d1a;color:#3fb950}
+.sector-mood-neg{background:#2d0d0d;color:#f85149}
+.sector-mood-neu{background:#21262d;color:#8b949e}
+
+/* ── 단계별 리포트 내 캔들 패턴 카드 ── */
+.step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
+
 /* ── 🌙 저녁 검증 모드 ── */
 .ev-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
 .ev-card{border-radius:12px;padding:16px;border:1px solid transparent}
@@ -3570,6 +3625,25 @@ input::placeholder{color:#484f58}
         <div id="core-error" style="display:none;text-align:center;padding:24px;color:#484f58;font-size:13px">
           시장 데이터 조회 실패
           <button onclick="loadMarketCore()" style="background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer;margin-left:8px">재시도</button>
+        </div>
+      </div>
+
+      <!-- 🏭 섹터 흐름 -->
+      <div id="sector-flow">
+        <div id="sector-flow-loading" style="text-align:center;padding:16px;color:#484f58;font-size:12px">
+          <div class="spinner" style="margin:0 auto 8px;width:24px;height:24px;border-width:3px"></div>
+          섹터 흐름 로딩 중...
+        </div>
+        <div id="sector-flow-content" style="display:none">
+          <div class="sector-flow-header">
+            <span class="sector-flow-title">🏭 섹터 흐름</span>
+            <button onclick="loadSectorFlow()" title="새로고침" style="background:none;border:1px solid #30363d;border-radius:6px;padding:4px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄</button>
+          </div>
+          <div class="sector-cards" id="sector-cards"></div>
+        </div>
+        <div id="sector-flow-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
+          섹터 데이터 조회 실패
+          <button onclick="loadSectorFlow()" style="background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer;margin-left:6px">재시도</button>
         </div>
       </div>
     </div>
@@ -3677,20 +3751,10 @@ input::placeholder{color:#484f58}
             <div class="card-title">📝 단계별 분석 리포트</div>
             <div id="steps-list"></div>
           </div>
-          <!-- 3행: 캔들스틱 패턴 + 52주 위치 + 섹터 -->
-          <div class="ai-bottom-grid">
-            <div class="card ai-patterns-card">
-              <div class="card-title">🕯️ 캔들스틱 패턴</div>
-              <div id="patterns-list"></div>
-            </div>
-            <div class="card ai-flow-card">
-              <div class="card-title">📊 52주 위치 & 거래량 신호</div>
-              <div id="flow-pos-content"></div>
-            </div>
-            <div class="card ai-flow-card" id="flow-sector-card">
-              <div class="card-title">🏭 섹터 / 업종 정보</div>
-              <div id="flow-sector-content"></div>
-            </div>
+          <!-- 3행: 섹터 / 업종 정보 (캔들·52주 섹션 제거 후 단독 카드) -->
+          <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
+            <div class="card-title">🏭 섹터 / 업종 정보</div>
+            <div id="flow-sector-content"></div>
           </div>
         </div>
       </div>
@@ -4015,13 +4079,30 @@ function renderAI(d, isKrx) {
     : s >= 40 ? '⚖️ HOLD (관망 / 중립)'
     : '⚠️ SELL (매도 우위 / 리스크 관리)';
 
+  // 캔들 패턴 카드 (step-5 인라인 삽입용)
+  const patterns = d.candlestick_patterns || [];
+  const patternCardsHtml = patterns.length === 0
+    ? '<p class="empty-note">특이한 캔들 패턴이 감지되지 않았습니다.</p>'
+    : patterns.map(p => {
+        const pcls = p.direction === '상승' ? 'pattern-bull' : p.direction === '하락' ? 'pattern-bear' : 'pattern-neu';
+        const icon = p.direction === '상승' ? '📈' : p.direction === '하락' ? '📉' : '➖';
+        return `<div class="pattern-item ${pcls}">
+          <div class="pattern-head"><span class="pattern-icon">${icon}</span><span>${p.name}</span></div>
+          <div class="pattern-desc">${p.desc}</div>
+        </div>`;
+      }).join('');
+
   const stepsList = document.getElementById('steps-list');
   stepsList.innerHTML = d.analysis_steps.map(st => {
     const sc = st.score;
     const cls = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
     const label = sc > 0 ? '+' + sc : sc;
     const weight = st.weight || '';
-    
+    // step-5(캔들 패턴 분석)이면 패턴 카드를 본문 아래에 삽입
+    const isStep5 = st.step.startsWith('5.');
+    const inlinePatterns = isStep5
+      ? `<div class="step-patterns">${patternCardsHtml}</div>`
+      : '';
     return `<div class="step-item">
       <div class="step-header">
         <span class="step-title">${st.step}</span>
@@ -4033,22 +4114,9 @@ function renderAI(d, isKrx) {
       <div class="step-result">
         ${st.result.split(' | ').filter(l => l.trim()).map(line => `<span class="step-result-line">${line}</span>`).join('')}
       </div>
+      ${inlinePatterns}
     </div>`;
   }).join('');
-
-  const patList = document.getElementById('patterns-list');
-  if (d.candlestick_patterns.length === 0) {
-    patList.innerHTML = '<p class="empty-note">특이한 캔들 패턴이 감지되지 않았습니다.</p>';
-  } else {
-    patList.innerHTML = d.candlestick_patterns.map(p => {
-      const cls = p.direction === '상승' ? 'pattern-bull' : p.direction === '하락' ? 'pattern-bear' : 'pattern-neu';
-      const icon = p.direction === '상승' ? '📈' : p.direction === '하락' ? '📉' : '➖';
-      return `<div class="pattern-item ${cls}">
-        <div class="pattern-head"><span class="pattern-icon">${icon}</span><span>${p.name}</span></div>
-        <div class="pattern-desc">${p.desc}</div>
-      </div>`;
-    }).join('');
-  }
 }
 
 function renderForecast(d, isKrx) {
@@ -4759,6 +4827,68 @@ function renderMarketCore(d) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 🏭 섹터 흐름 — 메인 페이지 자동 로드
+// ═══════════════════════════════════════════════════════════════
+async function loadSectorFlow() {
+  const elLoad = document.getElementById('sector-flow-loading');
+  const elCont = document.getElementById('sector-flow-content');
+  const elErr  = document.getElementById('sector-flow-error');
+  if (!elLoad) return;
+  elLoad.style.display = 'block';
+  elCont.style.display = 'none';
+  elErr.style.display  = 'none';
+  try {
+    const r = await fetch('/api/market/sector-summary');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderSectorFlow(d);
+    elLoad.style.display = 'none';
+    elCont.style.display = 'block';
+  } catch(e) {
+    elLoad.style.display = 'none';
+    elErr.style.display  = 'block';
+    console.warn('[sector-flow] 로드 실패:', e.message);
+  }
+}
+
+function renderSectorFlow(d) {
+  const sectors = d.sectors || [];
+  const cardsEl = document.getElementById('sector-cards');
+  if (!cardsEl) return;
+  if (!sectors.length) {
+    cardsEl.innerHTML = '<p style="color:#484f58;font-size:13px">섹터 데이터 없음</p>';
+    return;
+  }
+  // 무드순 정렬: positive → neutral → negative
+  const order = {positive:0, neutral:1, negative:2};
+  const sorted = [...sectors].sort((a, b) => (order[a.mood]||1) - (order[b.mood]||1));
+  cardsEl.innerHTML = sorted.map(s => {
+    const pct = s.avg_change_pct;
+    const pctTxt = pct != null
+      ? (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%'
+      : '—';
+    const pctClr = pct == null ? '#8b949e' : pct > 0 ? '#3fb950' : pct < 0 ? '#f85149' : '#8b949e';
+    const moodCls = s.mood === 'positive' ? 'sector-mood-pos'
+                  : s.mood === 'negative' ? 'sector-mood-neg'
+                  : 'sector-mood-neu';
+    const moodTxt = s.mood === 'positive' ? '강세' : s.mood === 'negative' ? '약세' : '혼조';
+    const cnt = s.stock_count ? `<span class="sector-card-cnt">${s.stock_count}종목</span>` : '';
+    return `<div class="sector-card">
+      <div class="sector-card-head">
+        <span class="sector-card-emoji">${s.emoji || '🏭'}</span>
+        <div>
+          <div class="sector-card-name">${s.name}</div>
+          ${cnt}
+        </div>
+      </div>
+      <div class="sector-card-pct" style="color:${pctClr}">${pctTxt}</div>
+      <span class="sector-card-mood ${moodCls}">${moodTxt}</span>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 🌊 흐름 분석 탭 — /api/stock 데이터로 즉시 렌더 (추가 API 호출 없음)
 // ═══════════════════════════════════════════════════════════════
 function extractKrxCode(symbol) {
@@ -4852,41 +4982,6 @@ function renderFlowTab(d) {
   document.getElementById('flow-rec-badge').className = 'rec-badge-lg ' + recCls;
   document.getElementById('flow-rec-badge').textContent = recLbl + ' · 신뢰도 ' + conf;
   document.getElementById('flow-rationale').textContent = rationale;
-
-  // 52주 위치 & 거래량
-  const posContent = document.getElementById('flow-pos-content');
-  if (posContent) {
-    const cd = d.chart_data || {};
-    const allCloses = cd.close || [];
-    const h52 = allCloses.length ? Math.max(...allCloses.filter(Boolean)) : null;
-    const l52 = allCloses.length ? Math.min(...allCloses.filter(Boolean)) : null;
-    const last = d.last_close;
-    let pos52Pct = null;
-    if (h52 && l52 && h52 > l52) pos52Pct = ((last - l52) / (h52 - l52) * 100).toFixed(1);
-    const fromHigh = h52 ? ((last - h52) / h52 * 100).toFixed(2) : null;
-    posContent.innerHTML = `
-      <div class="flow-detail-grid">
-        ${pos52Pct !== null ? `
-        <div class="flow-detail-main">
-          <div class="flow-detail-label">52주 위치</div>
-          <div class="flow-pos-bar-bg"><div class="flow-pos-bar-fill" style="width:${pos52Pct}%"></div></div>
-          <div class="flow-range-meta">
-            <span>저점 ${isKrx ? Number(l52).toLocaleString()+'원' : '$'+Number(l52).toFixed(2)}</span>
-            <strong>${pos52Pct}%</strong>
-            <span>고점 ${isKrx ? Number(h52).toLocaleString()+'원' : '$'+Number(h52).toFixed(2)}</span>
-          </div>
-        </div>` : ''}
-        ${fromHigh !== null ? `
-        <div class="flow-stat-card">
-          <div class="flow-stat-label">고점 대비</div>
-          <div class="flow-stat-value" style="color:${fromHigh>=0?'#3fb950':'#f85149'}">${fromHigh}%</div>
-        </div>` : ''}
-        <div class="flow-stat-card">
-          <div class="flow-stat-label">거래량</div>
-          <div class="flow-stat-value">${(d.volume||0).toLocaleString()}</div>
-        </div>
-      </div>`;
-  }
 
   // 섹터 정보 (스크리너 데이터 활용)
   const sectorCard = document.getElementById('flow-sector-card');
@@ -5021,7 +5116,8 @@ function renderEveningVerification(d, krxCode) {
 }
 
 // ── 초기화 ──
-loadMarketCore();  // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
+loadMarketCore();   // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
+loadSectorFlow();   // 🏭 섹터 흐름 자동 로드
 
 // ── Pull-to-Refresh (모바일) ──
 (function(){
@@ -5202,6 +5298,9 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
         if path == "/api/screener":
             # Long cache for screener (1 hour + 1 day stale)
             cache_control = "public, s-maxage=3600, stale-while-revalidate=86400"
+        elif path == "/api/market/sector-summary":
+            # 10분 캐시 — 섹터 흐름은 빠르게 바뀌지 않음
+            cache_control = "public, s-maxage=600, stale-while-revalidate=3600"
         elif path == "/api/stock":
             # Short cache for stock data
             cache_control = "public, s-maxage=60, stale-while-revalidate=300"
