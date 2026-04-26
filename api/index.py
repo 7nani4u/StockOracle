@@ -3236,6 +3236,27 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as e:
             return {"error": f"종목별 분석 조회 실패: {e}"}
 
+    if path == "/api/alert/quote":
+        # 알림 모니터용 — 등록된 KRX 종목들의 현재가 + 등락률 일괄 조회
+        # ?codes=005930,035720,...  (최대 20종목, 6자리 숫자 코드만)
+        codes_raw = params.get("codes", "")
+        codes = [c.strip() for c in codes_raw.split(",")
+                 if c.strip().isdigit() and len(c.strip()) == 6]
+        if not codes:
+            return {"quotes": {}}
+        quotes = {}
+        for code in codes[:20]:
+            data = fetch_naver(code)
+            if data and data.get("price"):
+                try:
+                    price = float(data["price"])
+                    prev  = float(data["prev_close"]) if data.get("prev_close") else price
+                    chg   = round((price - prev) / prev * 100, 2) if prev else 0.0
+                    quotes[code] = {"price": price, "change_pct": chg}
+                except (ValueError, TypeError):
+                    pass
+        return {"quotes": quotes}
+
     # HTML 서빙 (모든 나머지 경로)
     return None  # None이면 HTML 반환
 
@@ -3771,6 +3792,90 @@ input::placeholder{color:#484f58}
   .home-section-title{font-size:13px}
 }
 @media(max-width:400px){.core-indices{grid-template-columns:repeat(2,1fr)}}
+
+/* ── 🔔 알림 시스템 ── */
+.alert-bell-btn{display:flex;align-items:center;gap:6px;width:100%;text-align:left;padding:9px 12px;background:#21262d;border:1px solid #30363d;border-radius:8px;color:#8b949e;font-size:13px;cursor:pointer;transition:all .15s;position:relative;margin-top:6px}
+.alert-bell-btn:hover{border-color:#388bfd;color:#e6edf3}
+.alert-bell-count{position:absolute;top:-5px;right:6px;min-width:16px;height:16px;border-radius:8px;background:#f85149;color:#fff;font-size:10px;font-weight:700;display:none;align-items:center;justify-content:center;padding:0 4px;line-height:1}
+.alert-bell-count.visible{display:flex}
+/* 모달 */
+.alert-modal-overlay{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.65);padding:16px;opacity:0;pointer-events:none;transition:opacity .2s}
+.alert-modal-overlay.open{opacity:1;pointer-events:auto}
+.alert-modal{width:100%;max-width:360px;background:#161b22;border:1px solid #30363d;border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.alert-modal-header{display:flex;justify-content:space-between;align-items:flex-start}
+.alert-modal-title{font-size:15px;font-weight:700}
+.alert-modal-close{background:none;border:none;color:#8b949e;font-size:18px;cursor:pointer;padding:2px 6px;border-radius:6px;line-height:1}
+.alert-modal-close:hover{background:#21262d;color:#e6edf3}
+.alert-field-label{font-size:11px;color:#8b949e;font-weight:600;margin-bottom:6px;display:block}
+.alert-preview-dir{font-size:11px;font-weight:600}
+.alert-preview-up{color:#3fb950}
+.alert-preview-dn{color:#f85149}
+.alert-price-input{width:100%;background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 12px;color:#e6edf3;font-size:13px;outline:none;transition:border-color .15s}
+.alert-price-input:focus{border-color:#8b949e}
+.alert-toggle-row{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;list-style:none}
+.alert-toggle-row input[type=checkbox]{width:16px;height:16px;cursor:pointer;accent-color:#3fb950;flex-shrink:0}
+.alert-pct-row{display:flex;align-items:center;gap:8px;margin-left:24px;margin-top:6px}
+.alert-pct-input{width:70px;background:#21262d;border:1px solid #30363d;border-radius:8px;padding:6px 10px;color:#e6edf3;font-size:13px;outline:none}
+.alert-pct-input:focus{border-color:#8b949e}
+.alert-btn-row{display:flex;gap:8px;padding-top:2px}
+.alert-btn-save{flex:1;background:#e6edf3;color:#0d1117;border:none;border-radius:8px;padding:9px;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s}
+.alert-btn-save:hover{opacity:.85}
+.alert-btn-del{padding:8px 14px;border-radius:8px;border:1px solid #f85149;color:#f85149;background:none;font-size:13px;cursor:pointer;transition:background .15s}
+.alert-btn-del:hover{background:rgba(248,81,73,.1)}
+.alert-btn-cancel{padding:8px 14px;border-radius:8px;border:1px solid #30363d;color:#8b949e;background:none;font-size:13px;cursor:pointer;transition:background .15s}
+.alert-btn-cancel:hover{background:#21262d}
+/* 결과 페이지 알림 버튼 */
+.alert-result-btn{display:none;align-items:center;gap:5px;padding:5px 11px;background:#21262d;border:1px solid #30363d;border-radius:8px;color:#8b949e;font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap}
+.alert-result-btn:hover{border-color:#388bfd;color:#e6edf3}
+.alert-result-btn.has-alert{border-color:#3fb950;color:#3fb950}
+/* 알림 시트 */
+.alert-sheet-backdrop{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.6);opacity:0;pointer-events:none;transition:opacity .25s}
+.alert-sheet-backdrop.open{opacity:1;pointer-events:auto}
+.alert-sheet{position:fixed;bottom:0;left:50%;z-index:45;width:100%;max-width:880px;max-height:44vh;display:flex;flex-direction:column;background:#161b22;border:1px solid #30363d;border-bottom:none;border-radius:16px 16px 0 0;box-shadow:0 -8px 32px rgba(0,0,0,.5);transform:translateX(-50%) translateY(100%);transition:transform .3s cubic-bezier(.4,0,.2,1)}
+.alert-sheet.open{transform:translateX(-50%) translateY(0)}
+.alert-sheet-handle{display:flex;justify-content:center;padding-top:10px;flex-shrink:0}
+.alert-sheet-drag{width:40px;height:4px;border-radius:2px;background:#30363d}
+.alert-sheet-header{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid #30363d;flex-shrink:0}
+.alert-sheet-tabs{display:flex;gap:4px}
+.alert-sheet-tab{padding:5px 12px;border-radius:6px;border:none;font-size:13px;font-weight:500;cursor:pointer;background:none;color:#8b949e;transition:all .15s;display:flex;align-items:center;gap:6px}
+.alert-sheet-tab.active{background:#21262d;color:#e6edf3}
+.alert-sheet-close{background:none;border:none;color:#8b949e;font-size:12px;cursor:pointer;padding:4px 8px;border-radius:6px}
+.alert-sheet-close:hover{background:#21262d;color:#e6edf3}
+.alert-sheet-body{flex:1;min-height:0;overflow-y:auto;padding:12px 16px}
+.alert-tab-badge{font-size:10px;padding:1px 5px;border-radius:8px;font-weight:700;line-height:1.4}
+.alert-fired-badge{background:#f85149;color:#fff}
+.alert-config-badge{background:#30363d;color:#8b949e}
+.alert-noti-item{display:flex;align-items:center;gap:10px;border-radius:8px;border:1px solid transparent;padding:10px 12px;margin-bottom:6px}
+.alert-noti-up{background:rgba(63,185,80,.06);border-color:rgba(63,185,80,.25)}
+.alert-noti-dn{background:rgba(248,81,73,.06);border-color:rgba(248,81,73,.25)}
+.alert-noti-main{flex:1;min-width:0}
+.alert-noti-symbol{font-size:13px;font-weight:700}
+.alert-noti-label{font-size:12px;font-weight:600;margin-top:2px}
+.alert-noti-up .alert-noti-label{color:#3fb950}
+.alert-noti-dn .alert-noti-label{color:#f85149}
+.alert-noti-time{font-size:11px;color:#8b949e;text-align:right;line-height:1.6;flex-shrink:0}
+.alert-noti-dismiss{background:none;border:none;color:#484f58;font-size:14px;cursor:pointer;padding:2px 4px;border-radius:4px;flex-shrink:0}
+.alert-noti-dismiss:hover{color:#e6edf3;background:#21262d}
+.alert-cfg-item{display:flex;align-items:center;gap:10px;border-radius:8px;background:#21262d;border:1px solid #30363d;padding:10px 12px;margin-bottom:6px}
+.alert-cfg-code{font-size:13px;font-weight:700;width:76px;flex-shrink:0}
+.alert-cfg-tags{display:flex;flex-wrap:wrap;gap:5px;flex:1}
+.alert-cfg-tag{font-size:11px;padding:2px 8px;border-radius:6px}
+.alert-cfg-tag-target{background:#21262d;border:1px solid #30363d;color:#e6edf3}
+.alert-cfg-tag-surge{background:rgba(63,185,80,.1);color:#3fb950}
+.alert-cfg-tag-plunge{background:rgba(248,81,73,.1);color:#f85149}
+.alert-cfg-del{background:none;border:none;color:#484f58;font-size:14px;cursor:pointer;padding:2px 4px;border-radius:4px;flex-shrink:0}
+.alert-cfg-del:hover{color:#f85149;background:rgba(248,81,73,.1)}
+.alert-sheet-empty{text-align:center;padding:28px 0;color:#484f58;font-size:13px;line-height:1.8}
+/* 토스트 */
+#alert-toast-container{position:fixed;top:14px;right:14px;z-index:60;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.alert-toast{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px 14px;min-width:210px;max-width:280px;box-shadow:0 8px 24px rgba(0,0,0,.4);display:flex;gap:10px;align-items:flex-start;opacity:0;transform:translateX(40px);transition:opacity .3s,transform .3s;pointer-events:auto}
+.alert-toast.visible{opacity:1;transform:translateX(0)}
+.alert-toast-icon{font-size:18px;flex-shrink:0;line-height:1.3}
+.alert-toast-body{flex:1;min-width:0}
+.alert-toast-title{font-size:13px;font-weight:700}
+.alert-toast-desc{font-size:11px;color:#8b949e;margin-top:2px;line-height:1.4}
+.alert-toast-close{background:none;border:none;color:#484f58;font-size:14px;cursor:pointer;padding:0;flex-shrink:0;line-height:1}
+.alert-toast-close:hover{color:#e6edf3}
 </style>
 </head>
 <body>
@@ -3797,6 +3902,10 @@ input::placeholder{color:#484f58}
       <button class="mkt-btn active" style="text-align:left;padding:10px 12px" id="nav-analysis" onclick="showPage('analysis')">🔍 종목 상세 분석</button>
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-screener" onclick="showPage('screener')">📋 주식 골라보기</button>
     </div>
+    <button class="alert-bell-btn" onclick="openAlertsSheet()" aria-label="알림 관리">
+      🔔 알림 관리
+      <span class="alert-bell-count" id="alert-bell-count"></span>
+    </button>
   </div>
 
 
@@ -3892,6 +4001,7 @@ input::placeholder{color:#484f58}
       <div class="page-header">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:4px">
           <h2 id="r-title"></h2>
+          <button id="result-alert-btn" class="alert-result-btn" onclick="openAlertModal(_currentAlertSymbol, _currentAlertPrice)">🔔 알림 설정</button>
         </div>
         <p id="r-subtitle"></p>
       </div>
@@ -4289,6 +4399,15 @@ function renderResult(d) {
   const isKrx = d.market === 'KRX';
   const up = d.pct_change >= 0;
   const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
+
+  // 🔔 알림 버튼 연동 (KRX 전용)
+  _currentAlertSymbol = isKrx ? d.symbol : null;
+  _currentAlertPrice  = isKrx ? d.last_close : null;
+  const alertBtn = document.getElementById('result-alert-btn');
+  if (alertBtn) {
+    alertBtn.style.display = isKrx ? 'flex' : 'none';
+    if (isKrx) _alertResultBtnUpdate(d.symbol);
+  }
 
   document.getElementById('r-title').innerHTML =
     `${d.company || d.symbol} <span class="ticker-badge">${d.symbol}</span>`;
@@ -5561,9 +5680,361 @@ function renderEveningVerification(d, krxCode) {
   ).join('');
 }
 
+// ══════════════════════════════════════════════════════
+// 🔔 알림 시스템 — localStorage 기반 (stock-dashboard 이식)
+// ══════════════════════════════════════════════════════
+
+const AlertsStore = {
+  _KA: 'so_alerts',
+  _KN: 'so_notifications',
+  _KF: 'so_alert_fired',
+
+  // ── 설정 CRUD ──
+  getAll() { try { return JSON.parse(localStorage.getItem(this._KA) || '[]'); } catch { return []; } },
+  get(symbol) { return this.getAll().find(a => a.symbol === symbol) || null; },
+  save(cfg) {
+    const all = this.getAll().filter(a => a.symbol !== cfg.symbol);
+    all.push(cfg);
+    localStorage.setItem(this._KA, JSON.stringify(all));
+    _alertBellUpdate();
+  },
+  remove(symbol) {
+    localStorage.setItem(this._KA, JSON.stringify(this.getAll().filter(a => a.symbol !== symbol)));
+    this._clearFiredFor(symbol);
+    localStorage.setItem(this._KN, JSON.stringify(this.getNotifs().filter(n => n.symbol !== symbol)));
+    _alertBellUpdate();
+  },
+
+  // ── 알림 이력 ──
+  getNotifs() { try { return JSON.parse(localStorage.getItem(this._KN) || '[]'); } catch { return []; } },
+  addNotif(n) {
+    const notifs = this.getNotifs();
+    if (notifs.some(x => x.symbol === n.symbol && x.type === n.type)) return;
+    notifs.unshift({ ...n, id: n.symbol + '-' + n.type + '-' + Date.now(), triggeredAt: Date.now() });
+    localStorage.setItem(this._KN, JSON.stringify(notifs.slice(0, 50)));
+    _alertBellUpdate();
+  },
+  dismissNotif(id) {
+    localStorage.setItem(this._KN, JSON.stringify(this.getNotifs().filter(n => n.id !== id)));
+    _alertBellUpdate();
+  },
+  clearNotifs() { localStorage.setItem(this._KN, '[]'); _alertBellUpdate(); },
+
+  // ── 중복 발화 방지 ──
+  getFired() { try { return JSON.parse(localStorage.getItem(this._KF) || '[]'); } catch { return []; } },
+  isFired(key) { return this.getFired().includes(key); },
+  markFired(key) {
+    const f = this.getFired();
+    if (!f.includes(key)) { f.push(key); localStorage.setItem(this._KF, JSON.stringify(f.slice(-200))); }
+  },
+  _clearFiredFor(symbol) {
+    localStorage.setItem(this._KF, JSON.stringify(this.getFired().filter(k => !k.startsWith(symbol + '-'))));
+  },
+};
+
+function _alertBellUpdate() {
+  const count = AlertsStore.getNotifs().length;
+  const el = document.getElementById('alert-bell-count');
+  if (!el) return;
+  el.textContent = count > 0 ? count : '';
+  el.classList.toggle('visible', count > 0);
+}
+
+// ── 모달 ──────────────────────────────────────────────
+var _currentAlertSymbol = null;
+var _currentAlertPrice  = null;
+
+function openAlertModal(symbol, price) {
+  if (!symbol) return;
+  _currentAlertSymbol = symbol;
+  _currentAlertPrice  = price;
+  const ex = AlertsStore.get(symbol);
+  document.getElementById('am-symbol').textContent    = symbol + ' 알림 설정';
+  document.getElementById('am-cur-price').textContent = price ? '현재가 ' + Math.round(price).toLocaleString() + '원' : '';
+  document.getElementById('am-target').value          = ex && ex.targetPrice != null ? Math.round(ex.targetPrice) : '';
+  const surgeChk  = document.getElementById('am-surge-chk');
+  const plungeChk = document.getElementById('am-plunge-chk');
+  surgeChk.checked  = !!(ex && ex.surgeEnabled);
+  plungeChk.checked = !!(ex && ex.plungeEnabled);
+  document.getElementById('am-surge-pct').value    = ex ? ex.surgeThreshold  : 5;
+  document.getElementById('am-plunge-pct').value   = ex ? ex.plungeThreshold : 5;
+  document.getElementById('am-surge-row').style.display  = surgeChk.checked  ? '' : 'none';
+  document.getElementById('am-plunge-row').style.display = plungeChk.checked ? '' : 'none';
+  document.getElementById('am-del-btn').style.display    = ex ? '' : 'none';
+  _updateAlertPreview();
+  document.getElementById('alert-modal').classList.add('open');
+}
+
+function closeAlertModal() {
+  document.getElementById('alert-modal').classList.remove('open');
+}
+
+function _updateAlertPreview() {
+  const v   = parseFloat(document.getElementById('am-target').value);
+  const el  = document.getElementById('am-target-preview');
+  if (!el) return;
+  if (!isNaN(v) && v > 0 && _currentAlertPrice) {
+    const dir = v > _currentAlertPrice ? 'above' : 'below';
+    el.textContent = dir === 'above' ? '↑ 상향 돌파 시 알림' : '↓ 하향 도달 시 알림';
+    el.className   = 'alert-preview-dir ' + (dir === 'above' ? 'alert-preview-up' : 'alert-preview-dn');
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+function saveAlert() {
+  if (!_currentAlertSymbol) return;
+  const raw = parseFloat(document.getElementById('am-target').value);
+  const targetPrice = (!isNaN(raw) && raw > 0) ? raw : null;
+  let targetDirection = null;
+  if (targetPrice != null && _currentAlertPrice) {
+    targetDirection = targetPrice > _currentAlertPrice ? 'above' : 'below';
+  }
+  AlertsStore.save({
+    symbol:           _currentAlertSymbol,
+    targetPrice,
+    targetDirection,
+    surgeEnabled:     document.getElementById('am-surge-chk').checked,
+    surgeThreshold:   Math.max(0.1, parseFloat(document.getElementById('am-surge-pct').value)  || 5),
+    plungeEnabled:    document.getElementById('am-plunge-chk').checked,
+    plungeThreshold:  Math.max(0.1, parseFloat(document.getElementById('am-plunge-pct').value) || 5),
+  });
+  AlertsStore._clearFiredFor(_currentAlertSymbol);
+  closeAlertModal();
+  _alertResultBtnUpdate(_currentAlertSymbol);
+  if (_alertSheetOpen) renderAlertsSheet();
+}
+
+function deleteAlert() {
+  if (!_currentAlertSymbol) return;
+  AlertsStore.remove(_currentAlertSymbol);
+  closeAlertModal();
+  _alertResultBtnUpdate(_currentAlertSymbol);
+  if (_alertSheetOpen) renderAlertsSheet();
+}
+
+function _alertResultBtnUpdate(symbol) {
+  const btn = document.getElementById('result-alert-btn');
+  if (!btn || btn.style.display === 'none') return;
+  const has = !!AlertsStore.get(symbol);
+  btn.classList.toggle('has-alert', has);
+}
+
+// ── 알림 시트 ─────────────────────────────────────────
+var _alertSheetOpen = false;
+var _alertSheetTab  = 'triggered';
+
+function openAlertsSheet() {
+  _alertSheetOpen = true;
+  _alertSheetTab  = 'triggered';
+  document.getElementById('sheet-tab-triggered').classList.add('active');
+  document.getElementById('sheet-tab-configured').classList.remove('active');
+  renderAlertsSheet();
+  document.getElementById('alert-sheet').classList.add('open');
+  document.getElementById('alert-sheet-backdrop').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeAlertsSheet() {
+  _alertSheetOpen = false;
+  document.getElementById('alert-sheet').classList.remove('open');
+  document.getElementById('alert-sheet-backdrop').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function switchSheetTab(tab) {
+  _alertSheetTab = tab;
+  document.getElementById('sheet-tab-triggered').classList.toggle('active', tab === 'triggered');
+  document.getElementById('sheet-tab-configured').classList.toggle('active', tab === 'configured');
+  _renderSheetBody();
+}
+
+function renderAlertsSheet() {
+  const notifs  = AlertsStore.getNotifs();
+  const configs = AlertsStore.getAll().filter(a => a.targetPrice != null || a.surgeEnabled || a.plungeEnabled);
+  const fb = document.getElementById('sheet-fired-badge');
+  const cb = document.getElementById('sheet-config-badge');
+  if (fb) { fb.textContent = notifs.length;   fb.style.display = notifs.length  > 0 ? '' : 'none'; }
+  if (cb) { cb.textContent = configs.length; cb.style.display = configs.length > 0 ? '' : 'none'; }
+  _renderSheetBody();
+}
+
+function _renderSheetBody() {
+  const body = document.getElementById('alert-sheet-body');
+  if (!body) return;
+  if (_alertSheetTab === 'triggered') {
+    const notifs = AlertsStore.getNotifs();
+    if (!notifs.length) {
+      body.innerHTML = '<div class="alert-sheet-empty">발생한 알림이 없습니다.</div>';
+      return;
+    }
+    body.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+        '<span style="font-size:11px;color:#8b949e">' + notifs.length + '개의 알림</span>' +
+        '<button onclick="AlertsStore.clearNotifs();renderAlertsSheet()" style="font-size:11px;color:#8b949e;background:none;border:none;cursor:pointer">모두 지우기</button>' +
+      '</div>' +
+      notifs.map(function(n) {
+        var isUp = n.type === 'surge' || n.type === 'target_above';
+        var cls  = isUp ? 'alert-noti-up' : 'alert-noti-dn';
+        var t    = _alertFormatTime(n.triggeredAt);
+        return '<div class="alert-noti-item ' + cls + '">' +
+          '<div class="alert-noti-main">' +
+            '<div class="alert-noti-symbol">' + n.symbol + '</div>' +
+            '<div class="alert-noti-label">' + _alertNotifLabel(n) + '</div>' +
+          '</div>' +
+          '<div class="alert-noti-time">' + t.absolute + '<br><span style="color:#484f58">(' + t.relative + ')</span></div>' +
+          '<button class="alert-noti-dismiss" onclick="AlertsStore.dismissNotif(\'' + n.id + '\');renderAlertsSheet()">✕</button>' +
+        '</div>';
+      }).join('');
+  } else {
+    var configs = AlertsStore.getAll().filter(function(a) {
+      return a.targetPrice != null || a.surgeEnabled || a.plungeEnabled;
+    });
+    if (!configs.length) {
+      body.innerHTML = '<div class="alert-sheet-empty">설정된 알림이 없습니다.<br><span style="font-size:11px">종목 분석 후 🔔 버튼으로 추가하세요.</span></div>';
+      return;
+    }
+    body.innerHTML = configs.map(function(a) {
+      var tags = [];
+      if (a.targetPrice != null) {
+        var dir = a.targetDirection === 'above' ? '↑' : a.targetDirection === 'below' ? '↓' : '';
+        tags.push('<span class="alert-cfg-tag alert-cfg-tag-target">목표가 ' + Math.round(a.targetPrice).toLocaleString() + '원 ' + dir + '</span>');
+      }
+      if (a.surgeEnabled)  tags.push('<span class="alert-cfg-tag alert-cfg-tag-surge">급등 +' + a.surgeThreshold + '%</span>');
+      if (a.plungeEnabled) tags.push('<span class="alert-cfg-tag alert-cfg-tag-plunge">급락 -' + a.plungeThreshold + '%</span>');
+      return '<div class="alert-cfg-item">' +
+        '<div class="alert-cfg-code">' + a.symbol + '</div>' +
+        '<div class="alert-cfg-tags">' + tags.join('') + '</div>' +
+        '<button class="alert-cfg-del" onclick="AlertsStore.remove(\'' + a.symbol + '\');renderAlertsSheet()" title="삭제">✕</button>' +
+      '</div>';
+    }).join('');
+  }
+}
+
+function _alertNotifLabel(n) {
+  var price = Math.round(n.price).toLocaleString() + '원';
+  if (n.type === 'target_above') return '목표가 도달 ↑  ' + price;
+  if (n.type === 'target_below') return '목표가 도달 ↓  ' + price;
+  if (n.type === 'surge')        return '급등 +' + (n.changePercent || 0).toFixed(2) + '%  (' + price + ')';
+  if (n.type === 'plunge')       return '급락 ' + (n.changePercent || 0).toFixed(2) + '%  (' + price + ')';
+  return price;
+}
+
+function _alertFormatTime(ts) {
+  var d    = new Date(ts);
+  var mon  = String(d.getMonth() + 1).padStart(2, '0');
+  var day  = String(d.getDate()).padStart(2, '0');
+  var h    = d.getHours();
+  var min  = String(d.getMinutes()).padStart(2, '0');
+  var ampm = h < 12 ? '오전' : '오후';
+  var h12  = h % 12 === 0 ? 12 : h % 12;
+  var diff = Math.floor((Date.now() - ts) / 1000);
+  var rel;
+  if (diff < 60) rel = '방금';
+  else if (diff < 3600) rel = Math.floor(diff / 60) + '분 전';
+  else { var rh = Math.floor(diff / 3600); var rm = Math.floor((diff % 3600) / 60); rel = rm > 0 ? rh + '시간 ' + rm + '분 전' : rh + '시간 전'; }
+  return { absolute: mon + '월' + day + '일 ' + ampm + ' ' + h12 + '시' + min + '분', relative: rel };
+}
+
+// ── 토스트 알림 ──────────────────────────────────────
+function showAlertToast(n) {
+  var isUp  = n.type === 'surge' || n.type === 'target_above';
+  var icon  = isUp ? '📈' : '📉';
+  var toast = document.createElement('div');
+  toast.className = 'alert-toast';
+  toast.innerHTML =
+    '<div class="alert-toast-icon">' + icon + '</div>' +
+    '<div class="alert-toast-body">' +
+      '<div class="alert-toast-title">' + n.symbol + '</div>' +
+      '<div class="alert-toast-desc">' + _alertNotifLabel(n) + '</div>' +
+    '</div>' +
+    '<button class="alert-toast-close" onclick="this.parentElement.remove()">✕</button>';
+  document.getElementById('alert-toast-container').appendChild(toast);
+  requestAnimationFrame(function() { toast.classList.add('visible'); });
+  setTimeout(function() {
+    toast.classList.remove('visible');
+    setTimeout(function() { toast.remove(); }, 350);
+  }, 6000);
+}
+
+// ── 알림 모니터 (2분 폴링) ───────────────────────────
+var AlertMonitor = {
+  _t: null,
+  start: function() {
+    if (this._t) return;
+    this._check();
+    this._t = setInterval(function() { AlertMonitor._check(); }, 120000);
+  },
+  stop: function() { if (this._t) { clearInterval(this._t); this._t = null; } },
+  _check: async function() {
+    var alerts = AlertsStore.getAll();
+    if (!alerts.length) return;
+    var codes = alerts.map(function(a) { return a.symbol; }).filter(function(s) { return /^\d{6}$/.test(s); });
+    if (!codes.length) return;
+    try {
+      var r    = await fetch('/api/alert/quote?codes=' + codes.join(','));
+      var data = await r.json();
+      var qs   = data.quotes || {};
+      alerts.forEach(function(alert) {
+        var q = qs[alert.symbol];
+        if (!q) return;
+        var price = q.price, chg = q.change_pct;
+        // 목표가
+        if (alert.targetPrice != null && alert.targetDirection != null) {
+          if (alert.targetDirection === 'above') {
+            var k = alert.symbol + '-target_above';
+            if (price >= alert.targetPrice && !AlertsStore.isFired(k)) {
+              AlertsStore.markFired(k);
+              var n = { symbol: alert.symbol, type: 'target_above', price: price, targetPrice: alert.targetPrice };
+              AlertsStore.addNotif(n); showAlertToast(n);
+            }
+          } else {
+            var k = alert.symbol + '-target_below';
+            if (price <= alert.targetPrice && !AlertsStore.isFired(k)) {
+              AlertsStore.markFired(k);
+              var n = { symbol: alert.symbol, type: 'target_below', price: price, targetPrice: alert.targetPrice };
+              AlertsStore.addNotif(n); showAlertToast(n);
+            }
+          }
+        }
+        // 급등
+        if (alert.surgeEnabled) {
+          var k = alert.symbol + '-surge';
+          if (chg >= alert.surgeThreshold && !AlertsStore.isFired(k)) {
+            AlertsStore.markFired(k);
+            var n = { symbol: alert.symbol, type: 'surge', price: price, changePercent: chg };
+            AlertsStore.addNotif(n); showAlertToast(n);
+          }
+        }
+        // 급락
+        if (alert.plungeEnabled) {
+          var k = alert.symbol + '-plunge';
+          if (chg <= -alert.plungeThreshold && !AlertsStore.isFired(k)) {
+            AlertsStore.markFired(k);
+            var n = { symbol: alert.symbol, type: 'plunge', price: price, changePercent: chg };
+            AlertsStore.addNotif(n); showAlertToast(n);
+          }
+        }
+      });
+    } catch(e) { /* 네트워크 오류 무시 */ }
+  },
+};
+
+function initAlerts() {
+  _alertBellUpdate();
+  AlertMonitor.start();
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    if (document.getElementById('alert-modal').classList.contains('open')) closeAlertModal();
+    else if (_alertSheetOpen) closeAlertsSheet();
+  });
+}
+
 // ── 초기화 ──
 loadMarketCore();   // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
 loadSectorFlow();   // 🏭 섹터 흐름 자동 로드
+initAlerts();       // 🔔 알림 시스템 초기화
 
 // ── Pull-to-Refresh (모바일) ──
 (function(){
@@ -5684,6 +6155,81 @@ loadSectorFlow();   // 🏭 섹터 흐름 자동 로드
   }, { passive: true });
 })();
 </script>
+
+<!-- ── 🔔 알림 설정 모달 ── -->
+<div class="alert-modal-overlay" id="alert-modal" onclick="if(event.target===this)closeAlertModal()">
+  <div class="alert-modal">
+    <div class="alert-modal-header">
+      <div>
+        <div class="alert-modal-title" id="am-symbol"></div>
+        <div style="font-size:11px;color:#8b949e;margin-top:2px" id="am-cur-price"></div>
+      </div>
+      <button class="alert-modal-close" onclick="closeAlertModal()">✕</button>
+    </div>
+    <!-- 목표가 -->
+    <div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <label class="alert-field-label" style="margin-bottom:0">목표가 (원)</label>
+        <span class="alert-preview-dir" id="am-target-preview" style="display:none"></span>
+      </div>
+      <input type="number" min="0" id="am-target" class="alert-price-input" placeholder="예: 95000" oninput="_updateAlertPreview()">
+    </div>
+    <!-- 급등 -->
+    <div>
+      <label class="alert-toggle-row">
+        <input type="checkbox" id="am-surge-chk" onchange="document.getElementById('am-surge-row').style.display=this.checked?'':'none'">
+        <span style="font-size:13px;font-weight:600;color:#3fb950">📈 급등 알림</span>
+      </label>
+      <div class="alert-pct-row" id="am-surge-row" style="display:none">
+        <span style="font-size:12px;color:#8b949e">전일대비</span>
+        <input type="number" min="0.1" step="0.5" id="am-surge-pct" class="alert-pct-input" value="5">
+        <span style="font-size:12px;color:#8b949e">% 이상 상승</span>
+      </div>
+    </div>
+    <!-- 급락 -->
+    <div>
+      <label class="alert-toggle-row">
+        <input type="checkbox" id="am-plunge-chk" onchange="document.getElementById('am-plunge-row').style.display=this.checked?'':'none'">
+        <span style="font-size:13px;font-weight:600;color:#f85149">📉 급락 알림</span>
+      </label>
+      <div class="alert-pct-row" id="am-plunge-row" style="display:none">
+        <span style="font-size:12px;color:#8b949e">전일대비</span>
+        <input type="number" min="0.1" step="0.5" id="am-plunge-pct" class="alert-pct-input" value="5">
+        <span style="font-size:12px;color:#8b949e">% 이상 하락</span>
+      </div>
+    </div>
+    <!-- 버튼 -->
+    <div class="alert-btn-row">
+      <button class="alert-btn-save" onclick="saveAlert()">저장</button>
+      <button class="alert-btn-del" id="am-del-btn" onclick="deleteAlert()" style="display:none">삭제</button>
+      <button class="alert-btn-cancel" onclick="closeAlertModal()">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 🔔 알림 시트 (bottom sheet) ── -->
+<div class="alert-sheet-backdrop" id="alert-sheet-backdrop" onclick="closeAlertsSheet()"></div>
+<div class="alert-sheet" id="alert-sheet" role="dialog" aria-label="알림">
+  <div class="alert-sheet-handle"><div class="alert-sheet-drag"></div></div>
+  <div class="alert-sheet-header">
+    <div class="alert-sheet-tabs">
+      <button class="alert-sheet-tab active" id="sheet-tab-triggered" onclick="switchSheetTab('triggered')">
+        발생한 알림
+        <span class="alert-tab-badge alert-fired-badge" id="sheet-fired-badge" style="display:none"></span>
+      </button>
+      <button class="alert-sheet-tab" id="sheet-tab-configured" onclick="switchSheetTab('configured')">
+        설정한 알림
+        <span class="alert-tab-badge alert-config-badge" id="sheet-config-badge" style="display:none"></span>
+      </button>
+    </div>
+    <button class="alert-sheet-close" onclick="closeAlertsSheet()">닫기</button>
+  </div>
+  <div class="alert-sheet-body" id="alert-sheet-body"></div>
+</div>
+
+<!-- 🔔 토스트 컨테이너 -->
+<div id="alert-toast-container"></div>
+
 </body>
 </html>"""
 
