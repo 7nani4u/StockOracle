@@ -4111,9 +4111,9 @@ function renderAI(d, isKrx) {
           <span class="step-score ${cls}">${label}점</span>
         </div>
       </div>
-      <div class="step-result">
+      ${isStep5 ? '' : `<div class="step-result">
         ${st.result.split(' | ').filter(l => l.trim()).map(line => `<span class="step-result-line">${line}</span>`).join('')}
-      </div>
+      </div>`}
       ${inlinePatterns}
     </div>`;
   }).join('');
