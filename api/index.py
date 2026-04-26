@@ -5963,7 +5963,7 @@ var AlertMonitor = {
   _t: null,
   start: function() {
     if (this._t) return;
-    this._check();
+    // 페이지 로드 직후 서버 요청 경쟁 방지: 첫 체크는 120초 후부터 시작
     this._t = setInterval(function() { AlertMonitor._check(); }, 120000);
   },
   stop: function() { if (this._t) { clearInterval(this._t); this._t = null; } },
