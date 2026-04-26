@@ -3160,20 +3160,19 @@ input::placeholder{color:#484f58}
 .fund-val{font-size:14px;font-weight:600}
 
 /* 스코어 */
-.score-wrap{display:flex;align-items:flex-end;justify-content:center;gap:8px;margin-bottom:10px;text-align:center}
+.score-wrap{display:flex;align-items:flex-end;gap:8px;margin-bottom:10px}
 .score-num{font-size:52px;font-weight:800;line-height:1}
 .score-bar-bg{background:#21262d;border-radius:6px;height:10px;overflow:hidden}
 .score-bar-fill{height:10px;border-radius:6px;transition:width .6s ease}
 
 /* AI 진단 레이아웃 */
-.ai-diagnosis-layout{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:20px;align-items:stretch}
-.ai-summary-grid{display:grid;grid-template-columns:minmax(320px,400px) minmax(0,1fr);gap:20px;align-items:stretch}
-.ai-summary-stack{display:flex;flex-direction:column;gap:20px}
-.ai-insight-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:stretch}
+.ai-diagnosis-layout{display:flex;flex-direction:column;gap:20px;align-items:stretch}
+.ai-top-grid{display:grid;grid-template-columns:minmax(280px,360px) minmax(0,1fr);gap:20px;align-items:stretch}
+.ai-bottom-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:stretch}
 .ai-score-card,.ai-patterns-card,.ai-report-card,.ai-flow-card{margin-bottom:0;height:100%}
 .ai-flow-card{display:flex;flex-direction:column;gap:14px}
-.ai-score-card .score-bar-bg{max-width:320px;margin:0 auto}
-.ai-score-card #ai-score-desc{text-align:center;line-height:1.7}
+.ai-score-card .score-bar-bg{max-width:320px}
+.ai-score-card #ai-score-desc{line-height:1.7}
 #steps-list,#patterns-list,#flow-pos-content,#flow-sector-content{display:flex;flex-direction:column;gap:12px}
 .flow-rationale-text{font-size:13px;color:#8b949e;text-align:center;line-height:1.8;word-break:keep-all;overflow-wrap:anywhere}
 .empty-note{font-size:13px;color:#484f58;line-height:1.7;text-align:left}
@@ -3327,8 +3326,8 @@ input::placeholder{color:#484f58}
 #mob-overlay.on{display:block}
 
 @media(max-width:1100px){
-  .ai-summary-grid{grid-template-columns:1fr}
-  .ai-insight-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ai-top-grid{grid-template-columns:1fr}
+  .ai-bottom-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 /* ── 태블릿 (≤ 900px) ── */
@@ -3338,10 +3337,9 @@ input::placeholder{color:#484f58}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
   .buy-price-grid{grid-template-columns:1fr}
   .indicator-grid{grid-template-columns:1fr}
-  .ai-summary-grid,.ai-insight-grid{grid-template-columns:1fr}
+  .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
   .two-col-grid{grid-template-columns:1fr}
-  .ai-insight-grid{grid-template-columns:1fr}
 }
 
 /* ── 모바일 (≤ 768px) ── */
@@ -3371,7 +3369,7 @@ input::placeholder{color:#484f58}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
   .buy-price-grid{grid-template-columns:1fr}
   .indicator-grid{grid-template-columns:1fr}
-  .ai-summary-grid,.ai-insight-grid{grid-template-columns:1fr}
+  .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
 
   /* 헤더/타이포 */
@@ -3628,6 +3626,14 @@ input::placeholder{color:#484f58}
       <!-- 차트 탭 -->
       <div id="tab-chart">
         <div class="card">
+          <div class="card-title">📡 기술적 지표 종합 시그널</div>
+          <div id="indicator-signals-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">📐 피봇 포인트 분석</div>
+          <div id="pivot-points-section"></div>
+        </div>
+        <div class="card">
           <div class="card-title">가격 차트 (캔들 + MA + 볼린저 + 거래량)</div>
           <div id="price-chart" style="height:380px"></div>
         </div>
@@ -3641,48 +3647,41 @@ input::placeholder{color:#484f58}
             <div id="macd-chart" style="height:150px"></div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-title">📡 기술적 지표 종합 시그널</div>
-          <div id="indicator-signals-section"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">📐 피봇 포인트 분석</div>
-          <div id="pivot-points-section"></div>
-        </div>
       </div>
 
       <!-- AI 탭 -->
       <div id="tab-ai" style="display:none">
         <div class="ai-diagnosis-layout">
-          <div class="ai-summary-grid">
-            <div class="ai-summary-stack">
-              <div class="card ai-score-card">
-                <div class="card-title">🏆 종합 기술적 점수</div>
-                <div class="score-wrap">
-                  <div class="score-num" id="ai-score"></div>
-                  <span style="color:#8b949e;font-size:18px;margin-bottom:6px">/ 100점</span>
-                </div>
-                <div class="score-bar-bg"><div class="score-bar-fill" id="ai-score-bar"></div></div>
-                <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:10px"></p>
+          <!-- 1행: 종합 점수 + 3-신호 매트릭스 -->
+          <div class="ai-top-grid">
+            <div class="card ai-score-card">
+              <div class="card-title">🏆 종합 기술적 점수</div>
+              <div class="score-wrap">
+                <div class="score-num" id="ai-score"></div>
+                <span style="color:#8b949e;font-size:18px;margin-bottom:6px">/ 100점</span>
               </div>
-              <div class="card ai-patterns-card">
-                <div class="card-title">🕯️ 캔들스틱 패턴</div>
-                <div id="patterns-list"></div>
-              </div>
+              <div class="score-bar-bg"><div class="score-bar-fill" id="ai-score-bar"></div></div>
+              <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:10px"></p>
             </div>
-            <div class="card ai-report-card">
-              <div class="card-title">📝 단계별 분석 리포트</div>
-              <div id="steps-list"></div>
-            </div>
-          </div>
-          <div class="ai-insight-grid">
             <div class="card ai-flow-card">
               <div class="card-title">📡 3-신호 분석 매트릭스</div>
               <div class="signal-matrix" id="flow-matrix"></div>
-              <div style="text-align:center;margin:10px 0">
+              <div style="margin:10px 0">
                 <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
               </div>
               <div class="flow-rationale-text" id="flow-rationale"></div>
+            </div>
+          </div>
+          <!-- 2행: 단계별 분석 리포트 (전체 너비) -->
+          <div class="card ai-report-card">
+            <div class="card-title">📝 단계별 분석 리포트</div>
+            <div id="steps-list"></div>
+          </div>
+          <!-- 3행: 캔들스틱 패턴 + 52주 위치 + 섹터 -->
+          <div class="ai-bottom-grid">
+            <div class="card ai-patterns-card">
+              <div class="card-title">🕯️ 캔들스틱 패턴</div>
+              <div id="patterns-list"></div>
             </div>
             <div class="card ai-flow-card">
               <div class="card-title">📊 52주 위치 & 거래량 신호</div>
