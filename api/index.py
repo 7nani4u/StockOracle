@@ -3323,22 +3323,22 @@ input::placeholder{color:#484f58}
 .fund-val{font-size:14px;font-weight:600}
 
 /* 스코어 */
-.score-wrap{display:flex;align-items:flex-end;gap:8px;margin-bottom:10px}
-.score-num{font-size:52px;font-weight:800;line-height:1}
-.score-bar-bg{background:#21262d;border-radius:6px;height:10px;overflow:hidden}
-.score-bar-fill{height:10px;border-radius:6px;transition:width .6s ease}
+.score-wrap{display:flex;align-items:flex-end;gap:8px;margin-bottom:6px}
+.score-num{font-size:42px;font-weight:800;line-height:1}
+.score-bar-bg{background:#21262d;border-radius:6px;height:8px;overflow:hidden}
+.score-bar-fill{height:8px;border-radius:6px;transition:width .6s ease}
 
 /* AI 진단 레이아웃 */
-.ai-diagnosis-layout{display:flex;flex-direction:column;gap:20px;align-items:stretch}
-.ai-top-grid{display:grid;grid-template-columns:minmax(280px,360px) minmax(0,1fr);gap:20px;align-items:stretch}
-.ai-bottom-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:stretch}
+.ai-diagnosis-layout{display:flex;flex-direction:column;gap:14px;align-items:stretch}
+.ai-top-grid{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);gap:14px;align-items:stretch}
+.ai-bottom-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
 .ai-score-card,.ai-patterns-card,.ai-report-card,.ai-flow-card{margin-bottom:0;height:100%}
-.ai-flow-card{display:flex;flex-direction:column;gap:14px}
-.ai-score-card .score-bar-bg{max-width:320px}
-.ai-score-card #ai-score-desc{line-height:1.7}
-#steps-list,#flow-sector-content{display:flex;flex-direction:column;gap:12px}
-.flow-rationale-text{font-size:13px;color:#8b949e;text-align:center;line-height:1.8;word-break:keep-all;overflow-wrap:anywhere}
-.empty-note{font-size:13px;color:#484f58;line-height:1.7;text-align:left}
+.ai-flow-card{display:flex;flex-direction:column;gap:8px}
+.ai-score-card .score-bar-bg{max-width:300px}
+.ai-score-card #ai-score-desc{line-height:1.5}
+#steps-list,#flow-sector-content{display:flex;flex-direction:column;gap:10px}
+.flow-rationale-text{font-size:12px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;overflow-wrap:anywhere}
+.empty-note{font-size:13px;color:#484f58;line-height:1.6;text-align:left}
 
 /* 분석 스텝 */
 .step-item{background:#21262d;border-radius:14px;padding:18px;margin-bottom:0;border:1px solid #30363d;display:flex;flex-direction:column;gap:12px}
@@ -3625,12 +3625,12 @@ input::placeholder{color:#484f58}
 .core-section-label{font-size:11px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
 
 /* ── 🌊 흐름 분석 탭 ── */
-.signal-matrix{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.sig-cell{background:#21262d;border-radius:10px;padding:12px;text-align:center}
-.sig-cell-label{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
-.sig-cell-val{font-size:14px;font-weight:700}
+.signal-matrix{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
+.sig-cell{background:#21262d;border-radius:10px;padding:8px 10px;text-align:center}
+.sig-cell-label{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.sig-cell-val{font-size:13px;font-weight:700}
 .sig-up{color:#f85149}.sig-down{color:#388bfd}.sig-neutral{color:#8b949e}
-.rec-badge-lg{display:inline-block;padding:8px 20px;border-radius:20px;font-size:15px;font-weight:700;margin-bottom:8px}
+.rec-badge-lg{display:inline-block;padding:5px 16px;border-radius:20px;font-size:13px;font-weight:700;margin-bottom:4px}
 .rec-strong-buy{background:#0d2d1a;color:#3fb950;border:1px solid #1a4730}
 .rec-buy{background:#0d2020;color:#238636;border:1px solid #155724}
 .rec-hold{background:#2d2200;color:#d29922;border:1px solid #4a3800}
@@ -3686,19 +3686,19 @@ input::placeholder{color:#484f58}
 .step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
 
 /* ── 투자자 수급 카드 ── */
-.investor-main-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.investor-main-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
 .investor-main-item{
   background:#161b22;border:1px solid #30363d;border-radius:10px;
-  padding:12px 10px;text-align:center
+  padding:8px 10px;text-align:center
 }
-.investor-sub-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.investor-sub-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 .investor-sub-item{
   background:#0d1117;border:1px solid #21262d;border-radius:8px;
-  padding:8px 6px;text-align:center
+  padding:6px 4px;text-align:center
 }
-.investor-label{font-size:11px;color:#8b949e;margin-bottom:4px}
-.investor-val{font-size:15px;font-weight:700}
-.investor-val-lg{font-size:18px;font-weight:800}
+.investor-label{font-size:10px;color:#8b949e;margin-bottom:3px}
+.investor-val{font-size:13px;font-weight:700}
+.investor-val-lg{font-size:16px;font-weight:800}
 .investor-pos{color:#3fb950}
 .investor-neg{color:#f85149}
 .investor-neu{color:#8b949e}
@@ -3918,49 +3918,49 @@ input::placeholder{color:#484f58}
           <!-- 1행: 종합 점수 + 3-신호 매트릭스 -->
           <div class="ai-top-grid">
             <div class="card ai-score-card">
-              <div class="card-title">🏆 종합 기술적 점수</div>
+              <div class="card-title" style="margin-bottom:10px">🏆 종합 기술적 점수</div>
               <div class="score-wrap">
                 <div class="score-num" id="ai-score"></div>
-                <span style="color:#8b949e;font-size:18px;margin-bottom:6px">/ 100점</span>
+                <span style="color:#8b949e;font-size:15px;margin-bottom:4px">/ 100점</span>
               </div>
               <div class="score-bar-bg"><div class="score-bar-fill" id="ai-score-bar"></div></div>
-              <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:10px"></p>
+              <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:6px"></p>
             </div>
             <div class="card ai-flow-card">
-              <div class="card-title">📡 3-신호 분석 매트릭스</div>
+              <div class="card-title" style="margin-bottom:8px">📡 3-신호 분석 매트릭스</div>
               <div class="signal-matrix" id="flow-matrix"></div>
-              <div style="margin:10px 0">
+              <div style="margin:4px 0">
                 <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
               </div>
               <div class="flow-rationale-text" id="flow-rationale"></div>
             </div>
           </div>
-          <!-- 2행: 단계별 분석 리포트 (전체 너비) -->
-          <div class="card ai-report-card">
-            <div class="card-title">📝 단계별 분석 리포트</div>
-            <div id="steps-list"></div>
-          </div>
-          <!-- 3행: 투자자 수급 (KRX 전용, JS가 표시/숨김 제어) -->
+          <!-- 2행: 투자자 수급 (KRX 전용, JS가 표시/숨김 제어) -->
           <div class="card" id="investor-flow-card" style="display:none">
-            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
               <span>💰 투자자 수급 <span style="font-size:10px;color:#484f58;font-weight:400">· 토스증권 기준</span></span>
               <button id="investor-flow-retry" onclick="retryInvestorFlow()" style="display:none;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄 재시도</button>
             </div>
             <!-- 로딩 skeleton -->
             <div id="investor-flow-skeleton" style="display:none">
-              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
-                <div class="skel" style="height:64px;border-radius:10px"></div>
-                <div class="skel" style="height:64px;border-radius:10px"></div>
-                <div class="skel" style="height:64px;border-radius:10px"></div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+                <div class="skel" style="height:56px;border-radius:10px"></div>
+                <div class="skel" style="height:56px;border-radius:10px"></div>
+                <div class="skel" style="height:56px;border-radius:10px"></div>
               </div>
-              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-                <div class="skel" style="height:48px;border-radius:8px"></div>
-                <div class="skel" style="height:48px;border-radius:8px"></div>
-                <div class="skel" style="height:48px;border-radius:8px"></div>
-                <div class="skel" style="height:48px;border-radius:8px"></div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+                <div class="skel" style="height:42px;border-radius:8px"></div>
+                <div class="skel" style="height:42px;border-radius:8px"></div>
+                <div class="skel" style="height:42px;border-radius:8px"></div>
+                <div class="skel" style="height:42px;border-radius:8px"></div>
               </div>
             </div>
             <div id="investor-flow-content"></div>
+          </div>
+          <!-- 3행: 단계별 분석 리포트 (전체 너비) -->
+          <div class="card ai-report-card">
+            <div class="card-title">📝 단계별 분석 리포트</div>
+            <div id="steps-list"></div>
           </div>
           <!-- 4행: 섹터 / 업종 정보 (캔들·52주 섹션 제거 후 단독 카드) -->
           <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
