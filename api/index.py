@@ -2804,21 +2804,50 @@ def xgb_forecast(dd: Dict, days: int = 30):
 # 섹터 흐름 기본 종목 목록 (메인 페이지 /api/market/sector-summary 용)
 # =============================================================================
 _SECTOR_DEFAULT_STOCKS: list = [
-    {"code": "005930", "market": "KOSPI", "sector": "반도체"},   # 삼성전자
-    {"code": "000660", "market": "KOSPI", "sector": "반도체"},   # SK하이닉스
-    {"code": "035420", "market": "KOSPI", "sector": "인터넷"},   # NAVER
-    {"code": "035720", "market": "KOSPI", "sector": "인터넷"},   # 카카오
-    {"code": "005380", "market": "KOSPI", "sector": "자동차"},   # 현대차
-    {"code": "000270", "market": "KOSPI", "sector": "자동차"},   # 기아
-    {"code": "068270", "market": "KOSPI", "sector": "바이오"},   # 셀트리온
-    {"code": "207940", "market": "KOSPI", "sector": "바이오"},   # 삼성바이오로직스
-    {"code": "105560", "market": "KOSPI", "sector": "금융"},     # KB금융
-    {"code": "086790", "market": "KOSPI", "sector": "금융"},     # 하나금융지주
-    {"code": "373220", "market": "KOSPI", "sector": "배터리"},   # LG에너지솔루션
-    {"code": "006400", "market": "KOSPI", "sector": "배터리"},   # 삼성SDI
-    {"code": "017670", "market": "KOSPI", "sector": "통신"},     # SK텔레콤
-    {"code": "030200", "market": "KOSPI", "sector": "통신"},     # KT
-    {"code": "003550", "market": "KOSPI", "sector": "에너지"},   # LG
+    # ── 1행 (7섹터) ──────────────────────────────────────────────────
+    # 🔧 반도체
+    {"code": "005930", "name": "삼성전자",        "market": "KOSPI", "sector": "반도체"},
+    {"code": "000660", "name": "SK하이닉스",      "market": "KOSPI", "sector": "반도체"},
+    # ⚡ 전력기기
+    {"code": "010120", "name": "LS일렉트릭",      "market": "KOSPI", "sector": "전력기기"},
+    {"code": "267260", "name": "HD현대일렉트릭",  "market": "KOSPI", "sector": "전력기기"},
+    # 🚢 조선
+    {"code": "009540", "name": "HD한국조선해양",  "market": "KOSPI", "sector": "조선"},
+    {"code": "010140", "name": "삼성중공업",      "market": "KOSPI", "sector": "조선"},
+    # 🛡️ 방산
+    {"code": "012450", "name": "한화에어로스페이스", "market": "KOSPI", "sector": "방산"},
+    {"code": "079550", "name": "LIG넥스원",       "market": "KOSPI", "sector": "방산"},
+    # ⛽ 정유
+    {"code": "096770", "name": "SK이노베이션",    "market": "KOSPI", "sector": "정유"},
+    {"code": "010950", "name": "S-Oil",           "market": "KOSPI", "sector": "정유"},
+    # 🚗 자동차
+    {"code": "005380", "name": "현대차",          "market": "KOSPI", "sector": "자동차"},
+    {"code": "000270", "name": "기아",            "market": "KOSPI", "sector": "자동차"},
+    # 🔋 배터리
+    {"code": "373220", "name": "LG에너지솔루션",  "market": "KOSPI", "sector": "배터리"},
+    {"code": "006400", "name": "삼성SDI",         "market": "KOSPI", "sector": "배터리"},
+    # ── 2행 (7섹터) ──────────────────────────────────────────────────
+    # 🧬 바이오
+    {"code": "068270", "name": "셀트리온",        "market": "KOSPI", "sector": "바이오"},
+    {"code": "207940", "name": "삼성바이오로직스", "market": "KOSPI", "sector": "바이오"},
+    # 🏦 금융
+    {"code": "105560", "name": "KB금융",          "market": "KOSPI", "sector": "금융"},
+    {"code": "055550", "name": "신한지주",        "market": "KOSPI", "sector": "금융"},
+    # 🌐 인터넷
+    {"code": "035420", "name": "NAVER",           "market": "KOSPI", "sector": "인터넷"},
+    {"code": "035720", "name": "카카오",          "market": "KOSPI", "sector": "인터넷"},
+    # 📡 통신
+    {"code": "017670", "name": "SK텔레콤",        "market": "KOSPI", "sector": "통신"},
+    {"code": "030200", "name": "KT",              "market": "KOSPI", "sector": "통신"},
+    # 🧪 화학
+    {"code": "051910", "name": "LG화학",          "market": "KOSPI", "sector": "화학"},
+    {"code": "011170", "name": "롯데케미칼",      "market": "KOSPI", "sector": "화학"},
+    # 🏭 철강
+    {"code": "005490", "name": "POSCO홀딩스",     "market": "KOSPI", "sector": "철강"},
+    {"code": "004020", "name": "현대제철",        "market": "KOSPI", "sector": "철강"},
+    # 💡 에너지
+    {"code": "015760", "name": "한국전력",        "market": "KOSPI", "sector": "에너지"},
+    {"code": "036460", "name": "한국가스공사",    "market": "KOSPI", "sector": "에너지"},
 ]
 
 # =============================================================================
@@ -3069,13 +3098,14 @@ def route(path: str, params: Dict) -> Dict:
     if path == "/api/market/sector-summary":
         # 코드 파라미터 없이 기본 대표 종목으로 섹터 흐름 반환
         # 메인 페이지 자동 로드용 — 캐시 s-maxage=600 (10분)
+        # quote만 병렬 수집 (history/news 생략) → 대폭 빠름
         try:
             import sys as _sys
             import os as _os
             _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-            from market_briefing.data_fetcher import fetch_stock_list_snapshot
+            from market_briefing.data_fetcher import fetch_stock_list_quote_only
             from market_briefing.sector_flow import build_sector_flow
-            snapshots = fetch_stock_list_snapshot(_SECTOR_DEFAULT_STOCKS)
+            snapshots = fetch_stock_list_quote_only(_SECTOR_DEFAULT_STOCKS)
             return build_sector_flow(snapshots)
         except Exception as e:
             return {"error": f"섹터 흐름 조회 실패: {e}"}
@@ -3363,6 +3393,8 @@ input::placeholder{color:#484f58}
 @media(max-width:1100px){
   .ai-top-grid{grid-template-columns:1fr}
   .ai-bottom-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* 1100px 이하: 7열 → 4열 */
+  .sector-cards{grid-template-columns:repeat(4,minmax(0,1fr))}
 }
 
 /* ── 태블릿 (≤ 900px) ── */
@@ -3375,6 +3407,8 @@ input::placeholder{color:#484f58}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
   .two-col-grid{grid-template-columns:1fr}
+  /* 900px 이하: 3열 */
+  .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 
 /* ── 모바일 (≤ 768px) ── */
@@ -3423,12 +3457,16 @@ input::placeholder{color:#484f58}
 
   /* 메트릭 카드 */
   .m-value{font-size:18px}
+  /* 768px 이하: 2열 */
+  .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 /* ── 소형 모바일 (≤ 480px) ── */
 @media(max-width:480px){
   #main{padding:52px 10px 20px}
   .metrics-grid{grid-template-columns:1fr 1fr;gap:6px}
+  /* 480px 이하: 2열 */
+  .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
   .metric-card{padding:10px}
   .m-label{font-size:10px}
   .m-value{font-size:16px}
@@ -3507,18 +3545,44 @@ input::placeholder{color:#484f58}
 #sector-flow{margin-top:16px}
 .sector-flow-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .sector-flow-title{font-size:13px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.05em}
-.sector-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
-.sector-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;transition:border-color .15s}
-.sector-card:hover{border-color:#388bfd}
+
+/* 7열 고정 그리드 — 14종목 → 7×2 레이아웃 */
+.sector-cards{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+
+/* 카드 기본 스타일 */
+.sector-card{
+  background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;
+  cursor:pointer;user-select:none;
+  transition:border-color .15s,background .15s
+}
+.sector-card:hover{border-color:#388bfd;background:#1a2233}
+.sector-card.expanded{border-color:#388bfd;background:#161e2e}
+
+/* 카드 내부 요소 */
 .sector-card-head{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.sector-card-emoji{font-size:16px}
-.sector-card-name{font-size:12px;font-weight:600;color:#e6edf3}
-.sector-card-cnt{font-size:10px;color:#484f58}
+.sector-card-emoji{font-size:16px;flex-shrink:0}
+.sector-card-name{font-size:12px;font-weight:600;color:#e6edf3;line-height:1.3}
+.sector-card-cnt{font-size:10px;color:#484f58;margin-top:1px;transition:color .15s}
+.sector-card:hover .sector-card-cnt,.sector-card.expanded .sector-card-cnt{color:#388bfd}
 .sector-card-pct{font-size:13px;font-weight:700;margin-bottom:5px}
 .sector-card-mood{font-size:11px;padding:2px 7px;border-radius:8px;display:inline-block;font-weight:500}
 .sector-mood-pos{background:#0d2d1a;color:#3fb950}
 .sector-mood-neg{background:#2d0d0d;color:#f85149}
 .sector-mood-neu{background:#21262d;color:#8b949e}
+
+/* 토글 종목 리스트 — 기본 숨김, expanded 시 노출 */
+.sector-stock-list{
+  display:none;flex-wrap:wrap;gap:4px;
+  margin-top:8px;padding-top:8px;
+  border-top:1px solid #21262d
+}
+.sector-card.expanded .sector-stock-list{display:flex}
+.sector-stock-tag{
+  font-size:10px;padding:2px 7px;border-radius:6px;
+  background:#21262d;color:#8b949e;
+  cursor:pointer;transition:background .12s,color .12s
+}
+.sector-stock-tag:hover{background:#1f6feb;color:#fff}
 
 /* ── 단계별 리포트 내 캔들 패턴 카드 ── */
 .step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
@@ -4852,40 +4916,77 @@ async function loadSectorFlow() {
   }
 }
 
+// ── 섹터 카드 단일 렌더 헬퍼 ──────────────────────────────────────────────
+function _buildSectorCardHtml(s) {
+  const pct    = s.avg_change_pct;
+  const pctTxt = pct != null ? (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%' : '—';
+  const pctClr = pct == null ? '#8b949e' : pct > 0 ? '#3fb950' : pct < 0 ? '#f85149' : '#8b949e';
+
+  const moodCls = s.mood === 'positive' ? 'sector-mood-pos'
+                : s.mood === 'negative' ? 'sector-mood-neg'
+                : 'sector-mood-neu';
+  const moodTxt = s.mood === 'positive' ? '강세' : s.mood === 'negative' ? '약세' : '혼조';
+
+  // 종목명 태그 — 클릭 시 해당 종목 분석으로 이동
+  const names = s.stock_names || [];
+  const stockTagsHtml = names.map(n =>
+    `<span class="sector-stock-tag"
+          onclick="event.stopPropagation();quickSearch('${n.replace(/'/g,"\\'")}')
+          " title="${n} 분석">${n}</span>`
+  ).join('');
+
+  // 개수 표시 + 펼치기 화살표 (종목 있을 때만)
+  const cntHtml = names.length
+    ? `<div class="sector-card-cnt">${names.length}종목 ▾</div>`
+    : '';
+
+  // 종목 리스트 영역 (기본 숨김 — CSS .expanded 시 display:flex)
+  const listHtml = names.length
+    ? `<div class="sector-stock-list">${stockTagsHtml}</div>`
+    : '';
+
+  return `<div class="sector-card" onclick="toggleSectorCard(this)">
+    <div class="sector-card-head">
+      <span class="sector-card-emoji">${s.emoji || '🏭'}</span>
+      <div>
+        <div class="sector-card-name">${s.name}</div>
+        ${cntHtml}
+      </div>
+    </div>
+    <div class="sector-card-pct" style="color:${pctClr}">${pctTxt}</div>
+    <span class="sector-card-mood ${moodCls}">${moodTxt}</span>
+    ${listHtml}
+  </div>`;
+}
+
+// ── 섹터 흐름 전체 렌더 ────────────────────────────────────────────────────
 function renderSectorFlow(d) {
-  const sectors = d.sectors || [];
   const cardsEl = document.getElementById('sector-cards');
   if (!cardsEl) return;
+
+  const sectors = d.sectors || [];
   if (!sectors.length) {
     cardsEl.innerHTML = '<p style="color:#484f58;font-size:13px">섹터 데이터 없음</p>';
     return;
   }
-  // 무드순 정렬: positive → neutral → negative
-  const order = {positive:0, neutral:1, negative:2};
-  const sorted = [...sectors].sort((a, b) => (order[a.mood]||1) - (order[b.mood]||1));
-  cardsEl.innerHTML = sorted.map(s => {
-    const pct = s.avg_change_pct;
-    const pctTxt = pct != null
-      ? (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%'
-      : '—';
-    const pctClr = pct == null ? '#8b949e' : pct > 0 ? '#3fb950' : pct < 0 ? '#f85149' : '#8b949e';
-    const moodCls = s.mood === 'positive' ? 'sector-mood-pos'
-                  : s.mood === 'negative' ? 'sector-mood-neg'
-                  : 'sector-mood-neu';
-    const moodTxt = s.mood === 'positive' ? '강세' : s.mood === 'negative' ? '약세' : '혼조';
-    const cnt = s.stock_count ? `<span class="sector-card-cnt">${s.stock_count}종목</span>` : '';
-    return `<div class="sector-card">
-      <div class="sector-card-head">
-        <span class="sector-card-emoji">${s.emoji || '🏭'}</span>
-        <div>
-          <div class="sector-card-name">${s.name}</div>
-          ${cnt}
-        </div>
-      </div>
-      <div class="sector-card-pct" style="color:${pctClr}">${pctTxt}</div>
-      <span class="sector-card-mood ${moodCls}">${moodTxt}</span>
-    </div>`;
-  }).join('');
+
+  // 강세→혼조→약세 순으로 정렬해 시각적 우선순위 부여
+  const moodOrder = {positive: 0, neutral: 1, negative: 2};
+  const sorted = [...sectors].sort(
+    (a, b) => (moodOrder[a.mood] ?? 1) - (moodOrder[b.mood] ?? 1)
+  );
+
+  cardsEl.innerHTML = sorted.map(_buildSectorCardHtml).join('');
+}
+
+// ── 섹터 카드 토글 (펼치기 / 접기) ───────────────────────────────────────
+function toggleSectorCard(el) {
+  const isOpen = el.classList.toggle('expanded');
+  // 화살표 방향 갱신 (▾ ↔ ▴)
+  const cntEl = el.querySelector('.sector-card-cnt');
+  if (cntEl) {
+    cntEl.textContent = cntEl.textContent.replace(/[▾▴]/, isOpen ? '▴' : '▾');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════

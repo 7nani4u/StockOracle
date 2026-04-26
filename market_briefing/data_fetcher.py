@@ -522,3 +522,66 @@ def fetch_stock_list_snapshot(
                 snap[key] = cfg[key]
         result.append(snap)
     return result
+
+
+def fetch_stock_list_quote_only(
+    stock_configs: list[dict],
+    *,
+    max_workers: int = 10,
+) -> list[dict]:
+    """섹터 흐름용 경량 병렬 스냅샷.
+
+    quote(시세)만 수집하고 history/news/disclosures는 건너뜀.
+    ThreadPoolExecutor로 전 종목을 동시에 요청하므로
+    fetch_stock_list_snapshot 대비 대폭 빠름.
+
+    Args:
+        stock_configs: [{"code":"005930","market":"KOSPI","sector":"반도체"}, ...]
+        max_workers:   동시 스레드 수 (기본 10 — 네이버 서버 부하 고려)
+
+    Returns:
+        fetch_stock_list_snapshot 과 동일 구조이지만
+        history/news/disclosures 키는 포함되지 않음.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_one(cfg: dict) -> dict:
+        code   = cfg["code"]
+        market = cfg.get("market", "KOSPI")
+        snap: dict = {"code": code, "market": market}
+        # 설정 필드(이름·섹터 등) 먼저 병합
+        for key in ("name", "sector", "owners", "leader", "is_etf"):
+            if cfg.get(key) is not None:
+                snap[key] = cfg[key]
+        try:
+            snap["quote"] = fetch_stock_quote(code)
+        except Exception as e:
+            print(f"[warn] quote {code}: {e}", file=sys.stderr)
+            snap["quote"] = {}
+        return snap
+
+    n = len(stock_configs)
+    results: list[dict | None] = [None] * n
+    workers = min(max_workers, n) if n else 1
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(_fetch_one, cfg): i
+            for i, cfg in enumerate(stock_configs)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                results[idx] = future.result()
+            except Exception as e:
+                cfg = stock_configs[idx]
+                print(f"[warn] sector quote failed {cfg.get('code')}: {e}", file=sys.stderr)
+                results[idx] = {
+                    "code":   cfg["code"],
+                    "market": cfg.get("market", "KOSPI"),
+                    "sector": cfg.get("sector"),
+                    "quote":  {},
+                }
+
+    # None 보호 (이론상 발생 안 함)
+    return [r for r in results if r is not None]
