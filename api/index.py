@@ -3600,29 +3600,60 @@ input::placeholder{color:#484f58}
 }
 @keyframes ptr-spin{to{transform:rotate(360deg)}}
 
-/* ── ⭐ 오늘의 핵심 ── */
-#market-core{margin-bottom:24px}
-.core-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
-.core-title{font-size:16px;font-weight:700}
-.mood-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
+/* ── 홈 섹션 공통 헤더 ── */
+.home-section{margin-bottom:20px}
+.home-section-header{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:10px;flex-wrap:wrap;gap:8px
+}
+.home-section-title{
+  font-size:14px;font-weight:700;color:#e6edf3;
+  display:flex;align-items:center;gap:8px
+}
+.home-section-refresh{
+  background:none;border:1px solid #30363d;border-radius:6px;
+  padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer;
+  transition:border-color .15s,color .15s
+}
+.home-section-refresh:hover{border-color:#388bfd;color:#388bfd}
+
+/* ── 📊 시장 현황 ── */
+#market-core{margin-bottom:20px}
+.core-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px}
+.core-header-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.core-title{font-size:14px;font-weight:700;color:#e6edf3}
+.mood-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:16px;font-size:11px;font-weight:600}
 .mood-positive{background:#0d2d1a;color:#3fb950;border:1px solid #1a4730}
 .mood-neutral{background:#21262d;color:#8b949e;border:1px solid #30363d}
 .mood-negative{background:#2d0d0d;color:#f85149;border:1px solid #4d1515}
-.core-indices{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
-.core-index-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px}
-.ci-name{font-size:11px;color:#8b949e;margin-bottom:4px}
-.ci-val{font-size:18px;font-weight:700}
-.ci-chg{font-size:12px;font-weight:500;margin-top:2px}
-.core-news-item{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;margin-bottom:6px}
-.cn-impact{font-size:11px;font-weight:600;padding:2px 7px;border-radius:10px;white-space:nowrap;flex-shrink:0;margin-top:1px}
+.core-indices{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:0}
+.core-index-card{
+  background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;
+  transition:border-color .15s
+}
+.core-index-card:hover{border-color:#388bfd}
+.ci-name{font-size:11px;color:#8b949e;margin-bottom:3px;font-weight:500}
+.ci-val{font-size:17px;font-weight:700}
+.ci-chg{font-size:12px;font-weight:600;margin-top:2px}
+
+/* ── 📰 주요 뉴스 ── */
+#market-news{margin-bottom:20px}
+.core-news-item{
+  background:#161b22;border:1px solid #30363d;border-radius:8px;
+  padding:9px 12px;display:flex;gap:10px;align-items:flex-start;margin-bottom:5px;
+  transition:border-color .12s
+}
+.core-news-item:hover{border-color:#30363d80}
+.core-news-item:last-child{margin-bottom:0}
+.cn-impact{font-size:10px;font-weight:700;padding:2px 6px;border-radius:8px;white-space:nowrap;flex-shrink:0;margin-top:2px}
 .cn-positive{background:#0d2d1a;color:#3fb950}
 .cn-negative{background:#2d0d0d;color:#f85149}
 .cn-neutral{background:#21262d;color:#8b949e}
-.cn-title{font-size:13px;color:#e6edf3;text-decoration:none;line-height:1.4}
-.cn-title:hover{text-decoration:underline;color:#388bfd}
-.cn-meta{font-size:11px;color:#484f58;margin-top:2px}
-.core-loading{text-align:center;padding:32px;color:#8b949e;font-size:13px}
-.core-section-label{font-size:11px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
+.cn-title{font-size:13px;color:#cdd9e5;text-decoration:none;line-height:1.45}
+.cn-title:hover{color:#388bfd}
+.cn-meta{font-size:10px;color:#484f58;margin-top:2px}
+.core-loading{text-align:center;padding:24px;color:#8b949e;font-size:13px}
+.news-loading{text-align:center;padding:16px;color:#484f58;font-size:12px}
 
 /* ── 🌊 흐름 분석 탭 ── */
 .signal-matrix{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}
@@ -3642,7 +3673,7 @@ input::placeholder{color:#484f58}
 /* ── 🏭 섹터 흐름 (메인 페이지) ── */
 #sector-flow{margin-top:16px}
 .sector-flow-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.sector-flow-title{font-size:13px;font-weight:600;color:#8b949e;text-transform:uppercase;letter-spacing:.05em}
+.sector-flow-title{font-size:14px;font-weight:700;color:#e6edf3}
 
 /* 7열 고정 그리드 — 14종목 → 7×2 레이아웃 */
 .sector-cards{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
@@ -3731,11 +3762,15 @@ input::placeholder{color:#484f58}
 .ev-sig-row:last-child{margin-bottom:0}
 
 @media(max-width:900px){
-  .core-indices{grid-template-columns:repeat(2,1fr)}
+  .core-indices{grid-template-columns:repeat(3,1fr)}
   .signal-matrix{grid-template-columns:1fr}
   .ev-result-grid{grid-template-columns:1fr}
 }
-@media(max-width:480px){.core-indices{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){
+  .core-indices{grid-template-columns:repeat(3,1fr)}
+  .home-section-title{font-size:13px}
+}
+@media(max-width:400px){.core-indices{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
@@ -3791,50 +3826,58 @@ input::placeholder{color:#484f58}
   <!-- 분석 페이지 -->
   <div id="page-analysis">
     <div id="state-empty">
-      <!-- ⭐ 오늘의 핵심 -->
-      <div id="market-core">
+
+      <!-- 1. 📊 시장 현황 (지수 + 시장 무드) -->
+      <div id="market-core" class="home-section">
         <div class="core-loading" id="core-loading">
           <div class="spinner" style="margin:0 auto 10px"></div>
           시장 현황 로딩 중...
         </div>
         <div id="core-content" style="display:none">
           <div class="core-header">
-            <span class="core-title">⭐ 오늘의 핵심</span>
-            <div style="display:flex;gap:8px;align-items:center">
+            <div class="core-header-left">
+              <span class="core-title">📊 시장 현황</span>
               <span id="core-mood-badge" class="mood-badge mood-neutral">—</span>
-              <span id="core-vix-badge" style="display:none;font-size:11px;padding:3px 8px;border-radius:10px;background:#2d0d0d;color:#f85149;border:1px solid #4d1515"></span>
-              <button onclick="loadMarketCore()" title="새로고침" style="background:none;border:1px solid #30363d;border-radius:6px;padding:4px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄</button>
+              <span id="core-vix-badge" style="display:none;font-size:10px;padding:2px 7px;border-radius:10px;background:#2d0d0d;color:#f85149;border:1px solid #4d1515"></span>
             </div>
+            <button onclick="loadMarketCore()" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
           </div>
-          <div class="core-section-label">국내 지수</div>
           <div class="core-indices" id="core-indices"></div>
-          <div class="core-section-label">주요 뉴스</div>
-          <div id="core-news"></div>
         </div>
-        <div id="core-error" style="display:none;text-align:center;padding:24px;color:#484f58;font-size:13px">
-          시장 데이터 조회 실패
-          <button onclick="loadMarketCore()" style="background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer;margin-left:8px">재시도</button>
+        <div id="core-error" style="display:none;text-align:center;padding:20px;color:#484f58;font-size:13px">
+          시장 데이터를 불러오지 못했습니다
+          <button onclick="loadMarketCore()" class="home-section-refresh" style="margin-left:8px">재시도</button>
         </div>
       </div>
 
-      <!-- 🏭 섹터 흐름 -->
-      <div id="sector-flow">
-        <div id="sector-flow-loading" style="text-align:center;padding:16px;color:#484f58;font-size:12px">
-          <div class="spinner" style="margin:0 auto 8px;width:24px;height:24px;border-width:3px"></div>
-          섹터 흐름 로딩 중...
+      <!-- 2. 🏭 섹터 흐름 -->
+      <div id="sector-flow" class="home-section">
+        <div id="sector-flow-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
+          <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
+          섹터 데이터 로딩 중...
         </div>
         <div id="sector-flow-content" style="display:none">
           <div class="sector-flow-header">
             <span class="sector-flow-title">🏭 섹터 흐름</span>
-            <button onclick="loadSectorFlow()" title="새로고침" style="background:none;border:1px solid #30363d;border-radius:6px;padding:4px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄</button>
+            <button onclick="loadSectorFlow()" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
           </div>
           <div class="sector-cards" id="sector-cards"></div>
         </div>
         <div id="sector-flow-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
-          섹터 데이터 조회 실패
-          <button onclick="loadSectorFlow()" style="background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer;margin-left:6px">재시도</button>
+          섹터 데이터를 불러오지 못했습니다
+          <button onclick="loadSectorFlow()" class="home-section-refresh" style="margin-left:6px">재시도</button>
         </div>
       </div>
+
+      <!-- 3. 📰 주요 뉴스 (배경·원인) -->
+      <div id="market-news" class="home-section" style="display:none">
+        <div class="home-section-header">
+          <span class="home-section-title">📰 주요 뉴스</span>
+          <span style="font-size:11px;color:#484f58">시장에 영향을 주는 오늘의 이슈</span>
+        </div>
+        <div id="core-news"></div>
+      </div>
+
     </div>
     <div id="state-loading" class="center-state" style="display:none">
       <div class="spinner"></div>
@@ -5108,12 +5151,13 @@ function renderScreener() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ⭐ 오늘의 핵심 — 거시 시장 요약
+// 📊 시장 현황 — 거시 시장 요약
 // ═══════════════════════════════════════════════════════════════
 async function loadMarketCore() {
   document.getElementById('core-loading').style.display = 'block';
   document.getElementById('core-content').style.display = 'none';
   document.getElementById('core-error').style.display = 'none';
+  document.getElementById('market-news').style.display = 'none';
   try {
     const r = await fetch('/api/market/summary');
     if (!r.ok) throw new Error('서버 오류 ' + r.status);
@@ -5122,6 +5166,7 @@ async function loadMarketCore() {
     renderMarketCore(d);
     document.getElementById('core-loading').style.display = 'none';
     document.getElementById('core-content').style.display = 'block';
+    document.getElementById('market-news').style.display = '';   // 뉴스 섹션 노출
   } catch(e) {
     document.getElementById('core-loading').style.display = 'none';
     document.getElementById('core-error').style.display = 'block';
@@ -5130,8 +5175,12 @@ async function loadMarketCore() {
 }
 
 function renderMarketCore(d) {
-  // 무드 배지
-  const moodMap = { positive: ['mood-positive','🟢 우호'], neutral: ['mood-neutral','🟡 혼조'], negative: ['mood-negative','🔴 부담'] };
+  // 시장 무드 배지
+  const moodMap = {
+    positive: ['mood-positive', '🟢 우호적'],
+    neutral:  ['mood-neutral',  '🟡 혼조'],
+    negative: ['mood-negative', '🔴 부담적'],
+  };
   const [moodCls, moodTxt] = moodMap[d.market_mood] || moodMap.neutral;
   const badge = document.getElementById('core-mood-badge');
   badge.className = 'mood-badge ' + moodCls;
@@ -5139,42 +5188,48 @@ function renderMarketCore(d) {
 
   // VIX 신호
   const vixBadge = document.getElementById('core-vix-badge');
-  const vixMap = { extreme_fear: '😱 극단 공포 (VIX≥30)', fear: '😨 공포 (VIX≥20)', complacency: '😴 과열 (VIX≤13)', normal: null };
+  const vixMap = {
+    extreme_fear: '😱 극단 공포 VIX≥30',
+    fear:         '😨 공포 VIX≥20',
+    complacency:  '😴 과열 VIX≤13',
+    normal:       null,
+  };
   const vixTxt = vixMap[d.vix_signal];
   if (vixTxt) { vixBadge.textContent = vixTxt; vixBadge.style.display = ''; }
-  else { vixBadge.style.display = 'none'; }
+  else        { vixBadge.style.display = 'none'; }
 
-  // 국내 지수
-  const indices = d.indices || {};
-  const indicesEl = document.getElementById('core-indices');
-  const idxOrder = ['KOSPI','KOSDAQ','KOSPI200'];
-  indicesEl.innerHTML = idxOrder.map(k => {
+  // 국내 지수 3종 (KOSPI / KOSDAQ / KOSPI200)
+  const indices   = d.indices || {};
+  const idxOrder  = ['KOSPI', 'KOSDAQ', 'KOSPI200'];
+  const idxLabels = { KOSPI: '코스피', KOSDAQ: '코스닥', KOSPI200: 'KOSPI 200' };
+  document.getElementById('core-indices').innerHTML = idxOrder.map(k => {
     const idx = indices[k]; if (!idx) return '';
-    const up = idx.direction === 'up';
+    const up  = idx.direction === 'up';
     const clr = up ? '#f85149' : idx.direction === 'down' ? '#388bfd' : '#8b949e';
+    const arrow = up ? '▲' : idx.direction === 'down' ? '▼' : '—';
     return `<div class="core-index-card">
-      <div class="ci-name">${k}</div>
+      <div class="ci-name">${idxLabels[k] || k}</div>
       <div class="ci-val">${idx.value || '—'}</div>
-      <div class="ci-chg" style="color:${clr}">${up?'▲':'▼'} ${idx.change_pct || idx.change_abs || ''}</div>
+      <div class="ci-chg" style="color:${clr}">${arrow} ${idx.change_pct || idx.change_abs || ''}</div>
     </div>`;
   }).join('');
 
-  // 주요 뉴스 (최대 6건)
-  const news = (d.top_news || []).slice(0, 6);
+  // 주요 뉴스 (최대 6건) — #market-news 섹션 안의 #core-news에 렌더
+  const news   = (d.top_news || []).slice(0, 6);
   const newsEl = document.getElementById('core-news');
   if (!news.length) {
-    newsEl.innerHTML = '<p style="font-size:13px;color:#484f58">뉴스를 불러올 수 없습니다.</p>';
+    newsEl.innerHTML = '<p style="font-size:13px;color:#484f58;padding:8px 0">뉴스를 불러올 수 없습니다.</p>';
     return;
   }
-  const impCls = { positive:'cn-positive', negative:'cn-negative', neutral:'cn-neutral' };
-  const impTxt = { positive:'호재', negative:'악재', neutral:'중립' };
+  const impCls = { positive: 'cn-positive', negative: 'cn-negative', neutral: 'cn-neutral' };
+  const impTxt = { positive: '호재', negative: '악재', neutral: '중립' };
   newsEl.innerHTML = news.map(n => {
     const imp = n.impact || 'neutral';
     return `<div class="core-news-item">
-      <span class="cn-impact ${impCls[imp]||'cn-neutral'}">${impTxt[imp]||'중립'}</span>
-      <div>
-        <a class="cn-title" href="${n.link||'#'}" target="_blank">${n.title||''}</a>
-        <div class="cn-meta">${n.source||''} ${n.date ? '· '+n.date : ''}</div>
+      <span class="cn-impact ${impCls[imp] || 'cn-neutral'}">${impTxt[imp] || '중립'}</span>
+      <div style="min-width:0">
+        <a class="cn-title" href="${n.link || '#'}" target="_blank" rel="noopener">${n.title || ''}</a>
+        <div class="cn-meta">${n.source || ''}${n.date ? ' · ' + n.date : ''}</div>
       </div>
     </div>`;
   }).join('');
