@@ -237,46 +237,100 @@ US_STOCK_MAPPING = {
     "이더리움": "ETH-USD",
 }
 
-@ttl_cache(86400)
+@ttl_cache(3600)   # 1시간 캐시 — 실패 시 24시간 고착 방지 (기존 86400 → 3600)
 def get_krx_code_map():
-    url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
-    try:
-        res = requests.get(url, timeout=5)
-        res.encoding = "euc-kr"
-        soup = BeautifulSoup(res.text, "html.parser")
-        table = soup.select_one("table")
-        n2c, c2n = {}, {}
-        if table:
-            for row in table.select("tr")[1:]:
-                cols = row.select("td")
-                if len(cols) >= 3:
-                    name = cols[0].text.strip()
-                    code = cols[2].text.strip().zfill(6)
-                    n2c[name] = code
-                    c2n[code] = name
-        return n2c, c2n
-    except Exception:
-        return {}, {}
+    """KRX 전체 상장 종목 코드↔이름 맵 반환.
+    실패 시 빈 dict 반환 — resolve_ticker가 KR_STOCK_MAP 폴백으로 처리함.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
+    urls = [
+        # HTTPS 우선, HTTP 폴백
+        "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13",
+        "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13",
+    ]
+    for url in urls:
+        try:
+            res = requests.get(url, headers=headers, timeout=8, verify=False)
+            res.encoding = "euc-kr"
+            soup = BeautifulSoup(res.text, "html.parser")
+            table = soup.select_one("table")
+            n2c, c2n = {}, {}
+            if table:
+                for row in table.select("tr")[1:]:
+                    cols = row.select("td")
+                    if len(cols) >= 3:
+                        name = cols[0].text.strip()
+                        code = cols[2].text.strip().zfill(6)
+                        if name and code:
+                            n2c[name] = code
+                            c2n[code] = name
+            if n2c:          # 파싱 성공 시 반환 (빈 결과면 다음 URL 시도)
+                return n2c, c2n
+        except Exception:
+            continue
+    return {}, {}            # 모두 실패 → resolve_ticker가 KR_STOCK_MAP 폴백 사용
 
 def resolve_ticker(q: str):
+    """종목명 / 코드 / 별칭 → (yfinance_ticker, market, display_name)
+
+    우선순위 (빠른 오프라인 조회 우선, 외부 API는 최후 수단):
+    1. COMMON_ALIASES  — 별칭·줄임말 (KR_STOCK_MAP으로 올바른 시장접미사 검증)
+    2. US_STOCK_MAPPING — 한국어 미국 종목명
+    3. 6자리 숫자 코드 — KR_STOCK_MAP 역조회 → KRX API 폴백
+    4. 전체 ASCII    — US ticker 직접 입력
+    5. KR_STOCK_MAP 완전 일치 (오프라인, KQ/KS 올바름)  ← 핵심 추가
+    6. KRX API 완전 일치 (전체 상장 종목, 네트워크 필요)
+    7. KRX API 전방 일치
+    8. KR_STOCK_MAP 전방 일치 (KRX API 실패 시 최종 폴백)  ← 핵심 추가
+    """
     q = q.strip()
     if not q:
         return None, None, None
+
+    # ── 1. 별칭 / 줄임말 ─────────────────────────────────────────────
     if q in COMMON_ALIASES:
-        return f"{COMMON_ALIASES[q]}.KS", "KRX", q
+        code = COMMON_ALIASES[q]
+        # KR_STOCK_MAP에서 시장접미사 확인 — KOSDAQ 종목(.KQ) 오분류 방지
+        for name, tkr in KR_STOCK_MAP.items():
+            if tkr.startswith(code + "."):
+                return tkr, "KRX", q
+        return f"{code}.KS", "KRX", q   # KR_STOCK_MAP 미적재면 KS 기본값
+
+    # ── 2. 한국어 미국 종목명 ─────────────────────────────────────────
     if q in US_STOCK_MAPPING:
         return US_STOCK_MAPPING[q], "US", q
+
+    # ── 3. 6자리 숫자 코드 ───────────────────────────────────────────
     if q.isdigit() and len(q) == 6:
+        # KR_STOCK_MAP 역조회 (오프라인, 빠름)
+        for name, tkr in KR_STOCK_MAP.items():
+            if tkr.startswith(q + "."):
+                return tkr, "KRX", name
+        # KRX API 폴백 (네트워크 필요)
         _, c2n = get_krx_code_map()
         return f"{q}.KS", "KRX", c2n.get(q, q)
+
+    # ── 4. 전체 ASCII → US ticker 직접 입력 ──────────────────────────
     if all(ord(c) < 128 for c in q):
         return q.upper(), "US", q.upper()
+
+    # ── 5. KR_STOCK_MAP 완전 일치 (오프라인, KQ/KS 정확) ─────────────
+    if q in KR_STOCK_MAP:
+        return KR_STOCK_MAP[q], "KRX", q
+
+    # ── 6~7. KRX API (전체 상장 종목 조회, 네트워크 필요) ────────────
     n2c, _ = get_krx_code_map()
     if q in n2c:
         return f"{n2c[q]}.KS", "KRX", q
     for name, code in n2c.items():
         if name.startswith(q):
             return f"{code}.KS", "KRX", name
+
+    # ── 8. KR_STOCK_MAP 전방 일치 (KRX API 실패 시 최종 폴백) ────────
+    for name, tkr in KR_STOCK_MAP.items():
+        if name.startswith(q):
+            return tkr, "KRX", name
+
     return None, None, None
 
 # =============================================================================
@@ -697,7 +751,14 @@ KR_STOCK_MAP = {
     "한화솔루션": "009830.KS", "한화에어로스페이스": "012450.KS", "한화오션": "042660.KS", "HD현대중공업": "329180.KS",
     "HD한국조선해양": "009540.KS", "두산에너빌리티": "034020.KS", "두산밥캣": "241560.KS", "포스코퓨처엠": "003670.KS",
     "에코프로비엠": "247540.KQ", "에코프로": "086520.KQ", "엘앤에프": "066970.KQ", "HLB": "028300.KQ",
-    "리노공업": "058470.KQ", "알테오젠": "196170.KQ"
+    "리노공업": "058470.KQ", "알테오젠": "196170.KQ",
+    # 업종별 흐름(_SECTOR_DEFAULT_STOCKS) 클릭 검색 지원 — KRX API 불필요
+    "LS일렉트릭": "010120.KS", "HD현대일렉트릭": "267260.KS",
+    "삼성중공업": "010140.KS", "LIG넥스원": "079550.KS",
+    "S-Oil": "010950.KS", "현대제철": "004020.KS", "한국가스공사": "036460.KS",
+    # 자주 검색되는 추가 종목
+    "삼성전자우": "005935.KS", "현대자동차": "005380.KS", "카카오뱅크": "323410.KS",
+    "카카오페이": "377300.KS", "삼성바이오": "207940.KS", "현대중공업": "329180.KS",
 }
 
 US_TICKERS = [
