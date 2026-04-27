@@ -772,6 +772,63 @@ US_TICKERS = [
     "AIG", "HIG", "PLTR", "IONQ", "JOBY", "ACHR", "SOFI", "AFRM", "UPST", "RIVN", "LCID", "NKLA", "DNA", "PATH"
 ]
 
+# ── 미국 주가 보조 API 키 (yfinance 실패 시 폴백) ────────────────────────────
+_TIINGO_KEY = os.getenv("TIINGO_API_KEY",   "12ebd1feef89b6728cc15808864b7402449a5637")
+_AV_KEY     = os.getenv("ALPHAVANTAGE_KEY", "E0ODFSRNDU4P9HDU")
+
+
+def _tiingo_price(ticker: str, session_name: str) -> Optional[Tuple[float, float]]:
+    """Tiingo IEX API로 미국 주식 현재가·전일종가 조회.
+    - 프리/애프터마켓 → tngoLast (Tiingo 집계가, 시간외 지원)
+    - 정규장           → last (IEX 실시간) 우선, 없으면 tngoLast
+    반환: (price, prev_close) or None
+    """
+    try:
+        url = f"https://api.tiingo.com/iex/{ticker.upper()}?token={_TIINGO_KEY}"
+        r = requests.get(url, timeout=5, headers={"Accept": "application/json"})
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if not data:
+            return None
+        prev_close = float(data.get("prevClose") or 0)
+        if session_name in ("프리마켓", "애프터마켓", "데이마켓"):
+            # 시간외 세션: tngoLast(집계) 우선
+            price = float(data.get("tngoLast") or data.get("last") or 0)
+        else:
+            # 정규장: IEX 실시간 last 우선
+            price = float(data.get("last") or data.get("tngoLast") or 0)
+        if price > 0:
+            return price, prev_close
+    except Exception:
+        pass
+    return None
+
+
+def _av_price(ticker: str) -> Optional[Tuple[float, float]]:
+    """AlphaVantage GLOBAL_QUOTE로 미국 주식 현재가·전일종가 조회 (무료 플랜).
+    반환: (price, prev_close) or None
+    """
+    try:
+        url = (
+            "https://www.alphavantage.co/query"
+            f"?function=GLOBAL_QUOTE&symbol={ticker.upper()}&apikey={_AV_KEY}"
+        )
+        r = requests.get(url, timeout=6)
+        if r.status_code != 200:
+            return None
+        q = r.json().get("Global Quote", {})
+        price     = float(q.get("05. price")          or 0)
+        prev_close = float(q.get("08. previous close") or 0)
+        if price > 0:
+            return price, prev_close
+    except Exception:
+        pass
+    return None
+
+
 def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
     """
     현재 시간(US Eastern Time 기준)과 서머타임(DST) 적용 여부를 고려하여
@@ -823,9 +880,25 @@ def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
         # 따라서 데이마켓 중에는 가장 최근에 갱신된 애프터마켓 종가나 정규장 종가를 참조.
         price = post_price or regular_price or prev_close
 
-    if price is None:
+    # ── yfinance 가격 없으면 Tiingo → AlphaVantage 순서로 폴백 ──────────────
+    if not price:
+        ticker_str = getattr(ticker_obj, 'ticker', None) or ""
+        if ticker_str:
+            t_res = _tiingo_price(ticker_str, session_name)
+            if t_res:
+                price, t_prev = t_res
+                if not prev_close and t_prev:
+                    prev_close = t_prev
+        if not price and ticker_str:
+            av_res = _av_price(ticker_str)
+            if av_res:
+                price, av_prev = av_res
+                if not prev_close and av_prev:
+                    prev_close = av_prev
+    # 모든 API 실패 시 전일종가로 대체
+    if not price:
         price = prev_close or 0.0
-        
+
     return float(price), session_name, float(prev_close) if prev_close else 0.0
 
 
