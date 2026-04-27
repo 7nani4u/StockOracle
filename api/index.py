@@ -6359,11 +6359,14 @@ function renderSectorFlow(d) {
     return;
   }
 
-  // 강세→혼조→약세 순으로 정렬해 시각적 우선순위 부여
-  const moodOrder = {positive: 0, neutral: 1, negative: 2};
-  const sorted = [...sectors].sort(
-    (a, b) => (moodOrder[a.mood] ?? 1) - (moodOrder[b.mood] ?? 1)
-  );
+  // 등락률(%) 내림차순 정렬 — 동률 시 업종명 가나다순
+  // (강세/혼조/약세 상태값은 카드 내 표시용이며 정렬 기준으로 사용하지 않음)
+  const sorted = [...sectors].sort((a, b) => {
+    const pa = (a.avg_change_pct != null) ? a.avg_change_pct : -Infinity;
+    const pb = (b.avg_change_pct != null) ? b.avg_change_pct : -Infinity;
+    if (pa !== pb) return pb - pa;
+    return (a.name || '').localeCompare(b.name || '', 'ko');
+  });
 
   cardsEl.innerHTML = sorted.map(_buildSectorCardHtml).join('');
 }
@@ -7424,18 +7427,59 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
     
     if status == 200:
         if path == "/api/screener":
-            # Long cache for screener (1 hour + 1 day stale)
+            # 1시간 캐시 + 1일 stale (스크리너는 실시간성 불필요)
             cache_control = "public, s-maxage=3600, stale-while-revalidate=86400"
+
+        elif path == "/api/market/summary":
+            # 시장 현황 — 가변 TTL (시장 급변 대응)
+            # 장중(KST 09:00~15:30): 2분  → 지수·환율 분 단위 변동 반영
+            # 미국 정규장(KST 22:30~05:00): 3분 → 간밤 지표 반영
+            # 장 외(야간·주말): 8분         → 데이터 거의 고정, 비용 절감
+            # stale-while-revalidate: CDN이 만료 후에도 즉시 반환 + 백그라운드 갱신
+            try:
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                _KST = _tz(timedelta(hours=9))
+                _now = _dt.now(_KST)
+                _h   = _now.hour + _now.minute / 60.0
+                _wd  = _now.weekday()
+                if _wd >= 5:                      # 주말
+                    _smx, _swr = 480, 900
+                elif 9.0 <= _h < 15.5:            # 국내 정규장
+                    _smx, _swr = 120, 300
+                elif 22.5 <= _h or _h < 5.0:      # 미국 정규장(EDT)
+                    _smx, _swr = 180, 360
+                else:                              # 장 외 (장전·장후·심야)
+                    _smx, _swr = 480, 900
+            except Exception:
+                _smx, _swr = 180, 360              # 계산 실패 시 3분 기본값
+            cache_control = f"public, s-maxage={_smx}, stale-while-revalidate={_swr}"
+
         elif path == "/api/market/sector-summary":
-            # 10분 캐시 — 섹터 흐름은 빠르게 바뀌지 않음
-            cache_control = "public, s-maxage=600, stale-while-revalidate=3600"
+            # 섹터 흐름 — 장중 5분, 장 외 15분
+            try:
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                _KST = _tz(timedelta(hours=9))
+                _now = _dt.now(_KST)
+                _h   = _now.hour + _now.minute / 60.0
+                _wd  = _now.weekday()
+                if _wd >= 5 or not (9.0 <= _h < 15.5):
+                    _smx, _swr = 900, 1800         # 장 외: 15분
+                else:
+                    _smx, _swr = 300, 600          # 장중: 5분
+            except Exception:
+                _smx, _swr = 300, 600
+            cache_control = f"public, s-maxage={_smx}, stale-while-revalidate={_swr}"
+
         elif path == "/api/stock":
-            # Short cache for stock data
+            # 종목 분석 — 장중 60초, 장 외 5분
             cache_control = "public, s-maxage=60, stale-while-revalidate=300"
+
         elif path == "/" or path == "/index.html":
-            # HTML Cache
+            # HTML — 1시간 캐시 (정적에 가깝고 자주 바뀌지 않음)
             cache_control = "public, s-maxage=3600"
+
         elif path.startswith("/api/"):
+            # 기타 API — 10초 캐시 (기본값 유지)
             cache_control = "public, s-maxage=10, stale-while-revalidate=60"
 
     handler_self.send_header("Cache-Control", cache_control)
