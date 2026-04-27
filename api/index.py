@@ -4526,6 +4526,36 @@ input::placeholder{color:#484f58}
 }
 .sector-stock-tag:hover{background:#1f6feb;color:#fff}
 
+/* ── 업종별 흐름 반응형 (base repeat(7) 이후에 선언해야 override 적용됨) ── */
+@media(max-width:1100px){
+  .sector-cards{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+@media(max-width:900px){
+  .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:768px){
+  .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+  .sector-card{padding:10px 8px}
+  .sector-card-name{font-size:11px}
+  .sector-card-pct{font-size:12px}
+}
+@media(max-width:480px){
+  .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+  .sector-card{padding:9px 8px;border-radius:10px}
+  .sector-card-emoji{font-size:14px}
+  .sector-card-name{font-size:11px}
+  .sector-card-pct{font-size:12px}
+  .sector-card-mood{font-size:10px;padding:2px 5px}
+}
+@media(max-width:360px){
+  .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+  .sector-card{padding:8px 6px;border-radius:8px}
+  .sector-card-emoji{font-size:13px}
+  .sector-card-name{font-size:10px}
+  .sector-card-pct{font-size:11px}
+  .sector-card-mood{font-size:9px;padding:1px 4px}
+}
+
 /* ── 단계별 리포트 내 캔들 패턴 카드 ── */
 .step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
 
