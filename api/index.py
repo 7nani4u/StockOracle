@@ -4407,11 +4407,14 @@ input::placeholder{color:#484f58}
 .pv-ns{background:#0d2d1a}
 
 /* 매수 적정가 카드 */
-.buy-price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.buy-price-grid{display:flex;flex-direction:column;gap:16px;margin-bottom:16px}
 .buy-card{border-radius:12px;padding:16px;border:1px solid transparent}
 .buy-card.aggressive{background:#2d200a;border-color:#4d3615}
 .buy-card.recommended{background:#0d2d1a;border-color:#1a4730}
 .buy-card.conservative{background:#0a1f3a;border-color:#15356b}
+.buy-bands-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
+@media(max-width:900px){.buy-bands-row{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.buy-bands-row{grid-template-columns:1fr}}
 .buy-label{font-size:10px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
 .buy-price-val{font-size:18px;font-weight:800;margin-bottom:4px;word-break:break-all}
 .buy-basis-box{font-size:11px;color:#8b949e;line-height:1.5;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
@@ -4457,7 +4460,6 @@ input::placeholder{color:#484f58}
   .metrics-grid{grid-template-columns:repeat(2,1fr)}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
-  .buy-price-grid{grid-template-columns:1fr}
   .indicator-grid{grid-template-columns:1fr}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
@@ -4491,7 +4493,6 @@ input::placeholder{color:#484f58}
   .two-col-grid{grid-template-columns:1fr;gap:10px}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
-  .buy-price-grid{grid-template-columns:1fr}
   .indicator-grid{grid-template-columns:1fr}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
@@ -5788,7 +5789,7 @@ function renderForecast(d, isKrx) {
           if (isAgg) {
             // 공격적 매수: 수익률 + 손실확률 표시
             return `
-            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;margin-bottom:8px">
+            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;height:100%;box-sizing:border-box">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
                 <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}</span>
                 <span style="font-size:11px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
@@ -5823,7 +5824,7 @@ function renderForecast(d, isKrx) {
             // 추천 매수: Sharpe + 승률 + 보유기간 표시
             const sharpeColor = b.expected_sharpe >= 8 ? '#3fb950' : b.expected_sharpe >= 5 ? '#d29922' : '#f97316';
             return `
-            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;margin-bottom:8px">
+            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;height:100%;box-sizing:border-box">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
                 <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}</span>
                 <span style="font-size:11px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
@@ -5853,12 +5854,14 @@ function renderForecast(d, isKrx) {
           }
         }).join('');
         return `
-          <div class="buy-card ${isAgg ? 'aggressive' : 'recommended'}" style="display:flex;flex-direction:column;gap:4px">
-            <div class="buy-label">${icon} ${label}</div>
-            <div style="font-size:10px;color:#484f58;margin-bottom:4px">
-              ${isAgg ? '※ 수치: 백테스트(1년·' + (bp.market||'KRX') + ') 기저확률 + 추세·RSI 보정' : '※ 기술 지표 앵커 기반 · Zone B~C 백테스트 매핑'}
+          <div class="buy-card ${isAgg ? 'aggressive' : 'recommended'}">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+              <div class="buy-label" style="margin-bottom:0">${icon} ${label}</div>
+              <div style="font-size:10px;color:#484f58">
+                ${isAgg ? '※ 백테스트(1년·' + (bp.market||'KRX') + ') 기저확률 + 추세·RSI 보정' : '※ 기술 지표 앵커 기반 · Zone B~C 백테스트 매핑'}
+              </div>
             </div>
-            ${bandRows}
+            <div class="buy-bands-row">${bandRows}</div>
           </div>`;
       };
 
