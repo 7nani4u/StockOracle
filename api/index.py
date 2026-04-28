@@ -2988,48 +2988,48 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
     }[vol_trend]
 
     # ── TP 확률 산출 (백테스트 분포 기반) ────────────────────────────
-    # KRX: Zone C 기저승률 74.3% − 6pp 시장보정 = 68.3% → TP1 기준
-    # US : Zone C 기저승률 75.2% + 5pp 시장보정 = 80.2% → TP1 기준
-    # TP2 = TP1 − 20pp, TP3 = TP1 − 40pp (목표가 높을수록 도달 확률 감소)
+    # 기준점: KRX Zone C 승률 74.3% − 6pp 시장보정 = 68.3% (0.8 ATR 거리)
+    #         US  Zone C 승률 75.2% + 5pp 시장보정 = 80.2% (0.8 ATR 거리)
+    # 거리 감쇄: 0.8 ATR 초과분당 12pp 감소 (백테스트 Zone A→C 구간 분포 보간)
     _is_us    = (market == "US")
     _tp1_base = 80.2 if _is_us else 68.3
-    _tp_mom   = (trend - 2) * 3.0   # 추세 강도별 ±6pp
+    _tp_mom   = (trend - 2) * 3.0          # 추세 강도별 ±6pp
     _tp_rsi   = 5.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
-    def _tp_p(base_offset):
-        return round(min(93.0, max(5.0, _tp1_base + base_offset + _tp_mom + _tp_rsi)), 1)
-    # 도달 기간: KRX Zone B 13일 / US Zone B 12.3일 기준으로 TP 레벨별 스케일
-    _base_days = 12.3 if _is_us else 13.0
-    # 실패 시 평균 손실: 백테스트 avg_failed_loss 활용
-    _fl_b = -1.22 if _is_us else -1.11   # Zone B floss
-    _fl_a = -1.67 if _is_us else -1.61   # Zone A floss (더 깊은 손실)
+    _base_days = 12.3 if _is_us else 13.0  # Zone B 평균 보유일 기준
+    _fl_b = -1.22 if _is_us else -1.11     # Zone B 실패 손실
+    _fl_a = -1.67 if _is_us else -1.61     # Zone A 실패 손실 (더 깊음)
 
-    def _make_tp(price_add, offset, days_mul, fl):
-        return {
-            "price": round(price + price_add, rnd),
-            "return_pct": round(price_add / price * 100, 2),
-            "prob_pct": _tp_p(offset),
-            "avg_days": round(_base_days * days_mul, 1),
-            "fail_avg_loss_pct": fl,
-        }
+    def _make_tp_from_tgt(tgt_range):
+        """목표가 범위(tgt_range)를 TP1/TP2/TP3로 분할 → 각각 도달 확률·기간 산출.
+        TP 가격은 반드시 해당 리스크 프로필의 실제 목표가에서 나와야 한다.
+        확률은 현재가 대비 ATR 거리 기반으로 백테스트 분포를 보간하여 계산."""
+        lo, hi = tgt_range[0], tgt_range[1]
+        tp_prices = [lo, (lo + hi) / 2, hi]   # TP1=하단, TP2=중간, TP3=상단
+        result = []
+        for tp_price in tp_prices:
+            # ATR 단위 거리 (현재가 기준, 목표가가 위에 있어야 양수)
+            dist_atr = (tp_price - price) / atr if atr > 0 else 1.0
+            # 0.8 ATR 이내: 기준 확률 유지 / 초과분: ATR당 12pp 감소
+            decay    = max(0.0, dist_atr - 0.8) * 12.0
+            prob     = round(min(93.0, max(5.0, _tp1_base - decay + _tp_mom + _tp_rsi)), 1)
+            # 도달 기간: 0.8 ATR = base_days, 이후 거리에 비례하여 증가
+            days     = round(_base_days * max(0.5, dist_atr / 0.8), 1)
+            ret_pct  = round((tp_price - price) / price * 100, 2) if price > 0 else 0.0
+            # 실패 손실: 목표가가 2.5 ATR 이상이면 더 넓은 하락 범위 적용
+            fl       = _fl_b if dist_atr < 2.5 else _fl_a
+            result.append({
+                "price":             round(tp_price, rnd),
+                "return_pct":        ret_pct,
+                "prob_pct":          prob,
+                "avg_days":          days,
+                "fail_avg_loss_pct": fl,
+            })
+        return result
 
-    # 보수적: TP1=0.8ATR, TP2=1.5ATR, TP3=2.5ATR (손절 짧으므로 목표도 보수적)
-    cons_tp = [
-        _make_tp(atr * 0.8,  0.0, 0.8, _fl_b),
-        _make_tp(atr * 1.5, -18.0, 1.3, _fl_b),
-        _make_tp(atr * 2.5, -36.0, 2.0, _fl_a),
-    ]
-    # 중립: TP1=1.5ATR, TP2=2.5ATR, TP3=4ATR
-    bal_tp = [
-        _make_tp(atr * 1.5,  0.0, 1.0, _fl_b),
-        _make_tp(atr * 2.5, -18.0, 1.6, _fl_b),
-        _make_tp(atr * 4.0, -36.0, 2.5, _fl_a),
-    ]
-    # 공격: TP1=2ATR, TP2=3.5ATR, TP3=5.5ATR (추세 지속 가정)
-    agg_tp = [
-        _make_tp(atr * 2.0,  0.0, 1.2, _fl_b),
-        _make_tp(atr * 3.5, -18.0, 2.0, _fl_b),
-        _make_tp(atr * 5.5, -36.0, 3.2, _fl_a),
-    ]
+    # 각 리스크 프로필의 실제 목표가 범위에서 TP 레벨 생성
+    cons_tp = _make_tp_from_tgt(cons_tgt_range)
+    bal_tp  = _make_tp_from_tgt(bal_tgt_range)
+    agg_tp  = _make_tp_from_tgt(agg_tgt_range)
 
     r = lambda v: round(v, rnd)
     return {
@@ -3471,11 +3471,36 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # 개념: 기술적 지표 앵커(VWAP·BB·MA·Fib) 기반 고확률 진입 구간
     # 각 밴드는 백테스트 Zone B·C 데이터(더 높은 승률 구간)에 매핑
     _vwap = vwap_approx if vwap_approx else last_price - 0.875 * atr
-    _rec_anchor = {
-        "A": (_vwap + bb_m) / 2 if bb_m_raw else _vwap,
-        "B": (bb_l + ma20) / 2 if (bb_l_raw and ma20_raw) else (bb_l if bb_l_raw else last_price - 1.10 * atr),
-        "C": (ma60 + fib_382) / 2 if (ma60_raw and fib_382 > last_price * 0.80) else (ma60 if ma60_raw else last_price - 1.40 * atr),
-    }
+
+    # 앵커 산출: 각 지표가 현재가보다 아래에 있어야 유효한 지지선
+    # ── Band A: VWAP·BB중간 수렴 (현재가보다 낮은 경우만) ──────────────
+    _anc_A_raw = (_vwap + bb_m) / 2 if bb_m_raw else _vwap
+    _anc_A = min(_anc_A_raw, last_price - atr * 0.20)   # 최소 0.2 ATR 아래 보장
+
+    # ── Band B: BB하단·MA20 수렴 (현재가보다 낮은 경우만) ───────────────
+    if bb_l_raw and ma20_raw:
+        _anc_B_raw = (bb_l + ma20) / 2
+    elif bb_l_raw:
+        _anc_B_raw = bb_l
+    else:
+        _anc_B_raw = last_price - 1.10 * atr
+    # Band A보다 최소 0.2 ATR 아래에 위치하도록 보장
+    _anc_B = min(_anc_B_raw, _anc_A - atr * 0.20)
+
+    # ── Band C: MA60·Fib 38.2~50% 수렴 ──────────────────────────────
+    # fib_382가 현재가보다 낮을 때만(= 유효한 지지선) 사용
+    # fib_382 > last_price인 경우(하락 후 피보나치가 현재가 위) → ma60만 사용
+    _fib_valid = (fib_382 < last_price) and (fib_382 > last_price * 0.70)
+    if ma60_raw and _fib_valid:
+        _anc_C_raw = (ma60 + fib_382) / 2
+    elif ma60_raw:
+        _anc_C_raw = ma60
+    else:
+        _anc_C_raw = last_price - 1.40 * atr
+    # Band B보다 최소 0.2 ATR 아래에 위치하도록 보장
+    _anc_C = min(_anc_C_raw, _anc_B - atr * 0.20)
+
+    _rec_anchor = {"A": _anc_A, "B": _anc_B, "C": _anc_C}
     _rec_hw = {"A": atr * 0.25 * _bw, "B": atr * 0.35 * _bw, "C": atr * 0.50 * _bw}
     _rec_btmap = {"A": "B", "B": "C", "C": "C"}  # 기술적 앵커 구간 → 백테스트 Zone 매핑
     _rec_basis = {
@@ -3483,7 +3508,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
               else f"20일 거래량 가중 평균({_vwap:,.{rnd}f}) 기관 매집 참조"),
         "B": (f"BB하단({bb_l:,.{rnd}f}) + MA20({ma20:,.{rnd}f}) 쌍지지 수렴" if (bb_l_raw and ma20_raw)
               else "볼린저 하단 + 단기 이평 구조적 지지"),
-        "C": (f"MA60({ma60:,.{rnd}f}) + Fib 38.2~50%({fib_382:,.{rnd}f}~{fib_500:,.{rnd}f}) 중기 지지" if (ma60_raw and fib_382 > last_price * 0.80)
+        "C": (f"MA60({ma60:,.{rnd}f}) + Fib 38.2~50%({fib_382:,.{rnd}f}~{fib_500:,.{rnd}f}) 중기 지지" if (ma60_raw and _fib_valid)
               else f"중기 이평({ma60:,.{rnd}f}) 구조적 지지"),
     }
     _rec_hold = {
@@ -3491,13 +3516,16 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "B": f"분할 매수 구간 · 평균 {_btz['C']['hold']:.0f}일 보유 전략",
         "C": "중기 저점 매집 · 리스크 분산 보유 (ATR 낙폭 소화 후 반등)",
     }
+    _price_ceiling = last_price - atr * 0.05   # 모든 밴드 상단은 현재가보다 낮아야 함
     recommended_bands = []
     for _zn in ["A", "B", "C"]:
         _bk  = _rec_btmap[_zn]
         _z   = _btz[_bk]
         _anc = _rec_anchor[_zn]
         _hw  = _rec_hw[_zn]
-        _lo, _hi = _anc - _hw, _anc + _hw
+        _lo  = _anc - _hw
+        _hi  = min(_anc + _hw, _price_ceiling)   # 현재가 위로 올라가지 않도록 클램프
+        _lo  = min(_lo, _hi - atr * 0.05)        # 하단이 상단보다 낮도록 보장
         _win = _ap(_z["win"])
         recommended_bands.append({
             "band": _zn,
