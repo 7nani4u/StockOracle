@@ -1,0 +1,167 @@
+{
+  "KRX": {
+    "annual_return_pct": 24.48,
+    "daily_mean_pct": 0.089,
+    "daily_std_pct": 0.671,
+    "annualized_vol_pct": 10.66,
+    "mdd_pct": -9.37,
+    "daily_return_quantiles_pct": [
+      -1.05,
+      -0.28,
+      0.14,
+      0.51,
+      1.16
+    ],
+    "weekly_return_quantiles_pct": [
+      -2.29,
+      -0.66,
+      0.59,
+      1.65,
+      3.03
+    ],
+    "up_run_avg_days": 2.59,
+    "up_run_p75_days": 4.0,
+    "down_run_avg_days": 1.91,
+    "down_run_p75_days": 2.25,
+    "atr_avg_pct": 2.37,
+    "atr_p75_pct": 2.49,
+    "entry_zones": [
+      {
+        "zone": "A",
+        "atr_band": [
+          0.25,
+          0.65
+        ],
+        "win_prob": 49.5,
+        "expected_return_pct": 1.94,
+        "loss_prob": 50.5,
+        "avg_hold_days": 15.1,
+        "avg_failed_loss_pct": -1.61,
+        "sharpe_proxy": 3.36
+      },
+      {
+        "zone": "B",
+        "atr_band": [
+          0.65,
+          1.1
+        ],
+        "win_prob": 60.4,
+        "expected_return_pct": 2.74,
+        "loss_prob": 39.6,
+        "avg_hold_days": 13.0,
+        "avg_failed_loss_pct": -1.11,
+        "sharpe_proxy": 5.68
+      },
+      {
+        "zone": "C",
+        "atr_band": [
+          1.1,
+          1.7
+        ],
+        "win_prob": 74.3,
+        "expected_return_pct": 3.72,
+        "loss_prob": 25.7,
+        "avg_hold_days": 9.2,
+        "avg_failed_loss_pct": -0.79,
+        "sharpe_proxy": 11.21
+      }
+    ],
+    "market_adjustments": {
+      "band_width_adj": 1.18,
+      "target_prob_adj_pp": -6
+    }
+  },
+  "US": {
+    "annual_return_pct": 23.45,
+    "daily_mean_pct": 0.085,
+    "daily_std_pct": 0.468,
+    "annualized_vol_pct": 7.43,
+    "mdd_pct": -7.78,
+    "daily_return_quantiles_pct": [
+      -0.67,
+      -0.2,
+      0.09,
+      0.41,
+      0.84
+    ],
+    "weekly_return_quantiles_pct": [
+      -1.45,
+      -0.27,
+      0.36,
+      1.22,
+      2.16
+    ],
+    "up_run_avg_days": 2.65,
+    "up_run_p75_days": 4.0,
+    "down_run_avg_days": 2.06,
+    "down_run_p75_days": 3.0,
+    "atr_avg_pct": 1.83,
+    "atr_p75_pct": 1.93,
+    "entry_zones": [
+      {
+        "zone": "A",
+        "atr_band": [
+          0.25,
+          0.65
+        ],
+        "win_prob": 59.4,
+        "expected_return_pct": 1.49,
+        "loss_prob": 40.6,
+        "avg_hold_days": 14.0,
+        "avg_failed_loss_pct": -1.67,
+        "sharpe_proxy": 3.07
+      },
+      {
+        "zone": "B",
+        "atr_band": [
+          0.65,
+          1.1
+        ],
+        "win_prob": 66.3,
+        "expected_return_pct": 2.0,
+        "loss_prob": 33.7,
+        "avg_hold_days": 12.3,
+        "avg_failed_loss_pct": -1.22,
+        "sharpe_proxy": 4.86
+      },
+      {
+        "zone": "C",
+        "atr_band": [
+          1.1,
+          1.7
+        ],
+        "win_prob": 75.2,
+        "expected_return_pct": 2.7,
+        "loss_prob": 24.8,
+        "avg_hold_days": 9.0,
+        "avg_failed_loss_pct": -0.68,
+        "sharpe_proxy": 9.18
+      }
+    ],
+    "market_adjustments": {
+      "band_width_adj": 0.92,
+      "target_prob_adj_pp": 5
+    }
+  },
+  "GLOBAL_EQUAL_WEIGHT": {
+    "annual_return_pct": 24.23,
+    "daily_mean_pct": 0.087,
+    "daily_std_pct": 0.411,
+    "annualized_vol_pct": 6.52,
+    "mdd_pct": -8.19,
+    "daily_return_quantiles_pct": [
+      -0.6,
+      -0.14,
+      0.1,
+      0.35,
+      0.74
+    ],
+    "weekly_return_quantiles_pct": [
+      -1.11,
+      -0.43,
+      0.6,
+      1.3,
+      2.12
+    ]
+  }
+}

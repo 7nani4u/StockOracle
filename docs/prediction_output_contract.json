@@ -1,0 +1,70 @@
+{
+  "buy_price": {
+    "current": "number",
+    "aggressive": {
+      "title": "공격적 매수",
+      "bands": [
+        {
+          "band": "A | B | C",
+          "price_range": ["number_low", "number_high"],
+          "basis": ["ATR/변동성/낙폭/추세 기반 설명"],
+          "expected_return_pct": "number",
+          "win_probability_pct": "number",
+          "loss_probability_pct": "number",
+          "distribution_basis": "백테스트 수익률 분포 + ATR + 추세 강도 + 유사 패턴 빈도 기반"
+        }
+      ]
+    },
+    "recommended": {
+      "title": "추천 매수 구간",
+      "bands": [
+        {
+          "band": "A | B | C",
+          "price_range": ["number_low", "number_high"],
+          "expected_sharpe_ratio": "number",
+          "historical_win_rate_pct": "number",
+          "avg_holding_days": "number",
+          "distribution_basis": "유사 ATR 진입 깊이의 20거래일 목표 도달 분포 기반"
+        }
+      ]
+    },
+    "removed_fields": ["conservative"]
+  },
+  "risk_scenarios": {
+    "conservative": {
+      "label": "보수적",
+      "entry_range": ["number_low", "number_high"],
+      "stop_loss": "number",
+      "tp_levels": [
+        {
+          "level": "TP1 | TP2 | TP3",
+          "price": "number",
+          "return_pct": "number",
+          "hit_probability_pct": "number",
+          "avg_days_to_hit": "number_or_range_string",
+          "failed_avg_loss_pct": "number",
+          "risk_reward": "number"
+        }
+      ]
+    },
+    "balanced": "same_as_conservative_schema",
+    "aggressive": "same_as_conservative_schema"
+  },
+  "probability_model": {
+    "inputs": ["backtest_return_distribution", "atr_volatility", "trend_strength", "similar_pattern_frequency", "debt_ratio"],
+    "market_branch": {
+      "KRX": {
+        "band_width_multiplier": 1.18,
+        "probability_adjustment_pp": -6,
+        "target_distance_multiplier": 0.95,
+        "volatility_penalty_weight": 1.2
+      },
+      "US": {
+        "band_width_multiplier": 0.92,
+        "probability_adjustment_pp": 5,
+        "target_distance_multiplier": 1.05,
+        "momentum_weight": 1.2
+      }
+    }
+  }
+}
