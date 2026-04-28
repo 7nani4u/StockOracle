@@ -5770,9 +5770,8 @@ function renderForecast(d, isKrx) {
     } else {
       const cur = bp.current;
       const pct = v => ((v - cur) / cur * 100).toFixed(2);
-      const aggR = bp.aggressive.range;
-      const recR = bp.recommended.range;
-      const conR = bp.conservative.range;
+      const aggR = bp.aggressive ? bp.aggressive.range : null;
+      const recR = bp.recommended ? bp.recommended.range : null;
 
       const fmtPct = p => (p >= 0 ? `<span style="color:#3fb950">+${p}%</span>` : `<span style="color:#f85149">${p}%</span>`);
       const fib = bp.fib || {};
