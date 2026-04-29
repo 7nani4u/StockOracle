@@ -3050,7 +3050,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
         "balanced": {
             "label": "중립적",
             "icon": "⚖️",
-            "desc": "현재 가격을 중심으로 수급이 균형을 이루며, 변동성은 크지만 뚜렷한 방향성은 없는 상태",
+            "desc": "현재 가격 중심으로 수급은 균형이지만 변동성 크고 방향성은 부재인 상태",
             "target": [r(bal_tgt_range[0]), r(bal_tgt_range[1])],
             "stop":   [r(bal_stp_range[0]), r(bal_stp_range[1])],
             "return": bal_ret,
