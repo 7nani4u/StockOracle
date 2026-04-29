@@ -3036,7 +3036,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
         "conservative": {
             "label": "보수적",
             "icon": "🛡️",
-            "desc": f"리스크 최소화 · 손절 {abs(cons_stp_pct):.2f}%",
+            "desc": "급등 후 차익실현이 먼저 나오고, 별도 호재가 없을 때의 되돌림 구간",
             "target": [r(cons_tgt_range[0]), r(cons_tgt_range[1])],
             "stop":   [r(cons_stp_range[0]), r(cons_stp_range[1])],
             "return": cons_ret,
@@ -3050,7 +3050,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
         "balanced": {
             "label": "중립적",
             "icon": "⚖️",
-            "desc": f"스윙 트레이딩 · 손절 {abs(bal_stp_pct):.2f}%",
+            "desc": "현재 가격을 중심으로 매수·매도가 균형을 이루며, 변동성은 크지만 방향은 크게 정해지지 않는 경우",
             "target": [r(bal_tgt_range[0]), r(bal_tgt_range[1])],
             "stop":   [r(bal_stp_range[0]), r(bal_stp_range[1])],
             "return": bal_ret,
@@ -3064,7 +3064,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
         "aggressive": {
             "label": "공격적",
             "icon": "🚀",
-            "desc": f"추세 추종 · 손절 {abs(agg_stp_pct):.2f}%",
+            "desc": "추가 뉴스, 거래량 재확대, 단기 모멘텀 유입이 붙을 때 가능한 상단 시나리오",
             "target": [r(agg_tgt_range[0]), r(agg_tgt_range[1])],
             "stop":   [r(agg_stp_range[0]), r(agg_stp_range[1])],
             "return": agg_ret,
@@ -4436,7 +4436,7 @@ input::placeholder{color:#484f58}
 
 /* 매수 적정가 카드 */
 .buy-price-grid{display:flex;flex-direction:column;gap:16px;margin-bottom:16px}
-.buy-card{border-radius:12px;padding:16px;border:1px solid transparent}
+.buy-card{border-radius:12px;padding:12px 14px;border:1px solid transparent}
 .buy-card.aggressive{background:#2d200a;border-color:#4d3615}
 .buy-card.recommended{background:#0d2d1a;border-color:#1a4730}
 .buy-card.conservative{background:#0a1f3a;border-color:#15356b}
@@ -5815,76 +5815,43 @@ function renderForecast(d, isKrx) {
           const probColor = b.win_prob_pct >= 65 ? '#3fb950' : b.win_prob_pct >= 50 ? '#d29922' : '#f85149';
           const lossColor = '#f85149';
           if (isAgg) {
-            // 공격적 매수: 수익률 + 손실확률 표시
+            // 공격적 매수 밴드 카드
             return `
-            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;height:100%;box-sizing:border-box">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
                 <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}</span>
-                <span style="font-size:11px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
+                <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
                   현재가 대비 ${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}
                 </span>
               </div>
-              <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:6px">
+              <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">
                 ${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}
               </div>
-              <div style="font-size:10px;color:#8b949e;margin-bottom:4px">• ${b.atr_basis}</div>
-              <div style="font-size:10px;color:#8b949e;margin-bottom:8px">• ${b.tech_note}</div>
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <div style="background:#161b22;border-radius:5px;padding:4px 8px;text-align:center;flex:1;min-width:70px">
-                  <div style="font-size:9px;color:#8b949e">기대 수익</div>
-                  <div style="font-size:13px;font-weight:700;color:#3fb950">+${b.expected_return_pct}%</div>
-                </div>
-                <div style="background:#161b22;border-radius:5px;padding:4px 8px;text-align:center;flex:1;min-width:70px">
-                  <div style="font-size:9px;color:#8b949e">승률 (백테스트)</div>
-                  <div style="font-size:13px;font-weight:700;color:${probColor}">${b.win_prob_pct}%</div>
-                </div>
-                <div style="background:#161b22;border-radius:5px;padding:4px 8px;text-align:center;flex:1;min-width:70px">
-                  <div style="font-size:9px;color:#8b949e">손실 확률</div>
-                  <div style="font-size:13px;font-weight:700;color:${lossColor}">${b.loss_prob_pct}%</div>
-                </div>
-                <div style="background:#161b22;border-radius:5px;padding:4px 8px;text-align:center;flex:1;min-width:70px">
-                  <div style="font-size:9px;color:#8b949e">실패 시 손실</div>
-                  <div style="font-size:13px;font-weight:700;color:${lossColor}">${b.avg_failed_loss_pct}%</div>
-                </div>
-              </div>
+              <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.atr_basis}</div>
+              <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
             </div>`;
           } else {
-            // 추천 매수: Sharpe + 승률 + 보유기간 표시
-            const sharpeColor = b.expected_sharpe >= 8 ? '#3fb950' : b.expected_sharpe >= 5 ? '#d29922' : '#f97316';
+            // 추천 매수 밴드 카드
             return `
-            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;height:100%;box-sizing:border-box">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
                 <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}</span>
-                <span style="font-size:11px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
+                <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
                   현재가 대비 ${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}
                 </span>
               </div>
-              <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:6px">
+              <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">
                 ${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}
               </div>
-              <div style="font-size:10px;color:#8b949e;margin-bottom:4px">• ${b.basis}</div>
-              <div style="font-size:10px;color:#3fb950;margin-bottom:8px">→ ${b.hold_note}</div>
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <div style="background:#161b22;border-radius:5px;padding:4px 8px;text-align:center;flex:1;min-width:70px">
-                  <div style="font-size:9px;color:#8b949e">기대 Sharpe</div>
-                  <div style="font-size:13px;font-weight:700;color:${sharpeColor}">${b.expected_sharpe}</div>
-                </div>
-                <div style="background:#161b22;border-radius:5px;padding:4px 8px;text-align:center;flex:1;min-width:70px">
-                  <div style="font-size:9px;color:#8b949e">유사구간 승률</div>
-                  <div style="font-size:13px;font-weight:700;color:${probColor}">${b.win_prob_pct}%</div>
-                </div>
-                <div style="background:#161b22;border-radius:5px;padding:4px 8px;text-align:center;flex:1;min-width:90px">
-                  <div style="font-size:9px;color:#8b949e">평균 보유기간</div>
-                  <div style="font-size:13px;font-weight:700;color:#cdd9e5">${b.avg_hold_days}일</div>
-                </div>
-              </div>
+              <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
+              <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
             </div>`;
           }
         }).join('');
         return `
-          <div class="buy-card ${isAgg ? 'aggressive' : 'recommended'}">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">
-              <div class="buy-label" style="margin-bottom:0">${icon} ${label}</div>
+          <div class="buy-card ${isAgg ? 'aggressive' : 'recommended'}" style="padding:12px 14px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">${icon} ${label}</div>
               <div style="font-size:10px;color:#484f58">
                 ${isAgg ? '※ 백테스트(1년·' + (bp.market||'KRX') + ') 기저확률 + 추세·RSI 보정' : '※ 기술 지표 앵커 기반 · Zone B~C 백테스트 매핑'}
               </div>
