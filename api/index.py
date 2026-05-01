@@ -3168,93 +3168,146 @@ def calc_pivot_points(dd: Dict) -> Dict:
     return {"classic": classic, "fibonacci": fibonacci, "camarilla": camarilla}
 
 def calc_indicator_signals(dd: Dict) -> Dict:
-    """각 기술적 지표별 현재 상태·매매 시그널·핵심 해석 계산"""
+    """
+    각 기술적 지표별 현재 상태·매매 시그널·핵심 해석 계산.
+
+    ▶ 개선 사항 (v2):
+      - RSI / MACD / 이동평균 / 볼린저밴드 추가 (기존 패널에 없던 핵심 지표)
+      - ATR: 변동성 맥락 정보만 표시, 방향성 판단(가중치)에서 제외
+      - 단순 다수결 → 가중 점수(weighted_score) 기반 5단계 종합 판단
+        (강한매수 / 매수우세 / 중립 / 매도우세 / 강한매도)
+      - 지표별 가중치 체계:
+          RSI·MACD 1.5 → MA 1.2 → ADX·BB·PSAR 1.0 → OBV·Stoch 0.8 → Aroon·BuyPressure 0.7
+    """
     def v(k):
         a = dd.get(k, [])
         val = a[-1] if a else None
         return float(val) if val is not None else None
 
-    close = v("Close") or 1.0
-    signals = {}
+    def v2(k):
+        """직전봉(끝에서 두 번째) 값"""
+        a = dd.get(k, [])
+        val = a[-2] if len(a) >= 2 else None
+        return float(val) if val is not None else None
 
-    # ADX (14)
+    close = v("Close") or 1.0
+    signals: Dict = {}
+    # (score: -1.0~+1.0,  weight,  label)
+    weighted: list = []
+
+    # ── 1. RSI (14) ──────────────────────────────────────────────────────────
+    rsi = v("RSI")
+    if rsi is not None:
+        if   rsi < 25: st,sig,desc,sc = "극도 과매도","매수",f"RSI {rsi:.1f} — 강한 반등 가능, 역추세 진입 구간",+1.0
+        elif rsi < 35: st,sig,desc,sc = "과매도",      "매수",f"RSI {rsi:.1f} — 과매도권 진입, 단기 반등 기대",   +0.7
+        elif rsi < 45: st,sig,desc,sc = "약세 권역",   "관망",f"RSI {rsi:.1f} — 하락 기조, 추가 신호 대기",       +0.1
+        elif rsi < 55: st,sig,desc,sc = "중립",        "관망",f"RSI {rsi:.1f} — 중립 구간, 방향성 확인 필요",      0.0
+        elif rsi < 65: st,sig,desc,sc = "강세 권역",   "관망",f"RSI {rsi:.1f} — 상승 기조 유지 중",              -0.1
+        elif rsi < 75: st,sig,desc,sc = "과매수",      "매도",f"RSI {rsi:.1f} — 과매수권 진입, 차익 실현 고려",   -0.7
+        else:          st,sig,desc,sc = "극도 과매수", "매도",f"RSI {rsi:.1f} — 강한 과열, 조정 가능성 높음",     -1.0
+        signals["rsi"] = {"name":"RSI (14)", "state":st, "signal":sig, "desc":desc, "value":f"{rsi:.1f}"}
+        weighted.append((sc, 1.5, "RSI"))
+
+    # ── 2. MACD (12,26,9) ────────────────────────────────────────────────────
+    macd_val  = v("MACD"); macd_sig_val = v("Signal_Line")
+    macd_hist = (macd_val - macd_sig_val) if (macd_val is not None and macd_sig_val is not None) else None
+    prev_macd = v2("MACD"); prev_sig_line = v2("Signal_Line")
+    prev_hist = (prev_macd - prev_sig_line) if (prev_macd is not None and prev_sig_line is not None) else None
+    if macd_val is not None and macd_sig_val is not None:
+        above    = macd_val > macd_sig_val
+        hist_exp = (macd_hist is not None and prev_hist is not None and
+                    abs(macd_hist) > abs(prev_hist))
+        if above and macd_val > 0 and hist_exp:
+            st,sig,desc,sc = "강한 상승","매수",f"MACD 골든크로스 + 히스토그램 확대 (양수 구간)",       +1.0
+        elif above and macd_val > 0:
+            st,sig,desc,sc = "상승 추세","매수",f"MACD > Signal, 양수 구간 — 상승 추세 유효",           +0.7
+        elif above and macd_val <= 0:
+            st,sig,desc,sc = "반등 시도","관망",f"MACD > Signal이나 음수 구간 — 추세 전환 확인 중",     +0.3
+        elif not above and macd_val < 0 and hist_exp:
+            st,sig,desc,sc = "강한 하락","매도",f"MACD 데드크로스 + 히스토그램 확대 (음수 구간)",      -1.0
+        elif not above and macd_val < 0:
+            st,sig,desc,sc = "하락 추세","매도",f"MACD < Signal, 음수 구간 — 하락 추세 유효",          -0.7
+        else:
+            st,sig,desc,sc = "하락 전환","관망",f"MACD < Signal이나 양수 구간 — 하락 전환 주시",       -0.3
+        h_disp = f"H:{macd_hist:+.3f}" if macd_hist is not None else f"{macd_val:.3f}"
+        signals["macd"] = {"name":"MACD (12,26,9)", "state":st, "signal":sig, "desc":desc, "value":h_disp}
+        weighted.append((sc, 1.5, "MACD"))
+
+    # ── 3. 이동평균 정렬 (MA20 / MA60 / MA120) ───────────────────────────────
+    ma20  = v("MA20"); ma60 = v("MA60"); ma120 = v("MA120")
+    pma20 = v2("MA20"); pma60 = v2("MA60")
+    if ma20 is not None:
+        ab20  = close > ma20
+        ab60  = (close > ma60)  if ma60  else None
+        ab120 = (close > ma120) if ma120 else None
+        gc = (pma20 is not None and pma60 is not None and ma60 is not None
+              and pma20 <= pma60 and ma20 > ma60)
+        dc = (pma20 is not None and pma60 is not None and ma60 is not None
+              and pma20 >= pma60 and ma20 < ma60)
+        if gc:
+            st,sig,desc,sc = "골든크로스","매수",f"MA20({ma20:.2f}) > MA60 크로스 — 강한 상승 신호",+1.0
+        elif dc:
+            st,sig,desc,sc = "데드크로스","매도",f"MA20({ma20:.2f}) < MA60 크로스 — 강한 하락 신호",-1.0
+        elif ab20 and (ab60 is None or ab60) and (ab120 is None or ab120):
+            st,sig,desc,sc = "완전 정배열","매수",f"가격 > MA20 > MA60 > MA120 — 강세 정배열",       +0.8
+        elif not ab20 and (ab60 is False) and (ab120 is False or ab120 is None):
+            st,sig,desc,sc = "완전 역배열","매도",f"가격 < MA20 < MA60 < MA120 — 약세 역배열",      -0.8
+        elif ab20:
+            st,sig,desc,sc = "단기 상승","관망",f"가격 > MA20({ma20:.2f}), 중장기 MA 혼조",          +0.3
+        else:
+            st,sig,desc,sc = "단기 하락","관망",f"가격 < MA20({ma20:.2f}), 단기 추세 약화",          -0.3
+        ma_val = f"{ma20:.2f}"
+        if ma60:  ma_val += f" / {ma60:.2f}"
+        if ma120: ma_val += f" / {ma120:.2f}"
+        signals["ma"] = {"name":"이동평균 (20/60/120)", "state":st, "signal":sig, "desc":desc, "value":ma_val}
+        weighted.append((sc, 1.2, "MA"))
+
+    # ── 4. ADX (14) ──────────────────────────────────────────────────────────
     adx = v("ADX"); dip = v("DI_Plus"); dim = v("DI_Minus")
     if adx is not None:
         if adx > 25:
             if dip is not None and dim is not None and dip > dim:
-                st,sig,desc = "강한 상승 추세","매수", f"ADX {adx:.0f} 강세 + +DI 우세 → 상승 추세 강함"
+                st,sig,desc,sc = "강한 상승 추세","매수",f"ADX {adx:.0f} 강세 + +DI 우세 → 상승 추세 강함", +0.8
             elif dip is not None and dim is not None:
-                st,sig,desc = "강한 하락 추세","매도", f"ADX {adx:.0f} 강세 + -DI 우세 → 하락 추세 강함"
+                st,sig,desc,sc = "강한 하락 추세","매도",f"ADX {adx:.0f} 강세 + -DI 우세 → 하락 추세 강함",-0.8
             else:
-                st,sig,desc = "추세 강함",     "관망", f"ADX {adx:.0f} — 강한 추세 형성 중"
-        elif adx > 20: st,sig,desc = "추세 발생",    "관망", f"ADX {adx:.0f} — 추세 형성 초기"
-        else:          st,sig,desc = "횡보/추세 없음","관망", f"ADX {adx:.0f} — 방향성 불명확, 돌파 대기"
+                st,sig,desc,sc = "추세 강함",     "관망",f"ADX {adx:.0f} — 강한 추세 형성 중",              0.0
+        elif adx > 20:
+            sc_dir = +0.1 if (dip or 0) > (dim or 0) else -0.1
+            st,sig,desc,sc = "추세 발생","관망",f"ADX {adx:.0f} — 추세 형성 초기", sc_dir
+        else:
+            st,sig,desc,sc = "횡보/추세 없음","관망",f"ADX {adx:.0f} — 방향성 불명확, 돌파 대기", 0.0
         signals["adx"] = {"name":"ADX (14)", "state":st, "signal":sig, "desc":desc, "value":f"{adx:.1f}"}
+        weighted.append((sc, 1.0, "ADX"))
 
-    # ATR (14)
+    # ── 5. 볼린저 밴드 (20,2) ────────────────────────────────────────────────
+    bb_up = v("BB_Upper"); bb_lo = v("BB_Lower"); bb_mi = v("BB_Middle")
+    if bb_up is not None and bb_lo is not None and bb_up > bb_lo:
+        bb_mid   = bb_mi or ((bb_up + bb_lo) / 2)
+        bb_width = (bb_up - bb_lo) / bb_mid * 100
+        pct_b    = (close - bb_lo) / (bb_up - bb_lo)
+        if   pct_b >= 0.95: st,sig,desc,sc = "상단 돌파",  "매도",f"%B {pct_b:.2f} — 밴드 상단 이탈, 과열/저항",-0.7
+        elif pct_b >= 0.80: st,sig,desc,sc = "상단 권역",  "관망",f"%B {pct_b:.2f} — 상단 권역, 조정 주의",     -0.2
+        elif pct_b <= 0.05: st,sig,desc,sc = "하단 이탈",  "매수",f"%B {pct_b:.2f} — 밴드 하단 이탈, 반등 가능",+0.7
+        elif pct_b <= 0.20: st,sig,desc,sc = "하단 권역",  "매수",f"%B {pct_b:.2f} — 하단 권역, 지지선 테스트", +0.3
+        elif bb_width < 3.0:st,sig,desc,sc = "밴드 수렴",  "관망",f"밴드폭 {bb_width:.1f}% — 변동성 수축, 돌파 임박",0.1
+        else:               st,sig,desc,sc = "밴드 중간",  "관망",f"%B {pct_b:.2f} — 중립 구간",              0.0
+        signals["bb"] = {"name":"볼린저 밴드 (20,2)", "state":st, "signal":sig, "desc":desc,
+                         "value":f"%B:{pct_b:.2f} | 폭:{bb_width:.1f}%"}
+        weighted.append((sc, 1.0, "BB"))
+
+    # ── 6. ATR (14) — 변동성 맥락 정보만 (가중치 점수 제외) ─────────────────
     atr = v("ATR")
     if atr is not None:
         atr_pct = atr / close * 100
-        if   atr_pct > 3:   st,sig,desc = "고변동성",   "관망", f"일간 변동 ≈{atr_pct:.1f}% — 분할 매수 권장"
-        elif atr_pct > 1.5: st,sig,desc = "보통 변동성","관망", f"일간 변동 ≈{atr_pct:.1f}% — 적정 리스크"
-        else:                st,sig,desc = "저변동성",   "관망", f"일간 변동 ≈{atr_pct:.1f}% — 돌파 시 강한 추세 기대"
-        signals["atr"] = {"name":"ATR (14)", "state":st, "signal":sig, "desc":desc, "value":f"{atr:.2f}"}
+        if   atr_pct > 3:   st,sig,desc = "고변동성",   "관망",f"일간 변동 ≈{atr_pct:.1f}% — 분할 매수 권장"
+        elif atr_pct > 1.5: st,sig,desc = "보통 변동성","관망",f"일간 변동 ≈{atr_pct:.1f}% — 적정 리스크"
+        else:                st,sig,desc = "저변동성",   "관망",f"일간 변동 ≈{atr_pct:.1f}% — 돌파 시 강한 추세 기대"
+        signals["atr"] = {"name":"ATR (14)", "state":st, "signal":sig, "desc":desc,
+                          "value":f"{atr:.2f} ({atr_pct:.1f}%)", "context_only": True}
+        # ※ ATR은 방향성 없음 → weighted 미포함
 
-    # ── 신규 지표 ───────────────────────────────────────────────────────
-
-    # OBV — 가격·거래량 수렴/다이버전스
-    obv_arr = dd.get("OBV", [])
-    if len(obv_arr) >= 5:
-        obv_now = float(obv_arr[-1]) if obv_arr[-1] is not None else None
-        obv_p5  = float(obv_arr[-5]) if obv_arr[-5] is not None else None
-        cl_arr  = dd.get("Close", [])
-        cl_p5   = float(cl_arr[-5]) if len(cl_arr) >= 5 and cl_arr[-5] is not None else close
-        if obv_now is not None and obv_p5 is not None:
-            p_up = close > cl_p5; o_up = obv_now > obv_p5
-            if   p_up and o_up:   st,sig,desc = "수렴 상승","매수","가격↑ + OBV↑ — 매수세 동반, 추세 신뢰↑"
-            elif not p_up and not o_up: st,sig,desc = "수렴 하락","매도","가격↓ + OBV↓ — 매도세 동반, 하락 신뢰↑"
-            elif p_up and not o_up: st,sig,desc = "강세 다이버전스","매도","가격↑·OBV↓ — 매수세 약화, 상승 지속성 의문"
-            else:                   st,sig,desc = "약세 다이버전스","매수","가격↓·OBV↑ — 기관 누적 추정, 반등 가능"
-            _ao = abs(obv_now)
-            if _ao >= 1e9:   obv_disp = f"{obv_now/1e9:+.2f}B"
-            elif _ao >= 1e6: obv_disp = f"{obv_now/1e6:+.1f}M"
-            else:            obv_disp = f"{obv_now/1e3:+.1f}K"
-            signals["obv"] = {"name":"OBV", "state":st, "signal":sig, "desc":desc,
-                              "value":obv_disp}
-
-    # Stochastic (14,3) — %K / %D
-    sk14 = v("%K"); sd14 = v("%D")
-    if sk14 is not None and sd14 is not None:
-        if   sk14 > 80: st,sig,desc = "과매수",    "매도",f"%K {sk14:.1f} 과매수 — 되돌림 경계"
-        elif sk14 < 20: st,sig,desc = "과매도",    "매수",f"%K {sk14:.1f} 과매도 — 단기 반등 기대"
-        elif sk14 > sd14: st,sig,desc = "골든크로스","매수",f"%K({sk14:.1f}) > %D({sd14:.1f}) — 단기 상승 전환"
-        else:           st,sig,desc = "데드크로스","매도",f"%K({sk14:.1f}) < %D({sd14:.1f}) — 단기 하락 전환"
-        signals["stoch14"] = {"name":"Stochastic (14,3)", "state":st, "signal":sig, "desc":desc,
-                              "value":f"{sk14:.1f} / {sd14:.1f}"}
-
-    # Aroon (25) — 최근 고점/저점 경과일 기반 추세 방향
-    au = v("AROON_UP"); ad = v("AROON_DOWN")
-    if au is not None and ad is not None:
-        if   au > 70 and ad < 30: st,sig,desc = "강한 상승","매수",f"Up {au:.0f} — 최근 고점 근접, 상승 추세 우세"
-        elif ad > 70 and au < 30: st,sig,desc = "강한 하락","매도",f"Down {ad:.0f} — 최근 저점 근접, 하락 추세 우세"
-        elif au > ad:             st,sig,desc = "상승 우위","관망",f"Up({au:.0f}) > Down({ad:.0f}) — 추세 약함"
-        else:                     st,sig,desc = "하락 우위","관망",f"Up({au:.0f}) < Down({ad:.0f}) — 하락 우위"
-        signals["aroon"] = {"name":"Aroon (25)", "state":st, "signal":sig, "desc":desc,
-                            "value":f"↑{au:.0f} / ↓{ad:.0f}"}
-
-    # Buy Pressure (14일 상승일 거래량 비중)
-    bp = v("BUY_PRESSURE")
-    if bp is not None:
-        if   bp > 65: st,sig,desc = "강한 매수세","매수",f"상승일 거래량 비중 {bp:.1f}% — 14일 매수 우위"
-        elif bp > 50: st,sig,desc = "매수 우위",  "매수",f"상승일 거래량 비중 {bp:.1f}% — 완만한 매수세"
-        elif bp > 35: st,sig,desc = "매도 우위",  "매도",f"상승일 거래량 비중 {bp:.1f}% — 매도 압력 존재"
-        else:         st,sig,desc = "강한 매도세","매도",f"상승일 거래량 비중 {bp:.1f}% — 14일 매도 우위"
-        signals["buy_pressure"] = {"name":"Buy Pressure (14)", "state":st, "signal":sig, "desc":desc,
-                                   "value":f"{bp:.1f}%"}
-
-    # ── 추세형 이동평균 지표 ──────────────────────────────────────────────
-
-    # PSAR (Parabolic SAR) — 추세 방향 + 반전 감지
+    # ── 7. PSAR (Parabolic SAR) ──────────────────────────────────────────────
     psar_v   = v("PSAR")
     psar_dir = v("PSAR_DIR")
     if psar_v is not None and psar_v > 0 and psar_dir is not None:
@@ -3263,31 +3316,108 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         flipped   = (psar_dir != prev_pdir)
         psar_disp = round(psar_v, 2)
         if psar_dir == 1.0:
-            if flipped: st,sig,desc = "상승 전환", "매수", f"SAR {psar_disp} — 하락→상승 전환 (추세 반전 확인)"
-            else:       st,sig,desc = "상승 추세", "매수", f"가격 > SAR {psar_disp} — 상승 추세 지속"
+            st,sig,desc,sc = ("상승 전환","매수",f"SAR {psar_disp} — 하락→상승 전환 (추세 반전 확인)",+0.9) if flipped \
+                        else ("상승 추세","매수",f"가격 > SAR {psar_disp} — 상승 추세 지속",           +0.5)
         else:
-            if flipped: st,sig,desc = "하락 전환", "매도", f"SAR {psar_disp} — 상승→하락 전환 (손절 고려)"
-            else:       st,sig,desc = "하락 추세", "매도", f"가격 < SAR {psar_disp} — 하락 추세 지속"
+            st,sig,desc,sc = ("하락 전환","매도",f"SAR {psar_disp} — 상승→하락 전환 (손절 고려)",    -0.9) if flipped \
+                        else ("하락 추세","매도",f"가격 < SAR {psar_disp} — 하락 추세 지속",          -0.5)
         signals["psar"] = {"name":"PSAR (0.02/0.2)", "state":st, "signal":sig, "desc":desc,
                            "value":f"{'▲' if psar_dir == 1.0 else '▼'} {psar_disp}"}
+        weighted.append((sc, 1.0, "PSAR"))
 
-    # 시장 상태 분류
+    # ── 8. OBV — 가격·거래량 수렴/다이버전스 ────────────────────────────────
+    obv_arr = dd.get("OBV", [])
+    if len(obv_arr) >= 10:
+        obv_now = float(obv_arr[-1])  if obv_arr[-1]  is not None else None
+        obv_p10 = float(obv_arr[-10]) if obv_arr[-10] is not None else None
+        cl_arr  = dd.get("Close", [])
+        cl_p10  = float(cl_arr[-10]) if len(cl_arr) >= 10 and cl_arr[-10] is not None else close
+        if obv_now is not None and obv_p10 is not None:
+            p_up = close > cl_p10; o_up = obv_now > obv_p10
+            if   p_up and o_up:         st,sig,desc,sc = "수렴 상승",    "매수","가격↑ + OBV↑ — 매수세 동반, 추세 신뢰↑",    +0.6
+            elif not p_up and not o_up: st,sig,desc,sc = "수렴 하락",    "매도","가격↓ + OBV↓ — 매도세 동반, 하락 신뢰↑",    -0.6
+            elif p_up and not o_up:     st,sig,desc,sc = "강세 다이버전스","매도","가격↑·OBV↓ — 매수세 약화, 상승 지속 의문",-0.4
+            else:                       st,sig,desc,sc = "약세 다이버전스","매수","가격↓·OBV↑ — 기관 누적 추정, 반등 가능", +0.4
+            _ao = abs(obv_now)
+            obv_disp = f"{obv_now/1e9:+.2f}B" if _ao >= 1e9 else \
+                       f"{obv_now/1e6:+.1f}M" if _ao >= 1e6 else f"{obv_now/1e3:+.1f}K"
+            signals["obv"] = {"name":"OBV (10봉)", "state":st, "signal":sig, "desc":desc, "value":obv_disp}
+            weighted.append((sc, 0.8, "OBV"))
+
+    # ── 9. Stochastic (14,3) ─────────────────────────────────────────────────
+    sk14 = v("%K"); sd14 = v("%D"); psk14 = v2("%K")
+    if sk14 is not None and sd14 is not None:
+        if sk14 > 80:
+            st,sig,desc,sc = "과매수",    "매도",f"%K {sk14:.1f} 과매수 — 되돌림 경계",                 -0.6
+        elif sk14 < 20:
+            st,sig,desc,sc = "과매도",    "매수",f"%K {sk14:.1f} 과매도 — 단기 반등 기대",              +0.6
+        elif sk14 > sd14:
+            arrow = "↑" if (psk14 is not None and sk14 > psk14) else ""
+            st,sig,desc,sc = f"골든크로스{arrow}","매수",f"%K({sk14:.1f}) > %D({sd14:.1f}) — 단기 상승 전환",+0.4
+        else:
+            st,sig,desc,sc = "데드크로스","매도",f"%K({sk14:.1f}) < %D({sd14:.1f}) — 단기 하락 전환",   -0.4
+        signals["stoch14"] = {"name":"Stochastic (14,3)", "state":st, "signal":sig, "desc":desc,
+                              "value":f"{sk14:.1f} / {sd14:.1f}"}
+        weighted.append((sc, 0.8, "Stochastic"))
+
+    # ── 10. Aroon (25) ───────────────────────────────────────────────────────
+    au = v("AROON_UP"); ard = v("AROON_DOWN")
+    if au is not None and ard is not None:
+        if   au > 70 and ard < 30: st,sig,desc,sc = "강한 상승","매수",f"Up {au:.0f} — 최근 고점 근접, 상승 추세 우세", +0.6
+        elif ard > 70 and au < 30: st,sig,desc,sc = "강한 하락","매도",f"Down {ard:.0f} — 최근 저점 근접, 하락 추세 우세",-0.6
+        elif au > ard:             st,sig,desc,sc = "상승 우위","관망",f"Up({au:.0f}) > Down({ard:.0f}) — 추세 약함",   +0.2
+        else:                      st,sig,desc,sc = "하락 우위","관망",f"Up({au:.0f}) < Down({ard:.0f}) — 하락 우위",   -0.2
+        signals["aroon"] = {"name":"Aroon (25)", "state":st, "signal":sig, "desc":desc,
+                            "value":f"↑{au:.0f} / ↓{ard:.0f}"}
+        weighted.append((sc, 0.7, "Aroon"))
+
+    # ── 11. Buy Pressure (14) ────────────────────────────────────────────────
+    bp = v("BUY_PRESSURE")
+    if bp is not None:
+        if   bp > 65: st,sig,desc,sc = "강한 매수세","매수",f"상승일 거래량 비중 {bp:.1f}% — 14일 매수 우위",+0.6
+        elif bp > 50: st,sig,desc,sc = "매수 우위",  "매수",f"상승일 거래량 비중 {bp:.1f}% — 완만한 매수세", +0.3
+        elif bp > 35: st,sig,desc,sc = "매도 우위",  "매도",f"상승일 거래량 비중 {bp:.1f}% — 매도 압력 존재",-0.3
+        else:         st,sig,desc,sc = "강한 매도세","매도",f"상승일 거래량 비중 {bp:.1f}% — 14일 매도 우위",-0.6
+        signals["buy_pressure"] = {"name":"Buy Pressure (14)", "state":st, "signal":sig, "desc":desc,
+                                   "value":f"{bp:.1f}%"}
+        weighted.append((sc, 0.7, "BuyPressure"))
+
+    # ── 종합 판단: 가중 점수 기반 5단계 ─────────────────────────────────────
     adx_v = v("ADX") or 0.0; dip_v = v("DI_Plus") or 0.0; dim_v = v("DI_Minus") or 0.0
     rsi_v = v("RSI") or 50.0
     market_state = classify_market_state(dd, close, rsi_v, adx_v, dip_v, dim_v)
 
-    buy_n   = sum(1 for s in signals.values() if s["signal"] == "매수")
-    sell_n  = sum(1 for s in signals.values() if s["signal"] == "매도")
-    watch_n = sum(1 for s in signals.values() if s["signal"] == "관망")
-    total_n = len(signals)
-    if   buy_n  > sell_n  and buy_n  >= watch_n: ov_sig,ov_lbl = "매수","매수 우세"
-    elif sell_n > buy_n   and sell_n >= watch_n: ov_sig,ov_lbl = "매도","매도 우세"
-    else:                                         ov_sig,ov_lbl = "관망","중립 / 관망"
+    # 카운트 (ATR "context_only" 제외)
+    buy_n   = sum(1 for s in signals.values() if s["signal"] == "매수" and not s.get("context_only"))
+    sell_n  = sum(1 for s in signals.values() if s["signal"] == "매도" and not s.get("context_only"))
+    watch_n = sum(1 for s in signals.values() if s["signal"] == "관망" and not s.get("context_only"))
+    total_n = buy_n + sell_n + watch_n
 
-    return {"signals": signals,
-            "summary": {"buy":buy_n,"sell":sell_n,"watch":watch_n,"total":total_n,
-                        "overall_signal":ov_sig,"overall_label":ov_lbl,
-                        "market_state": market_state}}
+    # 가중 점수 정규화 (-1.0 ~ +1.0)
+    if weighted:
+        tw  = sum(w for _, w, _ in weighted)
+        raw = sum(sc * w for sc, w, _ in weighted)
+        norm = raw / tw if tw > 0 else 0.0
+    else:
+        norm = 0.0
+
+    # 5단계 종합 판단
+    if   norm >= 0.45: ov_sig, ov_lbl = "매수", "강한 매수 🔥"
+    elif norm >= 0.15: ov_sig, ov_lbl = "매수", "매수 우세 ▲"
+    elif norm >= -0.15:ov_sig, ov_lbl = "관망", "중립 / 관망 —"
+    elif norm >= -0.45:ov_sig, ov_lbl = "매도", "매도 우세 ▽"
+    else:              ov_sig, ov_lbl = "매도", "강한 매도 ❄️"
+
+    return {
+        "signals": signals,
+        "summary": {
+            "buy": buy_n, "sell": sell_n, "watch": watch_n, "total": total_n,
+            "overall_signal": ov_sig,
+            "overall_label":  ov_lbl,
+            "market_state":   market_state,
+            "weighted_score": round(norm * 100, 1),   # -100 ~ +100 (UI 진행 바용)
+        },
+    }
 
 def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict, market: str = "KRX") -> Dict:
     """매수 적정 가격 예측 — 다중 지표 기반 정밀 구간 산출"""
@@ -6120,26 +6250,61 @@ function renderTechnicalSignals(d) {
     return '<span class="sig-watch-badge">— 관망</span>';
   };
 
-  const ovClr = summary.overall_signal === '매수' ? '#3fb950'
-              : summary.overall_signal === '매도' ? '#f85149' : '#d29922';
+  // 5단계 색상 매핑
+  const ws = summary.weighted_score ?? 0;
+  const ovClr = ws >= 45  ? '#3fb950'
+              : ws >= 15  ? '#57c55a'
+              : ws >= -15 ? '#d29922'
+              : ws >= -45 ? '#e87a5a'
+              :              '#f85149';
+
+  // 가중 점수 진행 바 (−100 ~ +100 → 0~100% 너비, 중앙 50%)
+  const barPct  = Math.round((ws + 100) / 2);   // 0~100
+  const barClr  = ws >= 0 ? '#3fb950' : '#f85149';
+  // 중앙에서 확장되는 방향 계산
+  const barLeft  = ws >= 0 ? 50 : barPct;
+  const barWidth = Math.abs(ws) / 2;
 
   let html = `
     <div class="overall-signal-box">
-      <div>
-        <div class="ovs-label">종합 판단 (${summary.total}개 지표 기준)</div>
-        <div style="font-size:20px;font-weight:800;color:${ovClr}">${summary.overall_label}</div>
+      <div style="flex:1">
+        <div class="ovs-label">종합 판단 (가중 점수 기반 · ${summary.total}개 지표)</div>
+        <div style="font-size:20px;font-weight:800;color:${ovClr};margin-bottom:8px">${summary.overall_label}</div>
+        <!-- 가중 점수 바 -->
+        <div style="position:relative;background:#30363d;border-radius:4px;height:6px;margin-bottom:4px">
+          <div style="position:absolute;left:${barLeft}%;width:${barWidth}%;height:100%;background:${barClr};border-radius:4px;transition:width .4s"></div>
+          <div style="position:absolute;left:50%;top:-3px;width:2px;height:12px;background:#484f58"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#484f58">
+          <span>매도 −100</span>
+          <span style="color:${ovClr};font-weight:600">점수: ${ws > 0 ? '+' : ''}${ws}</span>
+          <span>+100 매수</span>
+        </div>
       </div>
-      ${summary.market_state ? `<div style="font-size:12px;background:#21262d;border-radius:8px;padding:6px 12px;color:#cdd9e5;white-space:nowrap">${summary.market_state}</div>` : ''}
+      ${summary.market_state ? `<div style="font-size:12px;background:#21262d;border-radius:8px;padding:6px 12px;color:#cdd9e5;white-space:nowrap;align-self:flex-start">${summary.market_state}</div>` : ''}
+    </div>
+    <!-- 매수/관망/매도 카운트 바 -->
+    <div style="display:flex;gap:4px;margin-bottom:12px;font-size:11px;font-weight:600">
+      <div style="flex:${summary.buy||0};background:#1b3a1f;color:#3fb950;text-align:center;padding:3px 0;border-radius:4px 0 0 4px;min-width:0"
+           title="매수 ${summary.buy}개">${summary.buy ? '▲ ' + summary.buy : ''}</div>
+      <div style="flex:${summary.watch||0};background:#2d2200;color:#d29922;text-align:center;padding:3px 0;min-width:0"
+           title="관망 ${summary.watch}개">${summary.watch ? '— ' + summary.watch : ''}</div>
+      <div style="flex:${summary.sell||0};background:#3d1a1a;color:#f85149;text-align:center;padding:3px 0;border-radius:0 4px 4px 0;min-width:0"
+           title="매도 ${summary.sell}개">${summary.sell ? '▽ ' + summary.sell : ''}</div>
     </div>
     <div class="indicator-grid">`;
 
   Object.values(signals).forEach(s => {
-    const stClr = s.signal === '매수' ? '#3fb950' : s.signal === '매도' ? '#f85149' : '#d29922';
+    const isCtx  = s.context_only;   // ATR 등 변동성 맥락 전용
+    const stClr  = isCtx ? '#8b949e'
+                 : s.signal === '매수' ? '#3fb950'
+                 : s.signal === '매도' ? '#f85149' : '#d29922';
+    const ctxTag = isCtx ? '<span style="font-size:9px;background:#21262d;color:#8b949e;padding:1px 4px;border-radius:3px;margin-left:4px">맥락</span>' : '';
     html += `
       <div class="indicator-item">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-          <span class="ind-name">${s.name}</span>
-          ${badge(s.signal)}
+          <span class="ind-name">${s.name}${ctxTag}</span>
+          ${isCtx ? '<span class="sig-watch-badge" style="opacity:.6">— 참고</span>' : badge(s.signal)}
         </div>
         <div class="ind-state" style="color:${stClr}">${s.state}</div>
         <div class="ind-value">${s.value}</div>
