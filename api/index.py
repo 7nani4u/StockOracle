@@ -829,31 +829,85 @@ def _av_price(ticker: str) -> Optional[Tuple[float, float]]:
     return None
 
 
+_us_price_fetcher = None   # 싱글톤 — 최초 호출 시 초기화
+
+def _get_us_price_fetcher():
+    """USStockPriceFetcher 싱글톤 반환 (lazy init)."""
+    global _us_price_fetcher
+    if _us_price_fetcher is None:
+        try:
+            import sys as _sys, os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from us_price_fetcher import USStockPriceFetcher
+            _us_price_fetcher = USStockPriceFetcher()
+        except Exception as _e:
+            pass  # 로드 실패 시 None 유지 → fallback 경로 사용
+    return _us_price_fetcher
+
+
+# price_type → 한국어 세션 라벨 매핑
+_PRICE_TYPE_LABEL = {
+    "overnight":      "오버나이트",   # Blue Ocean ATS (8 PM~4 AM ET)
+    "pre_market":     "프리마켓",     # 4 AM~9:30 AM ET
+    "post_market":    "애프터마켓",   # 4 PM~8 PM ET
+    "extended_hours": "시간외",
+    "real_time":      "정규장",
+    "regular_close":  "정규장",
+    "last_close":     "장마감",
+}
+
+
 def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
     """
-    현재 시간(US Eastern Time 기준)과 서머타임(DST) 적용 여부를 고려하여
-    카카오페이증권 장 구분(데이, 프리, 정규, 애프터)에 맞는 최적의 현재가와 세션명, 전일종가를 반환.
+    미국 주식 현재 세션에 맞는 최신 가격·세션명·전일종가 반환.
+
+    [우선순위]
+      1. USStockPriceFetcher  — overnightMarketPrice(Blue Ocean ATS) / preMarketPrice /
+                               postMarketPrice / regularMarketPrice 를 세션별 자동 선택
+      2. yfinance info        — 폴백 (fetcher 초기화 실패 시)
+      3. Tiingo IEX           — 폴백
+      4. AlphaVantage         — 폴백
+
+    반환: (price, session_label_ko, prev_close)
+      - session_label_ko: "오버나이트" | "프리마켓" | "정규장" | "애프터마켓" | "장마감"
     """
+    ticker_str = getattr(ticker_obj, 'ticker', None) or ""
+
+    # ── ① USStockPriceFetcher (overnightMarketPrice 포함 전체 세션 지원) ──────
+    if ticker_str:
+        fetcher = _get_us_price_fetcher()
+        if fetcher is not None:
+            try:
+                result = fetcher.fetch(ticker_str)
+                if result and result.price > 0:
+                    session_label = _PRICE_TYPE_LABEL.get(
+                        result.price_type,
+                        result.session.label_ko(),
+                    )
+                    return float(result.price), session_label, float(result.prev_close or 0)
+            except Exception:
+                pass
+
+    # ── ② yfinance 폴백 ──────────────────────────────────────────────────────
     try:
         from zoneinfo import ZoneInfo
         us_tz = ZoneInfo("America/New_York")
     except ImportError:
         import pytz
         us_tz = pytz.timezone("America/New_York")
-        
-    now_et = dt.now(us_tz)
+
+    now_et     = dt.now(us_tz)
     time_float = now_et.hour + now_et.minute / 60.0
-    
-    info = ticker_obj.info
-    
-    # yfinance 가격 데이터 수집
+
+    info         = ticker_obj.info
     regular_price = info.get("regularMarketPrice")
     current_price = info.get("currentPrice")
-    pre_price = info.get("preMarketPrice")
-    post_price = info.get("postMarketPrice")
-    prev_close = info.get("previousClose")
-    
-    # fast_info를 통한 최신 체결가 (가장 빠름)
+    pre_price     = info.get("preMarketPrice")
+    post_price    = info.get("postMarketPrice")
+    prev_close    = info.get("previousClose")
+
     fast_last_price = None
     try:
         fi = ticker_obj.fast_info
@@ -861,10 +915,9 @@ def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
             fast_last_price = fi.last_price
         if not prev_close and hasattr(fi, 'previous_close'):
             prev_close = fi.previous_close
-    except:
+    except Exception:
         pass
 
-    # 시장 세션 판별 및 최우선 가격 추출 (카카오페이증권 기준)
     if 4.0 <= time_float < 9.5:
         session_name = "프리마켓"
         price = pre_price or fast_last_price or current_price or regular_price
@@ -875,27 +928,23 @@ def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
         session_name = "애프터마켓"
         price = post_price or fast_last_price or current_price or regular_price
     else:
-        session_name = "데이마켓"
-        # yfinance는 24시간 대체거래소(Blue Ocean 등) 시세를 공식 지원하지 않을 수 있음.
-        # 따라서 데이마켓 중에는 가장 최근에 갱신된 애프터마켓 종가나 정규장 종가를 참조.
+        session_name = "오버나이트"
         price = post_price or regular_price or prev_close
 
-    # ── yfinance 가격 없으면 Tiingo → AlphaVantage 순서로 폴백 ──────────────
-    if not price:
-        ticker_str = getattr(ticker_obj, 'ticker', None) or ""
-        if ticker_str:
-            t_res = _tiingo_price(ticker_str, session_name)
-            if t_res:
-                price, t_prev = t_res
-                if not prev_close and t_prev:
-                    prev_close = t_prev
-        if not price and ticker_str:
-            av_res = _av_price(ticker_str)
-            if av_res:
-                price, av_prev = av_res
-                if not prev_close and av_prev:
-                    prev_close = av_prev
-    # 모든 API 실패 시 전일종가로 대체
+    # ── ③ Tiingo / AlphaVantage 폴백 ─────────────────────────────────────────
+    if not price and ticker_str:
+        t_res = _tiingo_price(ticker_str, session_name)
+        if t_res:
+            price, t_prev = t_res
+            if not prev_close and t_prev:
+                prev_close = t_prev
+    if not price and ticker_str:
+        av_res = _av_price(ticker_str)
+        if av_res:
+            price, av_prev = av_res
+            if not prev_close and av_prev:
+                prev_close = av_prev
+
     if not price:
         price = prev_close or 0.0
 
@@ -3974,60 +4023,74 @@ def route(path: str, params: Dict) -> Dict:
             except Exception:
                 pass
 
-        # 현재가 보정: 한국 시장인 경우 네이버 금융의 최신 현재가를 최우선으로 사용
-        # 미국 시장은 yfinance의 fast_info 객체를 활용해 실시간 데이터 보정
+        # 현재가 보정
+        # KRX: 네이버 금융 최신 현재가를 최우선으로 사용
+        # US:  USStockPriceFetcher → Pre-Market / Overnight / After-Hours / 정규장 순 자동 선택
+        session_name = "정규장"   # 기본값 (KRX·US 공통)
         if market == "KRX" and naver and naver.get("price"):
             try:
                 real_price = float(naver["price"])
-                # 네이버 현재가와 yfinance 종가의 차이가 30% 이내일 때만 보정 (액면분할 등 비정상적 차이 방지)
+                # 네이버 현재가와 yfinance 종가의 차이가 30% 이내일 때만 보정
                 if last > 0 and abs(real_price - last) / last < 0.3:
                     last = real_price
-                    # 전일종가를 네이버에서 가져온 prev_close로 교체
                     nv_prev = naver.get("prev_close")
                     if nv_prev:
                         try:
-                            prev = float(nv_prev)  # 실제 전일종가 사용
+                            prev = float(nv_prev)
                         except Exception:
                             pass
                     if prev > 0:
                         pct = (last - prev) / prev * 100
-            except:
+            except Exception:
                 pass
         elif market == "US":
+            # ① USStockPriceFetcher: overnightMarketPrice / preMarketPrice / postMarketPrice
+            #    → Pre-Market / Overnight 등 세션을 자동으로 감지하여 최신 가격 반환
+            _fetched = False
             try:
-                fast_info = yf.Ticker(sym).fast_info
-                # hasattr를 통해 안전하게 last_price 조회
-                if hasattr(fast_info, 'last_price'):
-                    real_price = fast_info.last_price
-                    if real_price and real_price > 0:
-                        if last > 0 and abs(real_price - last) / last < 0.3:
-                            last = float(real_price)
-                            # 이전 종가도 보정
-                            if hasattr(fast_info, 'previous_close'):
-                                real_prev = fast_info.previous_close
-                                if real_prev and real_prev > 0:
-                                    prev = float(real_prev)
+                _fetcher = _get_us_price_fetcher()
+                if _fetcher is not None:
+                    _res = _fetcher.fetch(sym)
+                    if _res and _res.price > 0:
+                        _rp = float(_res.price)
+                        # 50% 초과 이격 시 비정상 데이터로 간주하여 무시
+                        if last > 0 and abs(_rp - last) / last < 0.5:
+                            last = _rp
+                            if _res.prev_close and float(_res.prev_close) > 0:
+                                prev = float(_res.prev_close)
                             if prev > 0:
                                 pct = (last - prev) / prev * 100
-                else:
-                    # fallback: info 객체 사용
-                    info = yf.Ticker(sym).info
-                    real_price = info.get("currentPrice") or info.get("regularMarketPrice")
-                    if real_price and real_price > 0:
-                        if last > 0 and abs(real_price - last) / last < 0.3:
-                            last = float(real_price)
-                            real_prev = info.get("previousClose")
-                            if real_prev and real_prev > 0:
-                                prev = float(real_prev)
-                            if prev > 0:
-                                pct = (last - prev) / prev * 100
-            except:
+                            session_name = _PRICE_TYPE_LABEL.get(
+                                _res.price_type,
+                                getattr(_res, "session", None) and _res.session.label_ko() or "정규장",
+                            )
+                            _fetched = True
+            except Exception:
                 pass
+
+            # ② fallback: yfinance fast_info (fetcher 실패 또는 로드 불가 시)
+            if not _fetched:
+                try:
+                    fast_info = yf.Ticker(sym).fast_info
+                    if hasattr(fast_info, 'last_price'):
+                        real_price = fast_info.last_price
+                        if real_price and real_price > 0:
+                            if last > 0 and abs(real_price - last) / last < 0.3:
+                                last = float(real_price)
+                                if hasattr(fast_info, 'previous_close'):
+                                    real_prev = fast_info.previous_close
+                                    if real_prev and real_prev > 0:
+                                        prev = float(real_prev)
+                                if prev > 0:
+                                    pct = (last - prev) / prev * 100
+                except Exception:
+                    pass
                 
         return {
             "symbol": sym, "company": company or sym, "market": market,
             "last_close": round(last, 2), "prev_close": round(prev, 2),
             "pct_change": round(pct, 2),
+            "session_name": session_name,   # 현재가 세션 (프리마켓/오버나이트/정규장 등)
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
             "atr": round(atr_val, 2),
@@ -5036,7 +5099,7 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가</div><div class="m-value" id="r-price"></div><div class="m-sub" id="r-pct"></div></div>
+        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="m-value" id="r-price"></div><div class="m-sub" id="r-pct"></div></div>
         <div class="metric-card"><div class="m-label">RSI (14)</div><div class="m-value" id="r-rsi"></div><div class="m-sub" id="r-rsi-label"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
@@ -5521,6 +5584,29 @@ function renderResult(d) {
     `기준일: ${new Date().toLocaleDateString('ko-KR')} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'}`;
   document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
   document.getElementById('r-pct').innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
+
+  // 미국 주식 세션 배지: 프리마켓 / 오버나이트 / 애프터마켓 등 표시
+  const sessionBadge = document.getElementById('r-session-badge');
+  if (sessionBadge) {
+    const hiddenSessions = new Set(['정규장', '장마감', '']);
+    const sn = (d.session_name || '').trim();
+    if (!isKrx && sn && !hiddenSessions.has(sn)) {
+      // 세션별 색상 구분
+      const sessionColors = {
+        '프리마켓':   { bg: '#1f6feb33', fg: '#58a6ff' },
+        '오버나이트': { bg: '#6e40c933', fg: '#bc8cff' },
+        '애프터마켓': { bg: '#388bfd22', fg: '#79c0ff' },
+        '시간외':     { bg: '#30363d',   fg: '#8b949e' },
+      };
+      const col = sessionColors[sn] || { bg: '#1f6feb33', fg: '#58a6ff' };
+      sessionBadge.textContent = sn;
+      sessionBadge.style.background = col.bg;
+      sessionBadge.style.color = col.fg;
+      sessionBadge.style.display = 'inline';
+    } else {
+      sessionBadge.style.display = 'none';
+    }
+  }
 
   const rsi = d.rsi;
   const rsiClr = rsi > 70 ? '#f85149' : rsi < 30 ? '#388bfd' : '#e6edf3';
