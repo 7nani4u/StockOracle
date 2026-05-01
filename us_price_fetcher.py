@@ -344,11 +344,19 @@ class YahooFinanceDirectClient(_BaseClient):
         "regularMarketTime",
         "regularMarketChange",
         "regularMarketChangePercent",
-        "postMarketPrice",           # After-hours / Overnight 가격
-        "postMarketTime",            # 해당 가격의 타임스탬프
+        # ── Overnight (Blue Ocean ATS, 8 PM~4 AM ET) ──────────────────────
+        # overnightPrice=true 파라미터를 함께 전달해야 이 필드가 반환됨
+        "overnightMarketPrice",        # Blue Ocean ATS 심야 연장 거래 최신가
+        "overnightMarketTime",         # 해당 가격 타임스탬프
+        "overnightMarketChange",       # 전일 정규장 종가 대비 변동액
+        "overnightMarketChangePercent",# 전일 정규장 종가 대비 변동률
+        # ── After-hours (POST, 4 PM~8 PM ET) ──────────────────────────────
+        "postMarketPrice",             # After-hours 체결가
+        "postMarketTime",
         "postMarketChange",
         "postMarketChangePercent",
-        "preMarketPrice",            # Pre-market 가격
+        # ── Pre-market (PRE, 4 AM~9:30 AM ET) ────────────────────────────
+        "preMarketPrice",
         "preMarketTime",
         "preMarketChange",
         "preMarketChangePercent",
@@ -448,7 +456,12 @@ class YahooFinanceDirectClient(_BaseClient):
             logger.warning("[YFDirect] crumb 없음 — YFDirect 스킵, fallback 진행")
             return None
 
-        params = {"symbols": ticker, "fields": self._FIELDS, "crumb": self._crumb}
+        params = {
+            "symbols":        ticker,
+            "fields":         self._FIELDS,
+            "crumb":          self._crumb,
+            "overnightPrice": "true",   # overnightMarketPrice 필드 활성화
+        }
 
         for url in self._QUOTE_URLS:
             self._wait()
@@ -489,29 +502,20 @@ class YahooFinanceDirectClient(_BaseClient):
         self, ticker: str
     ) -> Optional[Tuple[float, float, Optional[datetime], str, str]]:
         """
-        Yahoo Finance Overnight 가격 추출.
+        Yahoo Finance Overnight(Blue Ocean ATS) 가격 추출.
 
         반환: (price, prev_close, price_time, price_type, market_state)
               또는 None (데이터 없음·만료·비거래)
 
-        [감지 우선순위]
-          1. marketState == "PREPRE" or "POSTPOST"
-             → Yahoo Overnight 상태 확정
-             → postMarketPrice + postMarketTime 검증 (8시간 이내만 유효)
-
-          2. marketState == "POST" (After-hours 진행 중)
-             → AFTER_HOURS 세션 처리기에서 별도 처리하므로 여기서는 None
-
-          3. marketState == "PRE"
-             → PRE_MARKET 세션 처리기에서 별도 처리하므로 여기서는 None
-
-          4. 위 조건 모두 불충족
-             → None 반환 → 상위 fallback(yfinance / Tiingo / previousClose) 사용
+        [우선순위]
+          ① overnightMarketPrice (Blue Ocean ATS 실제 체결가, 8 PM~4 AM ET)
+             - overnightPrice=true 파라미터로 활성화
+             - marketState 무관하게 8시간 이내 데이터이면 사용
+          ② postMarketPrice      (애프터마켓 종가, PREPRE/POSTPOST 상태에서 fallback)
+             - Blue Ocean ATS 데이터가 없을 때 보조 수단
 
         [타임스탬프 신선도 기준]
-          - POSTPOST(20:00~자정): 최대 8시간 이내 (20:00 거래 → 조회 시 04:00까지)
-          - PREPRE(자정~04:00):  최대 8시간 이내
-          - 이 기준을 초과하면 stale 데이터로 판단 → None 반환
+          overnightMarketTime 이 현재 시각으로부터 8시간 이내인 경우만 유효
         """
         q = self.fetch_raw_quote(ticker)
         if not q:
@@ -520,20 +524,44 @@ class YahooFinanceDirectClient(_BaseClient):
         prev_close   = float(q.get("regularMarketPreviousClose") or 0)
         market_state = q.get("marketState", "")
 
-        # ── Overnight 상태(PREPRE / POSTPOST) 감지 ───────────────────────────
+        # ── ① overnightMarketPrice (Blue Ocean ATS) ──────────────────────────
+        # marketState 상관없이: 타임스탬프가 8시간 이내면 유효한 overnight 데이터
+        ovn_price = q.get("overnightMarketPrice")
+        ovn_time  = self._ts(q.get("overnightMarketTime"))
+
+        if ovn_price and ovn_time:
+            age_min = (now_et() - ovn_time).total_seconds() / 60
+            if age_min <= 480:  # 8시간 이내
+                logger.info(
+                    f"[YFDirect] {ticker} Overnight(Blue Ocean ATS) ✓ "
+                    f"marketState={market_state} | "
+                    f"price={ovn_price} | "
+                    f"time={ovn_time.strftime('%H:%M:%S %Z')} | "
+                    f"{age_min:.0f}min ago"
+                )
+                return (
+                    float(ovn_price),
+                    prev_close,
+                    ovn_time,
+                    "overnight",
+                    market_state,
+                )
+            logger.debug(
+                f"[YFDirect] {ticker}: overnightMarketPrice 만료 "
+                f"({age_min:.0f}min > 480min)"
+            )
+
+        # ── ② postMarketPrice fallback (PREPRE/POSTPOST 전용) ─────────────
         if market_state in _YF_OVERNIGHT_STATES:
             post_price = q.get("postMarketPrice")
             post_time  = self._ts(q.get("postMarketTime"))
-
             if post_price and post_time:
                 age_min = (now_et() - post_time).total_seconds() / 60
-                if age_min <= 480:  # 8시간(480분) 이내만 유효
+                if age_min <= 480:
                     logger.info(
-                        f"[YFDirect] {ticker} Overnight 가격 확인 ✓ "
-                        f"marketState={market_state} | "
-                        f"price={post_price} | "
-                        f"time={post_time.strftime('%H:%M:%S %Z')} | "
-                        f"{age_min:.0f}분 전"
+                        f"[YFDirect] {ticker} postMarketPrice fallback "
+                        f"(overnightMarketPrice 없음) | "
+                        f"price={post_price} | {age_min:.0f}min ago"
                     )
                     return (
                         float(post_price),
@@ -542,22 +570,10 @@ class YahooFinanceDirectClient(_BaseClient):
                         "overnight",
                         market_state,
                     )
-                else:
-                    logger.info(
-                        f"[YFDirect] {ticker}: Overnight 가격 만료 "
-                        f"({age_min:.0f}분 전, 8시간 초과) → fallback"
-                    )
-            else:
-                logger.debug(
-                    f"[YFDirect] {ticker}: {market_state} 상태이나 "
-                    f"postMarketPrice={post_price} → fallback"
-                )
-            return None  # Overnight 상태이나 가격 없음
 
-        # POST(After-hours) / PRE(Pre-market) / REGULAR / CLOSED → 이 메서드 범위 외
         logger.debug(
-            f"[YFDirect] {ticker}: marketState={market_state} "
-            f"→ Overnight 아님, 다른 세션 처리기에서 담당"
+            f"[YFDirect] {ticker}: Overnight 가격 없음 "
+            f"(marketState={market_state}, overnightPrice={ovn_price})"
         )
         return None
 
@@ -566,6 +582,10 @@ class YahooFinanceDirectClient(_BaseClient):
     ) -> Optional[Tuple[float, float, Optional[datetime], str, str]]:
         """
         Pre-market 가격 추출 (marketState == "PRE").
+
+        [우선순위]
+          ① preMarketPrice  : 04:00~09:30 ET Nasdaq/NYSE 프리마켓 가격 (가장 최신)
+          ② overnightMarketPrice : Blue Ocean ATS 종료 직전 최종가 (PRE 시작 직후 유효)
 
         반환: (price, prev_close, price_time, price_type, market_state)
               또는 None
@@ -580,19 +600,32 @@ class YahooFinanceDirectClient(_BaseClient):
         if market_state != "PRE":
             return None
 
+        # ── ① preMarketPrice (가장 최신) ─────────────────────────────────────
         pre_price = q.get("preMarketPrice")
         pre_time  = self._ts(q.get("preMarketTime"))
 
         if pre_price and pre_time:
             age_min = (now_et() - pre_time).total_seconds() / 60
-            if age_min <= 120:  # 2시간 이내만 신선 데이터로 인정
+            if age_min <= 120:  # 2시간 이내
                 logger.info(
-                    f"[YFDirect] {ticker} Pre-market 가격 확인 ✓ "
+                    f"[YFDirect] {ticker} Pre-market ✓ "
                     f"price={pre_price} | "
                     f"time={pre_time.strftime('%H:%M:%S %Z')} | "
-                    f"{age_min:.0f}분 전"
+                    f"{age_min:.0f}min ago"
                 )
                 return float(pre_price), prev_close, pre_time, "pre_market", market_state
+
+        # ── ② overnightMarketPrice fallback (PRE 시작 직후, 4 AM 이후 데이터) ─
+        ovn_price = q.get("overnightMarketPrice")
+        ovn_time  = self._ts(q.get("overnightMarketTime"))
+        if ovn_price and ovn_time:
+            age_min = (now_et() - ovn_time).total_seconds() / 60
+            if age_min <= 480:
+                logger.info(
+                    f"[YFDirect] {ticker} overnightMarketPrice fallback (PRE) "
+                    f"price={ovn_price} | {age_min:.0f}min ago"
+                )
+                return float(ovn_price), prev_close, ovn_time, "overnight", market_state
 
         return None
 
