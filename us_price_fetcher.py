@@ -299,30 +299,32 @@ class _BaseClient:
 # ──────────────────────────────────────────────────────────────────────────────
 class YahooFinanceDirectClient(_BaseClient):
     """
-    Yahoo Finance v7/quote API 직접 호출 (yfinance 라이브러리 우회).
+    Yahoo Finance v7/quote API 직접 호출 — 세션/Crumb 인증 포함.
 
-    목적:
-      - "Overnight" 가격 데이터를 marketState 필드로 명시적으로 감지
-      - yfinance 라이브러리가 CLOSED 세션에서 postMarketPrice를 숨기는 경우 보완
-      - preMarketPrice / postMarketPrice + 타임스탬프 동시 검증
+    [인증 방식]
+      Yahoo Finance v7 API는 crumb 없이 호출하면 401을 반환합니다.
+      1. requests.Session으로 https://finance.yahoo.com/ 방문 → 쿠키 획득
+      2. https://query2.finance.yahoo.com/v1/test/csrfToken 호출 → crumb 획득
+      3. 이후 모든 v7 호출에 ?crumb=XXX 파라미터 포함
+      4. 401 발생 시 crumb 갱신 후 1회 재시도
 
     [Overnight 감지 로직]
       1. marketState in ("PREPRE", "POSTPOST") → Yahoo "Overnight" 상태 확정
       2. postMarketPrice 존재 + postMarketTime이 8시간 이내 → Overnight 데이터 유효
       3. 위 조건 불충족 → None 반환 (상위 fallback으로)
 
-    [엔드포인트]
-      https://query1.finance.yahoo.com/v7/finance/quote?symbols=TICKER
-      (실패 시 query2 자동 재시도)
-
     [캐시]
-      동일 티커 30초 내 재조회 시 캐시 반환 (불필요한 API 호출 방지)
+      crumb: 30분 / quote: cache_ttl 초 (기본 30초)
     """
 
-    _ENDPOINTS: List[str] = [
-        "https://query1.finance.yahoo.com/v7/finance/quote",
+    _CONSENT_URL = "https://finance.yahoo.com/"
+    _CRUMB_URL   = "https://query2.finance.yahoo.com/v1/test/csrfToken"
+    _QUOTE_URLS: List[str] = [
         "https://query2.finance.yahoo.com/v7/finance/quote",
+        "https://query1.finance.yahoo.com/v7/finance/quote",
     ]
+    _CRUMB_TTL = 1800  # 30분
+
     _HEADERS: Dict[str, str] = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -334,6 +336,7 @@ class YahooFinanceDirectClient(_BaseClient):
         "Referer":         "https://finance.yahoo.com/",
         "Origin":          "https://finance.yahoo.com",
     }
+
     # 조회할 필드 목록 (Yahoo Finance v7 quote API)
     _FIELDS: str = ",".join([
         "regularMarketPrice",
@@ -356,6 +359,11 @@ class YahooFinanceDirectClient(_BaseClient):
 
     def __init__(self, cache_ttl: int = 30):
         super().__init__()
+        # 쿠키 유지 세션 (crumb 인증에 필수)
+        self._sess = requests.Session()
+        self._sess.headers.update(self._HEADERS)
+        self._crumb:    Optional[str] = None
+        self._crumb_at: float         = 0.0
         self._cache: Dict[str, Tuple[Any, float]] = {}
         self._cache_ttl = cache_ttl
 
@@ -368,9 +376,65 @@ class YahooFinanceDirectClient(_BaseClient):
         except Exception:
             return None
 
+    def _refresh_crumb(self) -> bool:
+        """
+        crumb 갱신.
+
+        [우선순위]
+          1) yfinance 내부 YfData (SingletonMeta — 이미 쿠키/crumb 보유 시 즉시 반환)
+             → yfinance가 관리하는 세션/쿠키를 그대로 재사용하므로 가장 신뢰도 높음
+          2) 직접 HTTP: finance.yahoo.com 방문 → csrfToken 엔드포인트 호출 (백업)
+        """
+        # ── 방법 1: yfinance 내부 YfData 세션 공유 (권장) ──────────────────
+        if _HAS_YFINANCE:
+            try:
+                from yfinance.data import YfData
+                yfd_inst = YfData()          # SingletonMeta → 공유 인스턴스
+                yfd_inst._get_cookie_and_crumb()
+                if yfd_inst._crumb and yfd_inst._session:
+                    self._crumb    = yfd_inst._crumb
+                    self._crumb_at = time.monotonic()
+                    self._sess     = yfd_inst._session  # crumb 설정된 세션 공유
+                    logger.debug(
+                        f"[YFDirect] yfinance crumb 획득 ({self._crumb[:8]}...)"
+                    )
+                    return True
+            except Exception as e:
+                logger.debug(f"[YFDirect] yfinance crumb 실패: {e}")
+
+        # ── 방법 2: 직접 HTTP (백업) ────────────────────────────────────────
+        try:
+            self._sess.get(
+                self._CONSENT_URL,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=True,
+            )
+            r = self._sess.get(self._CRUMB_URL, timeout=REQUEST_TIMEOUT)
+            if r.ok:
+                try:
+                    token = r.json().get("csrfToken", "")
+                except Exception:
+                    token = r.text.strip()
+                if token and len(token) > 2:
+                    self._crumb    = token
+                    self._crumb_at = time.monotonic()
+                    logger.debug(f"[YFDirect] 직접 crumb 획득 ({token[:8]}...)")
+                    return True
+            logger.warning(f"[YFDirect] csrfToken HTTP {r.status_code}")
+        except Exception as e:
+            logger.debug(f"[YFDirect] 직접 crumb 획득 실패: {e}")
+
+        return False
+
+    def _ensure_crumb(self) -> bool:
+        """crumb이 없거나 만료(30분)되면 갱신 시도."""
+        if self._crumb and (time.monotonic() - self._crumb_at) < self._CRUMB_TTL:
+            return True
+        return self._refresh_crumb()
+
     def fetch_raw_quote(self, ticker: str) -> Optional[dict]:
         """
-        Yahoo Finance v7 quote API 호출 → 원시 quote dict 반환.
+        Yahoo Finance v7 quote API → 원시 quote dict (crumb 인증 포함).
         캐시 TTL 내 재호출은 캐시값 반환.
         """
         ck = ticker.upper()
@@ -380,21 +444,29 @@ class YahooFinanceDirectClient(_BaseClient):
                 logger.debug(f"[YFDirect] {ticker}: 캐시 반환")
                 return cached_data
 
-        params = {"symbols": ticker, "fields": self._FIELDS}
+        if not self._ensure_crumb():
+            logger.warning("[YFDirect] crumb 없음 — YFDirect 스킵, fallback 진행")
+            return None
 
-        for endpoint in self._ENDPOINTS:
+        params = {"symbols": ticker, "fields": self._FIELDS, "crumb": self._crumb}
+
+        for url in self._QUOTE_URLS:
             self._wait()
             try:
-                r = requests.get(
-                    endpoint,
-                    params=params,
-                    headers=self._HEADERS,
-                    timeout=REQUEST_TIMEOUT,
-                    verify=True,
-                )
+                r = self._sess.get(url, params=params, timeout=REQUEST_TIMEOUT)
+
+                if r.status_code == 401:
+                    # crumb 만료 → 갱신 후 1회 재시도
+                    logger.info("[YFDirect] 401 수신 → crumb 재발급 후 재시도")
+                    self._crumb = None
+                    if not self._refresh_crumb():
+                        logger.warning("[YFDirect] crumb 재발급 실패 → 다음 fallback")
+                        break
+                    params["crumb"] = self._crumb
+                    r = self._sess.get(url, params=params, timeout=REQUEST_TIMEOUT)
+
                 r.raise_for_status()
-                data     = r.json()
-                results  = data.get("quoteResponse", {}).get("result", [])
+                results = r.json().get("quoteResponse", {}).get("result", [])
                 self._last = time.monotonic()
                 if results:
                     q = results[0]
@@ -404,11 +476,11 @@ class YahooFinanceDirectClient(_BaseClient):
                         f"(marketState={q.get('marketState', 'N/A')})"
                     )
                     return q
-                logger.warning(f"[YFDirect] {ticker}: 응답은 성공이나 result 비어 있음")
+                logger.warning(f"[YFDirect] {ticker}: 응답 성공이나 result 비어 있음")
             except requests.exceptions.HTTPError as e:
-                logger.warning(f"[YFDirect] {ticker} HTTP오류 ({endpoint}): {e}")
+                logger.warning(f"[YFDirect] {ticker} HTTP 오류 ({url}): {e}")
             except Exception as e:
-                logger.debug(f"[YFDirect] {ticker} ({endpoint}): {e}")
+                logger.debug(f"[YFDirect] {ticker} ({url}): {e}")
 
         logger.warning(f"[YFDirect] {ticker}: 모든 엔드포인트 실패")
         return None
@@ -713,6 +785,78 @@ class YFinanceClient:
             return float(price), prev_close, ts, "last_close"
 
         return None
+
+    def get_price_via_history(
+        self, ticker: str
+    ) -> Optional[Tuple[float, float, Optional[datetime], str]]:
+        """
+        yfinance Ticker.history(prepost=True) 기반 최신 가격 조회.
+
+        정규장, 프리마켓, 애프터마켓, Blue Ocean ATS 오버나이트(yfinance 지원 시) 포함.
+        marketState 판단 없이 가장 마지막 캔들 Close 가격을 반환합니다.
+
+        반환: (price, prev_close, price_time, price_type) 또는 None
+        """
+        if not _HAS_YFINANCE:
+            return None
+        self._wait()
+        try:
+            t  = yf.Ticker(ticker)
+            df = t.history(
+                period="1d",
+                interval="1m",
+                prepost=True,
+                auto_adjust=False,
+            )
+            if df.empty:
+                logger.debug(f"[yfinance history] {ticker}: 빈 DataFrame")
+                return None
+
+            last  = df.iloc[-1]
+            price = float(last["Close"])
+            if price <= 0:
+                return None
+
+            # 타임스탬프 (DatetimeIndex → ET datetime)
+            ts: Optional[datetime] = None
+            try:
+                ts_raw = last.name
+                ts = ts_raw.to_pydatetime() if hasattr(ts_raw, "to_pydatetime") else None
+                if ts:
+                    ts = ts.replace(tzinfo=ET_TZ) if ts.tzinfo is None else ts.astimezone(ET_TZ)
+            except Exception:
+                pass
+
+            # prev_close: fast_info 우선, 실패 시 info fallback
+            prev_close = 0.0
+            try:
+                pc = t.fast_info.previous_close
+                if pc and pc > 0:
+                    prev_close = float(pc)
+            except Exception:
+                pass
+            if not prev_close:
+                try:
+                    info = self._fetch_info(ticker)
+                    if info:
+                        prev_close = float(
+                            info.get("regularMarketPreviousClose")
+                            or info.get("previousClose")
+                            or 0
+                        )
+                except Exception:
+                    pass
+
+            self._last = time.monotonic()
+            logger.info(
+                f"[yfinance history] {ticker}: "
+                f"price={price:.4f} | "
+                f"time={ts.strftime('%H:%M:%S %Z') if ts else 'N/A'}"
+            )
+            return price, prev_close or price, ts, "extended_hours"
+        except Exception as e:
+            logger.warning(f"[yfinance history] {ticker}: {e}")
+            return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1156,26 +1300,32 @@ class USStockPriceFetcher:
         )
 
         # ── 1. OVERNIGHT (20:00~04:00 ET) ────────────────────────────────────
-        # Yahoo Finance "Overnight" 레이블 구간
-        # 우선순위: YFDirect → yfinance → Tiingo → 당일/전일종가
+        # Yahoo Finance "Overnight" 레이블 구간 (Blue Ocean ATS 8PM~4AM ET)
+        # 우선순위: YFDirect(crumb) → yfinance(info) → yfinance(history) → Tiingo → 종가
         if session == MarketSession.OVERNIGHT:
             logger.info(
                 f"[Fetcher] {ticker}: 🌙 Overnight 세션 "
-                f"— Yahoo Overnight 가격 우선 조회"
+                f"— Yahoo Overnight(Blue Ocean ATS) 가격 우선 조회"
             )
             result = self._first(
-                # ① YFDirect: marketState 명시 검증으로 가장 신뢰도 높음
+                # ① YFDirect: crumb 인증 후 marketState 명시 검증으로 가장 신뢰도 높음
                 self._try_yfd(
                     self.yfd.get_overnight_price, ticker, session,
                     "Yahoo Finance Direct",
                     "Overnight — postMarketPrice (marketState=PREPRE/POSTPOST)",
                 ),
-                # ② yfinance: postMarketPrice + 타임스탬프 검증 (8시간 이내)
+                # ② yfinance info: postMarketPrice + 타임스탬프 검증 (8시간 이내)
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
                     "postMarketPrice — Yahoo Finance Overnight (타임스탬프 검증)",
                 ),
-                # ③ Tiingo: 커버리지 낮음, 보조 수단
+                # ③ yfinance history(prepost=True): 마지막 캔들 Close 가격
+                self._try(
+                    lambda t, _s: self.yf.get_price_via_history(t),
+                    ticker, session, "yfinance(history)",
+                    "history prepost=True — 최신 Extended Hours 캔들",
+                ),
+                # ④ Tiingo: 커버리지 낮음, 보조 수단
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "tngoLast — Overnight 커버리지 낮음 (보조)",
@@ -1196,26 +1346,32 @@ class USStockPriceFetcher:
                 self._try(self.av.global_quote,  ticker, session, "AlphaVantage"),
             )
             if eod:
-                eod.notes     = "Overnight 거래 없음 또는 데이터 미제공 — 가장 최근 정규장 종가"
+                eod.notes      = "Overnight 거래 없음 또는 데이터 미제공 — 가장 최근 정규장 종가"
                 eod.price_type = "last_close"
-                eod.session   = MarketSession.OVERNIGHT  # 세션 표기 유지
+                eod.session    = MarketSession.OVERNIGHT  # 세션 표기 유지
             return eod
 
         # ── 2. 프리마켓 (04:00–09:30 ET) ─────────────────────────────────────
         elif session == MarketSession.PRE_MARKET:
             result = self._first(
-                # YFDirect: marketState="PRE" 명시 검증
+                # ① YFDirect: crumb 인증 후 marketState="PRE" 명시 검증
                 self._try_yfd(
                     self.yfd.get_premarket_price, ticker, session,
                     "Yahoo Finance Direct",
                     "preMarketPrice — marketState=PRE 검증",
                 ),
-                # yfinance preMarketPrice
+                # ② yfinance info: preMarketPrice
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
                     "preMarketPrice — Yahoo Finance/Cboe 실시간",
                 ),
-                # Tiingo tngoLast
+                # ③ yfinance history(prepost=True): 마지막 캔들 Close 가격
+                self._try(
+                    lambda t, _s: self.yf.get_price_via_history(t),
+                    ticker, session, "yfinance(history)",
+                    "history prepost=True — 최신 Pre-market 캔들",
+                ),
+                # ④ Tiingo tngoLast
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "tngoLast — IEX 집계 (yfinance ±0.3$ 수준)",
@@ -1255,18 +1411,24 @@ class USStockPriceFetcher:
         # ── 4. 애프터마켓 (16:00–20:00 ET) ───────────────────────────────────
         elif session == MarketSession.AFTER_HOURS:
             result = self._first(
-                # YFDirect: marketState="POST" 명시 검증
+                # ① YFDirect: crumb 인증 후 marketState="POST" 명시 검증
                 self._try_yfd(
                     self.yfd.get_postmarket_price, ticker, session,
                     "Yahoo Finance Direct",
                     "postMarketPrice — marketState=POST 검증",
                 ),
-                # yfinance postMarketPrice
+                # ② yfinance info: postMarketPrice
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
                     "postMarketPrice — Yahoo Finance/Cboe 실시간",
                 ),
-                # Tiingo tngoLast (17:00 ET 이후 신뢰도 저하)
+                # ③ yfinance history(prepost=True): 마지막 캔들 Close 가격
+                self._try(
+                    lambda t, _s: self.yf.get_price_via_history(t),
+                    ticker, session, "yfinance(history)",
+                    "history prepost=True — 최신 After-hours 캔들",
+                ),
+                # ④ Tiingo tngoLast (17:00 ET 이후 신뢰도 저하)
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "tngoLast — IEX 집계 (17:00 ET 이후 신뢰도 낮음)",
