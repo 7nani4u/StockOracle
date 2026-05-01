@@ -581,14 +581,16 @@ class YahooFinanceDirectClient(_BaseClient):
         self, ticker: str
     ) -> Optional[Tuple[float, float, Optional[datetime], str, str]]:
         """
-        Pre-market 가격 추출 (marketState == "PRE").
+        Pre-market 가격 추출.
 
         [우선순위]
-          ① preMarketPrice  : 04:00~09:30 ET Nasdaq/NYSE 프리마켓 가격 (가장 최신)
-          ② overnightMarketPrice : Blue Ocean ATS 종료 직전 최종가 (PRE 시작 직후 유효)
+          ① preMarketPrice        : 04:00~09:30 ET 프리마켓 가격 (가장 최신)
+          ② overnightMarketPrice  : Blue Ocean ATS 종료 직전 최종가 (4 AM 이후 유효)
 
-        반환: (price, prev_close, price_time, price_type, market_state)
-              또는 None
+        ※ marketState 가 정확히 "PRE" 가 아니어도 preMarketPrice 필드가 있으면 반환합니다.
+           (세션 경계 시점에 marketState 가 아직 업데이트되지 않을 수 있음)
+
+        반환: (price, prev_close, price_time, price_type, market_state) 또는 None
         """
         q = self.fetch_raw_quote(ticker)
         if not q:
@@ -597,25 +599,27 @@ class YahooFinanceDirectClient(_BaseClient):
         prev_close   = float(q.get("regularMarketPreviousClose") or 0)
         market_state = q.get("marketState", "")
 
-        if market_state != "PRE":
-            return None
-
-        # ── ① preMarketPrice (가장 최신) ─────────────────────────────────────
+        # ── ① preMarketPrice ─────────────────────────────────────────────────
         pre_price = q.get("preMarketPrice")
         pre_time  = self._ts(q.get("preMarketTime"))
 
         if pre_price and pre_time:
             age_min = (now_et() - pre_time).total_seconds() / 60
-            if age_min <= 120:  # 2시간 이내
+            if age_min <= 360:  # 6시간 이내 (04:00~09:30 ET 커버)
                 logger.info(
                     f"[YFDirect] {ticker} Pre-market ✓ "
+                    f"marketState={market_state} | "
                     f"price={pre_price} | "
                     f"time={pre_time.strftime('%H:%M:%S %Z')} | "
                     f"{age_min:.0f}min ago"
                 )
                 return float(pre_price), prev_close, pre_time, "pre_market", market_state
 
-        # ── ② overnightMarketPrice fallback (PRE 시작 직후, 4 AM 이후 데이터) ─
+        # marketState 가 PRE 가 아니면 overnightMarketPrice fallback 도 스킵
+        if market_state not in ("PRE", "PREPRE"):
+            return None
+
+        # ── ② overnightMarketPrice fallback (PRE 세션 직전 Blue Ocean ATS) ──
         ovn_price = q.get("overnightMarketPrice")
         ovn_time  = self._ts(q.get("overnightMarketTime"))
         if ovn_price and ovn_time:
@@ -743,6 +747,10 @@ class YFinanceClient:
     ) -> Optional[Tuple[float, float, Optional[datetime], str]]:
         """
         Returns (price, prev_close, price_time, price_type) or None.
+
+        ※ OVERNIGHT / AFTER_HOURS 에서 해당 세션 데이터가 없을 경우
+           regularMarketPrice 로 폴백하지 않고 None 을 반환합니다.
+           폴백은 USStockPriceFetcher.fetch() 의 EOD 체인에서 명시적으로 처리합니다.
         """
         info = self._fetch_info(ticker)
         if not info:
@@ -782,16 +790,11 @@ class YFinanceClient:
             validated = self._validate_post_market(ticker, info, max_age_min=240)
             if validated:
                 return validated
-            # After-hours 데이터 없으면 당일 종가 반환
-            price = info.get("regularMarketPrice")
-            if not price:
-                return None
-            ts = self._ts(info.get("regularMarketTime"))
-            return float(price), prev_close, ts, "regular_close"
+            # 애프터마켓 데이터 없음 → None (regularMarketPrice 로 폴백 금지)
+            return None
 
-        # ── OVERNIGHT (신규) ──────────────────────────────────────────────────
+        # ── OVERNIGHT ────────────────────────────────────────────────────────
         # Yahoo marketState: POSTPOST(20:00~자정) / PREPRE(자정~04:00)
-        # postMarketPrice가 Overnight 체결가를 포함할 수 있음
         elif session == MarketSession.OVERNIGHT:
             # 8시간 이내 postMarketPrice = Overnight 유효 데이터
             validated = self._validate_post_market(ticker, info, max_age_min=480)
@@ -802,12 +805,9 @@ class YFinanceClient:
                     f"({ts.strftime('%H:%M:%S %Z') if ts else 'N/A'})"
                 )
                 return price, pc, ts, "overnight"
-            # postMarketPrice 없거나 만료 → 당일/전일 정규장 종가
-            price = info.get("regularMarketPrice") or prev_close
-            if not price:
-                return None
-            ts = self._ts(info.get("regularMarketTime"))
-            return float(price), prev_close, ts, "last_close"
+            # Overnight 데이터 없음 → None (regularMarketPrice 로 폴백 금지)
+            logger.debug(f"[yfinance] {ticker}: Overnight postMarketPrice 없음/만료 → None")
+            return None
 
         # ── CLOSED ───────────────────────────────────────────────────────────
         elif session == MarketSession.CLOSED:
@@ -818,6 +818,104 @@ class YFinanceClient:
             return float(price), prev_close, ts, "last_close"
 
         return None
+
+    def get_market_state_price(
+        self, ticker: str
+    ) -> Optional[Tuple[float, float, Optional[datetime], str, str]]:
+        """
+        yfinance info 의 실제 marketState 를 읽어 적절한 가격을 반환.
+
+        시간 기반 세션 감지 없이 Yahoo Finance API 가 보고하는 marketState 를
+        그대로 사용하기 때문에, 세션 경계 불일치 문제를 방지합니다.
+
+        반환: (price, prev_close, ts, price_type, market_state) 또는 None
+
+        price_type:
+          "pre_market"  — PRE 세션 preMarketPrice
+          "overnight"   — PREPRE / POSTPOST 세션 postMarketPrice
+          "post_market" — POST 세션 postMarketPrice
+          "real_time"   — REGULAR 세션 currentPrice
+          "last_close"  — CLOSED 세션 previousClose
+        """
+        info = self._fetch_info(ticker)
+        if not info:
+            return None
+
+        market_state = info.get("marketState", "REGULAR")
+        prev_close = float(
+            info.get("regularMarketPreviousClose")
+            or info.get("previousClose")
+            or 0
+        )
+
+        # ── Pre-Market (04:00~09:30 ET) ──────────────────────────────────────
+        if market_state == "PRE":
+            price = info.get("preMarketPrice")
+            if price:
+                ts = self._ts(info.get("preMarketTime"))
+                logger.info(
+                    f"[yfinance ms] {ticker}: PRE → preMarketPrice={price} "
+                    f"({ts.strftime('%H:%M %Z') if ts else 'N/A'})"
+                )
+                return float(price), prev_close, ts, "pre_market", market_state
+            return None
+
+        # ── Overnight POSTPOST (20:00~자정 ET) ───────────────────────────────
+        elif market_state == "POSTPOST":
+            price = info.get("postMarketPrice")
+            if price:
+                ts = self._ts(info.get("postMarketTime"))
+                if ts:
+                    age_min = (now_et() - ts).total_seconds() / 60
+                    if age_min <= 480:
+                        logger.info(
+                            f"[yfinance ms] {ticker}: POSTPOST → "
+                            f"postMarketPrice={price} ({age_min:.0f}min ago)"
+                        )
+                        return float(price), prev_close, ts, "overnight", market_state
+            return None
+
+        # ── Overnight PREPRE (자정~04:00 ET) ─────────────────────────────────
+        elif market_state == "PREPRE":
+            price = info.get("postMarketPrice")
+            if price:
+                ts = self._ts(info.get("postMarketTime"))
+                if ts:
+                    age_min = (now_et() - ts).total_seconds() / 60
+                    if age_min <= 480:
+                        logger.info(
+                            f"[yfinance ms] {ticker}: PREPRE → "
+                            f"postMarketPrice={price} ({age_min:.0f}min ago)"
+                        )
+                        return float(price), prev_close, ts, "overnight", market_state
+            return None
+
+        # ── After-Hours POST (16:00~20:00 ET) ────────────────────────────────
+        elif market_state == "POST":
+            price = info.get("postMarketPrice")
+            if price:
+                ts = self._ts(info.get("postMarketTime"))
+                if ts:
+                    age_min = (now_et() - ts).total_seconds() / 60
+                    if age_min <= 240:
+                        return float(price), prev_close, ts, "post_market", market_state
+            return None
+
+        # ── Regular (09:30~16:00 ET) ─────────────────────────────────────────
+        elif market_state == "REGULAR":
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            if price:
+                ts = self._ts(info.get("regularMarketTime"))
+                return float(price), prev_close, ts, "real_time", market_state
+            return None
+
+        # ── Closed (주말·공휴일) ──────────────────────────────────────────────
+        else:
+            price = prev_close or info.get("regularMarketPrice")
+            if price:
+                ts = self._ts(info.get("regularMarketTime"))
+                return float(price), prev_close, ts, "last_close", market_state
+            return None
 
     def get_price_via_history(
         self, ticker: str
@@ -1334,31 +1432,53 @@ class USStockPriceFetcher:
 
         # ── 1. OVERNIGHT (20:00~04:00 ET) ────────────────────────────────────
         # Yahoo Finance "Overnight" 레이블 구간 (Blue Ocean ATS 8PM~4AM ET)
-        # 우선순위: YFDirect(crumb) → yfinance(info) → yfinance(history) → Tiingo → 종가
+        # 우선순위:
+        #   ① YFDirect overnightMarketPrice (crumb, Blue Ocean ATS 실체결가)
+        #   ② yfinance marketState 직접 읽기 (POSTPOST/PREPRE → postMarketPrice)
+        #   ③ yfinance get_price (postMarketPrice 타임스탬프 8h 검증)
+        #   ④ yfinance history(prepost=True) 마지막 캔들
+        #   ⑤ Tiingo tngoLast (커버리지 낮음)
+        #   → 모두 실패 시 정규장 종가 fallback
         if session == MarketSession.OVERNIGHT:
             logger.info(
                 f"[Fetcher] {ticker}: 🌙 Overnight 세션 "
                 f"— Yahoo Overnight(Blue Ocean ATS) 가격 우선 조회"
             )
+
+            def _ms_overnight(t: str, _s: MarketSession):
+                """yfinance marketState 기반 overnight 추출 래퍼."""
+                raw5 = self.yf.get_market_state_price(t)
+                if raw5 is None:
+                    return None
+                price, prev_close, ts, ptype, ms = raw5
+                if ptype not in ("overnight", "post_market"):
+                    return None  # regular / last_close 는 이 체인에서 무시
+                return price, prev_close, ts, ptype
+
             result = self._first(
-                # ① YFDirect: crumb 인증 후 marketState 명시 검증으로 가장 신뢰도 높음
+                # ① YFDirect: crumb + overnightMarketPrice (Blue Ocean ATS 실체결가)
                 self._try_yfd(
                     self.yfd.get_overnight_price, ticker, session,
                     "Yahoo Finance Direct",
-                    "Overnight — postMarketPrice (marketState=PREPRE/POSTPOST)",
+                    "overnightMarketPrice/postMarketPrice (marketState=PREPRE/POSTPOST)",
                 ),
-                # ② yfinance info: postMarketPrice + 타임스탬프 검증 (8시간 이내)
+                # ② yfinance marketState 직접: POSTPOST/PREPRE → postMarketPrice
+                self._try(
+                    _ms_overnight, ticker, session, "yfinance(marketState)",
+                    "marketState 기반 overnight — postMarketPrice",
+                ),
+                # ③ yfinance info: postMarketPrice + 타임스탬프 검증 (8h)
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
-                    "postMarketPrice — Yahoo Finance Overnight (타임스탬프 검증)",
+                    "postMarketPrice — Yahoo Finance Overnight 타임스탬프 검증",
                 ),
-                # ③ yfinance history(prepost=True): 마지막 캔들 Close 가격
+                # ④ yfinance history(prepost=True): 마지막 Extended Hours 캔들
                 self._try(
                     lambda t, _s: self.yf.get_price_via_history(t),
                     ticker, session, "yfinance(history)",
                     "history prepost=True — 최신 Extended Hours 캔들",
                 ),
-                # ④ Tiingo: 커버리지 낮음, 보조 수단
+                # ⑤ Tiingo: 커버리지 낮음, 보조 수단
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "tngoLast — Overnight 커버리지 낮음 (보조)",
@@ -1385,26 +1505,49 @@ class USStockPriceFetcher:
             return eod
 
         # ── 2. 프리마켓 (04:00–09:30 ET) ─────────────────────────────────────
+        # 우선순위:
+        #   ① YFDirect preMarketPrice (crumb, marketState=PRE 또는 preMarketPrice 필드 존재)
+        #   ② yfinance marketState 직접 읽기 (PRE → preMarketPrice)
+        #   ③ yfinance get_price (preMarketPrice)
+        #   ④ yfinance history(prepost=True) 마지막 캔들
+        #   ⑤ Tiingo tngoLast
+        #   → 모두 실패 시 전일종가 fallback
         elif session == MarketSession.PRE_MARKET:
+
+            def _ms_premarket(t: str, _s: MarketSession):
+                """yfinance marketState 기반 pre-market 추출 래퍼."""
+                raw5 = self.yf.get_market_state_price(t)
+                if raw5 is None:
+                    return None
+                price, prev_close, ts, ptype, ms = raw5
+                if ptype != "pre_market":
+                    return None  # overnight / regular 등은 이 체인에서 무시
+                return price, prev_close, ts, ptype
+
             result = self._first(
-                # ① YFDirect: crumb 인증 후 marketState="PRE" 명시 검증
+                # ① YFDirect: crumb + preMarketPrice 필드 존재 여부 우선 확인
                 self._try_yfd(
                     self.yfd.get_premarket_price, ticker, session,
                     "Yahoo Finance Direct",
-                    "preMarketPrice — marketState=PRE 검증",
+                    "preMarketPrice — YFDirect (marketState 완화 검증)",
                 ),
-                # ② yfinance info: preMarketPrice
+                # ② yfinance marketState 직접: PRE → preMarketPrice
+                self._try(
+                    _ms_premarket, ticker, session, "yfinance(marketState)",
+                    "marketState=PRE 기반 preMarketPrice",
+                ),
+                # ③ yfinance info: preMarketPrice (세션 라우팅 기반)
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
                     "preMarketPrice — Yahoo Finance/Cboe 실시간",
                 ),
-                # ③ yfinance history(prepost=True): 마지막 캔들 Close 가격
+                # ④ yfinance history(prepost=True): 마지막 Pre-market 캔들
                 self._try(
                     lambda t, _s: self.yf.get_price_via_history(t),
                     ticker, session, "yfinance(history)",
                     "history prepost=True — 최신 Pre-market 캔들",
                 ),
-                # ④ Tiingo tngoLast
+                # ⑤ Tiingo tngoLast
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "tngoLast — IEX 집계 (yfinance ±0.3$ 수준)",
