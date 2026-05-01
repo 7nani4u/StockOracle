@@ -90,19 +90,31 @@ KST_TZ = ZoneInfo("Asia/Seoul")
 REQUEST_TIMEOUT = 10  # seconds
 
 # ──────────────────────────────────────────────────────────────────────────────
-# NYSE 공휴일 / 조기 종료일 (2025–2026)
+# NYSE 공휴일 / 조기 종료일 (2025–2028)
 # ──────────────────────────────────────────────────────────────────────────────
 NYSE_HOLIDAYS: frozenset[date] = frozenset({
+    # 2025
     date(2025, 1, 1),  date(2025, 1, 20), date(2025, 2, 17), date(2025, 4, 18),
     date(2025, 5, 26), date(2025, 6, 19), date(2025, 7, 4),  date(2025, 9, 1),
     date(2025, 11, 27), date(2025, 12, 25),
+    # 2026
     date(2026, 1, 1),  date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
     date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3),  date(2026, 9, 7),
     date(2026, 11, 26), date(2026, 12, 25),
+    # 2027
+    date(2027, 1, 1),  date(2027, 1, 18), date(2027, 2, 15), date(2027, 3, 26),
+    date(2027, 5, 31), date(2027, 6, 18), date(2027, 7, 5),  date(2027, 9, 6),
+    date(2027, 11, 25), date(2027, 12, 24),
+    # 2028
+    date(2028, 1, 17), date(2028, 2, 21), date(2028, 4, 14),
+    date(2028, 5, 29), date(2028, 6, 19), date(2028, 7, 4),  date(2028, 9, 4),
+    date(2028, 11, 23), date(2028, 12, 25),
 })
 NYSE_EARLY_CLOSE: frozenset[date] = frozenset({
     date(2025, 11, 28), date(2025, 12, 24),
     date(2026, 11, 27), date(2026, 12, 24),
+    date(2027, 11, 26), date(2027, 12, 24),
+    date(2028, 11, 24), date(2028, 12, 24),
 })
 
 # Yahoo Finance marketState 값 중 "Overnight" 레이블에 해당하는 상태들
@@ -231,12 +243,20 @@ def detect_session(dt: Optional[datetime] = None) -> Tuple[MarketSession, dateti
     t = dt_et.hour * 60 + dt_et.minute  # 분 단위 시각
 
     # ── 전날 20:00 이후 ~ 오늘 04:00 이전: 자정 넘긴 overnight 처리 ──────────
-    # 자정~04:00(분 기준 0~239)이면 "어제"가 거래일인지 확인
+    # 자정~04:00(분 기준 0~239)이면 "오늘" 또는 "어제"가 거래일인지 확인
+    #
+    # 수정 이유: 월요일 00:00~04:00 ET 에서 "어제"(일요일)는 비거래일이므로
+    # 이전 로직이 CLOSED 를 반환하는 버그가 있었음.
+    # 수정 로직: 오늘이 거래일이면 OVERNIGHT (Blue Ocean ATS 활성), 그 다음 어제 확인.
     if t < 240:  # 00:00 ~ 03:59
+        if is_trading_day(dt_et):
+            # 오늘이 거래일(월~금) → 전날 밤 ATS 연장 세션 (예: 월요일 자정~04:00)
+            return MarketSession.OVERNIGHT, dt_et
         yesterday = (dt_et - timedelta(days=1)).astimezone(ET_TZ)
         if is_trading_day(yesterday):
+            # 어제가 거래일 → 어제 밤 ATS 연장 세션 (예: 금요일 → 토요일 자정)
             return MarketSession.OVERNIGHT, dt_et
-        # 어제가 비거래일이면 CLOSED
+        # 어제·오늘 모두 비거래일 (예: 일요일 자정) → CLOSED
         return MarketSession.CLOSED, dt_et
 
     # 04:00 이후는 당일 거래일 여부 체크
@@ -882,7 +902,9 @@ class YFinanceClient:
                 ts = self._ts(info.get("postMarketTime"))
                 if ts:
                     age_min = (now_et() - ts).total_seconds() / 60
-                    if age_min <= 480:
+                    # 480분(8h) → 360분(6h)으로 축소: PREPRE 구간 최대 04:00 ET 까지이므로
+                    # 전날 22:00 이후 postMarketPrice 만 유효로 인정 (04:00 - 6h = 22:00)
+                    if age_min <= 360:
                         logger.info(
                             f"[yfinance ms] {ticker}: PREPRE → "
                             f"postMarketPrice={price} ({age_min:.0f}min ago)"
@@ -977,6 +999,16 @@ class YFinanceClient:
                         )
                 except Exception:
                     pass
+
+            # 신선도 검사: 마지막 캔들이 120분(2시간) 이상 지났으면 스테일 데이터 폐기
+            if ts:
+                age_min = (now_et() - ts).total_seconds() / 60
+                if age_min > 120:
+                    logger.warning(
+                        f"[yfinance history] {ticker}: 스테일 캔들 폐기 "
+                        f"({age_min:.0f}min ago, ts={ts.strftime('%H:%M %Z')})"
+                    )
+                    return None
 
             self._last = time.monotonic()
             logger.info(

@@ -4032,34 +4032,44 @@ def route(path: str, params: Dict) -> Dict:
                 pass
         elif market == "US":
             # ① USStockPriceFetcher: overnightMarketPrice / preMarketPrice / postMarketPrice
+            #
+            # ※ 퍼센트 이격 차단(50% 등)은 사용하지 않습니다.
+            #   USStockPriceFetcher 는 내부적으로 타임스탬프 신선도·marketState·
+            #   Yahoo Finance 크럼 인증을 거쳐 이미 검증된 가격만 반환합니다.
+            #   외부에서 추가로 퍼센트 체크를 하면 CUE처럼 뉴스·이벤트로 인해
+            #   Pre-Market / Overnight 에서 50% 이상 급등·급락한 정상 종목이
+            #   역사적 종가(closes[-1])로 강제 복귀되는 오류가 발생합니다.
+            #   유일한 가드: price > 0 (0이나 음수 가격만 거부)
             _fetched = False
             try:
                 _fetcher = _get_us_price_fetcher()
                 if _fetcher is not None:
                     _res = _fetcher.fetch(sym)
                     if _res and _res.price > 0:
-                        _rp = float(_res.price)
-                        # 50% 초과 이격 시 비정상 데이터로 간주하여 무시
-                        if last > 0 and abs(_rp - last) / last < 0.5:
-                            last = _rp
-                            if _res.prev_close and float(_res.prev_close) > 0:
-                                prev = float(_res.prev_close)
-                            if prev > 0:
-                                pct = (last - prev) / prev * 100
-                            session_name = _PRICE_TYPE_LABEL.get(
-                                _res.price_type,
-                                getattr(_res, "session", None) and _res.session.label_ko() or "정규장",
-                            )
-                            _fetched = True
+                        last = float(_res.price)
+                        if _res.prev_close and float(_res.prev_close) > 0:
+                            prev = float(_res.prev_close)
+                        elif last > 0:
+                            # prev_close 없는 경우: 역사적 종가를 전일종가로 사용
+                            prev = prev or last
+                        if prev > 0:
+                            pct = (last - prev) / prev * 100
+                        session_name = _PRICE_TYPE_LABEL.get(
+                            _res.price_type,
+                            getattr(_res, "session", None) and _res.session.label_ko() or "정규장",
+                        )
+                        _fetched = True
             except Exception:
                 pass
-            # ② fallback: yfinance fast_info (fetcher 실패 시)
+            # ② fallback: yfinance fast_info (fetcher 로드 실패 또는 API 오류 시)
+            #   fast_info.last_price 는 extended hours 포함 최신가이므로
+            #   퍼센트 체크 없이 그대로 신뢰합니다.
             if not _fetched:
                 try:
                     fast_info = yf.Ticker(sym).fast_info
                     if hasattr(fast_info, 'last_price'):
                         real_price = fast_info.last_price
-                        if real_price and real_price > 0 and last > 0 and abs(real_price - last) / last < 0.3:
+                        if real_price and real_price > 0:
                             last = float(real_price)
                             if hasattr(fast_info, 'previous_close'):
                                 real_prev = fast_info.previous_close
