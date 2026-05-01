@@ -3676,66 +3676,85 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     }
 
 def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, market: str = "KRX") -> Dict:
-    """향후 주가 상승 가능 범위(목표가) 예측"""
-    ma20 = float(dd.get("MA20", [0])[-1] or 0)
-    ma60 = float(dd.get("MA60", [0])[-1] or 0)
-    rsi = float(dd.get("RSI", [50])[-1] or 50)
-    macd = float(dd.get("MACD", [0])[-1] or 0)
-    sig = float(dd.get("Signal_Line", [0])[-1] or 0)
-    bb_u = float(dd.get("BB_Upper", [0])[-1] or 0)
-    
+    """
+    향후 주가 상승 가능 범위(목표가) 예측.
+
+    last_price: 현재가 보정 완료된 실시간 가격 (Pre-Market / Overnight 포함).
+    수익률 계산, 목표가 범위 모두 이 가격을 기준값으로 사용합니다.
+    """
+    if last_price <= 0:
+        return {}
+
+    def _last_val(key: str, default: float = 0.0) -> float:
+        a = dd.get(key, [])
+        v = a[-1] if a else None
+        return float(v) if v is not None else default
+
+    ma20 = _last_val("MA20")
+    ma60 = _last_val("MA60")
+    rsi  = _last_val("RSI", 50.0)
+    macd = _last_val("MACD")
+    sig  = _last_val("Signal_Line")
+    bb_u = _last_val("BB_Upper")
+
     if not atr or np.isnan(atr):
         atr = last_price * 0.02
-        
+
     rnd = 4 if market == "US" else 2
 
-    # 추세 강도 분석 (-2 ~ 2)
-    trend_strength = 0
-    if ma20 and last_price > ma20: trend_strength += 1
-    if ma60 and last_price > ma60: trend_strength += 1
-    if macd > sig: trend_strength += 1
-    if rsi > 50: trend_strength += 1
-    if rsi > 70: trend_strength -= 1
+    # ── 추세 강도 분석 (0 ~ 4, RSI 과매수 시 -1 보정) ──────────────────
+    trend_strength = (
+        (1 if ma20 and last_price > ma20 else 0)
+        + (1 if ma60 and last_price > ma60 else 0)
+        + (1 if macd > sig else 0)
+        + (1 if rsi > 50 else 0)
+        - (1 if rsi > 70 else 0)   # 과매수 패널티
+    )
 
-    # 사용자 선택 period 기반 목표 기간 및 기본 타겟 계산
-    if period in ["1d", "3d", "1wk"]:
+    # ── period 기반 기본 목표가 산출 ──────────────────────────────────
+    if period in ("1d", "3d", "1wk"):
         pred_period = "단기 (1주 ~ 2주)"
-        base_target = last_price + (atr * 2)
-        if bb_u and bb_u > last_price:
+        base_target = last_price + atr * 2
+        # 볼린저 상단이 유효한 저항선일 경우 반영
+        if bb_u > last_price:
             base_target = max(base_target, bb_u)
-    elif period in ["2wk", "1mo", "3mo"]:
+    elif period in ("2wk", "1mo", "3mo"):
         pred_period = "중기 (1개월 ~ 3개월)"
-        base_target = last_price + (atr * 4)
+        base_target = last_price + atr * 4
     else:
         pred_period = "장기 (6개월 이상)"
-        base_target = last_price + (atr * 8)
-        
-    # 추세 강도에 따른 보정 및 근거 작성
+        base_target = last_price + atr * 8
+
+    # ── 추세 강도에 따른 범위·근거 산출 ──────────────────────────────
     if trend_strength >= 3:
         min_target = base_target
-        max_target = base_target + (atr * 2)
-        reason = "강한 상승 추세(이동평균선 정배열 및 MACD 매수 우위)가 지속되고 있어 추가 상승 여력이 높습니다."
+        max_target = base_target + atr * 2
+        reason = ("강한 상승 추세(이동평균선 정배열 및 MACD 매수 우위)가 지속되고 있어 "
+                  "추가 상승 여력이 높습니다.")
     elif trend_strength >= 1:
-        min_target = base_target - (atr * 1)
-        max_target = base_target + (atr * 1)
-        reason = "완만한 상승 추세 또는 박스권 상향 돌파 시도 중입니다. 단기 저항선 돌파 여부가 중요합니다."
+        min_target = base_target - atr
+        max_target = base_target + atr
+        reason = ("완만한 상승 추세 또는 박스권 상향 돌파 시도 중입니다. "
+                  "단기 저항선 돌파 여부가 중요합니다.")
     else:
-        min_target = last_price + (atr * 0.5)
-        max_target = last_price + (atr * 1.5)
-        reason = "현재 하락 추세 또는 조정 구간입니다. 기술적 반등 시 일차적인 저항선을 목표로 보수적인 접근이 필요합니다."
+        min_target = last_price + atr * 0.5
+        max_target = last_price + atr * 1.5
+        reason = ("현재 하락 추세 또는 조정 구간입니다. 기술적 반등 시 "
+                  "일차적인 저항선을 목표로 보수적인 접근이 필요합니다.")
 
-    # 수익률 계산
+    # ── 수익률: 현재가(last_price) 기준 ──────────────────────────────
     min_return = (min_target - last_price) / last_price * 100
     max_return = (max_target - last_price) / last_price * 100
 
     return {
-        "min_price": round(min_target, rnd),
-        "max_price": round(max_target, rnd),
-        "min_return": round(min_return, 1),
-        "max_return": round(max_return, 1),
-        "period": pred_period,
-        "reason": reason,
-        "trend_strength": trend_strength
+        "min_price":      round(min_target, rnd),
+        "max_price":      round(max_target, rnd),
+        "min_return":     round(min_return, 1),
+        "max_return":     round(max_return, 1),
+        "period":         pred_period,
+        "reason":         reason,
+        "trend_strength": trend_strength,
+        "base_price":     round(last_price, rnd),   # 기준 현재가 (디버그용)
     }
 
 def holt_winters_forecast(dd: Dict, days: int = 30):
@@ -3866,8 +3885,7 @@ def xgb_forecast(dd: Dict, days: int = 30):
             preds.append(round(current_price, 2))
         
         return preds
-    except Exception as e:
-        print(f"Simulation Error: {e}")
+    except Exception:
         return None
 
 # =============================================================================
@@ -3968,51 +3986,17 @@ def route(path: str, params: Dict) -> Dict:
         except:
             pass
         
-        # 기하학적 패턴을 캔들 패턴 리스트에 통합 (UI 표시용)
+        # ── 기하학적 패턴 → 캔들 패턴 리스트 통합 (UI 표시용) ───────────────
         for gp in geo_patterns:
             direction = "상승" if gp.get("signal") == "매수" else "하락" if gp.get("signal") == "매도" else "중립"
-            patterns.append({
-                "name": gp.get("name"),
-                "desc": gp.get("desc"),
-                "direction": direction,
-                "conf": 100
-            })
-            
-        atrs = dd.get("ATR", [])
-        atr_val = float(atrs[-1]) if atrs and atrs[-1] else last * 0.02
-        risk             = calc_risk(last, atr_val, market, dd)
-        pivot_points     = calc_pivot_points(dd)
-        indicator_signals= calc_indicator_signals(dd)
-        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market)
-        target_price     = calc_target_price(dd, last, atr_val, period, market)
+            patterns.append({"name": gp.get("name"), "desc": gp.get("desc"),
+                              "direction": direction, "conf": 100})
+
+        # ── Step 1: 외부 데이터 선제 수집 (현재가 보정에 필요) ───────────────
+        # Naver 금융 (KRX 현재가·전일가 보정 소스)
         naver = fetch_naver(sym) if market == "KRX" else None
 
-        # ── 투자자 수급 (KRX 전용, 토스증권 API) ───────────────────────────
-        investor_flow = {"ok": False, "reason": "KRX 종목 아님"}
-        if market == "KRX":
-            investor_flow = fetch_investor_flow(sym)
-            if investor_flow.get("ok"):
-                foreign  = investor_flow.get("외국인", 0)
-                inst     = investor_flow.get("기관", 0)
-                pension  = investor_flow.get("연기금", 0)
-                # 방향성 신호 → 점수 소폭 보정 (상한 ±5)
-                adj = 0
-                if foreign > 0: adj += 2
-                elif foreign < 0: adj -= 2
-                if inst > 0: adj += 2
-                elif inst < 0: adj -= 2
-                if pension > 0: adj += 1   # 연기금은 신뢰도 높음
-                elif pension < 0: adj -= 1
-                score = max(0, min(100, score + max(-5, min(5, adj))))
-                # AI 전략 텍스트에 수급 메모 추가
-                flow_notes = []
-                if foreign != 0: flow_notes.append(f"외국인 {foreign:+,}주")
-                if inst    != 0: flow_notes.append(f"기관 {inst:+,}주")
-                if pension != 0: flow_notes.append(f"연기금 {pension:+,}주")
-                if flow_notes and isinstance(ai_strategy, dict):
-                    ai_strategy["result"] += " | [투자자 수급] " + " / ".join(flow_notes)
-
-        # US 주식 보강 데이터 (Finnhub / Alpha Vantage / Tiingo)
+        # US 보강 데이터 (Finnhub / AV / Tiingo — 재무지표·뉴스 보완)
         us_enriched = None
         if market == "US":
             try:
@@ -4023,14 +4007,17 @@ def route(path: str, params: Dict) -> Dict:
             except Exception:
                 pass
 
-        # 현재가 보정
-        # KRX: 네이버 금융 최신 현재가를 최우선으로 사용
-        # US:  USStockPriceFetcher → Pre-Market / Overnight / After-Hours / 정규장 순 자동 선택
-        session_name = "정규장"   # 기본값 (KRX·US 공통)
+        # ── Step 2: 현재가 보정 ───────────────────────────────────────────────
+        # 반드시 calc_buy_price / calc_target_price / calc_risk 호출 전에 완료해야 함.
+        # 보정된 last 가 예측·리스크 계산의 기준값(현재가)으로 사용됩니다.
+        #
+        # KRX: 네이버 금융 실시간 현재가 최우선
+        # US : USStockPriceFetcher → Pre-Market / Overnight / After-Hours / 정규장 순 자동 선택
+        session_name = "정규장"   # 기본값
         if market == "KRX" and naver and naver.get("price"):
             try:
                 real_price = float(naver["price"])
-                # 네이버 현재가와 yfinance 종가의 차이가 30% 이내일 때만 보정
+                # 30% 이내 차이일 때만 보정 (액면분할 등 비정상 이격 방지)
                 if last > 0 and abs(real_price - last) / last < 0.3:
                     last = real_price
                     nv_prev = naver.get("prev_close")
@@ -4045,7 +4032,6 @@ def route(path: str, params: Dict) -> Dict:
                 pass
         elif market == "US":
             # ① USStockPriceFetcher: overnightMarketPrice / preMarketPrice / postMarketPrice
-            #    → Pre-Market / Overnight 등 세션을 자동으로 감지하여 최신 가격 반환
             _fetched = False
             try:
                 _fetcher = _get_us_price_fetcher()
@@ -4067,24 +4053,56 @@ def route(path: str, params: Dict) -> Dict:
                             _fetched = True
             except Exception:
                 pass
-
-            # ② fallback: yfinance fast_info (fetcher 실패 또는 로드 불가 시)
+            # ② fallback: yfinance fast_info (fetcher 실패 시)
             if not _fetched:
                 try:
                     fast_info = yf.Ticker(sym).fast_info
                     if hasattr(fast_info, 'last_price'):
                         real_price = fast_info.last_price
-                        if real_price and real_price > 0:
-                            if last > 0 and abs(real_price - last) / last < 0.3:
-                                last = float(real_price)
-                                if hasattr(fast_info, 'previous_close'):
-                                    real_prev = fast_info.previous_close
-                                    if real_prev and real_prev > 0:
-                                        prev = float(real_prev)
-                                if prev > 0:
-                                    pct = (last - prev) / prev * 100
+                        if real_price and real_price > 0 and last > 0 and abs(real_price - last) / last < 0.3:
+                            last = float(real_price)
+                            if hasattr(fast_info, 'previous_close'):
+                                real_prev = fast_info.previous_close
+                                if real_prev and real_prev > 0:
+                                    prev = float(real_prev)
+                            if prev > 0:
+                                pct = (last - prev) / prev * 100
                 except Exception:
                     pass
+
+        # ── Step 3: 투자자 수급 (KRX 전용) — score 보정 포함 ────────────────
+        # calc_buy_price 가 score 를 사용하므로 현재가 보정 직후, 예측 계산 전 실행
+        investor_flow = {"ok": False, "reason": "KRX 종목 아님"}
+        if market == "KRX":
+            investor_flow = fetch_investor_flow(sym)
+            if investor_flow.get("ok"):
+                foreign = investor_flow.get("외국인", 0)
+                inst    = investor_flow.get("기관", 0)
+                pension = investor_flow.get("연기금", 0)
+                adj = 0
+                if foreign > 0: adj += 2
+                elif foreign < 0: adj -= 2
+                if inst > 0: adj += 2
+                elif inst < 0: adj -= 2
+                if pension > 0: adj += 1
+                elif pension < 0: adj -= 1
+                score = max(0, min(100, score + max(-5, min(5, adj))))
+                flow_notes = []
+                if foreign != 0: flow_notes.append(f"외국인 {foreign:+,}주")
+                if inst    != 0: flow_notes.append(f"기관 {inst:+,}주")
+                if pension != 0: flow_notes.append(f"연기금 {pension:+,}주")
+                if flow_notes and isinstance(ai_strategy, dict):
+                    ai_strategy["result"] += " | [투자자 수급] " + " / ".join(flow_notes)
+
+        # ── Step 4: 예측·리스크 계산 — 보정된 현재가(last) 기준 ─────────────
+        # ATR fallback 도 보정된 last 기준으로 재계산
+        atrs = dd.get("ATR", [])
+        atr_val          = float(atrs[-1]) if atrs and atrs[-1] else last * 0.02
+        pivot_points     = calc_pivot_points(dd)
+        indicator_signals= calc_indicator_signals(dd)
+        risk             = calc_risk(last, atr_val, market, dd)
+        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market)
+        target_price     = calc_target_price(dd, last, atr_val, period, market)
                 
         return {
             "symbol": sym, "company": company or sym, "market": market,
@@ -5849,18 +5867,25 @@ function renderForecast(d, isKrx) {
   }
 
   // ── 목표가 예측 섹션 ──
+  // cur = d.last_close : 이미 현재가 보정(Pre-Market / Overnight 포함) 완료된 값
   const tpEl = document.getElementById('target-price-section');
   if (tpEl) {
     if (!tp) {
       tpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
     } else {
-      const cur = d.last_close;
+      const cur = d.last_close;   // 보정된 실시간 현재가
+      const sn  = (!isKrx && d.session_name && !['정규장','장마감'].includes(d.session_name))
+                  ? ` <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:#6e40c933;color:#bc8cff;margin-left:4px">${d.session_name}</span>`
+                  : '';
       tpEl.innerHTML = `
         <div style="background:#21262d;border-radius:10px;padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
           <div>
             <div style="font-size:12px;color:#8b949e;margin-bottom:6px">예상 목표가 범위 (${tp.period})</div>
             <div style="font-size:24px;font-weight:800;color:#3fb950">${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
-            <div style="font-size:13px;color:#8b949e;margin-top:4px">현재가 대비 예상 수익률: <span style="color:#3fb950">+${tp.min_return}% ~ +${tp.max_return}%</span></div>
+            <div style="font-size:13px;color:#8b949e;margin-top:4px">
+              현재가${sn} <b style="color:#e6edf3">${fmt(cur, isKrx)}</b> 기준 예상 수익률:
+              <span style="color:#3fb950">+${tp.min_return}% ~ +${tp.max_return}%</span>
+            </div>
           </div>
           <div style="text-align:right">
             <div style="font-size:12px;color:#8b949e;margin-bottom:4px">추세 강도 분석</div>
@@ -5878,12 +5903,13 @@ function renderForecast(d, isKrx) {
   }
 
   // ── 매수 적정가 섹션 ──
+  // bp.current = calc_buy_price 가 반환한 현재가 (보정된 last_price 기준)
   const bpEl = document.getElementById('buy-price-section');
   if (bpEl) {
     if (!bp) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
     } else {
-      const cur = bp.current;
+      const cur = bp.current;   // 보정된 실시간 현재가 (calc_buy_price 반환)
       const pct = v => ((v - cur) / cur * 100).toFixed(2);
       const aggR = bp.aggressive ? bp.aggressive.range : null;
       const recR = bp.recommended ? bp.recommended.range : null;
@@ -5969,10 +5995,14 @@ function renderForecast(d, isKrx) {
           </div>`;
       };
 
+      // 세션 배지 (US 종목에서 프리마켓/오버나이트일 때만 표시)
+      const bpSn = (!isKrx && d.session_name && !['정규장','장마감'].includes(d.session_name))
+                   ? ` <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#6e40c933;color:#bc8cff">${d.session_name}</span>`
+                   : '';
       bpEl.innerHTML = `
         <div style="background:#21262d;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
           <div style="flex-shrink:0">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">현재가</div>
+            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">현재가 기준${bpSn}</div>
             <div style="font-size:22px;font-weight:800">${fmt(cur, isKrx)}</div>
             <div style="font-size:11px;color:#8b949e;margin-top:4px">ATR ${bp.atr_pct}% · ${
               bp.vol_trend === 'expanding'   ? '<span style="color:#f85149">변동성 확대↑</span>' :
