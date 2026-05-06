@@ -2290,21 +2290,52 @@ def fetch_us_longterm_reco():
 def fetch_us_opening_surge():
     """개장 급등 추천 Top 3 (PM 배치 스캔 → 기술적 분석)"""
     try:
+        # ── 미국 동부시간(ET) 세션 감지 ─────────────────────────────────
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            _et_now = dt.now(_ZI("America/New_York"))
+        except Exception:
+            _utc_now = dt.utcnow()
+            _m = _utc_now.month
+            _et_now = _utc_now + timedelta(hours=(-4 if 3 <= _m <= 10 else -5))
+        _et_h = _et_now.hour + _et_now.minute / 60.0
+        if 4.0 <= _et_h < 9.5:
+            _session = "premarket"
+            _session_label = "프리마켓 (ET 04:00~09:30)"
+        elif 9.5 <= _et_h < 16.0:
+            _session = "regular"
+            _session_label = "정규장 (ET 09:30~16:00)"
+        elif 16.0 <= _et_h < 20.0:
+            _session = "afterhours"
+            _session_label = "시간외거래 (ET 16:00~20:00)"
+        else:
+            _session = "closed"
+            _session_label = "장 외 시간 (ET 20:00~04:00)"
+
         tickers = _US_RECO_UNIVERSE
-        # 전일 종가 배치 조회
+        # 전일 종가 배치 조회 (5거래일 일봉)
         daily = yf.download(tickers, period="5d", interval="1d",
                             progress=False, auto_adjust=True, threads=True)
         if daily.empty:
             return {"error": "데이터 없음", "items": []}
+        # ── prev_close: 마지막 완료된 거래일 종가 ──────────────────────
+        # iloc[-1]은 장중/시간외에 오늘의 미완성 봉일 수 있으므로
+        # 마지막 봉의 날짜가 오늘이면 iloc[-2](전일 종가)를 사용한다.
+        today_utc = dt.utcnow().date()
+        try:
+            last_bar_date = pd.Timestamp(daily.index[-1]).date()
+        except Exception:
+            last_bar_date = today_utc
+        _pc_idx = -2 if (last_bar_date >= today_utc and len(daily) >= 2) else -1
         if isinstance(daily.columns, pd.MultiIndex):
-            prev_close = daily["Close"].iloc[-1]
+            prev_close = daily["Close"].iloc[_pc_idx]
         else:
-            prev_close = pd.Series({tickers[0]: float(daily["Close"].iloc[-1])})
-        # 프리마켓 데이터 배치 조회
+            prev_close = pd.Series({tickers[0]: float(daily["Close"].iloc[_pc_idx])})
+        # 프리마켓/시간외 데이터 배치 조회 (1분봉, pre/post 포함)
         pm_raw = yf.download(tickers, period="1d", interval="1m",
                              prepost=True, progress=False, auto_adjust=True, threads=True)
         if pm_raw.empty:
-            return {"items": [], "note": "프리마켓 데이터 없음 (미국 시간 기준 오전 4~9시30분에만 제공)"}
+            return {"items": [], "note": f"현재 시세 데이터 없음 — 현재 세션: {_session_label}"}
         if isinstance(pm_raw.columns, pd.MultiIndex):
             latest_price = pm_raw["Close"].iloc[-1]
         else:
@@ -2322,7 +2353,13 @@ def fetch_us_opening_surge():
             except Exception:
                 continue
         if not gainers:
-            return {"items": [], "note": "PM +1.5% 이상 종목 없음 (프리마켓 시간 외이거나 상승 종목 없음)"}
+            _time_str = _et_now.strftime("%H:%M")
+            _note = f"+1.5% 이상 급등 종목 없음 — 현재 세션: {_session_label} ({_time_str} ET)"
+            if _session == "closed":
+                _note += " | 프리마켓(04:00~09:30 ET) 시간에 다시 확인하세요"
+            elif _session == "regular":
+                _note += " | 정규장 중 — 전일 대비 급등 종목이 없거나 조건 미충족"
+            return {"items": [], "note": _note}
         gainers.sort(key=lambda x: x[2], reverse=True)
         gainers = gainers[:30]
         gainer_tickers = [g[0] for g in gainers]
@@ -2364,7 +2401,8 @@ def fetch_us_opening_surge():
                 stop = round(pm_price - est * 0.5, 2)
             ret = round(((target - pm_price) / pm_price) * 100, 2) if pm_price > 0 else 0
             rr = round((target - pm_price) / (pm_price - stop), 2) if pm_price > stop else 0
-            reasons = [f"프리마켓 +{pm_chg:.2f}% 강세"]
+            _surge_label = {"premarket": "프리마켓", "regular": "정규장", "afterhours": "시간외"}.get(_session, "전일비")
+            reasons = [f"{_surge_label} +{pm_chg:.2f}% 급등"]
             if sq and not sq["on"] and sq["momentum"] > 0: reasons.append("Squeeze 해제 — 돌파 진행")
             elif sq and sq["on"] and sq["momentum"] > 0: reasons.append(f"Squeeze ON {sq['count']}일 — 돌파 임박")
             if rs and rs["rs20"] > 0: reasons.append(f"SPY 대비 +{rs['rs20']:.1f}% 아웃퍼폼")
@@ -2390,7 +2428,7 @@ def fetch_us_opening_surge():
                 "adx": adx["adx"] if adx else None,
                 "rs20": rs["rs20"] if rs else None,
             })
-        return {"items": results, "ts": int(time.time())}
+        return {"items": results, "ts": int(time.time()), "session": _session, "session_label": _session_label}
     except Exception as e:
         return {"error": str(e), "items": []}
 
@@ -5796,7 +5834,10 @@ input::placeholder{color:#484f58}
       </div>
       <div id="us-surge-content" style="display:none">
         <div class="us-reco-header">
-          <span class="us-reco-title">🇺🇸 미국 개장 급등 추천 <span style="font-size:11px;color:#484f58;font-weight:400">PM 스캔·ATR 기반 Top 3</span></span>
+          <span class="us-reco-title">🇺🇸 미국 개장 급등 추천
+            <span style="font-size:11px;color:#484f58;font-weight:400">PM 스캔·ATR 기반 Top 3</span>
+            <span id="us-surge-session-label" style="font-size:10px;color:#8b949e;font-weight:400;margin-left:6px"></span>
+          </span>
           <button onclick="loadUsSurge(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
         </div>
         <div class="us-reco-cards" id="us-surge-cards"></div>
@@ -7789,6 +7830,10 @@ function initAlerts() {
   });
 }
 
+// ── 섹션 간 중복 제거용 전역 Set ──────────────────────────────────
+var _usLtTickers = new Set();   // US 장기 추천에 이미 표시된 티커
+var _krLtTickers = new Set();   // KR 장기 추천에 이미 표시된 티커
+
 // ── 국내 장기 투자 추천 ───────────────────────────────────────────
 async function loadKrLongterm(force) {
   var ldg = document.getElementById('kr-lt-loading');
@@ -7816,6 +7861,7 @@ async function loadKrLongterm(force) {
 function renderKrLongtermCards(items) {
   var el = document.getElementById('kr-lt-cards');
   if (!el) return;
+  _krLtTickers = new Set((items || []).map(function(it) { return it.ticker; }));
   if (!items.length) {
     el.innerHTML = '<div class="us-reco-empty">현재 국내 장기 추천 조건에 부합하는 종목이 없습니다.<br>칼만 상승 추세 + 복합 기술 조건을 충족하는 국내 종목이 발견되면 표시됩니다.</div>';
     return;
@@ -7888,6 +7934,7 @@ async function loadUsLongterm(force) {
 function renderUsLongtermCards(items) {
   var el = document.getElementById('us-lt-cards');
   if (!el) return;
+  _usLtTickers = new Set((items || []).map(function(it) { return it.ticker; }));
   if (!items.length) {
     el.innerHTML = '<div class="us-reco-empty">현재 장기 추천 조건에 부합하는 종목이 없습니다.<br>칼만 상승 추세 + 복합 기술 조건을 충족하는 종목이 발견되면 표시됩니다.</div>';
     return;
@@ -7949,6 +7996,9 @@ async function loadUsSurge(force) {
       return;
     }
     renderUsSurgeCards(d.items || [], d.note);
+    // 세션 레이블 배지 업데이트 (있는 경우)
+    var slEl = document.getElementById('us-surge-session-label');
+    if (slEl && d.session_label) slEl.textContent = d.session_label;
     if (cnt) cnt.style.display = 'block';
   } catch(e) {
     if (ldg) ldg.style.display = 'none';
@@ -7959,12 +8009,16 @@ async function loadUsSurge(force) {
 function renderUsSurgeCards(items, note) {
   var el = document.getElementById('us-surge-cards');
   if (!el) return;
-  if (!items.length) {
-    var msg = note || '현재 PM 조건에 부합하는 급등 종목이 없습니다.<br>프리마켓 시간(미국 동부 오전 4~9시30분)에 확인해 주세요.';
+  // US 장기 추천에 이미 포함된 티커는 중복 제거
+  var filtered = (items || []).filter(function(it) {
+    return !_usLtTickers.has(it.ticker);
+  });
+  if (!filtered.length) {
+    var msg = note || '현재 급등 조건에 부합하는 종목이 없습니다.<br>프리마켓 시간(미국 동부 오전 4~9시30분)에 확인해 주세요.';
     el.innerHTML = '<div class="us-reco-empty">' + msg + '</div>';
     return;
   }
-  el.innerHTML = items.map(function(it) {
+  el.innerHTML = filtered.map(function(it) {
     var reasons = (it.reasons || []).map(function(r) {
       return '<div class="us-reco-reason">' + r + '</div>';
     }).join('');
