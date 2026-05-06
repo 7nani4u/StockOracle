@@ -4351,6 +4351,16 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    if path == "/api/investor-flow":
+        # 투자자 수급 전용 경량 엔드포인트 — 메인 분석과 분리하여 타임아웃 경합 제거
+        ticker_raw = params.get("ticker", "")
+        if not ticker_raw:
+            return {"ok": False, "reason": "ticker 파라미터 없음"}
+        ticker, market, _ = resolve_ticker(ticker_raw)
+        if not ticker or market != "KRX":
+            return {"ok": False, "reason": "KRX 종목이 아닙니다"}
+        return fetch_investor_flow(ticker)
+
     if path == "/api/sentiment":
         m = params.get("market", "US")
         r = fetch_sentiment(m)
@@ -5304,7 +5314,7 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="m-value" id="r-price"></div><div class="m-sub" id="r-pct"></div><div id="r-prob" style="display:none;margin-top:5px;font-size:11px;font-weight:600;gap:6px;align-items:center"></div></div>
+        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:center;gap:8px"><div class="m-value" id="r-price"></div><div id="r-prob" style="display:none;font-size:11px;font-weight:600;gap:5px;align-items:center"></div></div><div class="m-sub" id="r-pct"></div></div>
         <div class="metric-card"><div class="m-label">RSI (14)</div><div class="m-value" id="r-rsi"></div><div class="m-sub" id="r-rsi-label"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
@@ -5731,6 +5741,11 @@ async function analyze() {
     }
     renderResult(d);
     setState('result');
+    // KRX 전용: 투자자 수급 자동 비동기 로드
+    // 메인 API 응답에서 ok=false인 경우(타임아웃·API 지연 등) 전용 엔드포인트로 자동 재시도
+    if (d.market === 'KRX' && (!d.investor_flow || !d.investor_flow.ok)) {
+      loadInvestorFlowAsync(d.symbol);
+    }
     // 흐름 분석: AI 탭에 통합, 항상 즉시 렌더
     renderFlowTab(d);
     // KRX 전용 탭: KRX 종목만 표시 + 자동 데이터 로드
@@ -5795,9 +5810,9 @@ function renderResult(d) {
   if (probEl && d.prob_up != null) {
     probEl.style.display = 'flex';
     probEl.innerHTML =
-      `<span style="color:#3fb950;background:#3fb95018;padding:1px 5px;border-radius:3px">▲ ${d.prob_up.toFixed(1)}%</span>` +
+      `<span style="color:#3fb950;background:#3fb95018;padding:2px 6px;border-radius:3px;white-space:nowrap">▲ 상승 가능성 ${d.prob_up.toFixed(1)}%</span>` +
       `<span style="color:#8b949e;font-size:10px;align-self:center">/</span>` +
-      `<span style="color:#f85149;background:#f8514918;padding:1px 5px;border-radius:3px">▼ ${d.prob_down.toFixed(1)}%</span>`;
+      `<span style="color:#f85149;background:#f8514918;padding:2px 6px;border-radius:3px;white-space:nowrap">▼ 하락 가능성 ${d.prob_down.toFixed(1)}%</span>`;
   } else if (probEl) {
     probEl.style.display = 'none';
   }
@@ -5947,24 +5962,21 @@ function renderInvestorFlow(d, isKrx) {
 
   // KRX 종목이면 항상 카드 표시
   card.style.display = '';
-  if (skelEl) skelEl.style.display = 'none';
-  if (retryBtn) retryBtn.style.display = 'none';
 
   const flow = d.investor_flow;
 
-  // API 실패 상태
+  // ok=false: 비동기 자동 로드가 진행 중이므로 스켈레톤 표시
+  // (loadInvestorFlowAsync가 완료되면 이 함수를 다시 호출하여 ok=true 또는 에러 렌더링)
   if (!flow || !flow.ok) {
-    const reason = (flow && flow.reason) ? flow.reason : '수급 데이터 조회 실패';
-    if (contEl) contEl.innerHTML = `
-      <div style="text-align:center;padding:20px 0;color:#484f58;font-size:13px">
-        <div style="font-size:22px;margin-bottom:8px">📡</div>
-        ${reason}
-        <div style="font-size:11px;margin-top:6px;color:#30363d">장 개시 전이거나 API 일시 불가 상태입니다</div>
-      </div>`;
-    if (retryBtn) retryBtn.style.display = '';
+    if (skelEl) skelEl.style.display = '';
+    if (contEl) contEl.innerHTML = '';
+    if (retryBtn) retryBtn.style.display = 'none';
     if (badge) badge.classList.remove('visible');
     return;
   }
+
+  if (skelEl) skelEl.style.display = 'none';
+  if (retryBtn) retryBtn.style.display = 'none';
 
   // 성공 — AI 탭 배지 활성화
   if (badge) badge.classList.add('visible');
@@ -6015,33 +6027,46 @@ function renderInvestorFlow(d, isKrx) {
   `;
 }
 
-// ── 투자자 수급 재시도 ────────────────────────────────────────────────────
-async function retryInvestorFlow() {
-  if (!currentData) return;
-  const isKrx = currentData.market === 'KRX';
+// ── 투자자 수급 비동기 로드 (전용 경량 엔드포인트 사용) ─────────────────────
+// 메인 /api/stock 호출과 완전히 분리 — Toss API 타임아웃 경합 문제 근본 해결
+async function loadInvestorFlowAsync(symbol) {
   const skelEl   = document.getElementById('investor-flow-skeleton');
   const contEl   = document.getElementById('investor-flow-content');
   const retryBtn = document.getElementById('investor-flow-retry');
-  if (skelEl)   { skelEl.style.display = ''; }
-  if (contEl)   { contEl.innerHTML = ''; }
-  if (retryBtn) { retryBtn.style.display = 'none'; }
+
+  // 스켈레톤 표시 (이미 renderInvestorFlow에서 표시됐을 수 있으나 명시적으로 보장)
+  if (skelEl)   skelEl.style.display = '';
+  if (contEl)   contEl.innerHTML = '';
+  if (retryBtn) retryBtn.style.display = 'none';
 
   try {
-    const ticker = currentData.symbol;
-    const r = await fetch(`/api/stock?ticker=${encodeURIComponent(ticker)}&period=1mo`);
+    const r  = await fetch(`/api/investor-flow?ticker=${encodeURIComponent(symbol)}`);
     const nd = await r.json();
-    if (nd && nd.investor_flow) {
-      currentData.investor_flow = nd.investor_flow;
-      renderInvestorFlow(currentData, isKrx);
-    } else {
-      throw new Error('데이터 없음');
-    }
+
+    // 응답 도착 전 다른 종목으로 전환된 경우 무시 (race condition 방지)
+    if (!currentData || currentData.symbol !== symbol) return;
+
+    currentData.investor_flow = nd;
+    renderInvestorFlow(currentData, true);
   } catch(e) {
-    if (contEl) contEl.innerHTML = '<div style="text-align:center;padding:16px;color:#484f58;font-size:12px">재시도 실패 — 잠시 후 다시 시도해주세요</div>';
+    if (!currentData || currentData.symbol !== symbol) return;
+    // 네트워크 오류 시 에러 상태를 직접 렌더 (renderInvestorFlow 재귀 방지)
+    if (contEl) contEl.innerHTML = `
+      <div style="text-align:center;padding:20px 0;color:#484f58;font-size:13px">
+        <div style="font-size:22px;margin-bottom:8px">📡</div>
+        수급 데이터 조회 실패
+        <div style="font-size:11px;margin-top:6px;color:#30363d">장 개시 전이거나 API 일시 불가 상태입니다</div>
+      </div>`;
     if (retryBtn) retryBtn.style.display = '';
   } finally {
     if (skelEl) skelEl.style.display = 'none';
   }
+}
+
+// ── 투자자 수급 재시도 (전용 엔드포인트로 위임) ───────────────────────────
+async function retryInvestorFlow() {
+  if (!currentData || currentData.market !== 'KRX') return;
+  await loadInvestorFlowAsync(currentData.symbol);
 }
 
 function renderForecast(d, isKrx) {
