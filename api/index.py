@@ -5424,7 +5424,7 @@ input::placeholder{color:#484f58}
   <div class="sb-header">
     <div class="sb-header-top">
       <h1>📈 StockOracle</h1>
-      <button class="sb-home-btn" onclick="setState('empty');closeSidebar()" title="메인으로 이동" aria-label="메인으로 이동">🏠</button>
+      <button class="sb-home-btn" onclick="showPage('analysis')" title="종목 상세 분석" aria-label="종목 상세 분석">🏠</button>
     </div>
     <p>AI 기반 기술적 분석 · 투자자 수급</p>
   </div>
@@ -5447,10 +5447,6 @@ input::placeholder{color:#484f58}
         <button class="mkt-btn nav-subbtn" id="nav-us-surge"    onclick="showPage('us-surge')">🇺🇸 미국 개장 급등 추천</button>
       </div>
     </div>
-    <button class="alert-bell-btn" onclick="openAlertsSheet()" aria-label="알림 관리">
-      🔔 알림 관리
-      <span class="alert-bell-count" id="alert-bell-count"></span>
-    </button>
   </div>
 
 
