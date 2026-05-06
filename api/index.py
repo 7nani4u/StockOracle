@@ -4732,8 +4732,11 @@ body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI','Noto Sans KR',sans
 /* 사이드바 */
 #sidebar{width:260px;background:#161b22;border-right:1px solid #30363d;display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
 .sb-header{padding:16px;border-bottom:1px solid #30363d}
-.sb-header h1{font-size:15px;font-weight:700;display:flex;align-items:center;gap:6px}
+.sb-header-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sb-header h1{font-size:15px;font-weight:700;display:flex;align-items:center;gap:6px;flex:1;min-width:0}
 .sb-header p{font-size:11px;color:#8b949e;margin-top:4px}
+.sb-home-btn{background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#8b949e;border-radius:8px;min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s,color .15s}
+.sb-home-btn:hover{background:#30363d;color:#e6edf3}
 .sb-section{padding:14px;border-bottom:1px solid #30363d}
 .sb-label{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;display:block}
 .mkt-btns{display:flex;gap:6px}
@@ -4741,6 +4744,12 @@ body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI','Noto Sans KR',sans
 .mkt-btn.active{background:#1f6feb;color:#fff}
 .mkt-btn:not(.active){background:#21262d;color:#8b949e}
 .mkt-btn:not(.active):hover{background:#30363d;color:#e6edf3}
+/* ── 개장 급등 추천 서브메뉴 ── */
+.nav-reco-parent{display:flex;align-items:center;justify-content:space-between;width:100%}
+.nav-reco-arrow{font-size:10px;transition:transform .2s;color:#8b949e;flex-shrink:0}
+.nav-reco-arrow.open{transform:rotate(90deg)}
+.nav-subbtn{flex:unset;width:100%;text-align:left;padding:7px 10px;font-size:12px;border-radius:6px;border-left:2px solid #30363d}
+.nav-subbtn.active{border-left-color:#1f6feb}
 input,select{width:100%;background:#21262d;border:1px solid #30363d;border-radius:8px;padding:9px 12px;color:#e6edf3;font-size:13px;outline:none;transition:border-color .15s}
 input:focus,select:focus{border-color:#1f6feb}
 input::placeholder{color:#484f58}
@@ -5097,6 +5106,10 @@ input::placeholder{color:#484f58}
   transition:border-color .15s,color .15s
 }
 .home-section-refresh:hover{border-color:#388bfd;color:#388bfd}
+.header-alert-btn{position:relative;display:inline-flex;align-items:center;gap:5px;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 10px;color:#8b949e;font-size:11px;cursor:pointer;transition:border-color .15s,color .15s;white-space:nowrap}
+.header-alert-btn:hover{border-color:#388bfd;color:#388bfd}
+.header-alert-count{position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;border-radius:8px;background:#f85149;color:#fff;font-size:10px;font-weight:700;display:none;align-items:center;justify-content:center;padding:0 3px;line-height:1}
+.header-alert-count.visible{display:flex}
 
 /* ── 📊 시장 현황 ── */
 #market-core{margin-bottom:20px}
@@ -5409,18 +5422,30 @@ input::placeholder{color:#484f58}
 <!-- ── 사이드바 ── -->
 <div id="sidebar">
   <div class="sb-header">
-    <h1>📈 StockOracle</h1>
+    <div class="sb-header-top">
+      <h1>📈 StockOracle</h1>
+      <button class="sb-home-btn" onclick="setState('empty');closeSidebar()" title="메인으로 이동" aria-label="메인으로 이동">🏠</button>
+    </div>
     <p>AI 기반 기술적 분석 · 투자자 수급</p>
   </div>
-
-  <button onclick="setState('empty');closeSidebar()" style="width:100%;text-align:left;padding:9px 12px;margin-bottom:8px;background:#21262d;border:1px solid #30363d;border-radius:8px;color:#8b949e;font-size:13px;cursor:pointer">🏠 메인 홈페이지로 이동</button>
 
   <div class="sb-section">
     <span class="sb-label">메뉴</span>
     <div style="display:flex;flex-direction:column;gap:4px">
       <button class="mkt-btn active" style="text-align:left;padding:10px 12px" id="nav-analysis" onclick="showPage('analysis')">🔍 종목 상세 분석</button>
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-screener" onclick="showPage('screener')">📋 주식 골라보기</button>
-      <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-recommendations" onclick="showPage('recommendations')">⚡ 개장 급등 추천</button>
+      <!-- ⚡ 개장 급등 추천 아코디언 -->
+      <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-recommendations" onclick="toggleRecoMenu()">
+        <span class="nav-reco-parent">
+          <span>⚡ 개장 급등 추천</span>
+          <span class="nav-reco-arrow" id="nav-reco-arrow">▶</span>
+        </span>
+      </button>
+      <div id="nav-reco-submenu" style="display:none;flex-direction:column;gap:2px;padding-left:10px">
+        <button class="mkt-btn nav-subbtn" id="nav-kr-longterm" onclick="showPage('kr-longterm')">🇰🇷 국내 장기 투자 추천</button>
+        <button class="mkt-btn nav-subbtn" id="nav-us-longterm" onclick="showPage('us-longterm')">🇺🇸 미국 장기 투자 추천</button>
+        <button class="mkt-btn nav-subbtn" id="nav-us-surge"    onclick="showPage('us-surge')">🇺🇸 미국 개장 급등 추천</button>
+      </div>
     </div>
     <button class="alert-bell-btn" onclick="openAlertsSheet()" aria-label="알림 관리">
       🔔 알림 관리
@@ -5469,7 +5494,10 @@ input::placeholder{color:#484f58}
               <span id="core-mood-badge" class="mood-badge mood-neutral">—</span>
               <span id="core-vix-badge" style="display:none;font-size:10px;padding:2px 7px;border-radius:10px;background:#2d0d0d;color:#f85149;border:1px solid #4d1515"></span>
             </div>
-            <button onclick="loadMarketCore()" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
+            <button class="header-alert-btn" onclick="openAlertsSheet()" aria-label="알림 관리">
+              🔔 알림 관리
+              <span class="header-alert-count" id="header-alert-count"></span>
+            </button>
           </div>
           <div class="core-indices" id="core-indices"></div>
         </div>
@@ -5779,17 +5807,15 @@ input::placeholder{color:#484f58}
     </div>
   </div>
 
-  <!-- ── 추천 페이지 ── -->
-  <div id="page-recommendations" style="display:none">
-    <div class="screener-header" style="margin-bottom:20px">
+  <!-- ── 🇰🇷 국내 장기 투자 추천 페이지 ── -->
+  <div id="page-kr-longterm" style="display:none">
+    <div class="screener-header" style="margin-bottom:16px">
       <div>
-        <h2 style="font-size:22px;font-weight:700;margin-bottom:4px">⚡ 개장 급등 추천</h2>
-        <p style="font-size:12px;color:#8b949e">추세 추종·칼만 필터 장기 추천 및 PM 모멘텀 기반 당일 급등 추천</p>
+        <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇰🇷 국내 장기 투자 추천</h2>
+        <p style="font-size:12px;color:#8b949e">추세 추종 · 칼만 필터 기반 Top 3</p>
       </div>
     </div>
-
-    <!-- 국내 장기 투자 추천 -->
-    <div class="home-section" style="margin-bottom:16px">
+    <div class="home-section">
       <div id="kr-lt-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
         <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
         국내 장기 추천 분석 중...
@@ -5806,9 +5832,17 @@ input::placeholder{color:#484f58}
         <button onclick="loadKrLongterm(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
       </div>
     </div>
+  </div>
 
-    <!-- 미국 장기 투자 추천 -->
-    <div class="home-section" style="margin-bottom:16px">
+  <!-- ── 🇺🇸 미국 장기 투자 추천 페이지 ── -->
+  <div id="page-us-longterm" style="display:none">
+    <div class="screener-header" style="margin-bottom:16px">
+      <div>
+        <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇺🇸 미국 장기 투자 추천</h2>
+        <p style="font-size:12px;color:#8b949e">추세 추종 · 칼만 필터 기반 Top 3</p>
+      </div>
+    </div>
+    <div class="home-section">
       <div id="us-lt-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
         <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
         미국 장기 추천 분석 중...
@@ -5825,8 +5859,16 @@ input::placeholder{color:#484f58}
         <button onclick="loadUsLongterm(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
       </div>
     </div>
+  </div>
 
-    <!-- 미국 개장 급등 추천 -->
+  <!-- ── 🇺🇸 미국 개장 급등 추천 페이지 ── -->
+  <div id="page-us-surge" style="display:none">
+    <div class="screener-header" style="margin-bottom:16px">
+      <div>
+        <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇺🇸 미국 개장 급등 추천</h2>
+        <p style="font-size:12px;color:#8b949e">PM 스캔 · ATR 기반 당일 모멘텀 Top 3</p>
+      </div>
+    </div>
     <div class="home-section">
       <div id="us-surge-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
         <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
@@ -5862,23 +5904,53 @@ let scrnSort = {key:'price', dir:'desc'};
 let chartInstances = {};
 
 // ── 페이지 전환 ──
-var _recoLoaded = false;  // 추천 페이지 첫 로드 여부
+var _recoMenuOpen = false;
+var _krLongtermLoaded = false;
+var _usLongtermLoaded = false;
+var _usSurgeLoaded   = false;
+
+var _recoSubPages = ['kr-longterm', 'us-longterm', 'us-surge'];
+var _allPages = ['analysis', 'screener', 'kr-longterm', 'us-longterm', 'us-surge'];
+
+function toggleRecoMenu() {
+  _recoMenuOpen = !_recoMenuOpen;
+  var submenu = document.getElementById('nav-reco-submenu');
+  var arrow   = document.getElementById('nav-reco-arrow');
+  submenu.style.display = _recoMenuOpen ? 'flex' : 'none';
+  if (arrow) arrow.classList.toggle('open', _recoMenuOpen);
+  // 서브메뉴가 열리면 부모 버튼도 active
+  document.getElementById('nav-recommendations').classList.toggle('active', _recoMenuOpen);
+}
+
 function showPage(page) {
-  document.getElementById('page-analysis').style.display = page === 'analysis' ? 'block' : 'none';
-  document.getElementById('page-screener').style.display = page === 'screener' ? 'block' : 'none';
-  document.getElementById('page-recommendations').style.display = page === 'recommendations' ? 'block' : 'none';
+  // 모든 페이지 숨기기
+  _allPages.forEach(function(p) {
+    var el = document.getElementById('page-' + p);
+    if (el) el.style.display = (p === page) ? 'block' : 'none';
+  });
+  // 분석 컨트롤 패널 (종목 입력 등) analysis 페이지에서만 노출
   document.getElementById('analysis-controls').style.display = page === 'analysis' ? 'block' : 'none';
+
+  // 상단 nav 버튼 active 상태
   document.getElementById('nav-analysis').classList.toggle('active', page === 'analysis');
   document.getElementById('nav-screener').classList.toggle('active', page === 'screener');
-  document.getElementById('nav-recommendations').classList.toggle('active', page === 'recommendations');
-  if (page === 'screener' && screenerData.length === 0) loadScreener();
-  if (page === 'recommendations' && !_recoLoaded) {
-    _recoLoaded = true;
-    loadKrLongterm();
-    setTimeout(function() { loadUsLongterm(); }, 1000);
-    setTimeout(function() { loadUsSurge(); }, 2000);
-  }
-  closeSidebar();   // 페이지 전환 시 모바일 사이드바 닫기
+
+  var isRecoPage = _recoSubPages.indexOf(page) !== -1;
+  // 서브페이지를 선택하면 아코디언 부모도 active, 서브메뉴 열기
+  if (isRecoPage && !_recoMenuOpen) toggleRecoMenu();
+  document.getElementById('nav-recommendations').classList.toggle('active', isRecoPage || _recoMenuOpen);
+  ['kr-longterm', 'us-longterm', 'us-surge'].forEach(function(p) {
+    var btn = document.getElementById('nav-' + p);
+    if (btn) btn.classList.toggle('active', p === page);
+  });
+
+  // 데이터 최초 로드 (각 서브페이지 첫 방문 시)
+  if (page === 'screener'    && screenerData.length === 0) loadScreener();
+  if (page === 'kr-longterm' && !_krLongtermLoaded) { _krLongtermLoaded = true; loadKrLongterm(); }
+  if (page === 'us-longterm' && !_usLongtermLoaded) { _usLongtermLoaded = true; loadUsLongterm(); }
+  if (page === 'us-surge'    && !_usSurgeLoaded)    { _usSurgeLoaded    = true; loadUsSurge(); }
+
+  closeSidebar();   // 모바일: 페이지 전환 시 사이드바 닫기
 }
 
 // ── 모바일 사이드바 토글 ──
@@ -7533,10 +7605,12 @@ const AlertsStore = {
 
 function _alertBellUpdate() {
   const count = AlertsStore.getNotifs().length;
+  // 사이드바 뱃지
   const el = document.getElementById('alert-bell-count');
-  if (!el) return;
-  el.textContent = count > 0 ? count : '';
-  el.classList.toggle('visible', count > 0);
+  if (el) { el.textContent = count > 0 ? count : ''; el.classList.toggle('visible', count > 0); }
+  // 시장 현황 헤더 뱃지
+  const hel = document.getElementById('header-alert-count');
+  if (hel) { hel.textContent = count > 0 ? count : ''; hel.classList.toggle('visible', count > 0); }
 }
 
 // ── 모달 ──────────────────────────────────────────────
@@ -8082,8 +8156,12 @@ initAlerts();       // 🔔 알림 시스템 초기화
 
   // ── 현재 활성 페이지 ──
   function getActivePage() {
-    var s = document.getElementById('page-screener');
-    return (s && s.style.display !== 'none') ? 'screener' : 'analysis';
+    var pages = ['screener', 'kr-longterm', 'us-longterm', 'us-surge'];
+    for (var i = 0; i < pages.length; i++) {
+      var el = document.getElementById('page-' + pages[i]);
+      if (el && el.style.display !== 'none') return pages[i];
+    }
+    return 'analysis';
   }
 
   // ── 인디케이터 초기화 ──
@@ -8107,6 +8185,12 @@ initAlerts();       // 🔔 알림 시스템 초기화
 
     if (page === 'screener') {
       p = loadScreener();
+    } else if (page === 'kr-longterm') {
+      p = loadKrLongterm(true);
+    } else if (page === 'us-longterm') {
+      p = loadUsLongterm(true);
+    } else if (page === 'us-surge') {
+      p = loadUsSurge(true);
     } else {
       var resultEl  = document.getElementById('state-result');
       var hasResult = resultEl && resultEl.style.display !== 'none';
