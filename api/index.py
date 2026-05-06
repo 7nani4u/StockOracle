@@ -2915,6 +2915,51 @@ def analyze_score(dd: Dict, market: str = "KRX"):
 
     return score, steps, patterns, geo_patterns, ai_strategy
 
+def calc_probability(score: float, dd: Dict) -> tuple:
+    """
+    상승/하락 가능성 계산 (0–100%)
+
+    계산 방식:
+    1. 기본값: score(0~100) 편차의 70%를 확률 편차로 선형 변환
+       - score=50 → 50%, score=70 → 64%, score=30 → 36%
+    2. RSI 보조 조정: 과매도(<30) +5pp 상승, 과매수(>70) -5pp 하락
+    3. 볼린저 밴드 위치: 하단 20% 이내 근접 → +3pp, 상단 80% 초과 → -3pp
+    4. 거래량 급증(>20일 평균 1.5배): 현재 추세 방향으로 추가 ±2pp
+    5. 최종 클리핑: [15%, 85%] — 극단값 방지
+    """
+    prob_up = 50.0 + (score - 50) * 0.70  # 점수 편차를 확률로 변환
+
+    def _last(k):
+        a = dd.get(k, [])
+        return float(a[-1]) if a and a[-1] is not None else None
+
+    # RSI 보조 조정
+    rsi = _last("RSI") or 50.0
+    if rsi < 30:    prob_up += 5.0   # 과매도 → 반등 기대
+    elif rsi > 70:  prob_up -= 5.0   # 과매수 → 하락 압력
+
+    # 볼린저 밴드 내 현재가 위치
+    close = _last("Close")
+    bb_u  = _last("BB_Upper")
+    bb_l  = _last("BB_Lower")
+    if close and bb_u and bb_l and bb_u > bb_l:
+        pos = (close - bb_l) / (bb_u - bb_l)  # 0=하단, 1=상단
+        if pos < 0.2:    prob_up += 3.0   # 하단 근접 → 반등 기대
+        elif pos > 0.8:  prob_up -= 3.0   # 상단 근접 → 하락 경계
+
+    # 거래량 급증: 추세 방향 강화
+    vols = dd.get("Volume", [])
+    if vols:
+        cur_vol = float(vols[-1] or 0)
+        avg_vol = float(np.mean([x for x in vols[-20:] if x])) if len(vols) >= 2 else cur_vol
+        if avg_vol > 0 and cur_vol > avg_vol * 1.5:
+            if score > 50:  prob_up += 2.0   # 상승 추세에 거래량 확인
+            else:           prob_up -= 2.0   # 하락 추세에 거래량 확인
+
+    prob_up   = max(15.0, min(85.0, prob_up))  # 극단값 클리핑
+    prob_down = round(100.0 - prob_up, 1)
+    return round(prob_up, 1), prob_down
+
 def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
     rnd = 4 if market == "US" else 2
@@ -4089,7 +4134,8 @@ def route(path: str, params: Dict) -> Dict:
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
         score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market)
-        
+        prob_up, prob_down = calc_probability(score, dd)  # 상승/하락 가능성 계산
+
         # Market Regime 필터 적용
         regime = check_market_regime(market)
         if regime == "BEAR":
@@ -4252,7 +4298,8 @@ def route(path: str, params: Dict) -> Dict:
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
             "atr": round(atr_val, 2),
-            "score": score, "analysis_steps": steps, "ai_strategy": ai_strategy,
+            "score": score, "prob_up": prob_up, "prob_down": prob_down,
+            "analysis_steps": steps, "ai_strategy": ai_strategy,
             "candlestick_patterns": patterns,
             "chart_data": {
                 "dates": dd.get("Date", []),
@@ -5257,7 +5304,7 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="m-value" id="r-price"></div><div class="m-sub" id="r-pct"></div></div>
+        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="m-value" id="r-price"></div><div class="m-sub" id="r-pct"></div><div id="r-prob" style="display:none;margin-top:5px;font-size:11px;font-weight:600;gap:6px;align-items:center"></div></div>
         <div class="metric-card"><div class="m-label">RSI (14)</div><div class="m-value" id="r-rsi"></div><div class="m-sub" id="r-rsi-label"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
@@ -5742,6 +5789,18 @@ function renderResult(d) {
     `기준일: ${new Date().toLocaleDateString('ko-KR')} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'}`;
   document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
   document.getElementById('r-pct').innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
+
+  // 상승/하락 가능성 표시
+  const probEl = document.getElementById('r-prob');
+  if (probEl && d.prob_up != null) {
+    probEl.style.display = 'flex';
+    probEl.innerHTML =
+      `<span style="color:#3fb950;background:#3fb95018;padding:1px 5px;border-radius:3px">▲ ${d.prob_up.toFixed(1)}%</span>` +
+      `<span style="color:#8b949e;font-size:10px;align-self:center">/</span>` +
+      `<span style="color:#f85149;background:#f8514918;padding:1px 5px;border-radius:3px">▼ ${d.prob_down.toFixed(1)}%</span>`;
+  } else if (probEl) {
+    probEl.style.display = 'none';
+  }
 
   // 미국 주식 세션 배지: 프리마켓 / 오버나이트 / 애프터마켓 등 표시
   const sessionBadge = document.getElementById('r-session-badge');
