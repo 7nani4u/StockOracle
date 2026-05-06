@@ -5488,7 +5488,7 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div></div>
+        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div></div>
         <div class="metric-card"><div class="m-label">RSI (14)</div><div class="m-value" id="r-rsi"></div><div class="m-sub" id="r-rsi-label"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
