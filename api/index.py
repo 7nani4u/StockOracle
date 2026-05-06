@@ -4353,9 +4353,16 @@ def route(path: str, params: Dict) -> Dict:
 
     if path == "/api/investor-flow":
         # 투자자 수급 전용 경량 엔드포인트 — 메인 분석과 분리하여 타임아웃 경합 제거
-        ticker_raw = params.get("ticker", "")
+        ticker_raw = params.get("ticker", "").strip()
         if not ticker_raw:
             return {"ok": False, "reason": "ticker 파라미터 없음"}
+        # resolve_ticker 우회: "005930.KS" 같은 ASCII 심볼이 US로 오분류되는 문제 방지
+        # (resolve_ticker 규칙 4 — 전체 ASCII → US ticker 직접 처리)
+        code = ticker_raw.replace(".KS", "").replace(".KQ", "").strip()
+        if code.isdigit() and len(code) == 6:
+            # yfinance KRX 형식(005930.KS / 005930.KQ) 또는 6자리 코드 → 직접 전달
+            return fetch_investor_flow(ticker_raw)
+        # 종목명 입력(예: 삼성전자) → resolve_ticker 경유
         ticker, market, _ = resolve_ticker(ticker_raw)
         if not ticker or market != "KRX":
             return {"ok": False, "reason": "KRX 종목이 아닙니다"}
@@ -5314,7 +5321,7 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:center;gap:8px"><div class="m-value" id="r-price"></div><div id="r-prob" style="display:none;font-size:11px;font-weight:600;gap:5px;align-items:center"></div></div><div class="m-sub" id="r-pct"></div></div>
+        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div></div>
         <div class="metric-card"><div class="m-label">RSI (14)</div><div class="m-value" id="r-rsi"></div><div class="m-sub" id="r-rsi-label"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
@@ -5809,9 +5816,9 @@ function renderResult(d) {
   const probEl = document.getElementById('r-prob');
   if (probEl && d.prob_up != null) {
     probEl.style.display = 'flex';
+    probEl.style.flexDirection = 'column';
     probEl.innerHTML =
       `<span style="color:#3fb950;background:#3fb95018;padding:2px 6px;border-radius:3px;white-space:nowrap">▲ 상승 가능성 ${d.prob_up.toFixed(1)}%</span>` +
-      `<span style="color:#8b949e;font-size:10px;align-self:center">/</span>` +
       `<span style="color:#f85149;background:#f8514918;padding:2px 6px;border-radius:3px;white-space:nowrap">▼ 하락 가능성 ${d.prob_down.toFixed(1)}%</span>`;
   } else if (probEl) {
     probEl.style.display = 'none';
@@ -6034,28 +6041,55 @@ async function loadInvestorFlowAsync(symbol) {
   const contEl   = document.getElementById('investor-flow-content');
   const retryBtn = document.getElementById('investor-flow-retry');
 
-  // 스켈레톤 표시 (이미 renderInvestorFlow에서 표시됐을 수 있으나 명시적으로 보장)
+  console.log(`[투자자수급] 로드 시작 → ticker: ${symbol}`);
+
+  // 로딩 상태: 스켈레톤 표시
   if (skelEl)   skelEl.style.display = '';
   if (contEl)   contEl.innerHTML = '';
   if (retryBtn) retryBtn.style.display = 'none';
 
   try {
-    const r  = await fetch(`/api/investor-flow?ticker=${encodeURIComponent(symbol)}`);
+    const url = `/api/investor-flow?ticker=${encodeURIComponent(symbol)}`;
+    console.log(`[투자자수급] API 요청: ${url}`);
+    const r  = await fetch(url);
+
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
     const nd = await r.json();
+    console.log(`[투자자수급] 응답 수신:`, nd);
 
     // 응답 도착 전 다른 종목으로 전환된 경우 무시 (race condition 방지)
-    if (!currentData || currentData.symbol !== symbol) return;
+    if (!currentData || currentData.symbol !== symbol) {
+      console.log(`[투자자수급] 종목 전환 감지 — 렌더 취소 (${symbol} → ${currentData && currentData.symbol})`);
+      return;
+    }
 
-    currentData.investor_flow = nd;
-    renderInvestorFlow(currentData, true);
+    if (nd && nd.ok) {
+      // 성공 상태
+      console.log(`[투자자수급] 성공 — 데이터 렌더링`);
+      currentData.investor_flow = nd;
+      renderInvestorFlow(currentData, true);
+    } else {
+      // API 실패(ok:false) — 재시도 버튼 표시
+      const reason = (nd && nd.reason) ? nd.reason : '수급 데이터 없음';
+      console.warn(`[투자자수급] ok:false — ${reason}`);
+      if (contEl) contEl.innerHTML = `
+        <div style="text-align:center;padding:20px 0;color:#484f58;font-size:13px">
+          <div style="font-size:22px;margin-bottom:8px">📡</div>
+          ${reason}
+          <div style="font-size:11px;margin-top:6px;color:#30363d">장 개시 전이거나 API 일시 불가 상태입니다</div>
+        </div>`;
+      if (retryBtn) retryBtn.style.display = '';
+    }
   } catch(e) {
+    // 네트워크 / 파싱 오류
+    console.error(`[투자자수급] 오류:`, e);
     if (!currentData || currentData.symbol !== symbol) return;
-    // 네트워크 오류 시 에러 상태를 직접 렌더 (renderInvestorFlow 재귀 방지)
     if (contEl) contEl.innerHTML = `
       <div style="text-align:center;padding:20px 0;color:#484f58;font-size:13px">
         <div style="font-size:22px;margin-bottom:8px">📡</div>
         수급 데이터 조회 실패
-        <div style="font-size:11px;margin-top:6px;color:#30363d">장 개시 전이거나 API 일시 불가 상태입니다</div>
+        <div style="font-size:11px;margin-top:6px;color:#30363d">네트워크 오류 — 잠시 후 재시도해주세요</div>
       </div>`;
     if (retryBtn) retryBtn.style.display = '';
   } finally {
