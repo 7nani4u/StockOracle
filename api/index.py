@@ -953,67 +953,234 @@ def get_us_realtime_price(ticker_obj) -> Tuple[float, str, float]:
 
 @ttl_cache(120)  # 2분 캐시 — 장중 수급 변화 대응
 def fetch_investor_flow(ticker: str) -> dict:
-    """토스증권 공개 API에서 투자자별 순매수 + 외국인 보유율 조회 (KRX 전용).
+    """투자자별 순매수 + 외국인 보유율 조회 (KRX 전용).
+
+    1차: Toss 증권 API (유연한 응답 구조 파싱)
+    2차: Naver Finance HTML 파싱 (폴백)
 
     Returns:
         성공: {"ok": True, "date": ..., "개인": ..., ...}
-        실패: {"ok": False, "reason": "<오류 원인>"}
+        실패: {"ok": False, "reason": "<상세 원인>"}
     """
     code = str(ticker).replace(".KS", "").replace(".KQ", "").strip()
     if not code.isdigit() or len(code) != 6:
         return {"ok": False, "reason": "KRX 6자리 코드 아님"}
 
-    url = (
+    # ── 공통 파서: 다양한 응답 구조에서 행 리스트 추출 ────────────────────
+    def _extract_rows(raw) -> list:
+        """body / result / data / tradingTrend 등 다양한 키 자동 탐색"""
+        if isinstance(raw, list):
+            return raw
+        if not isinstance(raw, dict):
+            return []
+        # 1레벨 탐색
+        for k1 in ("body", "result", "data", "list", "items",
+                   "content", "tradingTrend", "records", "rows"):
+            v = raw.get(k1)
+            if isinstance(v, list) and v:
+                return v
+            if isinstance(v, dict):
+                # 2레벨 탐색 ({"body": {"list": [...]}})
+                for k2 in ("list", "items", "tradingTrend", "body",
+                           "content", "records", "data"):
+                    inner = v.get(k2)
+                    if isinstance(inner, list) and inner:
+                        return inner
+        return []
+
+    # ── 공통 파서: 행 dict → 반환 dict 변환 ──────────────────────────────
+    def _parse_row(row: dict, source: str = "") -> dict:
+        def _i(*keys):
+            for k in keys:
+                v = row.get(k)
+                if v is not None:
+                    try: return int(float(str(v).replace(",", "")))
+                    except: continue
+            return 0
+        def _f(*keys):
+            for k in keys:
+                v = row.get(k)
+                if v is not None:
+                    try: return round(float(str(v).replace(",", "")), 2)
+                    except: continue
+            return 0.0
+        date_val = (row.get("baseDate") or row.get("date") or
+                    row.get("tradeDate") or row.get("stndDt") or
+                    row.get("trdDt") or "")
+        return {
+            "ok":         True,
+            "source":     source,
+            "date":       str(date_val),
+            # 현재 필드명 + 구버전/대체 필드명 순으로 시도
+            "개인":       _i("netIndividualsBuyVolume",  "individualNetBuyVolume",  "retlNetBuyTrdvol"),
+            "외국인":     _i("netForeignerBuyVolume",    "foreignerNetBuyVolume",   "frgnNetBuyTrdvol"),
+            "기관":       _i("netInstitutionBuyVolume",  "institutionNetBuyVolume", "instNetBuyTrdvol"),
+            "연기금":     _i("netPensionFundBuyVolume",  "pensionFundNetBuyVolume", "pnsionNetBuyTrdvol"),
+            "금융투자":   _i("netFinancialInvestmentBuyVolume", "financialInvestmentNetBuyVolume"),
+            "투신":       _i("netTrustBuyVolume",        "trustNetBuyVolume"),
+            "사모":       _i("netPrivateEquityFundBuyVolume", "privateEquityNetBuyVolume"),
+            "보험":       _i("netInsuranceBuyVolume",    "insuranceNetBuyVolume"),
+            "은행":       _i("netBankBuyVolume",         "bankNetBuyVolume"),
+            "기타금융":   _i("netOtherFinancialInstitutionsBuyVolume", "otherFinancialNetBuyVolume"),
+            "기타법인":   _i("netOtherCorporationBuyVolume", "otherCorporationNetBuyVolume"),
+            "외국인비율": _f("foreignerRatio", "foreignOwnershipRatio", "frgnHoldingRate"),
+        }
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 1차: Toss 증권 API
+    # ══════════════════════════════════════════════════════════════════════
+    toss_url = (
         "https://wts-info-api.tossinvest.com/api/v1/stock-infos/trade/trend/trading-trend"
         f"?productCode=A{code}&size=60"
     )
-    headers = {
+    toss_headers = {
+        # 최신 Chrome/Windows UA — 구버전 Mac UA 교체 (Toss UA 필터링 대응)
         "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
         ),
-        "Origin":  "https://tossinvest.com",
-        "Referer": "https://tossinvest.com/",
-        "Accept":  "application/json",
+        "Origin":          "https://tossinvest.com",
+        "Referer":         f"https://tossinvest.com/stocks/A{code}/order",  # 종목별 URL
+        "Accept":          "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+        "Sec-Fetch-Dest":  "empty",
+        "Sec-Fetch-Mode":  "cors",
+        "Sec-Fetch-Site":  "same-site",
     }
+    toss_reason = ""
     try:
-        resp = requests.get(url, headers=headers, timeout=6)
+        resp = requests.get(toss_url, headers=toss_headers, timeout=8)
+        print(f"[수급|Toss] HTTP {resp.status_code} | CT: {resp.headers.get('Content-Type','?')[:40]}")
         resp.raise_for_status()
-        body = resp.json().get("body", [])
-        if not body:
-            return {"ok": False, "reason": "수급 데이터 없음 (거래 없는 종목)"}
-        row = body[0]
+
+        raw = resp.json()
+        top_keys = list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__
+        print(f"[수급|Toss] 응답 최상위 키: {top_keys}")
+
+        rows = _extract_rows(raw)
+        print(f"[수급|Toss] 파싱된 행 수: {len(rows)}")
+
+        if rows:
+            row0 = rows[0]
+            print(f"[수급|Toss] 첫 행 키 샘플: {list(row0.keys())[:10] if isinstance(row0, dict) else '?'}")
+            result = _parse_row(row0, source="toss")
+            print(f"[수급|Toss] 성공 — 개인:{result['개인']:+,} 외국인:{result['외국인']:+,} 기관:{result['기관']:+,}")
+            return result
+
+        # 빈 응답: 원인 세분화
+        print(f"[수급|Toss] 빈 응답 샘플: {str(raw)[:500]}")
+        if isinstance(raw, dict):
+            if "body" in raw:
+                toss_reason = "장 개시 전 또는 해당일 거래 없음 (body 빈 배열)"
+            else:
+                toss_reason = f"API 응답 구조 불일치 (최상위 키: {top_keys})"
+        else:
+            toss_reason = f"API 응답 형식 비정상 ({type(raw).__name__})"
+
     except requests.exceptions.Timeout:
-        return {"ok": False, "reason": "API 타임아웃 (6초 초과)"}
+        toss_reason = "Toss API 타임아웃 (8초 초과)"
     except requests.exceptions.HTTPError as e:
-        return {"ok": False, "reason": f"API HTTP {e.response.status_code}"}
+        sc = e.response.status_code if e.response else "?"
+        toss_reason = {
+            401: "Toss API 인증 필요 (401)",
+            403: "Toss API 접근 차단 (403)",
+            429: "Toss API 요청 한도 초과 (429)",
+        }.get(sc, f"Toss API HTTP {sc}")
     except Exception as e:
-        return {"ok": False, "reason": f"조회 실패: {type(e).__name__}"}
+        toss_reason = f"Toss 조회 오류: {type(e).__name__}"
+        print(f"[수급|Toss] 예외: {type(e).__name__}: {e}")
 
-    def _i(v):
-        try: return int(v or 0)
-        except (TypeError, ValueError): return 0
+    # ══════════════════════════════════════════════════════════════════════
+    # 2차: Naver Finance HTML 파싱 (폴백)
+    # ══════════════════════════════════════════════════════════════════════
+    print(f"[수급|Toss] 실패 ({toss_reason}) → Naver 폴백 시도")
+    try:
+        naver_url = f"https://finance.naver.com/item/investor.naver?code={code}"
+        nheaders = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            ),
+            "Referer":        "https://finance.naver.com/",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+        }
+        nresp = requests.get(naver_url, headers=nheaders, timeout=8)
+        print(f"[수급|Naver] HTTP {nresp.status_code}")
+        nresp.raise_for_status()
 
-    def _f(v):
-        try: return round(float(v or 0), 2)
-        except (TypeError, ValueError): return 0.0
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(nresp.text, "html.parser")
 
-    return {
-        "ok":         True,
-        "date":       str(row.get("baseDate", "")),
-        "개인":       _i(row.get("netIndividualsBuyVolume")),
-        "외국인":     _i(row.get("netForeignerBuyVolume")),
-        "기관":       _i(row.get("netInstitutionBuyVolume")),
-        "연기금":     _i(row.get("netPensionFundBuyVolume")),
-        "금융투자":   _i(row.get("netFinancialInvestmentBuyVolume")),
-        "투신":       _i(row.get("netTrustBuyVolume")),
-        "사모":       _i(row.get("netPrivateEquityFundBuyVolume")),
-        "보험":       _i(row.get("netInsuranceBuyVolume")),
-        "은행":       _i(row.get("netBankBuyVolume")),
-        "기타금융":   _i(row.get("netOtherFinancialInstitutionsBuyVolume")),
-        "기타법인":   _i(row.get("netOtherCorporationBuyVolume")),
-        "외국인비율": _f(row.get("foreignerRatio")),
-    }
+        # 투자자별 순매수 테이블 탐색 (class="type2" 또는 첫 번째 data table)
+        table = soup.find("table", class_="type2") or soup.find("table")
+        if not table:
+            print("[수급|Naver] 테이블 없음")
+            return {"ok": False, "reason": toss_reason}
+
+        all_trs = table.find_all("tr")
+        print(f"[수급|Naver] 테이블 행 수: {len(all_trs)}")
+
+        def _nv(td_el):
+            txt = td_el.get_text(strip=True).replace(",", "").replace("+", "").replace(" ", "")
+            try: return int(txt)
+            except: return 0
+
+        # 헤더 제외, 데이터 행 탐색 (첫 번째 유효 행 = 최신 거래일)
+        for tr in all_trs[2:]:
+            tds = tr.find_all("td")
+            if len(tds) < 4:
+                continue
+            date_txt = tds[0].get_text(strip=True)
+            # 날짜 형식 확인 (예: "2024.05.06")
+            if not any(c.isdigit() for c in date_txt):
+                continue
+
+            개인 = _nv(tds[1])
+            외국인 = _nv(tds[2])
+            기관   = _nv(tds[3])
+
+            # 유효 데이터 확인 (모두 0이면 스킵)
+            if 개인 == 0 and 외국인 == 0 and 기관 == 0:
+                continue
+
+            연기금   = _nv(tds[4])  if len(tds) > 4  else 0
+            금융투자 = _nv(tds[5])  if len(tds) > 5  else 0
+            보험     = _nv(tds[6])  if len(tds) > 6  else 0
+            투신     = _nv(tds[7])  if len(tds) > 7  else 0
+            사모     = _nv(tds[8])  if len(tds) > 8  else 0
+            은행     = _nv(tds[9])  if len(tds) > 9  else 0
+            기타금융 = _nv(tds[10]) if len(tds) > 10 else 0
+            기타법인 = _nv(tds[11]) if len(tds) > 11 else 0
+
+            # 날짜를 YYYYMMDD 형식으로 변환 (2024.05.06 → 20240506)
+            date_clean = date_txt.replace(".", "").replace(" ", "").strip()
+            print(f"[수급|Naver] 성공 — {date_txt} | 개인:{개인:+,} 외국인:{외국인:+,} 기관:{기관:+,}")
+            return {
+                "ok":         True,
+                "source":     "naver",
+                "date":       date_clean,
+                "개인":       개인,
+                "외국인":     외국인,
+                "기관":       기관,
+                "연기금":     연기금,
+                "금융투자":   금융투자,
+                "투신":       투신,
+                "사모":       사모,
+                "보험":       보험,
+                "은행":       은행,
+                "기타금융":   기타금융,
+                "기타법인":   기타법인,
+                "외국인비율": 0.0,  # Naver investor.naver에는 보유율 미포함
+            }
+
+        print("[수급|Naver] 유효 데이터 행 없음 (장 개시 전 또는 휴장일)")
+    except ImportError:
+        print("[수급|Naver] BeautifulSoup 미설치 — 폴백 불가")
+    except Exception as e:
+        print(f"[수급|Naver] 예외: {type(e).__name__}: {e}")
+
+    # 두 소스 모두 실패
+    return {"ok": False, "reason": toss_reason}
 
 
 @ttl_cache(60)
