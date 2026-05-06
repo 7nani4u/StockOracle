@@ -5424,7 +5424,7 @@ input::placeholder{color:#484f58}
   <div class="sb-header">
     <div class="sb-header-top">
       <h1>📈 StockOracle</h1>
-      <button class="sb-home-btn" onclick="showPage('analysis')" title="종목 상세 분석" aria-label="종목 상세 분석">🏠</button>
+      <button class="sb-home-btn" onclick="showPage('analysis');setState('empty')" title="홈으로 이동" aria-label="홈으로 이동">🏠</button>
     </div>
     <p>AI 기반 기술적 분석 · 투자자 수급</p>
   </div>
