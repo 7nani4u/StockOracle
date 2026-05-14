@@ -5270,6 +5270,21 @@ input::placeholder{color:#484f58}
 /* ── 단계별 리포트 내 캔들 패턴 카드 ── */
 .step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
 
+/* ── 종목 진단 (AI진단 탭 신규) ── */
+.diag-grade-row{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px}
+.diag-grade-badge{font-size:26px;font-weight:900;width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:3px solid;border-radius:50%;flex-shrink:0;letter-spacing:-1px}
+.diag-grade-info{display:flex;flex-direction:column;gap:3px}
+.diag-grade-title{font-size:15px;font-weight:700}
+.diag-grade-sub{font-size:11px;color:#8b949e}
+.diag-dims{display:flex;flex-direction:column;gap:10px}
+.diag-dim{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px}
+.diag-dim-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.diag-dim-label{font-size:13px;color:#e6edf3;font-weight:600}
+.diag-dim-score{font-size:12px;font-weight:700}
+.diag-bar-bg{height:6px;background:#21262d;border-radius:3px;overflow:hidden;margin-bottom:6px}
+.diag-bar-fill{height:100%;border-radius:3px;transition:width .7s cubic-bezier(.4,0,.2,1)}
+.diag-dim-desc{font-size:11px;color:#8b949e;line-height:1.5}
+
 /* ── 투자자 수급 카드 ── */
 .investor-main-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
 .investor-main-item{
@@ -5604,6 +5619,7 @@ input::placeholder{color:#484f58}
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트</button>
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
+        <button class="tab-btn" onclick="switchTab('report')">📝 단계별 리포트</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 예측</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스</button>
         <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">📋 KRX</button>
@@ -5680,16 +5696,24 @@ input::placeholder{color:#484f58}
             </div>
             <div id="investor-flow-content"></div>
           </div>
-          <!-- 3행: 단계별 분석 리포트 (전체 너비) -->
+          <!-- 3행: 종목 진단 (5-차원 기술적 진단) -->
           <div class="card ai-report-card">
-            <div class="card-title">📝 단계별 분석 리포트</div>
-            <div id="steps-list"></div>
+            <div class="card-title">🔬 종목 진단</div>
+            <div id="ai-diagnosis-chart"></div>
           </div>
-          <!-- 4행: 섹터 / 업종 정보 (캔들·52주 섹션 제거 후 단독 카드) -->
+          <!-- 4행: 섹터 / 업종 정보 -->
           <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
             <div class="card-title">🏭 섹터 / 업종 정보</div>
             <div id="flow-sector-content"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- 단계별 분석 리포트 탭 -->
+      <div id="tab-report" style="display:none">
+        <div class="card">
+          <div class="card-title">📝 단계별 분석 리포트</div>
+          <div id="steps-list" style="display:flex;flex-direction:column;gap:10px"></div>
         </div>
       </div>
 
@@ -6256,6 +6280,8 @@ function renderResult(d) {
 
   // AI 진단
   renderAI(d, isKrx);
+  // 단계별 분석 리포트 (별도 탭)
+  renderReport(d);
   // 예측/리스크
   renderForecast(d, isKrx);
   // 기술적 지표 시그널 & 피봇 포인트
@@ -6281,7 +6307,12 @@ function renderAI(d, isKrx) {
     : s >= 40 ? '⚖️ HOLD (관망 / 중립)'
     : '⚠️ SELL (매도 우위 / 리스크 관리)';
 
-  // 캔들 패턴 카드 (step-5 인라인 삽입용)
+  renderDiagnosis(d, isKrx);
+  renderInvestorFlow(d, isKrx);
+}
+
+// ── 단계별 분석 리포트 렌더 (tab-report 전용) ────────────────────────────────
+function renderReport(d) {
   const patterns = d.candlestick_patterns || [];
   const patternCardsHtml = patterns.length === 0
     ? '<p class="empty-note">특이한 캔들 패턴이 감지되지 않았습니다.</p>'
@@ -6295,12 +6326,12 @@ function renderAI(d, isKrx) {
       }).join('');
 
   const stepsList = document.getElementById('steps-list');
-  stepsList.innerHTML = d.analysis_steps.map(st => {
+  if (!stepsList) return;
+  stepsList.innerHTML = (d.analysis_steps || []).map(st => {
     const sc = st.score;
     const cls = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
     const label = sc > 0 ? '+' + sc : sc;
     const weight = st.weight || '';
-    // step-5(캔들 패턴 분석)이면 패턴 카드를 본문 아래에 삽입
     const isStep5 = st.step.startsWith('5.');
     const inlinePatterns = isStep5
       ? `<div class="step-patterns">${patternCardsHtml}</div>`
@@ -6319,8 +6350,124 @@ function renderAI(d, isKrx) {
       ${inlinePatterns}
     </div>`;
   }).join('');
+}
 
-  renderInvestorFlow(d, isKrx);
+// ── 5-차원 종목 진단 렌더 ────────────────────────────────────────────────────
+function renderDiagnosis(d, isKrx) {
+  const diagEl = document.getElementById('ai-diagnosis-chart');
+  if (!diagEl) return;
+
+  const score  = d.score   || 50;
+  const rsi    = d.rsi     || 50;
+  const bp     = d.buy_price;
+  const flow   = d.investor_flow;
+  const patterns = d.candlestick_patterns || [];
+
+  // ── 1. 기술적 추세 (Technical Trend) ────────────────────────────
+  const techScore = Math.min(100, Math.max(0, score));
+
+  // ── 2. 모멘텀 (RSI 기반) ─────────────────────────────────────────
+  let mScore = 50;
+  if      (rsi > 70)              mScore = Math.max(10, 45 - (rsi - 70) * 2);
+  else if (rsi > 60)              mScore = 60;
+  else if (rsi >= 45 && rsi<=60)  mScore = 75;
+  else if (rsi >= 30)             mScore = 52;
+  else                            mScore = Math.min(75, 55 + (30 - rsi) * 1.5); // 과매도 = 반등기회
+  const momentumScore = Math.min(100, Math.max(0, Math.round(mScore)));
+
+  // ── 3. 변동성 안정도 (ATR 기반) ──────────────────────────────────
+  let vScore = 60;
+  if (bp) {
+    const atrPct = parseFloat(bp.atr_pct) || 0;
+    if      (bp.vol_trend === 'contracting') vScore = 82;
+    else if (bp.vol_trend === 'expanding')   vScore = 28;
+    else                                     vScore = 62;
+    if      (atrPct > 6) vScore = Math.max(15, vScore - 25);
+    else if (atrPct > 3) vScore = Math.max(25, vScore - 12);
+    else if (atrPct < 2) vScore = Math.min(92, vScore + 10);
+  }
+  const volScore = Math.min(100, Math.max(0, Math.round(vScore)));
+
+  // ── 4. 수급 흐름 ────────────────────────────────────────────────
+  let sScore = 50;
+  if (isKrx && flow && flow.ok) {
+    const net = (flow['외국인'] || 0) + (flow['기관'] || 0);
+    sScore = 50 + Math.min(35, Math.max(-35, net / 4000));
+  } else if (!isKrx && d.us_enriched && d.us_enriched.sentiment) {
+    const bull = Number(d.us_enriched.sentiment.bullish_pct || 0.5);
+    sScore = Math.round(bull * 100);
+  }
+  const supplyScore = Math.min(100, Math.max(0, Math.round(sScore)));
+
+  // ── 5. 패턴 신호 ─────────────────────────────────────────────────
+  const bullPat = patterns.filter(p => p.direction === '상승').length;
+  const bearPat = patterns.filter(p => p.direction === '하락').length;
+  let pScore = 50;
+  if (bullPat + bearPat > 0) {
+    pScore = Math.round((bullPat / (bullPat + bearPat)) * 80 + 10);
+  }
+  const patScore = Math.min(100, Math.max(0, pScore));
+
+  // ── 종합 등급 계산 ────────────────────────────────────────────────
+  const dims = [techScore, momentumScore, volScore, supplyScore, patScore];
+  const avg  = Math.round(dims.reduce((a, b) => a + b, 0) / dims.length);
+  const grade      = avg >= 80 ? 'A+' : avg >= 65 ? 'A' : avg >= 50 ? 'B' : avg >= 35 ? 'C' : 'D';
+  const gradeColor = avg >= 65 ? '#3fb950' : avg >= 50 ? '#d29922' : '#f85149';
+  const gradeText  = avg >= 80 ? '매우 우수' : avg >= 65 ? '우수' : avg >= 50 ? '보통' : avg >= 35 ? '주의' : '위험';
+  const gradeDesc  = avg >= 65
+    ? '기술적 지표 전반이 양호한 상태입니다.'
+    : avg >= 50
+    ? '일부 지표가 혼재되어 추가 관찰이 필요합니다.'
+    : '여러 지표에서 위험 신호가 감지됩니다.';
+
+  // ── 각 차원 설명 텍스트 ────────────────────────────────────────
+  const techDesc   = `종합 기술점수 ${score}점 · ${score >= 65 ? '매수 우위' : score >= 40 ? '중립' : '매도 우위'}`;
+  const rsiLabel   = rsi > 70 ? `RSI ${rsi.toFixed(0)} 과매수 — 조정 주의`
+                   : rsi < 30 ? `RSI ${rsi.toFixed(0)} 과매도 — 반등 기대`
+                   :            `RSI ${rsi.toFixed(0)} 안정 구간`;
+  const volDesc    = bp ? `ATR ${bp.atr_pct}% · ${
+    bp.vol_trend === 'expanding'   ? '변동성 확대 진행중' :
+    bp.vol_trend === 'contracting' ? '변동성 수축 (안정화)' : '변동성 안정'}` : '변동성 데이터 없음';
+  const supplyDesc = isKrx && flow && flow.ok
+    ? `외국인 ${(flow['외국인']||0)>0?'+':''}${(flow['외국인']||0).toLocaleString()} · 기관 ${(flow['기관']||0)>0?'+':''}${(flow['기관']||0).toLocaleString()}`
+    : !isKrx && d.us_enriched && d.us_enriched.sentiment && d.us_enriched.sentiment.bullish_pct != null
+    ? `긍정 ${Math.round(Number(d.us_enriched.sentiment.bullish_pct)*100)}% / 부정 ${Math.round((1-Number(d.us_enriched.sentiment.bullish_pct))*100)}%`
+    : '수급 데이터 로딩 중…';
+  const patDesc    = patterns.length === 0 ? '특이 캔들 패턴 없음'
+    : `상승패턴 ${bullPat}개 · 하락패턴 ${bearPat}개 감지`;
+
+  // ── 렌더 헬퍼 ─────────────────────────────────────────────────────
+  const dimBar = (emoji, label, val, desc) => {
+    const c   = val >= 65 ? '#3fb950' : val >= 40 ? '#d29922' : '#f85149';
+    const lbl = val >= 65 ? '양호' : val >= 40 ? '보통' : '주의';
+    return `<div class="diag-dim">
+      <div class="diag-dim-head">
+        <span class="diag-dim-label">${emoji} ${label}</span>
+        <span class="diag-dim-score" style="color:${c}">${val}점 · ${lbl}</span>
+      </div>
+      <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${val}%;background:${c}"></div></div>
+      <div class="diag-dim-desc">${desc}</div>
+    </div>`;
+  };
+
+  diagEl.innerHTML = `
+    <div class="diag-grade-row">
+      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${grade}</div>
+      <div class="diag-grade-info">
+        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· 5항목 평균 ${avg}점</span></div>
+        <div class="diag-grade-sub">${gradeDesc}</div>
+      </div>
+    </div>
+    <div class="diag-dims">
+      ${dimBar('📊', '기술적 추세',    techScore,     techDesc)}
+      ${dimBar('⚡', '모멘텀 강도',    momentumScore,  rsiLabel)}
+      ${dimBar('🌊', '변동성 안정도',  volScore,       volDesc)}
+      ${dimBar('💰', '수급 흐름',      supplyScore,    supplyDesc)}
+      ${dimBar('🕯️', '패턴 신호',     patScore,       patDesc)}
+    </div>
+    <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
+      ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 단계별 상세 분석은 📝 단계별 리포트 탭을 확인하세요.
+    </div>`;
 }
 
 // ── 투자자 수급 렌더 (KRX 전용) ────────────────────────────────────────────
@@ -7029,7 +7176,7 @@ function renderCharts(d, isKrx) {
 }
 
 // ── 탭 전환 ──
-const ALL_TABS = ['chart','ai','forecast','news','evening'];
+const ALL_TABS = ['chart','ai','report','forecast','news','evening'];
 function switchTab(tab) {
   currentTab = tab;
   ALL_TABS.forEach(t => {
