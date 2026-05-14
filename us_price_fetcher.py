@@ -731,7 +731,7 @@ class NaverWorldStockClient(_BaseClient):
         "Accept-Language": "ko-KR,ko;q=0.9",
     }
 
-    def __init__(self, cache_ttl: int = 15):
+    def __init__(self, cache_ttl: int = 5):
         super().__init__()
         self._sess = requests.Session()
         self._sess.headers.update(self._HEADERS)
@@ -739,7 +739,7 @@ class NaverWorldStockClient(_BaseClient):
         self._data_cache: Dict[str, Tuple[Any, float]] = {}
         # Reuters code 해석 결과 캐시 {raw_ticker → resolved_reuters_code|None}
         self._code_cache: Dict[str, Optional[str]] = {}
-        self._cache_ttl = cache_ttl  # 초 (장 중 빠른 갱신 위해 15초 기본)
+        self._cache_ttl = cache_ttl  # 초 (새로고침 시 실시간 반영을 위해 5초로 단축)
 
     # ── 내부 API 호출 ──────────────────────────────────────────────────────────
     def _fetch_basic(self, reuters_code: str) -> Optional[dict]:
@@ -1636,7 +1636,7 @@ class USStockPriceFetcher:
         tiingo_key:  str = TIINGO_KEY,
         av_key:      str = AV_KEY,
     ):
-        self.naver   = NaverWorldStockClient(cache_ttl=15)  # ← 네이버 증권 (최우선)
+        self.naver   = NaverWorldStockClient(cache_ttl=5)   # ← 네이버 증권 (최우선, 5초 TTL)
         self.yfd     = YahooFinanceDirectClient(cache_ttl=30)
         self.yf      = YFinanceClient()
         self.tiingo  = TiingoClient(tiingo_key)

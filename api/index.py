@@ -4558,6 +4558,31 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    if path == "/api/price":
+        # 미국 주식 현재가 전용 경량 엔드포인트 — 캐시 없음, 폴링용
+        ticker_raw = params.get("ticker", "").strip()
+        market_p   = params.get("market", "US").strip().upper()
+        if not ticker_raw or market_p != "US":
+            return {"error": "ticker required, US market only"}
+        ticker_r, _, sym_r = resolve_ticker(ticker_raw)
+        if not ticker_r:
+            return {"error": f"'{ticker_raw}' not found"}
+        fetcher = _get_us_price_fetcher()
+        if fetcher is None:
+            return {"error": "fetcher unavailable"}
+        try:
+            res = fetcher.fetch(sym_r)
+            if res and res.price > 0:
+                p    = float(res.price)
+                pc   = float(res.prev_close) if res.prev_close else 0.0
+                pct  = (p - pc) / pc * 100 if pc else 0.0
+                sn   = _PRICE_TYPE_LABEL.get(res.price_type, "정규장")
+                return {"price": round(p, 4), "prev_close": round(pc, 4),
+                        "pct_change": round(pct, 4), "session_name": sn}
+        except Exception:
+            pass
+        return {"error": "price unavailable"}
+
     if path == "/api/investor-flow":
         # 투자자 수급 전용 경량 엔드포인트 — 메인 분석과 분리하여 타임아웃 경합 제거
         ticker_raw = params.get("ticker", "").strip()
@@ -5997,7 +6022,60 @@ function _stopLoadingAnimation() {
   if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
 }
 
+// ── 미국 주식 실시간 가격 폴링 ──────────────────────────────────────────────
+let _pricePoller    = null;
+let _pollTicker     = null;
+
+function _stopPricePolling() {
+  if (_pricePoller) { clearInterval(_pricePoller); _pricePoller = null; }
+}
+
+function _startPricePolling(symbol) {
+  _stopPricePolling();
+  _pollTicker = symbol;
+  _pricePoller = setInterval(async () => {
+    if (!_pollTicker) return;
+    try {
+      const r = await fetch(`/api/price?ticker=${encodeURIComponent(_pollTicker)}&market=US`);
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.error || !d.price) return;
+      _applyPriceUpdate(d);
+    } catch(e) {}
+  }, 5000);
+}
+
+function _applyPriceUpdate(d) {
+  const up  = d.pct_change >= 0;
+  const clr = up ? '#3fb950' : '#f85149';
+  const priceEl  = document.getElementById('r-price');
+  const pctEl    = document.getElementById('r-pct');
+  const badgeEl  = document.getElementById('r-session-badge');
+  if (priceEl) priceEl.textContent = '$' + Number(d.price).toLocaleString('en-US', {minimumFractionDigits:4, maximumFractionDigits:4});
+  if (pctEl)   pctEl.innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
+  if (badgeEl) {
+    const hiddenSessions = new Set(['정규장', '장마감', '']);
+    const sn = (d.session_name || '').trim();
+    if (sn && !hiddenSessions.has(sn)) {
+      const sessionColors = {
+        '프리마켓':   { bg: '#1f6feb33', fg: '#58a6ff' },
+        '오버나이트': { bg: '#6e40c933', fg: '#bc8cff' },
+        '애프터마켓': { bg: '#388bfd22', fg: '#79c0ff' },
+        '시간외':     { bg: '#30363d',   fg: '#8b949e' },
+      };
+      const col = sessionColors[sn] || { bg: '#1f6feb33', fg: '#58a6ff' };
+      badgeEl.textContent = sn;
+      badgeEl.style.background = col.bg;
+      badgeEl.style.color = col.fg;
+      badgeEl.style.display = 'inline';
+    } else {
+      badgeEl.style.display = 'none';
+    }
+  }
+}
+
 async function analyze() {
+  _stopPricePolling();   // 새 검색 시 이전 폴링 중단
   closeSidebar();   // 모바일에서 분석 시작 시 사이드바 자동 닫기
   const ticker = document.getElementById('ticker-input').value.trim();
   const period = document.getElementById('period-select').value;
@@ -6026,6 +6104,10 @@ async function analyze() {
     }
     renderResult(d);
     setState('result');
+    // 미국 주식: 5초마다 현재가 자동 갱신
+    if (d.market === 'US' && d.symbol) {
+      _startPricePolling(d.symbol);
+    }
     // KRX 전용: 투자자 수급 자동 비동기 로드
     // 메인 API 응답에서 ok=false인 경우(타임아웃·API 지연 등) 전용 엔드포인트로 자동 재시도
     if (d.market === 'KRX' && (!d.investor_flow || !d.investor_flow.ok)) {
