@@ -579,15 +579,17 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         if "Datetime" in df2.columns:
             df2.rename(columns={"Datetime": "Date"}, inplace=True)
             
-        if hasattr(df2["Date"].dtype, "tz") and df2["Date"].dtype.tz:
-            df2["Date"] = df2["Date"].dt.tz_localize(None)
-            
         # Lightweight Charts가 인식할 수 있도록 날짜를 yyyy-mm-dd 문자열 또는 Unix Timestamp 형식으로 반환해야 함
         # 일봉은 %Y-%m-%d 문자열로, 분봉은 Unix Timestamp(초 단위)로 변환
         if interval == "1d":
+            # tz 정보 제거 후 날짜 문자열 변환
+            if hasattr(df2["Date"].dtype, "tz") and df2["Date"].dtype.tz:
+                df2["Date"] = df2["Date"].dt.tz_localize(None)
             df2["Date"] = df2["Date"].dt.strftime("%Y-%m-%d")
         else:
-            df2["Date"] = df2["Date"].astype("int64") // 10**9
+            # pandas 버전에 따라 astype("int64")가 나노초(2.x) 또는 초(3.x)를 반환하는
+            # 호환성 문제를 방지하기 위해 Timestamp.timestamp()를 사용해 항상 초 단위로 변환
+            df2["Date"] = [int(ts.timestamp()) for ts in df2["Date"]]
             
         d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
         return d, news, sym
