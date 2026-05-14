@@ -5577,7 +5577,7 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div></div>
+        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:3px"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
       </div>
@@ -6209,6 +6209,19 @@ function renderResult(d) {
   document.getElementById('r-vol').textContent = d.volume.toLocaleString();
   document.getElementById('r-atr').textContent = d.atr.toLocaleString();
 
+  // ATR% + 변동성 추세 — 현재가 카드 바로 아래 표시 (예측 탭 데이터에서 인출)
+  const atrPctEl = document.getElementById('r-atr-pct');
+  if (atrPctEl && d.buy_price && d.buy_price.atr_pct != null) {
+    const vt = d.buy_price.vol_trend;
+    const vtHtml = vt === 'expanding'   ? '<span style="color:#f85149">변동성 확대↑</span>' :
+                   vt === 'contracting' ? '<span style="color:#3fb950">변동성 수축↓</span>' :
+                                         '<span style="color:#d29922">변동성 안정</span>';
+    atrPctEl.innerHTML = `ATR ${d.buy_price.atr_pct}% · ${vtHtml}`;
+    atrPctEl.style.display = 'block';
+  } else if (atrPctEl) {
+    atrPctEl.style.display = 'none';
+  }
+
   // 펀더멘털
   if (isKrx && d.naver) {
     document.getElementById('r-naver-fund').style.display = 'block';
@@ -6608,32 +6621,7 @@ function renderForecast(d, isKrx) {
           </div>`;
       };
 
-      // 세션 배지 (US 종목에서 프리마켓/오버나이트일 때만 표시)
-      const bpSn = (!isKrx && d.session_name && !['정규장','장마감'].includes(d.session_name))
-                   ? ` <span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#6e40c933;color:#bc8cff">${d.session_name}</span>`
-                   : '';
       bpEl.innerHTML = `
-        <div style="background:#21262d;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">
-          <div style="flex-shrink:0">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:4px">현재가 기준${bpSn}</div>
-            <div style="font-size:22px;font-weight:800">${fmt(cur, isKrx)}</div>
-            <div style="font-size:11px;color:#8b949e;margin-top:4px">ATR ${bp.atr_pct}% · ${
-              bp.vol_trend === 'expanding'   ? '<span style="color:#f85149">변동성 확대↑</span>' :
-              bp.vol_trend === 'contracting' ? '<span style="color:#3fb950">변동성 수축↓</span>' :
-              '<span style="color:#d29922">변동성 안정</span>'
-            }</div>
-          </div>
-          <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;min-width:0">
-            <div style="min-width:0">
-              <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매수 타이밍</div>
-              <div style="font-size:13px;font-weight:600;color:#3fb950;word-break:keep-all;white-space:normal;line-height:1.4">${bp.timing.buy}</div>
-            </div>
-            <div style="min-width:0">
-              <div style="font-size:11px;color:#8b949e;margin-bottom:4px">예상 매도 타이밍</div>
-              <div style="font-size:13px;font-weight:600;color:#f85149;word-break:keep-all;white-space:normal;line-height:1.4">${bp.timing.sell}</div>
-            </div>
-          </div>
-        </div>
         ${fib.f382 ? `
         <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#8b949e">
           <span>📐 피보나치 기준 (60일)</span>
