@@ -4667,9 +4667,9 @@ def route(path: str, params: Dict) -> Dict:
             import sys as _sys
             import os as _os
             _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-            from market_briefing.data_fetcher import fetch_stock_list_quote_only
+            from market_briefing.data_fetcher import fetch_stock_list_quote_cached
             from market_briefing.sector_flow import build_sector_flow
-            snapshots = fetch_stock_list_quote_only(_SECTOR_DEFAULT_STOCKS)
+            snapshots = fetch_stock_list_quote_cached(_SECTOR_DEFAULT_STOCKS)
             return build_sector_flow(snapshots)
         except Exception as e:
             return {"error": f"업종별 흐름 조회 실패: {e}"}
@@ -5578,7 +5578,6 @@ input::placeholder{color:#484f58}
       </div>
       <div class="metrics-grid">
         <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div></div>
-        <div class="metric-card"><div class="m-label">RSI (14)</div><div class="m-value" id="r-rsi"></div><div class="m-sub" id="r-rsi-label"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
       </div>
@@ -6207,10 +6206,6 @@ function renderResult(d) {
     }
   }
 
-  const rsi = d.rsi;
-  const rsiClr = rsi > 70 ? '#f85149' : rsi < 30 ? '#388bfd' : '#e6edf3';
-  document.getElementById('r-rsi').innerHTML = `<span style="color:${rsiClr}">${rsi.toFixed(1)}</span>`;
-  document.getElementById('r-rsi-label').innerHTML = `<span style="color:${rsiClr}">${rsi>70?'과매수':rsi<30?'과매도':'중립'}</span>`;
   document.getElementById('r-vol').textContent = d.volume.toLocaleString();
   document.getElementById('r-atr').textContent = d.atr.toLocaleString();
 

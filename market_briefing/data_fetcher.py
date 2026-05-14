@@ -36,8 +36,11 @@ _UA = (
 
 # ── 모듈 레벨 TTL 캐시 (Vercel 웜 인스턴스 재사용) ───────────────────────────
 # 장중(09:00~15:30 KST): 3분, 장 외: 10분
-_MACRO_CACHE: dict = {"data": None, "ts": 0.0}
-_MACRO_LOCK  = _Lock()   # Thundering-herd 방지 (동시 다중 요청 중복 수집 차단)
+_MACRO_CACHE:  dict = {"data": None, "ts": 0.0}
+_MACRO_LOCK    = _Lock()   # Thundering-herd 방지 (동시 다중 요청 중복 수집 차단)
+
+_SECTOR_CACHE: dict = {"data": None, "ts": 0.0}
+_SECTOR_LOCK   = _Lock()
 
 def _macro_ttl_seconds() -> int:
     """현재 KST 기준 시장 상태에 따른 캐시 TTL 반환.
@@ -57,6 +60,16 @@ def _macro_ttl_seconds() -> int:
     if 22.5 <= h or h < 5.0:  # 미국 정규장(EDT 기준, EST는 23.5)
         return 300             # 5분
     return 600                 # 장 외 (오전 장전·오후 장후·심야)
+
+
+def _sector_ttl_seconds() -> int:
+    """섹터 흐름 캐시 TTL: 장중 3분, 장외 10분."""
+    now_kst = datetime.now(KST)
+    wday = now_kst.weekday()
+    h    = now_kst.hour + now_kst.minute / 60.0
+    if wday >= 5:               return 600   # 주말
+    if 9.0 <= h < 15.5:        return 180   # 국내 장중
+    return 600                               # 장외
 
 
 # ── 내부 HTTP 헬퍼 ──────────────────────────────────────────────────────────
@@ -278,45 +291,104 @@ def fetch_upbit_crypto(markets: list[str] | None = None) -> dict[str, Any]:
 
 # ── 개별 종목 ────────────────────────────────────────────────────────────────
 
-def fetch_stock_quote(code: str) -> dict:
-    """네이버 금융에서 현재 시세 (가격, 등락, 거래량)."""
-    url  = f"https://finance.naver.com/item/main.naver?code={code}"
-    soup = _get(url)
-    out: dict = {}
-    today = soup.select_one("div.today")
-    if not today:
+def _fetch_quote_mobile_json(code: str) -> dict | None:
+    """네이버 모바일 JSON API로 시세 수집.
+
+    HTML 스크래핑 대비 응답 크기·처리 시간 대폭 절감.
+    실패 시 None 반환 → HTML 폴백.
+    """
+    try:
+        url  = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+            "Referer":    "https://m.stock.naver.com/",
+            "Accept":     "application/json",
+        }
+        r = requests.get(url, headers=hdrs, timeout=5)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+
+        price_str = (d.get("closePrice") or "").replace(",", "")
+        diff_str  = (d.get("compareToPreviousClosePrice") or "0").replace(",", "")
+        vol_str   = (d.get("tradeVolume") or "").replace(",", "")
+        # compareToPreviousPrice.code: "5" = 하락, "2" = 상승, 그 외 = 보합
+        code_type = (d.get("compareToPreviousPrice") or {}).get("code", "3")
+
+        price_num = float(price_str)
+        diff_num  = float(diff_str)
+        if code_type == "5":           # 하락 → diff는 절댓값이므로 음수 처리
+            diff_num = -diff_num
+        prev_num  = price_num - diff_num
+        pct_num   = (diff_num / prev_num * 100) if prev_num else 0.0
+        direction = "up" if diff_num > 0 else ("down" if diff_num < 0 else "flat")
+        sign      = "+" if diff_num > 0 else ""
+
+        out: dict = {
+            "price":          f"{int(price_num):,}",
+            "change":         f"{abs(int(diff_num)):,}",
+            "change_pct":     f"{sign}{pct_num:.2f}%",
+            "change_pct_num": round(pct_num, 2),
+            "direction":      direction,
+        }
+        if vol_str:
+            try:
+                out["volume"] = int(vol_str)
+            except ValueError:
+                pass
         return out
-    now_el = today.select_one("p.no_today .blind")
-    if now_el:
-        out["price"] = now_el.get_text(strip=True)
-    exday = today.select_one("p.no_exday")
-    if exday:
-        blinds    = [b.get_text(strip=True) for b in exday.select("em .blind, span .blind")]
-        em        = exday.select_one("em")
-        direction = ""
-        if em:
-            cls = " ".join(em.get("class") or [])
-            direction = "up" if "up" in cls else ("down" if "down" in cls else "")
-        if blinds:
-            out["change"] = blinds[0] if len(blinds) >= 1 else ""
-            pct = blinds[1] if len(blinds) >= 2 else ""
-            if pct:
-                sign = "-" if direction == "down" else "+" if direction == "up" else ""
-                out["change_pct"] = f"{sign}{pct}"
-                try:
-                    out["change_pct_num"] = float(pct.replace("%", "")) * (-1 if direction == "down" else 1)
-                except ValueError:
-                    pass
-            out["direction"] = direction
-    for th in soup.select("table.rwidth th, table.lwidth th, th"):
-        if th.get_text(strip=True) == "거래량":
-            td = th.find_next("em") or th.find_next("td")
-            if td:
-                try:
-                    out["volume"] = int(td.get_text(strip=True).replace(",", ""))
-                except ValueError:
-                    pass
-            break
+    except Exception:
+        return None
+
+
+def fetch_stock_quote(code: str) -> dict:
+    """네이버 금융 현재 시세 — 모바일 JSON API 우선, HTML 폴백."""
+    # ① 모바일 JSON API (빠름 — 페이지당 ~50ms vs HTML ~300ms)
+    result = _fetch_quote_mobile_json(code)
+    if result:
+        return result
+
+    # ② HTML 폴백 (모바일 API 실패 시)
+    out: dict = {}
+    try:
+        url  = f"https://finance.naver.com/item/main.naver?code={code}"
+        soup = _get(url)
+        today = soup.select_one("div.today")
+        if not today:
+            return out
+        now_el = today.select_one("p.no_today .blind")
+        if now_el:
+            out["price"] = now_el.get_text(strip=True)
+        exday = today.select_one("p.no_exday")
+        if exday:
+            blinds    = [b.get_text(strip=True) for b in exday.select("em .blind, span .blind")]
+            em        = exday.select_one("em")
+            direction = ""
+            if em:
+                cls = " ".join(em.get("class") or [])
+                direction = "up" if "up" in cls else ("down" if "down" in cls else "")
+            if blinds:
+                out["change"] = blinds[0] if len(blinds) >= 1 else ""
+                pct = blinds[1] if len(blinds) >= 2 else ""
+                if pct:
+                    sign = "-" if direction == "down" else "+" if direction == "up" else ""
+                    out["change_pct"] = f"{sign}{pct}"
+                    try:
+                        out["change_pct_num"] = float(pct.replace("%", "")) * (-1 if direction == "down" else 1)
+                    except ValueError:
+                        pass
+                out["direction"] = direction
+        for th in soup.select("table.rwidth th, table.lwidth th, th"):
+            if th.get_text(strip=True) == "거래량":
+                td = th.find_next("em") or th.find_next("td")
+                if td:
+                    try:
+                        out["volume"] = int(td.get_text(strip=True).replace(",", ""))
+                    except ValueError:
+                        pass
+                break
+    except Exception:
+        pass
     return out
 
 
@@ -653,3 +725,32 @@ def fetch_stock_list_quote_only(
 
     # None 보호 (이론상 발생 안 함)
     return [r for r in results if r is not None]
+
+
+def fetch_stock_list_quote_cached(
+    stock_configs: list[dict],
+    *,
+    max_workers: int = 15,
+) -> list[dict]:
+    """TTL 캐시 포함 섹터 흐름용 quote 수집.
+
+    캐시 히트 시 즉시 반환 (0ms). 미스 시 fetch_stock_list_quote_only 실행 후 캐시 저장.
+    Vercel 웜 인스턴스 재사용으로 반복 요청의 응답 속도를 대폭 단축.
+
+    TTL: 장중(09:00~15:30 KST) 3분 / 장외·주말 10분
+    """
+    cached = _SECTOR_CACHE["data"]
+    if cached and (_time.monotonic() - _SECTOR_CACHE["ts"]) < _sector_ttl_seconds():
+        return cached
+
+    with _SECTOR_LOCK:
+        # Double-checked locking — 락 대기 중 다른 스레드가 갱신했을 수 있음
+        cached = _SECTOR_CACHE["data"]
+        if cached and (_time.monotonic() - _SECTOR_CACHE["ts"]) < _sector_ttl_seconds():
+            return cached
+
+        result = fetch_stock_list_quote_only(stock_configs, max_workers=max_workers)
+        _SECTOR_CACHE["data"] = result
+        _SECTOR_CACHE["ts"]   = _time.monotonic()
+
+    return result
