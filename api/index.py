@@ -5592,9 +5592,10 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:3px"></div></div>
+        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap"><div class="m-value" id="r-price" style="white-space:nowrap;flex-shrink:0"></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div><div class="m-sub" id="r-pct"></div></div>
         <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
-        <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div></div>
+        <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
+        <div class="metric-card" id="r-fib-card" style="display:none"><div class="m-label">📐 피보나치 기준 (60일)</div><div id="r-fib-content" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div></div>
       </div>
       <div id="r-naver-fund" style="display:none" class="card">
         <div class="card-title">🏢 기업 펀더멘털 (네이버 금융)</div>
@@ -6233,17 +6234,33 @@ function renderResult(d) {
   document.getElementById('r-vol').textContent = d.volume.toLocaleString();
   document.getElementById('r-atr').textContent = d.atr.toLocaleString();
 
-  // ATR% + 변동성 추세 — 현재가 카드 바로 아래 표시 (예측 탭 데이터에서 인출)
+  // ATR% + 변동성 추세 → ATR 카드 서브텍스트
   const atrPctEl = document.getElementById('r-atr-pct');
   if (atrPctEl && d.buy_price && d.buy_price.atr_pct != null) {
     const vt = d.buy_price.vol_trend;
     const vtHtml = vt === 'expanding'   ? '<span style="color:#f85149">변동성 확대↑</span>' :
                    vt === 'contracting' ? '<span style="color:#3fb950">변동성 수축↓</span>' :
                                          '<span style="color:#d29922">변동성 안정</span>';
-    atrPctEl.innerHTML = `ATR ${d.buy_price.atr_pct}% · ${vtHtml}`;
+    atrPctEl.innerHTML = `${d.buy_price.atr_pct}% · ${vtHtml}`;
     atrPctEl.style.display = 'block';
   } else if (atrPctEl) {
     atrPctEl.style.display = 'none';
+  }
+
+  // 피보나치 카드 → 상단 핵심 지표 영역
+  const fibCard    = document.getElementById('r-fib-card');
+  const fibContent = document.getElementById('r-fib-content');
+  const _fib = (d.buy_price && d.buy_price.fib) || {};
+  if (fibCard && fibContent && _fib.f382) {
+    fibContent.innerHTML = `
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">▲ 고점</span><b style="color:#cdd9e5">${fmt(_fib.h60, isKrx)}</b></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">▼ 저점</span><b style="color:#cdd9e5">${fmt(_fib.l60, isKrx)}</b></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">38.2%</span><b style="color:#f97316">${fmt(_fib.f382, isKrx)}</b></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">50.0%</span><b style="color:#d29922">${fmt(_fib.f500, isKrx)}</b></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">61.8%</span><b style="color:#388bfd">${fmt(_fib.f618, isKrx)}</b></div>`;
+    fibCard.style.display = 'block';
+  } else if (fibCard) {
+    fibCard.style.display = 'none';
   }
 
   // 펀더멘털
@@ -6769,15 +6786,6 @@ function renderForecast(d, isKrx) {
       };
 
       bpEl.innerHTML = `
-        ${fib.f382 ? `
-        <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#8b949e">
-          <span>📐 피보나치 기준 (60일)</span>
-          <span>▲ 고점 <b style="color:#cdd9e5">${fmt(fib.h60, isKrx)}</b></span>
-          <span>▼ 저점 <b style="color:#cdd9e5">${fmt(fib.l60, isKrx)}</b></span>
-          <span>38.2% <b style="color:#f97316">${fmt(fib.f382, isKrx)}</b></span>
-          <span>50.0% <b style="color:#d29922">${fmt(fib.f500, isKrx)}</b></span>
-          <span>61.8% <b style="color:#388bfd">${fmt(fib.f618, isKrx)}</b></span>
-        </div>` : ''}
         <div class="buy-price-grid">
           ${bp.aggressive_bands && bp.aggressive_bands.length
             ? buyBands('aggressive_bands', '#f97316', '공격적 매수', '⚡', true)
@@ -6795,9 +6803,6 @@ function renderForecast(d, isKrx) {
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     rgEl.innerHTML = `
-      ${risk.vol_state ? `<div style="grid-column:1/-1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;font-size:12px;color:#8b949e;margin-bottom:2px">
-        📊 ${risk.vol_state}<br><span style="font-size:11px">${risk.vol_trend || ''}</span>
-      </div>` : ''}
       ${riskEntries.map(sc => `
       <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
         <div class="risk-icon">${sc.icon}</div>
