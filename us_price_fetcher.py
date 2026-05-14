@@ -684,6 +684,272 @@ class YahooFinanceDirectClient(_BaseClient):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 네이버 모바일 증권 해외주식 클라이언트  ← 신규 추가
+# ──────────────────────────────────────────────────────────────────────────────
+class NaverWorldStockClient(_BaseClient):
+    """
+    네이버 모바일 증권 해외주식 현재가 클라이언트.
+
+    API 엔드포인트: https://api.stock.naver.com/stock/{reuters_code}/basic
+    reuters_code 형식: 심볼 + 거래소 접미사 (예: AIIO.O, AAPL.O, TSLA.N)
+
+    [거래소 접미사]
+      .O = NASDAQ (NSQ)
+      .N = NYSE   (NYQ/NYS)
+      .A = AMEX   (ASE)
+      접미사 없이 입력 시 .O → .N → .A 순으로 자동 탐색
+
+    [네이버 현재가 표시 로직]
+      marketStatus == "OPEN"
+        → closePrice (정규장 실시간 체결가)
+      overMarketPriceInfo.overMarketStatus == "OPEN"
+        → overMarketPriceInfo.overPrice (프리/애프터마켓 가격)
+      그 외 (장마감)
+        → closePrice (마지막 정규장 종가)
+
+    [세션 커버리지]
+      PRE_MARKET  ✓  (overMarketPriceInfo.tradingSessionType == "PRE_MARKET")
+      REGULAR     ✓  (marketStatus == "OPEN")
+      AFTER_HOURS ✓  (overMarketPriceInfo.tradingSessionType == "AFTER_MARKET")
+      CLOSED      ✓  (closePrice = 마지막 정규장 종가)
+      OVERNIGHT   ✗  (Blue Ocean ATS 미지원 → 항상 None 반환)
+    """
+
+    BASE_URL = "https://api.stock.naver.com/stock"
+    # 접미사 없이 입력된 경우 시도 순서 (NASDAQ이 가장 일반적)
+    _SUFFIX_CANDIDATES = [".O", ".N", ".A", ".K"]
+    _min_interval = 0.3
+
+    _HEADERS: Dict[str, str] = {
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 10) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Mobile Safari/537.36"
+        ),
+        "Referer": "https://m.stock.naver.com/",
+        "Accept": "application/json",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+
+    def __init__(self, cache_ttl: int = 15):
+        super().__init__()
+        self._sess = requests.Session()
+        self._sess.headers.update(self._HEADERS)
+        # 가격 데이터 캐시 {reuters_code → (data, monotonic_time)}
+        self._data_cache: Dict[str, Tuple[Any, float]] = {}
+        # Reuters code 해석 결과 캐시 {raw_ticker → resolved_reuters_code|None}
+        self._code_cache: Dict[str, Optional[str]] = {}
+        self._cache_ttl = cache_ttl  # 초 (장 중 빠른 갱신 위해 15초 기본)
+
+    # ── 내부 API 호출 ──────────────────────────────────────────────────────────
+    def _fetch_basic(self, reuters_code: str) -> Optional[dict]:
+        """네이버 증권 /basic 엔드포인트 호출. 캐시 TTL 내 재호출은 캐시 반환."""
+        ck = reuters_code.upper()
+        cached = self._data_cache.get(ck)
+        if cached and (time.monotonic() - cached[1]) < self._cache_ttl:
+            return cached[0]
+
+        self._wait()
+        url = f"{self.BASE_URL}/{reuters_code}/basic"
+        try:
+            r = self._sess.get(url, timeout=REQUEST_TIMEOUT)
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            data = r.json()
+            self._last = time.monotonic()
+            self._data_cache[ck] = (data, time.monotonic())
+            logger.debug(
+                f"[Naver] {reuters_code} 조회 성공 "
+                f"(marketStatus={data.get('marketStatus', 'N/A')})"
+            )
+            return data
+        except Exception as e:
+            logger.debug(f"[Naver] {reuters_code} 조회 실패: {e}")
+            return None
+
+    def _resolve_reuters_code(self, ticker: str) -> Optional[str]:
+        """
+        티커 심볼 → 네이버 Reuters code 결정.
+
+        - 접미사 포함(예: "AIIO.O") → 그대로 검증 후 반환
+        - 접미사 없음(예: "AIIO")   → .O → .N → .A 순으로 시도, 첫 성공 반환
+        결과는 _code_cache에 저장해 재호출 비용 제거.
+        """
+        t = ticker.upper()
+        if t in self._code_cache:
+            return self._code_cache[t]
+
+        # 이미 접미사 포함된 경우
+        if '.' in t:
+            data = self._fetch_basic(t)
+            code = t if (data and data.get("closePrice")) else None
+            self._code_cache[t] = code
+            return code
+
+        # 접미사 없음 → 후보 순으로 시도
+        for suffix in self._SUFFIX_CANDIDATES:
+            code = f"{t}{suffix}"
+            data = self._fetch_basic(code)
+            if data and data.get("closePrice"):
+                logger.info(f"[Naver] {t}: Reuters code 결정 → {code}")
+                self._code_cache[t] = code
+                return code
+
+        logger.warning(f"[Naver] {t}: 매칭 Reuters code 없음 (스킵)")
+        self._code_cache[t] = None
+        return None
+
+    # ── 공개 메서드 ───────────────────────────────────────────────────────────
+    def get_price(
+        self, ticker: str, session: MarketSession
+    ) -> Optional[Tuple[float, float, Optional[datetime], str]]:
+        """
+        네이버 증권 기준 현재가 반환.
+
+        [가격 선택 로직 — 네이버 UI와 동일]
+          PRE_MARKET  : overMarketPriceInfo.overPrice  (tradingSessionType=PRE_MARKET)
+          REGULAR     : closePrice                     (marketStatus=OPEN)
+          AFTER_HOURS : overMarketPriceInfo.overPrice  (tradingSessionType=AFTER_MARKET)
+          CLOSED      : closePrice                     (마지막 정규장 종가)
+          OVERNIGHT   : None                           (네이버 미지원)
+
+        Returns: (price, prev_close, price_time, price_type) 또는 None
+        """
+        # 네이버는 Overnight(Blue Ocean ATS 20:00~04:00 ET) 미지원
+        if session == MarketSession.OVERNIGHT:
+            return None
+
+        reuters_code = self._resolve_reuters_code(ticker)
+        if not reuters_code:
+            return None
+
+        # _resolve_reuters_code 내부에서 이미 fetch → 캐시 재사용
+        data = self._fetch_basic(reuters_code)
+        if not data:
+            return None
+
+        try:
+            market_status = data.get("marketStatus", "CLOSE")
+
+            # ── closePrice (정규장 체결가 / 마지막 종가) ────────────────────
+            close_str = (data.get("closePrice") or "0").replace(",", "")
+            close_price = float(close_str)
+            if close_price <= 0:
+                return None
+
+            # 정규장 전일종가 역산
+            # compareToPreviousClosePrice = closePrice와 전일종가의 절대 차이
+            chg_str  = (data.get("compareToPreviousClosePrice") or "0").replace(",", "")
+            chg_code = data.get("compareToPreviousPrice", {}).get("code", "3")
+            chg_val  = float(chg_str) if chg_str else 0.0
+            # code "2"=상승(RISING), "5"=하락(FALLING), "3"=보합(EVEN)
+            if chg_code == "2":
+                prev_close_regular = close_price - chg_val
+            elif chg_code == "5":
+                prev_close_regular = close_price + chg_val
+            else:
+                prev_close_regular = close_price
+            if prev_close_regular <= 0:
+                prev_close_regular = close_price
+
+            # 정규장 마지막 체결 시각
+            price_time: Optional[datetime] = None
+            local_traded = data.get("localTradedAt")
+            if local_traded:
+                try:
+                    price_time = datetime.fromisoformat(local_traded).astimezone(ET_TZ)
+                except Exception:
+                    pass
+
+            # ── 장외 시장 정보 파싱 ──────────────────────────────────────────
+            over = data.get("overMarketPriceInfo") or {}
+            over_status   = over.get("overMarketStatus", "CLOSE")
+            over_sess_type = over.get("tradingSessionType", "")
+
+            # 장외 시장 활성 중인 경우 overPrice와 시각 추출
+            over_price: float = 0.0
+            over_time: Optional[datetime] = None
+            if over_status == "OPEN":
+                over_price_str = (over.get("overPrice") or "").replace(",", "")
+                over_price = float(over_price_str) if over_price_str else 0.0
+                over_local = over.get("localTradedAt")
+                if over_local:
+                    try:
+                        over_time = datetime.fromisoformat(over_local).astimezone(ET_TZ)
+                    except Exception:
+                        pass
+
+            # ── 세션별 가격 선택 ─────────────────────────────────────────────
+
+            # 프리마켓: 네이버 tradingSessionType=PRE_MARKET 이어야 유효
+            if session == MarketSession.PRE_MARKET:
+                if over_status != "OPEN" or over_sess_type != "PRE_MARKET":
+                    logger.debug(
+                        f"[Naver] {ticker}: PRE_MARKET 요청이나 "
+                        f"overMarketStatus={over_status} / type={over_sess_type} → None"
+                    )
+                    return None
+                if over_price <= 0:
+                    return None
+                logger.info(
+                    f"[Naver] {ticker}: PRE_MARKET | "
+                    f"overPrice={over_price} | closePrice={close_price} | "
+                    f"time={over_time.strftime('%H:%M %Z') if over_time else 'N/A'}"
+                )
+                # 프리마켓 prev_close = 오늘 정규장 종가(closePrice)
+                return over_price, close_price, over_time, "pre_market"
+
+            # 정규장: marketStatus=OPEN 이어야 유효
+            elif session == MarketSession.REGULAR:
+                if market_status != "OPEN":
+                    logger.debug(
+                        f"[Naver] {ticker}: REGULAR 요청이나 "
+                        f"marketStatus={market_status} → None"
+                    )
+                    return None
+                logger.info(
+                    f"[Naver] {ticker}: REGULAR | "
+                    f"closePrice={close_price} | "
+                    f"time={price_time.strftime('%H:%M %Z') if price_time else 'N/A'}"
+                )
+                return close_price, prev_close_regular, price_time, "real_time"
+
+            # 애프터마켓: tradingSessionType=AFTER_MARKET 이어야 유효
+            elif session == MarketSession.AFTER_HOURS:
+                valid_after = over_status == "OPEN" and over_sess_type in (
+                    "AFTER_MARKET", "POST_MARKET", "AFTER_HOURS"
+                )
+                if not valid_after:
+                    logger.debug(
+                        f"[Naver] {ticker}: AFTER_HOURS 요청이나 "
+                        f"overMarketStatus={over_status} / type={over_sess_type} → None"
+                    )
+                    return None
+                if over_price <= 0:
+                    return None
+                logger.info(
+                    f"[Naver] {ticker}: AFTER_HOURS | "
+                    f"overPrice={over_price} | closePrice={close_price} | "
+                    f"time={over_time.strftime('%H:%M %Z') if over_time else 'N/A'}"
+                )
+                # 애프터마켓 prev_close = 오늘 정규장 종가(closePrice)
+                return over_price, close_price, over_time, "post_market"
+
+            # 장마감: closePrice = 마지막 정규장 종가
+            elif session == MarketSession.CLOSED:
+                logger.info(
+                    f"[Naver] {ticker}: CLOSED | closePrice={close_price}"
+                )
+                return close_price, prev_close_regular, price_time, "last_close"
+
+        except Exception as e:
+            logger.warning(f"[Naver] {ticker} 가격 파싱 실패: {e}")
+
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # yfinance 클라이언트 (Extended Hours 주력 소스)
 # ──────────────────────────────────────────────────────────────────────────────
 class YFinanceClient:
@@ -1370,7 +1636,8 @@ class USStockPriceFetcher:
         tiingo_key:  str = TIINGO_KEY,
         av_key:      str = AV_KEY,
     ):
-        self.yfd     = YahooFinanceDirectClient(cache_ttl=30)  # ← 신규
+        self.naver   = NaverWorldStockClient(cache_ttl=15)  # ← 네이버 증권 (최우선)
+        self.yfd     = YahooFinanceDirectClient(cache_ttl=30)
         self.yf      = YFinanceClient()
         self.tiingo  = TiingoClient(tiingo_key)
         self.finnhub = FinnhubClient(finnhub_key)
@@ -1557,29 +1824,34 @@ class USStockPriceFetcher:
                 return price, prev_close, ts, ptype
 
             result = self._first(
-                # ① YFDirect: crumb + preMarketPrice 필드 존재 여부 우선 확인
+                # ① 네이버 증권: overMarketPriceInfo.overPrice (PRE_MARKET 세션 검증)
+                self._try(
+                    self.naver.get_price, ticker, session, "Naver 증권",
+                    "overMarketPriceInfo.overPrice — 네이버 모바일 증권 프리마켓",
+                ),
+                # ② YFDirect: crumb + preMarketPrice 필드 존재 여부 우선 확인
                 self._try_yfd(
                     self.yfd.get_premarket_price, ticker, session,
                     "Yahoo Finance Direct",
                     "preMarketPrice — YFDirect (marketState 완화 검증)",
                 ),
-                # ② yfinance marketState 직접: PRE → preMarketPrice
+                # ③ yfinance marketState 직접: PRE → preMarketPrice
                 self._try(
                     _ms_premarket, ticker, session, "yfinance(marketState)",
                     "marketState=PRE 기반 preMarketPrice",
                 ),
-                # ③ yfinance info: preMarketPrice (세션 라우팅 기반)
+                # ④ yfinance info: preMarketPrice (세션 라우팅 기반)
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
                     "preMarketPrice — Yahoo Finance/Cboe 실시간",
                 ),
-                # ④ yfinance history(prepost=True): 마지막 Pre-market 캔들
+                # ⑤ yfinance history(prepost=True): 마지막 Pre-market 캔들
                 self._try(
                     lambda t, _s: self.yf.get_price_via_history(t),
                     ticker, session, "yfinance(history)",
                     "history prepost=True — 최신 Pre-market 캔들",
                 ),
-                # ⑤ Tiingo tngoLast
+                # ⑥ Tiingo tngoLast
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "tngoLast — IEX 집계 (yfinance ±0.3$ 수준)",
@@ -1601,6 +1873,11 @@ class USStockPriceFetcher:
         # ── 3. 정규장 (09:30–16:00 ET) ───────────────────────────────────────
         elif session == MarketSession.REGULAR:
             return self._first(
+                # ① 네이버 증권: closePrice (marketStatus=OPEN 실시간)
+                self._try(
+                    self.naver.get_price, ticker, session, "Naver 증권",
+                    "closePrice — 네이버 모바일 증권 정규장 실시간",
+                ),
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "IEX 실시간 last trade",
@@ -1619,24 +1896,29 @@ class USStockPriceFetcher:
         # ── 4. 애프터마켓 (16:00–20:00 ET) ───────────────────────────────────
         elif session == MarketSession.AFTER_HOURS:
             result = self._first(
-                # ① YFDirect: crumb 인증 후 marketState="POST" 명시 검증
+                # ① 네이버 증권: overMarketPriceInfo.overPrice (AFTER_MARKET 세션 검증)
+                self._try(
+                    self.naver.get_price, ticker, session, "Naver 증권",
+                    "overMarketPriceInfo.overPrice — 네이버 모바일 증권 애프터마켓",
+                ),
+                # ② YFDirect: crumb 인증 후 marketState="POST" 명시 검증
                 self._try_yfd(
                     self.yfd.get_postmarket_price, ticker, session,
                     "Yahoo Finance Direct",
                     "postMarketPrice — marketState=POST 검증",
                 ),
-                # ② yfinance info: postMarketPrice
+                # ③ yfinance info: postMarketPrice
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
                     "postMarketPrice — Yahoo Finance/Cboe 실시간",
                 ),
-                # ③ yfinance history(prepost=True): 마지막 캔들 Close 가격
+                # ④ yfinance history(prepost=True): 마지막 캔들 Close 가격
                 self._try(
                     lambda t, _s: self.yf.get_price_via_history(t),
                     ticker, session, "yfinance(history)",
                     "history prepost=True — 최신 After-hours 캔들",
                 ),
-                # ④ Tiingo tngoLast (17:00 ET 이후 신뢰도 저하)
+                # ⑤ Tiingo tngoLast (17:00 ET 이후 신뢰도 저하)
                 self._try(
                     self.tiingo.get_price, ticker, session, "Tiingo IEX",
                     "tngoLast — IEX 집계 (17:00 ET 이후 신뢰도 낮음)",
@@ -1658,6 +1940,11 @@ class USStockPriceFetcher:
         # ── 5. 장마감 (주말 / NYSE 공휴일) ───────────────────────────────────
         elif session == MarketSession.CLOSED:
             result = self._first(
+                # ① 네이버 증권: closePrice (마지막 정규장 종가)
+                self._try(
+                    self.naver.get_price, ticker, session, "Naver 증권",
+                    "closePrice — 네이버 모바일 증권 마지막 정규장 종가",
+                ),
                 self._try(
                     self.yf.get_price, ticker, session, "yfinance",
                     "previousClose — 마지막 정규장 종가",
