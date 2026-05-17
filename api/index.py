@@ -5271,7 +5271,7 @@ input::placeholder{color:#484f58}
 .step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
 
 /* ── 종목 진단 (AI진단 탭 신규) ── */
-.diag-grade-row{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px}
+.diag-grade-row{display:flex;align-items:center;gap:12px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px;flex-wrap:wrap}
 .diag-grade-badge{font-size:26px;font-weight:900;width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:3px solid;border-radius:50%;flex-shrink:0;letter-spacing:-1px}
 .diag-grade-info{display:flex;flex-direction:column;gap:3px}
 .diag-grade-title{font-size:15px;font-weight:700}
@@ -5661,10 +5661,6 @@ input::placeholder{color:#484f58}
           <!-- 종목 진단 (rec badge + 5-차원 진단 + 수급 아코디언 통합) -->
           <div class="card ai-report-card">
             <div class="card-title">🔬 종목 진단</div>
-            <div class="diag-rec-area">
-              <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
-              <div class="flow-rationale-text" id="flow-rationale" style="margin-top:4px"></div>
-            </div>
             <div id="ai-diagnosis-chart"></div>
           </div>
           <!-- 4행: 섹터 / 업종 정보 -->
@@ -6400,7 +6396,7 @@ function renderDiagnosis(d, isKrx) {
     bp.vol_trend === 'expanding'   ? '변동성 확대 진행중' :
     bp.vol_trend === 'contracting' ? '변동성 수축 (안정화)' : '변동성 안정'}` : '변동성 데이터 없음';
   const supplyDesc = isKrx && flow && flow.ok
-    ? `외국인 ${(flow['외국인']||0)>0?'+':''}${(flow['외국인']||0).toLocaleString()} · 기관 ${(flow['기관']||0)>0?'+':''}${(flow['기관']||0).toLocaleString()}`
+    ? `외국인 ${(flow['외국인']||0)>0?'+':''}${(flow['외국인']||0).toLocaleString()} · 기관 ${(flow['기관']||0)>0?'+':''}${(flow['기관']||0).toLocaleString()} · 개인 ${(flow['개인']||0)>0?'+':''}${(flow['개인']||0).toLocaleString()}`
     : !isKrx && d.us_enriched && d.us_enriched.sentiment && d.us_enriched.sentiment.bullish_pct != null
     ? `긍정 ${Math.round(Number(d.us_enriched.sentiment.bullish_pct)*100)}% / 부정 ${Math.round((1-Number(d.us_enriched.sentiment.bullish_pct))*100)}%`
     : '수급 데이터 로딩 중…';
@@ -6434,11 +6430,13 @@ function renderDiagnosis(d, isKrx) {
   diagEl.innerHTML = `
     <div class="diag-grade-row">
       <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${grade}</div>
-      <div class="diag-grade-info">
+      <div class="diag-grade-info" style="flex:1">
         <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· 5항목 평균 ${avg}점</span></div>
         <div class="diag-grade-sub">${gradeDesc}</div>
       </div>
+      <span id="flow-rec-badge" class="rec-badge-lg rec-hold" style="flex-shrink:0">분석 중...</span>
     </div>
+    <div id="flow-rationale" style="display:none"></div>
     <div class="diag-dims">
       ${dimBar('📊', '기술적 추세',   techScore,    techDesc)}
       ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel)}
@@ -7619,9 +7617,10 @@ function renderFlowTab(d) {
         ${rsi > 70 ? '과매수 구간' : rsi < 30 ? '과매도 구간' : '중립 구간'}
       </div>
     </div>`;
-  document.getElementById('flow-rec-badge').className = 'rec-badge-lg ' + recCls;
-  document.getElementById('flow-rec-badge').textContent = recLbl + ' · 신뢰도 ' + conf;
-  document.getElementById('flow-rationale').textContent = rationale;
+  const recBadgeEl = document.getElementById('flow-rec-badge');
+  if (recBadgeEl) { recBadgeEl.className = 'rec-badge-lg ' + recCls; recBadgeEl.textContent = recLbl + ' · 신뢰도 ' + conf; }
+  const rationaleEl = document.getElementById('flow-rationale');
+  if (rationaleEl) rationaleEl.textContent = rationale;
 
   // 섹터 정보 (스크리너 데이터 활용)
   const sectorCard = document.getElementById('flow-sector-card');
