@@ -4847,7 +4847,7 @@ input::placeholder{color:#484f58}
 .step-score.pos{background:#0d2d1a;color:#3fb950}
 .step-score.neg{background:#2d0d0d;color:#f85149}
 .step-score.neu{background:#21262d;color:#8b949e}
-.step-result{font-size:13px;color:#8b949e;line-height:1.8;display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid #30363d;text-align:left}
+.step-result{font-size:13px;color:#8b949e;line-height:1.8;display:flex;flex-direction:column;gap:8px;text-align:left}
 .step-result-line{position:relative;display:block;padding-left:14px;word-break:keep-all;overflow-wrap:anywhere}
 .step-result-line::before{content:'•';position:absolute;left:0;top:0;color:#388bfd}
 
@@ -5587,7 +5587,7 @@ input::placeholder{color:#484f58}
         <div class="metric-card" id="r-fib-card" style="display:none"><div class="m-label">📐 피보나치 기준 (60일)</div><div id="r-fib-content" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div></div>
       </div>
       <div id="r-naver-fund" style="display:none" class="card">
-        <div class="card-title">🏢 기업 펀더멘털 (네이버 금융)</div>
+        <div class="card-title">🏢 기업 펀더멘털</div>
         <div class="fund-grid">
           <div class="fund-item"><div class="fund-label">시가총액</div><div class="fund-val" id="f-mktcap"></div></div>
           <div class="fund-item"><div class="fund-label">PER</div><div class="fund-val" id="f-per"></div></div>
@@ -6213,7 +6213,8 @@ function renderResult(d) {
   // 펀더멘털
   if (isKrx && d.naver) {
     document.getElementById('r-naver-fund').style.display = 'block';
-    document.getElementById('f-mktcap').textContent = d.naver.market_cap || '-';
+    const _mc = d.naver.market_cap || '-';
+    document.getElementById('f-mktcap').textContent = (_mc !== '-' && !_mc.endsWith('원')) ? _mc + ' 원' : _mc;
     document.getElementById('f-per').textContent = d.naver.per || '-';
     document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
     document.getElementById('r-us-fund').style.display = 'none';
