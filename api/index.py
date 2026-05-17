@@ -5284,6 +5284,9 @@ input::placeholder{color:#484f58}
 .diag-bar-bg{height:6px;background:#21262d;border-radius:3px;overflow:hidden;margin-bottom:6px}
 .diag-bar-fill{height:100%;border-radius:3px;transition:width .7s cubic-bezier(.4,0,.2,1)}
 .diag-dim-desc{font-size:11px;color:#8b949e;line-height:1.5}
+.diag-dim-clickable{cursor:pointer;transition:background .2s,border-color .2s}
+.diag-dim-clickable:hover{background:#1c2128;border-color:#388bfd}
+.diag-rec-area{text-align:center;padding:8px 0 14px 0;border-bottom:1px solid #21262d;margin-bottom:14px}
 
 /* ── 투자자 수급 카드 ── */
 .investor-main-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
@@ -5655,52 +5658,35 @@ input::placeholder{color:#484f58}
       <!-- AI 탭 -->
       <div id="tab-ai" style="display:none">
         <div class="ai-diagnosis-layout">
-          <!-- 1행: 종합 점수 + 3-신호 매트릭스 -->
-          <div class="ai-top-grid">
-            <div class="card ai-score-card">
-              <div class="card-title" style="margin-bottom:10px">🏆 종합 기술적 점수</div>
-              <div class="score-wrap">
-                <div class="score-num" id="ai-score"></div>
-                <span style="color:#8b949e;font-size:15px;margin-bottom:4px">/ 100점</span>
-              </div>
-              <div class="score-bar-bg"><div class="score-bar-fill" id="ai-score-bar"></div></div>
-              <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:6px"></p>
-            </div>
-            <div class="card ai-flow-card">
-              <div class="card-title" style="margin-bottom:8px">📡 3-신호 분석 매트릭스</div>
-              <div class="signal-matrix" id="flow-matrix"></div>
-              <div style="margin:4px 0">
-                <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
-              </div>
-              <div class="flow-rationale-text" id="flow-rationale"></div>
-            </div>
-          </div>
-          <!-- 2행: 투자자 수급 (KRX 전용, JS가 표시/숨김 제어) -->
-          <div class="card" id="investor-flow-card" style="display:none">
-            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-              <span>💰 투자자 수급 <span style="font-size:10px;color:#484f58;font-weight:400">· 토스증권 기준</span></span>
-              <button id="investor-flow-retry" onclick="retryInvestorFlow()" style="display:none;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄 재시도</button>
-            </div>
-            <!-- 로딩 skeleton -->
-            <div id="investor-flow-skeleton" style="display:none">
-              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
-                <div class="skel" style="height:56px;border-radius:10px"></div>
-                <div class="skel" style="height:56px;border-radius:10px"></div>
-                <div class="skel" style="height:56px;border-radius:10px"></div>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-              </div>
-            </div>
-            <div id="investor-flow-content"></div>
-          </div>
-          <!-- 3행: 종목 진단 (5-차원 기술적 진단) -->
+          <!-- 종목 진단 (rec badge + 5-차원 진단 + 수급 아코디언 통합) -->
           <div class="card ai-report-card">
             <div class="card-title">🔬 종목 진단</div>
+            <div class="diag-rec-area">
+              <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
+              <div class="flow-rationale-text" id="flow-rationale" style="margin-top:4px"></div>
+            </div>
             <div id="ai-diagnosis-chart"></div>
+            <!-- 투자자 수급 아코디언 (KRX 전용, 수급 흐름 행 클릭 시 토글) -->
+            <div id="investor-flow-accordion" style="display:none;margin-top:12px;border-top:1px solid #21262d;padding-top:12px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <span style="font-size:12px;color:#8b949e;font-weight:600">💰 투자자 수급 <span style="font-size:10px;color:#484f58;font-weight:400">· 토스증권 기준</span></span>
+                <button id="investor-flow-retry" onclick="retryInvestorFlow()" style="display:none;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄 재시도</button>
+              </div>
+              <div id="investor-flow-skeleton" style="display:none">
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+                  <div class="skel" style="height:56px;border-radius:10px"></div>
+                  <div class="skel" style="height:56px;border-radius:10px"></div>
+                  <div class="skel" style="height:56px;border-radius:10px"></div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+                  <div class="skel" style="height:42px;border-radius:8px"></div>
+                  <div class="skel" style="height:42px;border-radius:8px"></div>
+                  <div class="skel" style="height:42px;border-radius:8px"></div>
+                  <div class="skel" style="height:42px;border-radius:8px"></div>
+                </div>
+              </div>
+              <div id="investor-flow-content"></div>
+            </div>
           </div>
           <!-- 4행: 섹터 / 업종 정보 -->
           <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
@@ -6313,17 +6299,6 @@ function renderResult(d) {
 }
 
 function renderAI(d, isKrx) {
-  const s = d.score;
-  const sClr = s >= 65 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
-  const sBarClr = s >= 65 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
-  document.getElementById('ai-score').innerHTML = `<span style="color:${sClr}">${s}</span>`;
-  const bar = document.getElementById('ai-score-bar');
-  bar.style.width = s + '%'; bar.style.background = sBarClr;
-  document.getElementById('ai-score-desc').textContent =
-    s >= 65 ? '✅ BUY (매수 우위)'
-    : s >= 40 ? '⚖️ HOLD (관망 / 중립)'
-    : '⚠️ SELL (매도 우위 / 리스크 관리)';
-
   renderDiagnosis(d, isKrx);
   renderInvestorFlow(d, isKrx);
 }
@@ -6454,9 +6429,19 @@ function renderDiagnosis(d, isKrx) {
     : `상승패턴 ${bullPat}개 · 하락패턴 ${bearPat}개 감지`;
 
   // ── 렌더 헬퍼 ─────────────────────────────────────────────────────
-  const dimBar = (emoji, label, val, desc) => {
+  const dimBar = (emoji, label, val, desc, opts = {}) => {
     const c   = val >= 65 ? '#3fb950' : val >= 40 ? '#d29922' : '#f85149';
     const lbl = val >= 65 ? '양호' : val >= 40 ? '보통' : '주의';
+    if (opts.clickable) {
+      return `<div class="diag-dim diag-dim-clickable" onclick="toggleInvestorFlowAccordion()">
+        <div class="diag-dim-head">
+          <span class="diag-dim-label">${emoji} ${label} <span id="investor-flow-arrow" style="font-size:11px;color:#8b949e;display:inline-block;transition:transform .25s">▼</span></span>
+          <span class="diag-dim-score" style="color:${c}">${val}점 · ${lbl}</span>
+        </div>
+        <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${val}%;background:${c}"></div></div>
+        <div class="diag-dim-desc">${desc}</div>
+      </div>`;
+    }
     return `<div class="diag-dim">
       <div class="diag-dim-head">
         <span class="diag-dim-label">${emoji} ${label}</span>
@@ -6476,11 +6461,11 @@ function renderDiagnosis(d, isKrx) {
       </div>
     </div>
     <div class="diag-dims">
-      ${dimBar('📊', '기술적 추세',    techScore,     techDesc)}
-      ${dimBar('⚡', '모멘텀 강도',    momentumScore,  rsiLabel)}
-      ${dimBar('🌊', '변동성 안정도',  volScore,       volDesc)}
-      ${dimBar('💰', '수급 흐름',      supplyScore,    supplyDesc)}
-      ${dimBar('🕯️', '패턴 신호',     patScore,       patDesc)}
+      ${dimBar('📊', '기술적 추세',   techScore,    techDesc)}
+      ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel)}
+      ${dimBar('🌊', '변동성 안정도', volScore,      volDesc)}
+      ${isKrx ? dimBar('💰', '수급 흐름', supplyScore, supplyDesc, {clickable: true}) : ''}
+      ${dimBar('🕯️', '패턴 신호',    patScore,      patDesc)}
     </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
       ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 단계별 상세 분석은 📝 단계별 리포트 탭을 확인하세요.
@@ -6489,23 +6474,17 @@ function renderDiagnosis(d, isKrx) {
 
 // ── 투자자 수급 렌더 (KRX 전용) ────────────────────────────────────────────
 function renderInvestorFlow(d, isKrx) {
-  const card     = document.getElementById('investor-flow-card');
   const badge    = document.getElementById('investor-badge');
   const retryBtn = document.getElementById('investor-flow-retry');
   const skelEl   = document.getElementById('investor-flow-skeleton');
   const contEl   = document.getElementById('investor-flow-content');
-  if (!card) return;
 
-  // US 종목 → 카드 완전 숨김
-  if (!isKrx) { card.style.display = 'none'; if (badge) badge.classList.remove('visible'); return; }
-
-  // KRX 종목이면 항상 카드 표시
-  card.style.display = '';
+  // US 종목 → 배지만 제거 (수급 흐름 행 자체가 KRX 전용이므로 아코디언 없음)
+  if (!isKrx) { if (badge) badge.classList.remove('visible'); return; }
 
   const flow = d.investor_flow;
 
-  // ok=false: 비동기 자동 로드가 진행 중이므로 스켈레톤 표시
-  // (loadInvestorFlowAsync가 완료되면 이 함수를 다시 호출하여 ok=true 또는 에러 렌더링)
+  // ok=false: 비동기 자동 로드 진행 중 — 아코디언 내부에 스켈레톤 표시
   if (!flow || !flow.ok) {
     if (skelEl) skelEl.style.display = '';
     if (contEl) contEl.innerHTML = '';
@@ -6633,6 +6612,16 @@ async function loadInvestorFlowAsync(symbol) {
 async function retryInvestorFlow() {
   if (!currentData || currentData.market !== 'KRX') return;
   await loadInvestorFlowAsync(currentData.symbol);
+}
+
+// ── 수급 흐름 아코디언 토글 ─────────────────────────────────────────────────
+function toggleInvestorFlowAccordion() {
+  const acc   = document.getElementById('investor-flow-accordion');
+  const arrow = document.getElementById('investor-flow-arrow');
+  if (!acc) return;
+  const nowHidden = acc.style.display === 'none';
+  acc.style.display = nowHidden ? '' : 'none';
+  if (arrow) arrow.style.transform = nowHidden ? 'rotate(180deg)' : 'rotate(0deg)';
 }
 
 function renderForecast(d, isKrx) {
@@ -7612,7 +7601,8 @@ function renderFlowTab(d) {
   const newsSub = finnSent && finnSent.bullish_pct != null
     ? `긍정 ${posN}% · 부정 ${negN}%`
     : `호재 ${posN}건 · 악재 ${negN}건`;
-  document.getElementById('flow-matrix').innerHTML = `
+  const matrixEl = document.getElementById('flow-matrix');
+  if (matrixEl) matrixEl.innerHTML = `
     <div class="sig-cell">
       <div class="sig-cell-label">📰 뉴스 감성</div>
       <div class="sig-cell-val ${newsSentClr}">${newsSentLbl}</div>
