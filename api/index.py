@@ -6434,17 +6434,11 @@ function renderDiagnosis(d, isKrx) {
   const buildStepHtml = (steps) => {
     if (!steps || !steps.length) return '<p style="font-size:12px;color:#484f58;padding:6px 0">해당 분석 데이터가 없습니다.</p>';
     return steps.map(st => {
-      const sc      = st.score;
-      const scCls   = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
-      const scLabel = sc > 0 ? '+' + sc : sc;
       const isS5    = st.step.startsWith('5.');
+      const title   = st.step.replace(/^\d+\.\s*/, '');
       return `<div class="step-item">
         <div class="step-header">
-          <span class="step-title">${st.step}</span>
-          <div class="step-meta">
-            ${st.weight ? `<span class="step-weight">${st.weight}</span>` : ''}
-            <span class="step-score ${scCls}">${scLabel}점</span>
-          </div>
+          <span class="step-title">${title}</span>
         </div>
         ${isS5
           ? `<div class="step-patterns">${patCardHtml}</div>`
@@ -6454,11 +6448,12 @@ function renderDiagnosis(d, isKrx) {
     }).join('');
   };
 
-  // 차원별 단계 그룹핑: 1→기술추세 / 2→모멘텀 / 3→변동성 / 4·5·6→패턴·신호
-  const stepTech = allSteps.filter(st => st.step.startsWith('1.'));
-  const stepMom  = allSteps.filter(st => st.step.startsWith('2.'));
-  const stepVol  = allSteps.filter(st => st.step.startsWith('3.'));
-  const stepPat  = allSteps.filter(st => !st.step.match(/^[123]\./));
+  // 차원별 단계 그룹핑: 1→기술추세 / 2→모멘텀 / 3→변동성 / 4→거래량(독립) / 5·6→패턴·신호
+  const stepTech   = allSteps.filter(st => st.step.startsWith('1.'));
+  const stepMom    = allSteps.filter(st => st.step.startsWith('2.'));
+  const stepVol    = allSteps.filter(st => st.step.startsWith('3.'));
+  const stepVolume = allSteps.filter(st => st.step.startsWith('4.'));
+  const stepPat    = allSteps.filter(st => !st.step.match(/^[1234]\./));
 
   // ── 렌더 헬퍼 ─────────────────────────────────────────────────────
   const dimBar = (emoji, label, val, desc, opts = {}) => {
@@ -6533,6 +6528,24 @@ function renderDiagnosis(d, isKrx) {
         </div>
         <div id="investor-flow-content"></div>
       </div>` : ''}
+      ${(() => {
+        if (!stepVolume.length) return '';
+        const vSt   = stepVolume[0];
+        const wPct  = parseFloat(vSt.weight) || 10;
+        const maxSc = wPct / 2;
+        const barVal = Math.max(0, Math.min(100, Math.round(50 + (vSt.score / maxSc) * 30)));
+        const vc    = barVal >= 65 ? '#3fb950' : barVal >= 40 ? '#d29922' : '#f85149';
+        const vlbl  = barVal >= 65 ? '양호' : barVal >= 40 ? '보통' : '주의';
+        const vdesc = vSt.result.split(' | ').filter(l => l.trim()).join(' · ') || '거래량 분석 완료';
+        return `<div class="diag-dim">
+          <div class="diag-dim-head">
+            <span class="diag-dim-label">📦 거래량 확인</span>
+            <span class="diag-dim-score" style="color:${vc}">${barVal}점 · ${vlbl}</span>
+          </div>
+          <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${barVal}%;background:${vc}"></div></div>
+          <div class="diag-dim-desc">${vdesc}</div>
+        </div>`;
+      })()}
       ${dimBar('🕯️', '패턴 신호',    patScore,      patDesc,   {accordionId:'dim-pat',  accordionContent: buildStepHtml(stepPat)})}
     </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
