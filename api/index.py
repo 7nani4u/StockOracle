@@ -4346,25 +4346,12 @@ def route(path: str, params: Dict) -> Dict:
         # Market Regime 필터 적용
         regime = check_market_regime(market)
         if regime == "BEAR":
-            if isinstance(ai_strategy, dict):
-                ai_strategy["result"] += " | [시장 상태] 시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"
-            else:
-                ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"}
             score = min(score, 40) # 하락장에서는 점수 강제 하향
-        elif regime == "BULL":
-            if isinstance(ai_strategy, dict):
-                ai_strategy["result"] += " | [시장 상태] 시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"
-            else:
-                ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"}
-            
+
         # 부채비율 검증 로직 적용
         try:
             info = yf.Ticker(sym).info
             if not validate_financial_health(info):
-                if isinstance(ai_strategy, dict):
-                    ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"
-                else:
-                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"}
                 score = min(score, 45)
         except:
             pass
@@ -4484,8 +4471,7 @@ def route(path: str, params: Dict) -> Dict:
                 if foreign != 0: flow_notes.append(f"외국인 {foreign:+,}주")
                 if inst    != 0: flow_notes.append(f"기관 {inst:+,}주")
                 if pension != 0: flow_notes.append(f"연기금 {pension:+,}주")
-                if flow_notes and isinstance(ai_strategy, dict):
-                    ai_strategy["result"] += " | [투자자 수급] " + " / ".join(flow_notes)
+                # [투자자 수급] 문구는 AI 진단 탭 수급 흐름 아코디언에서 직접 표시
 
         # ── Step 4: 예측·리스크 계산 — 보정된 현재가(last) 기준 ─────────────
         # ATR fallback 도 보정된 last 기준으로 재계산
@@ -5623,7 +5609,7 @@ input::placeholder{color:#484f58}
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트</button>
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
-        <button class="tab-btn" onclick="switchTab('report')">📝 단계별 리포트</button>
+        <button class="tab-btn" onclick="switchTab('report')" style="display:none">📝 단계별 리포트</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 예측</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스</button>
         <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">📋 KRX</button>
@@ -6280,43 +6266,13 @@ function renderAI(d, isKrx) {
 
 // ── 단계별 분석 리포트 렌더 (tab-report 전용) ────────────────────────────────
 function renderReport(d) {
-  const patterns = d.candlestick_patterns || [];
-  const patternCardsHtml = patterns.length === 0
-    ? '<p class="empty-note">특이한 캔들 패턴이 감지되지 않았습니다.</p>'
-    : patterns.map(p => {
-        const pcls = p.direction === '상승' ? 'pattern-bull' : p.direction === '하락' ? 'pattern-bear' : 'pattern-neu';
-        const icon = p.direction === '상승' ? '📈' : p.direction === '하락' ? '📉' : '➖';
-        return `<div class="pattern-item ${pcls}">
-          <div class="pattern-head"><span class="pattern-icon">${icon}</span><span>${p.name}</span></div>
-          <div class="pattern-desc">${p.desc}</div>
-        </div>`;
-      }).join('');
-
   const stepsList = document.getElementById('steps-list');
   if (!stepsList) return;
-  stepsList.innerHTML = (d.analysis_steps || []).map(st => {
-    const sc = st.score;
-    const cls = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
-    const label = sc > 0 ? '+' + sc : sc;
-    const weight = st.weight || '';
-    const isStep5 = st.step.startsWith('5.');
-    const inlinePatterns = isStep5
-      ? `<div class="step-patterns">${patternCardsHtml}</div>`
-      : '';
-    return `<div class="step-item">
-      <div class="step-header">
-        <span class="step-title">${st.step}</span>
-        <div class="step-meta">
-          ${weight ? `<span class="step-weight">${weight}</span>` : ''}
-          <span class="step-score ${cls}">${label}점</span>
-        </div>
-      </div>
-      ${isStep5 ? '' : `<div class="step-result">
-        ${st.result.split(' | ').filter(l => l.trim()).map(line => `<span class="step-result-line">${line}</span>`).join('')}
-      </div>`}
-      ${inlinePatterns}
-    </div>`;
-  }).join('');
+  stepsList.innerHTML = `<div style="text-align:center;padding:32px 16px;color:#8b949e;font-size:13px">
+    <div style="font-size:28px;margin-bottom:12px">🔬</div>
+    단계별 분석 내용이 <strong style="color:#58a6ff">AI 진단</strong> 탭으로 이동되었습니다.<br>
+    <span style="font-size:12px;margin-top:8px;display:inline-block">각 지표 항목을 클릭하면 상세 분석을 확인할 수 있습니다.</span>
+  </div>`;
 }
 
 // ── 수급 흐름 해석 문구 생성 ─────────────────────────────────────────────────
@@ -6464,10 +6420,64 @@ function renderDiagnosis(d, isKrx) {
   const patDesc    = patterns.length === 0 ? '특이 캔들 패턴 없음'
     : `상승패턴 ${bullPat}개 · 하락패턴 ${bearPat}개 감지`;
 
+  // ── 단계별 분석 스텝 HTML 빌더 ─────────────────────────────────────────────
+  const allSteps    = d.analysis_steps || [];
+  const patCardHtml = patterns.map(p => {
+    const pcls = p.direction === '상승' ? 'pattern-bull' : p.direction === '하락' ? 'pattern-bear' : 'pattern-neu';
+    const icon  = p.direction === '상승' ? '📈' : p.direction === '하락' ? '📉' : '➖';
+    return `<div class="pattern-item ${pcls}">
+      <div class="pattern-head"><span class="pattern-icon">${icon}</span><span>${p.name}</span></div>
+      <div class="pattern-desc">${p.desc}</div>
+    </div>`;
+  }).join('') || '<p class="empty-note">특이한 캔들 패턴이 감지되지 않았습니다.</p>';
+
+  const buildStepHtml = (steps) => {
+    if (!steps || !steps.length) return '<p style="font-size:12px;color:#484f58;padding:6px 0">해당 분석 데이터가 없습니다.</p>';
+    return steps.map(st => {
+      const sc      = st.score;
+      const scCls   = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
+      const scLabel = sc > 0 ? '+' + sc : sc;
+      const isS5    = st.step.startsWith('5.');
+      return `<div class="step-item">
+        <div class="step-header">
+          <span class="step-title">${st.step}</span>
+          <div class="step-meta">
+            ${st.weight ? `<span class="step-weight">${st.weight}</span>` : ''}
+            <span class="step-score ${scCls}">${scLabel}점</span>
+          </div>
+        </div>
+        ${isS5
+          ? `<div class="step-patterns">${patCardHtml}</div>`
+          : `<div class="step-result">${st.result.split(' | ').filter(l => l.trim()).map(line => `<span class="step-result-line">${line}</span>`).join('')}</div>`
+        }
+      </div>`;
+    }).join('');
+  };
+
+  // 차원별 단계 그룹핑: 1→기술추세 / 2→모멘텀 / 3→변동성 / 4·5·6→패턴·신호
+  const stepTech = allSteps.filter(st => st.step.startsWith('1.'));
+  const stepMom  = allSteps.filter(st => st.step.startsWith('2.'));
+  const stepVol  = allSteps.filter(st => st.step.startsWith('3.'));
+  const stepPat  = allSteps.filter(st => !st.step.match(/^[123]\./));
+
   // ── 렌더 헬퍼 ─────────────────────────────────────────────────────
   const dimBar = (emoji, label, val, desc, opts = {}) => {
     const c   = val >= 65 ? '#3fb950' : val >= 40 ? '#d29922' : '#f85149';
     const lbl = val >= 65 ? '양호' : val >= 40 ? '보통' : '주의';
+    if (opts.accordionId) {
+      const aId = opts.accordionId;
+      return `<div class="diag-dim diag-dim-clickable" onclick="toggleDimAccordion('${aId}')">
+        <div class="diag-dim-head">
+          <span class="diag-dim-label">${emoji} ${label} <span id="arrow-${aId}" style="font-size:11px;color:#8b949e;display:inline-block;transition:transform .25s">▼</span></span>
+          <span class="diag-dim-score" style="color:${c}">${val}점 · ${lbl}</span>
+        </div>
+        <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${val}%;background:${c}"></div></div>
+        <div class="diag-dim-desc">${desc}</div>
+      </div>
+      <div id="${aId}" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
+        <div style="display:flex;flex-direction:column;gap:8px">${opts.accordionContent || ''}</div>
+      </div>`;
+    }
     if (opts.clickable) {
       return `<div class="diag-dim diag-dim-clickable" onclick="toggleInvestorFlowAccordion()">
         <div class="diag-dim-head">
@@ -6499,9 +6509,9 @@ function renderDiagnosis(d, isKrx) {
     </div>
     <div id="flow-rationale" style="display:none"></div>
     <div class="diag-dims">
-      ${dimBar('📊', '기술적 추세',   techScore,    techDesc)}
-      ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel)}
-      ${dimBar('🌊', '변동성 안정도', volScore,      volDesc)}
+      ${dimBar('📊', '기술적 추세',   techScore,    techDesc,  {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
+      ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel, {accordionId:'dim-mom',  accordionContent: buildStepHtml(stepMom)})}
+      ${dimBar('🌊', '변동성 안정도', volScore,      volDesc,   {accordionId:'dim-vol',  accordionContent: buildStepHtml(stepVol)})}
       ${isKrx ? dimBar('💰', '수급 흐름', supplyScore, supplyDesc, {clickable: true}) : ''}
       ${isKrx ? `<div id="investor-flow-accordion" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -6523,10 +6533,10 @@ function renderDiagnosis(d, isKrx) {
         </div>
         <div id="investor-flow-content"></div>
       </div>` : ''}
-      ${dimBar('🕯️', '패턴 신호',    patScore,      patDesc)}
+      ${dimBar('🕯️', '패턴 신호',    patScore,      patDesc,   {accordionId:'dim-pat',  accordionContent: buildStepHtml(stepPat)})}
     </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
-      ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 단계별 상세 분석은 📝 단계별 리포트 탭을 확인하세요.
+      ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 각 항목을 클릭하면 단계별 상세 분석을 확인할 수 있습니다.
     </div>`;
 }
 
@@ -6676,6 +6686,15 @@ async function retryInvestorFlow() {
 function toggleInvestorFlowAccordion() {
   const acc   = document.getElementById('investor-flow-accordion');
   const arrow = document.getElementById('investor-flow-arrow');
+  if (!acc) return;
+  const nowHidden = acc.style.display === 'none';
+  acc.style.display = nowHidden ? '' : 'none';
+  if (arrow) arrow.style.transform = nowHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+}
+
+function toggleDimAccordion(id) {
+  const acc   = document.getElementById(id);
+  const arrow = document.getElementById('arrow-' + id);
   if (!acc) return;
   const nowHidden = acc.style.display === 'none';
   acc.style.display = nowHidden ? '' : 'none';
