@@ -4847,7 +4847,7 @@ input::placeholder{color:#484f58}
 .step-score.pos{background:#0d2d1a;color:#3fb950}
 .step-score.neg{background:#2d0d0d;color:#f85149}
 .step-score.neu{background:#21262d;color:#8b949e}
-.step-result{font-size:13px;color:#8b949e;line-height:1.8;display:flex;flex-direction:column;gap:8px;text-align:left}
+.step-result{font-size:13px;color:#8b949e;line-height:1.8;display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid #30363d;text-align:left}
 .step-result-line{position:relative;display:block;padding-left:14px;word-break:keep-all;overflow-wrap:anywhere}
 .step-result-line::before{content:'•';position:absolute;left:0;top:0;color:#388bfd}
 
@@ -4856,9 +4856,9 @@ input::placeholder{color:#484f58}
 .pattern-head{display:flex;align-items:flex-start;gap:8px;font-weight:700;line-height:1.5;word-break:keep-all;overflow-wrap:anywhere}
 .pattern-icon{flex-shrink:0}
 .pattern-desc{font-size:12px;color:#8b949e;line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
-.pattern-bull{background:#0d2d1a;border:1px solid #1a4730}
-.pattern-bear{background:#2d0d0d;border:1px solid #4d1515}
-.pattern-neu{background:#21262d;border:1px solid #30363d}
+.pattern-bull{background:#0d2d1a}
+.pattern-bear{background:#2d0d0d}
+.pattern-neu{background:#21262d}
 
 /* 흐름 분석 보조 UI */
 .flow-subtext{font-size:11px;color:#484f58;margin-top:4px;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
@@ -5254,7 +5254,7 @@ input::placeholder{color:#484f58}
 }
 
 /* ── 단계별 리포트 내 캔들 패턴 카드 ── */
-.step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
+.step-patterns{display:flex;flex-direction:column;gap:6px;padding-top:12px;border-top:1px solid #30363d}
 
 /* ── 종목 진단 (AI진단 탭 신규) ── */
 .diag-grade-row{display:flex;align-items:center;gap:12px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px;flex-wrap:wrap}
