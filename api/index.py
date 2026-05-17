@@ -5666,27 +5666,6 @@ input::placeholder{color:#484f58}
               <div class="flow-rationale-text" id="flow-rationale" style="margin-top:4px"></div>
             </div>
             <div id="ai-diagnosis-chart"></div>
-            <!-- 투자자 수급 아코디언 (KRX 전용, 수급 흐름 행 클릭 시 토글) -->
-            <div id="investor-flow-accordion" style="display:none;margin-top:12px;border-top:1px solid #21262d;padding-top:12px">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                <span style="font-size:12px;color:#8b949e;font-weight:600">💰 투자자 수급 <span style="font-size:10px;color:#484f58;font-weight:400">· 토스증권 기준</span></span>
-                <button id="investor-flow-retry" onclick="retryInvestorFlow()" style="display:none;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄 재시도</button>
-              </div>
-              <div id="investor-flow-skeleton" style="display:none">
-                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
-                  <div class="skel" style="height:56px;border-radius:10px"></div>
-                  <div class="skel" style="height:56px;border-radius:10px"></div>
-                  <div class="skel" style="height:56px;border-radius:10px"></div>
-                </div>
-                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
-                  <div class="skel" style="height:42px;border-radius:8px"></div>
-                  <div class="skel" style="height:42px;border-radius:8px"></div>
-                  <div class="skel" style="height:42px;border-radius:8px"></div>
-                  <div class="skel" style="height:42px;border-radius:8px"></div>
-                </div>
-              </div>
-              <div id="investor-flow-content"></div>
-            </div>
           </div>
           <!-- 4행: 섹터 / 업종 정보 -->
           <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
@@ -6465,6 +6444,26 @@ function renderDiagnosis(d, isKrx) {
       ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel)}
       ${dimBar('🌊', '변동성 안정도', volScore,      volDesc)}
       ${isKrx ? dimBar('💰', '수급 흐름', supplyScore, supplyDesc, {clickable: true}) : ''}
+      ${isKrx ? `<div id="investor-flow-accordion" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:12px;color:#8b949e;font-weight:600">💰 투자자 수급 <span style="font-size:10px;color:#484f58;font-weight:400">· 토스증권 기준</span></span>
+          <button id="investor-flow-retry" onclick="retryInvestorFlow()" style="display:none;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄 재시도</button>
+        </div>
+        <div id="investor-flow-skeleton" style="display:none">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+            <div class="skel" style="height:56px;border-radius:10px"></div>
+            <div class="skel" style="height:56px;border-radius:10px"></div>
+            <div class="skel" style="height:56px;border-radius:10px"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+            <div class="skel" style="height:42px;border-radius:8px"></div>
+            <div class="skel" style="height:42px;border-radius:8px"></div>
+            <div class="skel" style="height:42px;border-radius:8px"></div>
+            <div class="skel" style="height:42px;border-radius:8px"></div>
+          </div>
+        </div>
+        <div id="investor-flow-content"></div>
+      </div>` : ''}
       ${dimBar('🕯️', '패턴 신호',    patScore,      patDesc)}
     </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
