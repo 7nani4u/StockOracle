@@ -6510,6 +6510,7 @@ function renderDiagnosis(d, isKrx) {
       <span id="flow-rec-badge" class="rec-badge-lg rec-hold" style="flex-shrink:0">분석 중...</span>
     </div>
     <div id="flow-rationale" style="display:none"></div>
+    <div id="flow-matrix" class="signal-matrix"></div>
     <div class="diag-dims">
       ${dimBar('📊', '기술적 추세',   techScore,    techDesc,  {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel, {accordionId:'dim-mom',  accordionContent: buildStepHtml(stepMom)})}
@@ -7697,7 +7698,8 @@ function renderFlowTab(d) {
   const newsSub = finnSent && finnSent.bullish_pct != null
     ? `긍정 ${posN}% · 부정 ${negN}%`
     : `호재 ${posN}건 · 악재 ${negN}건`;
-  document.getElementById('flow-matrix').innerHTML = `
+  const flowMatrix = document.getElementById('flow-matrix');
+  if (flowMatrix) flowMatrix.innerHTML = `
     <div class="sig-cell">
       <div class="sig-cell-label">📰 뉴스 감성</div>
       <div class="sig-cell-val ${newsSentClr}">${newsSentLbl}</div>
@@ -7715,9 +7717,13 @@ function renderFlowTab(d) {
         ${rsi > 70 ? '과매수 구간' : rsi < 30 ? '과매도 구간' : '중립 구간'}
       </div>
     </div>`;
-  document.getElementById('flow-rec-badge').className = 'rec-badge-lg ' + recCls;
-  document.getElementById('flow-rec-badge').textContent = recLbl + ' · 신뢰도 ' + conf;
-  document.getElementById('flow-rationale').textContent = rationale;
+  const flowRecBadge = document.getElementById('flow-rec-badge');
+  if (flowRecBadge) {
+    flowRecBadge.className = 'rec-badge-lg ' + recCls;
+    flowRecBadge.textContent = recLbl + ' · 신뢰도 ' + conf;
+  }
+  const flowRationale = document.getElementById('flow-rationale');
+  if (flowRationale) flowRationale.textContent = rationale;
 
   // 섹터 정보 (스크리너 데이터 활용)
   const sectorCard = document.getElementById('flow-sector-card');
