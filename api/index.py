@@ -4797,6 +4797,7 @@ input::placeholder{color:#484f58}
 /* 메트릭 카드 */
 .metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
 .metric-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
+.metric-price-row{display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap}
 .m-label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
 .m-value{font-size:22px;font-weight:700}
 .m-sub{font-size:12px;font-weight:500;margin-top:2px}
@@ -5043,7 +5044,15 @@ input::placeholder{color:#484f58}
   #sidebar.open{transform:translateX(0)}
 
   /* 그리드 1열 */
-  .metrics-grid{grid-template-columns:1fr 1fr;gap:8px}
+  .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:start}
+  .metric-price-card{grid-column:span 3}
+  .metric-volume-card{grid-column:span 1}
+  .metric-atr-card{grid-column:span 2}
+  #r-fib-card{grid-column:span 2}
+  .metric-price-row{gap:14px}
+  #r-fib-content>div{gap:8px}
+  #r-fib-content span{white-space:nowrap}
+  #r-fib-content b{white-space:nowrap;text-align:right}
   .two-col-grid{grid-template-columns:1fr;gap:10px}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
@@ -5074,7 +5083,10 @@ input::placeholder{color:#484f58}
 /* ── 소형 모바일 (≤ 480px) ── */
 @media(max-width:480px){
   #main{padding:52px 10px 20px}
-  .metrics-grid{grid-template-columns:1fr 1fr;gap:6px}
+  .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .metric-price-card{grid-column:1/-1}
+  .metric-volume-card,.metric-atr-card{grid-column:span 2}
+  #r-fib-card{grid-column:1/-1}
   /* 480px 이하: 2열, 카드 패딩 축소로 내용 확보 */
   .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
   .sector-card{padding:9px 8px;border-radius:10px}
@@ -5083,6 +5095,11 @@ input::placeholder{color:#484f58}
   .sector-card-pct{font-size:12px}
   .sector-card-mood{font-size:10px;padding:2px 5px}
   .metric-card{padding:10px}
+  .metric-price-row{justify-content:space-between;gap:10px}
+  #r-prob{font-size:10px!important;gap:3px!important}
+  #r-fib-card .m-label{white-space:nowrap}
+  #r-fib-content{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px!important}
+  #r-fib-content>div{display:flex!important;justify-content:space-between!important;align-items:baseline;background:#0d1117;border-radius:7px;padding:6px 8px}
   .m-label{font-size:10px}
   .m-value{font-size:16px}
   .card{padding:12px;border-radius:10px}
@@ -5095,6 +5112,13 @@ input::placeholder{color:#484f58}
   .risk-card{padding:12px}
   .buy-card{padding:12px}
   .fund-grid{grid-template-columns:1fr 1fr}
+  #result-tabs{gap:5px}
+  #result-tabs .tab-btn{font-size:11px;padding:7px 9px}
+  .overall-signal-box{flex-direction:column;align-items:flex-start;padding:12px;gap:10px}
+  .overall-signal-box>div{width:100%;text-align:left!important}
+  .ovs-counts{gap:8px;font-size:11px}
+  .indicator-item{padding:10px}
+  .ind-desc{font-size:11px}
 }
 
 /* ── Pull-to-Refresh 인디케이터 ── */
@@ -5592,9 +5616,9 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div class="metrics-grid">
-        <div class="metric-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
-        <div class="metric-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
-        <div class="metric-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
+        <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
+        <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
+        <div class="metric-card metric-atr-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
         <div class="metric-card" id="r-fib-card" style="display:none"><div class="m-label">📐 피보나치 기준 (60일)</div><div id="r-fib-content" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div></div>
       </div>
       <div id="r-naver-fund" style="display:none" class="card">
