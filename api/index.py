@@ -4373,12 +4373,25 @@ def route(path: str, params: Dict) -> Dict:
         # Market Regime 필터 적용
         regime = check_market_regime(market)
         if regime == "BEAR":
+            if isinstance(ai_strategy, dict):
+                ai_strategy["result"] += " | [시장 상태] 시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"
+            else:
+                ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"}
             score = min(score, 40) # 하락장에서는 점수 강제 하향
+        elif regime == "BULL":
+            if isinstance(ai_strategy, dict):
+                ai_strategy["result"] += " | [시장 상태] 시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"
+            else:
+                ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"}
 
         # 부채비율 검증 로직 적용
         try:
             info = yf.Ticker(sym).info
             if not validate_financial_health(info):
+                if isinstance(ai_strategy, dict):
+                    ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"
+                else:
+                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"}
                 score = min(score, 45)
         except:
             pass
@@ -4498,7 +4511,8 @@ def route(path: str, params: Dict) -> Dict:
                 if foreign != 0: flow_notes.append(f"외국인 {foreign:+,}주")
                 if inst    != 0: flow_notes.append(f"기관 {inst:+,}주")
                 if pension != 0: flow_notes.append(f"연기금 {pension:+,}주")
-                # [투자자 수급] 문구는 AI 진단 탭 수급 흐름 아코디언에서 직접 표시
+                if flow_notes and isinstance(ai_strategy, dict):
+                    ai_strategy["result"] += " | [투자자 수급] " + " / ".join(flow_notes)
 
         # ── Step 4: 예측·리스크 계산 — 보정된 현재가(last) 기준 ─────────────
         # ATR fallback 도 보정된 last 기준으로 재계산
@@ -5735,7 +5749,7 @@ input::placeholder{color:#484f58}
           <div id="ai-strategy-section"></div>
         </div>
         <div class="card">
-          <div class="card-title">📈 중장기 주가 예측 (시나리오별 목표가)</div>
+          <div class="card-title">📈 향후 주가 상승 가능 범위 (목표가 예측)</div>
           <div id="target-price-section"></div>
         </div>
         <div class="card">
@@ -6825,94 +6839,6 @@ function toggleDimAccordion(id) {
   if (arrow) arrow.style.transform = nowHidden ? 'rotate(180deg)' : 'rotate(0deg)';
 }
 
-// ── 중장기 목표가 예측 SVG 팬 차트 ──────────────────────────────────────────
-function buildTargetSVG(cur, milestones, isKrx) {
-  if (!milestones || !milestones.length) return '';
-  const W = 600, H = 240, PL = 74, PR = 18, PT = 20, PB = 48;
-  const PW = W - PL - PR, PH = H - PT - PB;
-  const n  = milestones.length;
-
-  const allPrices = [cur, ...milestones.flatMap(m => [m.conservative.price, m.base.price, m.optimistic.price])];
-  const rawMin = Math.min(...allPrices), rawMax = Math.max(...allPrices);
-  const pad  = (rawMax - rawMin) * 0.15;
-  const minP = rawMin - pad * 0.5, maxP = rawMax + pad;
-  const toY  = p => PT + PH * (1 - (p - minP) / (maxP - minP));
-  const xs   = Array.from({length: n + 1}, (_, i) => PL + i * PW / n);
-  const curY = toY(cur);
-
-  const conPs  = [cur, ...milestones.map(m => m.conservative.price)];
-  const basePs = [cur, ...milestones.map(m => m.base.price)];
-  const optPs  = [cur, ...milestones.map(m => m.optimistic.price)];
-  const pts = arr => arr.map((p, i) => `${xs[i].toFixed(1)},${toY(p).toFixed(1)}`).join(' ');
-
-  // Fan polygons: forward upper + backward lower
-  const poly = (upper, lower) =>
-    upper.map((p, i) => `${xs[i].toFixed(1)},${toY(p).toFixed(1)}`).join(' ') + ' ' +
-    lower.slice().reverse().map((p, i) => `${xs[n - i].toFixed(1)},${toY(p).toFixed(1)}`).join(' ');
-  const optBand  = poly(optPs,  basePs);
-  const baseBand = poly(basePs, conPs);
-
-  // Y-axis ticks
-  const yTicks = Array.from({length: 5}, (_, i) => {
-    const p = minP + (maxP - minP) * (i / 4);
-    return {p, y: toY(p)};
-  });
-  const fmtY = p => {
-    if (!isKrx) return p >= 1000 ? '$' + (p / 1000).toFixed(0) + 'K' : '$' + p.toFixed(0);
-    if (p >= 1e8) return (p / 1e8).toFixed(1) + '억';
-    if (p >= 1e4) return (p / 1e4).toFixed(1) + '만';
-    return Math.round(p).toLocaleString();
-  };
-
-  const grid = yTicks.map(t =>
-    `<line x1="${PL}" y1="${t.y.toFixed(1)}" x2="${W-PR}" y2="${t.y.toFixed(1)}" stroke="#1c2333" stroke-width="1"/>` +
-    `<text x="${PL-5}" y="${(t.y+3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="#484f58" font-family="sans-serif">${fmtY(t.p)}</text>`
-  ).join('');
-
-  const vLines = xs.slice(1).map(x =>
-    `<line x1="${x.toFixed(1)}" y1="${PT}" x2="${x.toFixed(1)}" y2="${PT+PH}" stroke="#1c2333" stroke-width="1" stroke-dasharray="3,3"/>`
-  ).join('');
-
-  const dots = milestones.map((m, i) => {
-    const xi = xs[i + 1], yO = toY(m.optimistic.price), yB = toY(m.base.price), yC = toY(m.conservative.price);
-    const lblY = PT + PH + 16;
-    return [
-      `<circle cx="${xi.toFixed(1)}" cy="${yO.toFixed(1)}" r="3"   fill="#3fb950" stroke="#0d1117" stroke-width="1.2"/>`,
-      `<circle cx="${xi.toFixed(1)}" cy="${yB.toFixed(1)}" r="3.5" fill="#388bfd" stroke="#0d1117" stroke-width="1.2"/>`,
-      `<circle cx="${xi.toFixed(1)}" cy="${yC.toFixed(1)}" r="3"   fill="#6e7681" stroke="#0d1117" stroke-width="1.2"/>`,
-      `<text x="${xi.toFixed(1)}" y="${(yO-7).toFixed(1)}" text-anchor="middle" font-size="9" fill="#3fb950" font-family="sans-serif">+${m.optimistic.return_pct}%</text>`,
-      `<text x="${xi.toFixed(1)}" y="${(yB+16).toFixed(1)}" text-anchor="middle" font-size="9" fill="#388bfd" font-family="sans-serif">+${m.base.return_pct}%</text>`,
-      m.label.split(' ').map((ln, li) =>
-        `<text x="${xi.toFixed(1)}" y="${(lblY + li * 12).toFixed(1)}" text-anchor="middle" font-size="10" fill="#8b949e" font-family="sans-serif">${ln}</text>`
-      ).join(''),
-    ].join('');
-  }).join('');
-
-  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">
-    <defs>
-      <linearGradient id="tg-opt"  x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0%" stop-color="#3fb950" stop-opacity="0"/><stop offset="100%" stop-color="#3fb950" stop-opacity="0.38"/>
-      </linearGradient>
-      <linearGradient id="tg-base" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0%" stop-color="#388bfd" stop-opacity="0"/><stop offset="100%" stop-color="#388bfd" stop-opacity="0.32"/>
-      </linearGradient>
-    </defs>
-    ${grid}${vLines}
-    <polygon points="${baseBand}" fill="url(#tg-base)" stroke="none"/>
-    <polygon points="${optBand}"  fill="url(#tg-opt)"  stroke="none"/>
-    <polyline points="${pts(conPs)}"  fill="none" stroke="#6e7681" stroke-width="1.5" stroke-linejoin="round"/>
-    <polyline points="${pts(basePs)}" fill="none" stroke="#388bfd" stroke-width="2"   stroke-linejoin="round"/>
-    <polyline points="${pts(optPs)}"  fill="none" stroke="#3fb950" stroke-width="1.5" stroke-linejoin="round"/>
-    <line x1="${PL}" y1="${curY.toFixed(1)}" x2="${W-PR}" y2="${curY.toFixed(1)}" stroke="#e3b341" stroke-width="1.2" stroke-dasharray="5,4"/>
-    <circle cx="${xs[0].toFixed(1)}" cy="${curY.toFixed(1)}" r="4.5" fill="#e3b341" stroke="#0d1117" stroke-width="1.5"/>
-    <text x="${(xs[0]+8).toFixed(1)}" y="${(curY-7).toFixed(1)}" font-size="10" fill="#e3b341" font-weight="bold" font-family="sans-serif">${fmt(cur, isKrx)}</text>
-    <text x="${xs[0].toFixed(1)}" y="${(PT+PH+16).toFixed(1)}" text-anchor="middle" font-size="10" fill="#6e7681" font-family="sans-serif">현재</text>
-    ${dots}
-    <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+PH}" stroke="#30363d" stroke-width="1"/>
-    <line x1="${PL}" y1="${(PT+PH).toFixed(0)}" x2="${W-PR}" y2="${(PT+PH).toFixed(0)}" stroke="#30363d" stroke-width="1"/>
-  </svg>`;
-}
-
 function renderForecast(d, isKrx) {
   const risk = d.risk_scenarios;
   const bp   = d.buy_price;
@@ -6934,73 +6860,39 @@ function renderForecast(d, isKrx) {
     `;
   }
 
-  // ── 목표가 예측 섹션 (중장기 팬 차트) ────────────────────────────────────
+  // ── 목표가 예측 섹션 ──
+  // cur = d.last_close : 이미 현재가 보정(Pre-Market / Overnight 포함) 완료된 값
   const tpEl = document.getElementById('target-price-section');
   if (tpEl) {
     if (!tp) {
       tpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
     } else {
-      const cur = d.last_close;
+      const cur = d.last_close;   // 보정된 실시간 현재가
       const sn  = (!isKrx && d.session_name && !['정규장','장마감'].includes(d.session_name))
-                  ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:#6e40c933;color:#bc8cff;margin-left:4px">${d.session_name}</span>` : '';
-      const trendColor = tp.trend_strength >= 2 ? '#3fb950' : tp.trend_strength > 0 ? '#d29922' : '#f85149';
-      const trendLabel = tp.trend_strength >= 2 ? '강세 돌파' : tp.trend_strength > 0 ? '완만한 상승' : '조정 / 하락';
-      const milestones = tp.milestones || [];
-
-      const scenarioCards = milestones.map(m => `
-        <div style="flex:1;min-width:130px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
-          <div style="font-size:11px;color:#cdd9e5;font-weight:600;margin-bottom:8px;white-space:nowrap">${m.label}</div>
-          <div style="display:flex;flex-direction:column;gap:5px">
-            <div style="display:flex;justify-content:space-between;align-items:center">
-              <span style="font-size:10px;color:#3fb950">● 낙관</span>
-              <span style="font-size:12px;font-weight:700;color:#3fb950">+${m.optimistic.return_pct}%</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center">
-              <span style="font-size:10px;color:#388bfd">● 기본</span>
-              <span style="font-size:12px;font-weight:700;color:#388bfd">+${m.base.return_pct}%</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;align-items:center">
-              <span style="font-size:10px;color:#6e7681">● 보수</span>
-              <span style="font-size:12px;font-weight:700;color:#6e7681">+${m.conservative.return_pct}%</span>
-            </div>
-          </div>
-          <div style="margin-top:8px;padding-top:6px;border-top:1px solid #21262d;font-size:10px;color:#484f58">
-            기본 목표 ${fmt(m.base.price, isKrx)}
-          </div>
-        </div>`).join('');
-
-      const legend = [
-        ['#3fb950', '낙관 시나리오',  'solid'],
-        ['#388bfd', '기본 시나리오',  'solid'],
-        ['#6e7681', '보수 시나리오',  'solid'],
-        ['#e3b341', '현재가 기준',    'dashed'],
-      ].map(([c, lbl, style]) => `
-        <div style="display:flex;align-items:center;gap:5px;font-size:11px;color:${c}">
-          <svg width="20" height="4" style="flex-shrink:0"><line x1="0" y1="2" x2="20" y2="2" stroke="${c}" stroke-width="2" ${style==='dashed'?'stroke-dasharray="5,3"':''}/></svg>
-          ${lbl}
-        </div>`).join('');
-
+                  ? ` <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:#6e40c933;color:#bc8cff;margin-left:4px">${d.session_name}</span>`
+                  : '';
       tpEl.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <div style="background:#21262d;border-radius:10px;padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
           <div>
-            <div style="font-size:12px;color:#8b949e;margin-bottom:3px">기준가${sn} <b style="color:#e6edf3">${fmt(cur, isKrx)}</b></div>
-            <div style="font-size:11px;color:#484f58">ATR 변동성 · 추세 강도 기반 중장기 시나리오</div>
+            <div style="font-size:12px;color:#8b949e;margin-bottom:6px">예상 목표가 범위 (${tp.period})</div>
+            <div style="font-size:24px;font-weight:800;color:#3fb950">${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
+            <div style="font-size:13px;color:#8b949e;margin-top:4px">
+              현재가${sn} <b style="color:#e6edf3">${fmt(cur, isKrx)}</b> 기준 예상 수익률:
+              <span style="color:#3fb950">+${tp.min_return}% ~ +${tp.max_return}%</span>
+            </div>
           </div>
           <div style="text-align:right">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:3px">추세 강도</div>
-            <div style="font-size:14px;font-weight:700;color:${trendColor}">${trendLabel}</div>
+            <div style="font-size:12px;color:#8b949e;margin-bottom:4px">추세 강도 분석</div>
+            <div style="font-size:16px;font-weight:700;color:${tp.trend_strength >= 2 ? '#3fb950' : tp.trend_strength > 0 ? '#d29922' : '#f85149'}">
+              ${tp.trend_strength >= 2 ? '강세 돌파' : tp.trend_strength > 0 ? '완만한 상승' : '조정 / 하락'}
+            </div>
           </div>
         </div>
-        <div style="background:#0d1117;border-radius:10px;padding:12px;margin-bottom:10px">
-          ${milestones.length ? buildTargetSVG(cur, milestones, isKrx) : '<p style="color:#484f58;font-size:12px;text-align:center;padding:20px 0">예측 데이터 없음</p>'}
+        <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px">
+          <div style="font-size:11px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">📋 예측 근거</div>
+          <div style="font-size:13px;color:#e6edf3;line-height:1.5;">${tp.reason}</div>
         </div>
-        <div style="display:flex;gap:14px;margin-bottom:12px;flex-wrap:wrap">${legend}</div>
-        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">${scenarioCards}</div>
-        <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
-          <div style="font-size:10px;color:#484f58;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">📋 예측 근거</div>
-          <div style="font-size:12px;color:#8b949e;line-height:1.6">${tp.reason}</div>
-          <div style="font-size:10px;color:#484f58;margin-top:8px">⚠️ 본 예측은 ATR 변동성 및 기술적 지표 기반 참고 자료이며, 실제 주가와 다를 수 있습니다.</div>
-        </div>`;
+      `;
     }
   }
 
@@ -7098,6 +6990,15 @@ function renderForecast(d, isKrx) {
       };
 
       bpEl.innerHTML = `
+        ${fib.f382 ? `
+        <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#8b949e">
+          <span>📐 피보나치 기준 (60일)</span>
+          <span>▲ 고점 <b style="color:#cdd9e5">${fmt(fib.h60, isKrx)}</b></span>
+          <span>▼ 저점 <b style="color:#cdd9e5">${fmt(fib.l60, isKrx)}</b></span>
+          <span>38.2% <b style="color:#f97316">${fmt(fib.f382, isKrx)}</b></span>
+          <span>50.0% <b style="color:#d29922">${fmt(fib.f500, isKrx)}</b></span>
+          <span>61.8% <b style="color:#388bfd">${fmt(fib.f618, isKrx)}</b></span>
+        </div>` : ''}
         <div class="buy-price-grid">
           ${bp.aggressive_bands && bp.aggressive_bands.length
             ? buyBands('aggressive_bands', '#f97316', '공격적 매수', '⚡', true)
@@ -7115,6 +7016,9 @@ function renderForecast(d, isKrx) {
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     rgEl.innerHTML = `
+      ${risk.vol_state ? `<div style="grid-column:1/-1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;font-size:12px;color:#8b949e;margin-bottom:2px">
+        📊 ${risk.vol_state}<br><span style="font-size:11px">${risk.vol_trend || ''}</span>
+      </div>` : ''}
       ${riskEntries.map(sc => `
       <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
         <div class="risk-icon">${sc.icon}</div>
