@@ -6284,6 +6284,69 @@ function renderReport(d) {
     <span style="font-size:12px;margin-top:8px;display:inline-block">각 지표 항목을 클릭하면 상세 분석을 확인할 수 있습니다.</span>
   </div>`;
 }
+// ── 수급 흐름 해석 문구 생성 ─────────────────────────────────────────────────
+function calcSupplyDesc(flow) {
+  if (!flow || !flow.ok) return '수급 데이터 부족 — 관망';
+
+  const fore = flow['외국인'] || 0;
+  const inst = flow['기관']   || 0;
+  const indi = flow['개인']   || 0;
+
+  const total  = Math.abs(fore) + Math.abs(inst) + Math.abs(indi);
+  const thresh = Math.max(total * 0.05, 50000);
+
+  const foreDir = fore >  thresh ? 'buy'  : fore < -thresh ? 'sell' : 'neu';
+  const instDir = inst >  thresh ? 'buy'  : inst < -thresh ? 'sell' : 'neu';
+  const indiDir = indi >  thresh ? 'buy'  : indi < -thresh ? 'sell' : 'neu';
+
+  const keyInst = ['연기금','금융투자','투신','사모'].map(k => flow[k] || 0);
+  const kiBuy   = keyInst.filter(v => v > 0).length;
+  const kiSell  = keyInst.filter(v => v < 0).length;
+  const instMix = kiBuy >= 1 && kiSell >= 1;
+
+  let head, tail;
+
+  if (foreDir === 'sell' && instDir === 'sell' && indiDir === 'buy') {
+    head = '외국인·기관 동반 매도, 개인 매수 방어';  tail = '수급 부담 우세';
+  } else if (foreDir === 'buy' && instDir === 'buy' && indiDir === 'sell') {
+    head = '외국인·기관 동반 매수, 개인 차익실현';    tail = '매수 우세';
+  } else if (foreDir === 'buy' && instDir === 'buy') {
+    head = '외국인·기관 동반 매수 유입';              tail = '매수 우세 흐름';
+  } else if (foreDir === 'sell' && instDir === 'sell') {
+    head = '외국인·기관 동반 이탈';                   tail = '수급 부담';
+  } else if (foreDir === 'buy' && instMix) {
+    head = '외국인 매수 주도, 기관 내부 혼조';        tail = '수급 중립권 관망';
+  } else if (foreDir === 'buy' && instDir === 'neu') {
+    head = '외국인 주도 매수세 유입, 기관 관망';      tail = '수급 개선';
+  } else if (foreDir === 'buy' && instDir === 'sell') {
+    head = '외국인 매수·기관 매도 혼조';              tail = '방향성 제한';
+  } else if (instDir === 'buy' && foreDir === 'neu') {
+    head = instMix ? '기관 내부 혼조 속 순매수 우세' : '기관 주도 매수세 강화, 외국인 관망';
+    tail = '매수 우세';
+  } else if (instDir === 'buy' && foreDir === 'sell') {
+    head = '기관 매수, 외국인 이탈 혼조';             tail = '방향성 제한';
+  } else if (foreDir === 'sell' && instDir === 'neu') {
+    head = instMix ? '외국인 이탈, 기관 내부 혼조' : '외국인 이탈, 기관 관망';
+    tail = '수급 부담';
+  } else if (instDir === 'sell' && foreDir === 'neu') {
+    head = instMix ? '기관 내부 혼조 속 순매도' : '기관 약세, 외국인 관망';
+    tail = '수급 중립 하단';
+  } else if (foreDir === 'sell' && indiDir === 'buy') {
+    head = '개인 매수 집중, 외국인 이탈';             tail = '단기 수급 불균형';
+  } else if (instDir === 'sell' && indiDir === 'buy') {
+    head = '개인 매수 집중, 기관 이탈';               tail = '단기 수급 불균형';
+  } else if (foreDir === 'neu' && instDir === 'neu') {
+    if      (indiDir === 'buy')  { head = '개인 매수 집중, 기관·외국인 관망'; tail = '수급 중립'; }
+    else if (indiDir === 'sell') { head = '개인 차익실현, 전반적 관망';        tail = '중립 관망'; }
+    else                         { head = '수급 방향성 미미';                  tail = '중립 관망'; }
+  } else {
+    head = instMix ? '기관 내부 혼조 속 방향성 불명확' : '수급 방향성 불명확';
+    tail = '중립 — 관망';
+  }
+
+  return `${head} — ${tail}`;
+}
+
 // ── 5-차원 종목 진단 렌더 ────────────────────────────────────────────────────
 function renderDiagnosis(d, isKrx) {
   const diagEl = document.getElementById('ai-diagnosis-chart');
