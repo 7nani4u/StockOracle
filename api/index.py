@@ -6729,10 +6729,20 @@ function renderForecast(d, isKrx) {
   // ── AI 종합 진단 및 트레이딩 전략 섹션 ──
   const aiEl = document.getElementById('ai-strategy-section');
   if (aiEl && ai) {
+    const hiddenAiStrategyPatterns = [
+      /^\[시장 상태\]/,
+      /^⚠️\s*\[경고\]\s*부채비율/,
+      /^\[투자자 수급\]/,
+    ];
+    const visibleAiStrategyLines = (ai.result || '')
+      .split(' | ')
+      .map(line => line.trim())
+      .filter(line => line && !hiddenAiStrategyPatterns.some(pattern => pattern.test(line)));
+
     aiEl.innerHTML = `
       <div style="background: rgba(31, 111, 235, 0.05); border-radius:10px; padding:16px; margin-bottom:16px; border: 1px solid #1f6feb;">
         <div style="color:#e6edf3; font-size: 14px; line-height: 1.6;">
-          ${ai.result.split(' | ').filter(l => l.trim()).map(line => {
+          ${visibleAiStrategyLines.map(line => {
             if (line.startsWith('[')) return `<div style="margin-top:12px; font-weight:bold; color:#388bfd; font-size: 15px;">${line}</div>`;
             return `<div style="margin-top:6px; margin-left:8px;">${line}</div>`;
           }).join('')}
