@@ -6510,7 +6510,6 @@ function renderDiagnosis(d, isKrx) {
       <span id="flow-rec-badge" class="rec-badge-lg rec-hold" style="flex-shrink:0">분석 중...</span>
     </div>
     <div id="flow-rationale" style="display:none"></div>
-    <div id="flow-matrix" class="signal-matrix"></div>
     <div class="diag-dims">
       ${dimBar('📊', '기술적 추세',   techScore,    techDesc,  {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel, {accordionId:'dim-mom',  accordionContent: buildStepHtml(stepMom)})}
