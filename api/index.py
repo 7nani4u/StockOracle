@@ -4128,32 +4128,6 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
     min_return = (min_target - last_price) / last_price * 100
     max_return = (max_target - last_price) / last_price * 100
 
-    # ── 중장기 마일스톤 예측 (올해 말 / 내년 상반기 / 내년 말) ──────
-    _today    = datetime.date.today()
-    _yr       = _today.year
-    _mo_to_ye = max(1.0, (12 - _today.month) + (1 - _today.day / 30.0))
-    # 3개월 기준 ATR*4 → sqrt 시간 스케일로 기간 확장
-    _tmul     = 1.3 if trend_strength >= 3 else (1.0 if trend_strength >= 1 else 0.65)
-    _base3mo  = atr * 4.0 * _tmul
-    _milestones = []
-    for _lbl, _mo in [
-        (f"{_yr}년 말",        _mo_to_ye),
-        (f"{_yr+1}년 상반기",  _mo_to_ye + 6.0),
-        (f"{_yr+1}년 말",      _mo_to_ye + 12.0),
-    ]:
-        _sc = math.sqrt(max(1.0, _mo) / 3.0)
-        _gr = _base3mo * _sc
-        _cp = round(last_price + _gr * 0.35, rnd)
-        _bp = round(last_price + _gr * 1.00, rnd)
-        _op = round(last_price + _gr * 1.75, rnd)
-        _milestones.append({
-            "label":  _lbl,
-            "months": round(_mo, 1),
-            "conservative": {"price": _cp, "return_pct": round((_cp - last_price) / last_price * 100, 1)},
-            "base":         {"price": _bp, "return_pct": round((_bp - last_price) / last_price * 100, 1)},
-            "optimistic":   {"price": _op, "return_pct": round((_op - last_price) / last_price * 100, 1)},
-        })
-
     return {
         "min_price":      round(min_target, rnd),
         "max_price":      round(max_target, rnd),
@@ -4162,8 +4136,7 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         "period":         pred_period,
         "reason":         reason,
         "trend_strength": trend_strength,
-        "base_price":     round(last_price, rnd),
-        "milestones":     _milestones,
+        "base_price":     round(last_price, rnd),   # 기준 현재가 (디버그용)
     }
 
 def holt_winters_forecast(dd: Dict, days: int = 30):
@@ -4383,7 +4356,7 @@ def route(path: str, params: Dict) -> Dict:
                 ai_strategy["result"] += " | [시장 상태] 시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"
             else:
                 ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"}
-
+            
         # 부채비율 검증 로직 적용
         try:
             info = yf.Ticker(sym).info
@@ -4897,9 +4870,9 @@ input::placeholder{color:#484f58}
 .pattern-head{display:flex;align-items:flex-start;gap:8px;font-weight:700;line-height:1.5;word-break:keep-all;overflow-wrap:anywhere}
 .pattern-icon{flex-shrink:0}
 .pattern-desc{font-size:12px;color:#8b949e;line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
-.pattern-bull{background:#0d2d1a;border:1px solid #1a4730}
-.pattern-bear{background:#2d0d0d;border:1px solid #4d1515}
-.pattern-neu{background:#21262d;border:1px solid #30363d}
+.pattern-bull{background:#0d2d1a}
+.pattern-bear{background:#2d0d0d}
+.pattern-neu{background:#21262d}
 
 /* 흐름 분석 보조 UI */
 .flow-subtext{font-size:11px;color:#484f58;margin-top:4px;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
@@ -5298,7 +5271,7 @@ input::placeholder{color:#484f58}
 .step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
 
 /* ── 종목 진단 (AI진단 탭 신규) ── */
-.diag-grade-row{display:flex;align-items:center;gap:12px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px;flex-wrap:wrap}
+.diag-grade-row{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px}
 .diag-grade-badge{font-size:26px;font-weight:900;width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:3px solid;border-radius:50%;flex-shrink:0;letter-spacing:-1px}
 .diag-grade-info{display:flex;flex-direction:column;gap:3px}
 .diag-grade-title{font-size:15px;font-weight:700}
@@ -5311,9 +5284,6 @@ input::placeholder{color:#484f58}
 .diag-bar-bg{height:6px;background:#21262d;border-radius:3px;overflow:hidden;margin-bottom:6px}
 .diag-bar-fill{height:100%;border-radius:3px;transition:width .7s cubic-bezier(.4,0,.2,1)}
 .diag-dim-desc{font-size:11px;color:#8b949e;line-height:1.5}
-.diag-dim-clickable{cursor:pointer;transition:background .2s,border-color .2s}
-.diag-dim-clickable:hover{background:#1c2128;border-color:#388bfd}
-.diag-rec-area{text-align:center;padding:8px 0 14px 0;border-bottom:1px solid #21262d;margin-bottom:14px}
 
 /* ── 투자자 수급 카드 ── */
 .investor-main-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
@@ -5628,7 +5598,7 @@ input::placeholder{color:#484f58}
         <div class="metric-card" id="r-fib-card" style="display:none"><div class="m-label">📐 피보나치 기준 (60일)</div><div id="r-fib-content" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div></div>
       </div>
       <div id="r-naver-fund" style="display:none" class="card">
-        <div class="card-title">🏢 기업 펀더멘털</div>
+        <div class="card-title">🏢 기업 펀더멘털 (네이버 금융)</div>
         <div class="fund-grid">
           <div class="fund-item"><div class="fund-label">시가총액</div><div class="fund-val" id="f-mktcap"></div></div>
           <div class="fund-item"><div class="fund-label">PER</div><div class="fund-val" id="f-per"></div></div>
@@ -5650,6 +5620,7 @@ input::placeholder{color:#484f58}
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트</button>
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
+        <button class="tab-btn" onclick="switchTab('report')" style="display:none">📝 단계별 리포트</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 예측</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스</button>
         <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">📋 KRX</button>
@@ -5684,54 +5655,12 @@ input::placeholder{color:#484f58}
       <!-- AI 탭 -->
       <div id="tab-ai" style="display:none">
         <div class="ai-diagnosis-layout">
-          <!-- 1행: 종합 점수 + 3-신호 매트릭스 -->
-          <div class="ai-top-grid">
-            <div class="card ai-score-card">
-              <div class="card-title" style="margin-bottom:10px">🏆 종합 기술적 점수</div>
-              <div class="score-wrap">
-                <div class="score-num" id="ai-score"></div>
-                <span style="color:#8b949e;font-size:15px;margin-bottom:4px">/ 100점</span>
-              </div>
-              <div class="score-bar-bg"><div class="score-bar-fill" id="ai-score-bar"></div></div>
-              <p id="ai-score-desc" style="font-size:12px;color:#8b949e;margin-top:6px"></p>
-            </div>
-            <div class="card ai-flow-card">
-              <div class="card-title" style="margin-bottom:8px">📡 3-신호 분석 매트릭스</div>
-              <div class="signal-matrix" id="flow-matrix"></div>
-              <div style="margin:4px 0">
-                <span id="flow-rec-badge" class="rec-badge-lg rec-hold">분석 중...</span>
-              </div>
-              <div class="flow-rationale-text" id="flow-rationale"></div>
-            </div>
-          </div>
-          <!-- 2행: 투자자 수급 (KRX 전용, JS가 표시/숨김 제어) -->
-          <div class="card" id="investor-flow-card" style="display:none">
-            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-              <span>💰 투자자 수급 <span style="font-size:10px;color:#484f58;font-weight:400">· 토스증권 기준</span></span>
-              <button id="investor-flow-retry" onclick="retryInvestorFlow()" style="display:none;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄 재시도</button>
-            </div>
-            <!-- 로딩 skeleton -->
-            <div id="investor-flow-skeleton" style="display:none">
-              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
-                <div class="skel" style="height:56px;border-radius:10px"></div>
-                <div class="skel" style="height:56px;border-radius:10px"></div>
-                <div class="skel" style="height:56px;border-radius:10px"></div>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-                <div class="skel" style="height:42px;border-radius:8px"></div>
-              </div>
-            </div>
-            <div id="investor-flow-content"></div>
-          </div>
-          <!-- 3행: 단계별 분석 리포트 (전체 너비) -->
+          <!-- 종목 진단 (rec badge + 5-차원 진단 + 수급 아코디언 통합) -->
           <div class="card ai-report-card">
-            <div class="card-title">📝 단계별 분석 리포트</div>
-            <div id="steps-list"></div>
+            <div class="card-title">🔬 종목 진단</div>
+            <div id="ai-diagnosis-chart"></div>
           </div>
-          <!-- 4행: 섹터 / 업종 정보 (캔들·52주 섹션 제거 후 단독 카드) -->
+          <!-- 4행: 섹터 / 업종 정보 -->
           <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
             <div class="card-title">🏭 섹터 / 업종 정보</div>
             <div id="flow-sector-content"></div>
@@ -5739,8 +5668,13 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
-      <!-- 단계별 분석 리포트 탭 (AI 진단 탭에 통합됨) -->
-      <div id="tab-report" style="display:none"></div>
+      <!-- 단계별 분석 리포트 탭 -->
+      <div id="tab-report" style="display:none">
+        <div class="card">
+          <div class="card-title">📝 단계별 분석 리포트</div>
+          <div id="steps-list" style="display:flex;flex-direction:column;gap:10px"></div>
+        </div>
+      </div>
 
       <!-- 예측 탭 -->
       <div id="tab-forecast" style="display:none">
@@ -6290,8 +6224,7 @@ function renderResult(d) {
   // 펀더멘털
   if (isKrx && d.naver) {
     document.getElementById('r-naver-fund').style.display = 'block';
-    const _mc = d.naver.market_cap || '-';
-    document.getElementById('f-mktcap').textContent = (_mc !== '-' && !_mc.endsWith('원')) ? _mc + ' 원' : _mc;
+    document.getElementById('f-mktcap').textContent = d.naver.market_cap || '-';
     document.getElementById('f-per').textContent = d.naver.per || '-';
     document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
     document.getElementById('r-us-fund').style.display = 'none';
@@ -6338,127 +6271,19 @@ function renderResult(d) {
 }
 
 function renderAI(d, isKrx) {
-  const s = d.score;
-  const sClr = s >= 65 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
-  const sBarClr = s >= 65 ? '#3fb950' : s >= 40 ? '#d29922' : '#f85149';
-  document.getElementById('ai-score').innerHTML = `<span style="color:${sClr}">${s}</span>`;
-  const bar = document.getElementById('ai-score-bar');
-  bar.style.width = s + '%'; bar.style.background = sBarClr;
-  document.getElementById('ai-score-desc').textContent =
-    s >= 65 ? '✅ BUY (매수 우위)'
-    : s >= 40 ? '⚖️ HOLD (관망 / 중립)'
-    : '⚠️ SELL (매도 우위 / 리스크 관리)';
-
-  // 캔들 패턴 카드 (step-5 인라인 삽입용)
-  const patterns = d.candlestick_patterns || [];
-  const patternCardsHtml = patterns.length === 0
-    ? '<p class="empty-note">특이한 캔들 패턴이 감지되지 않았습니다.</p>'
-    : patterns.map(p => {
-        const pcls = p.direction === '상승' ? 'pattern-bull' : p.direction === '하락' ? 'pattern-bear' : 'pattern-neu';
-        const icon = p.direction === '상승' ? '📈' : p.direction === '하락' ? '📉' : '➖';
-        return `<div class="pattern-item ${pcls}">
-          <div class="pattern-head"><span class="pattern-icon">${icon}</span><span>${p.name}</span></div>
-          <div class="pattern-desc">${p.desc}</div>
-        </div>`;
-      }).join('');
-
-  const stepsList = document.getElementById('steps-list');
-  stepsList.innerHTML = d.analysis_steps.map(st => {
-    const sc = st.score;
-    const cls = sc > 0 ? 'pos' : sc < 0 ? 'neg' : 'neu';
-    const label = sc > 0 ? '+' + sc : sc;
-    const weight = st.weight || '';
-    // step-5(캔들 패턴 분석)이면 패턴 카드를 본문 아래에 삽입
-    const isStep5 = st.step.startsWith('5.');
-    const inlinePatterns = isStep5
-      ? `<div class="step-patterns">${patternCardsHtml}</div>`
-      : '';
-    return `<div class="step-item">
-      <div class="step-header">
-        <span class="step-title">${st.step}</span>
-        <div class="step-meta">
-          ${weight ? `<span class="step-weight">${weight}</span>` : ''}
-          <span class="step-score ${cls}">${label}점</span>
-        </div>
-      </div>
-      ${isStep5 ? '' : `<div class="step-result">
-        ${st.result.split(' | ').filter(l => l.trim()).map(line => `<span class="step-result-line">${line}</span>`).join('')}
-      </div>`}
-      ${inlinePatterns}
-    </div>`;
-  }).join('');
-
+  renderDiagnosis(d, isKrx);
   renderInvestorFlow(d, isKrx);
 }
-
-// ── 단계별 분석 리포트 렌더 (AI 진단 탭에 통합됨) ─────────────────────────────
-function renderReport(d) { /* steps-list는 renderAI에서 AI 진단 탭으로 렌더됨 */ }
-
-// ── 수급 흐름 해석 문구 생성 ─────────────────────────────────────────────────
-function calcSupplyDesc(flow) {
-  if (!flow || !flow.ok) return '수급 데이터 부족 — 관망';
-
-  const fore = flow['외국인'] || 0;
-  const inst = flow['기관']   || 0;
-  const indi = flow['개인']   || 0;
-
-  // 방향성 임계값: 전체 절대합의 5%, 최소 5만 주
-  const total  = Math.abs(fore) + Math.abs(inst) + Math.abs(indi);
-  const thresh = Math.max(total * 0.05, 50000);
-
-  const foreDir = fore >  thresh ? 'buy'  : fore < -thresh ? 'sell' : 'neu';
-  const instDir = inst >  thresh ? 'buy'  : inst < -thresh ? 'sell' : 'neu';
-  const indiDir = indi >  thresh ? 'buy'  : indi < -thresh ? 'sell' : 'neu';
-
-  // 기관 세부 혼조 분석 (주요 4개 주체)
-  const keyInst = ['연기금','금융투자','투신','사모'].map(k => flow[k] || 0);
-  const kiBuy   = keyInst.filter(v => v > 0).length;
-  const kiSell  = keyInst.filter(v => v < 0).length;
-  const instMix = kiBuy >= 1 && kiSell >= 1;
-
-  let head, tail;
-
-  if (foreDir === 'sell' && instDir === 'sell' && indiDir === 'buy') {
-    head = '외국인·기관 동반 매도, 개인 매수 방어';  tail = '수급 부담 우세';
-  } else if (foreDir === 'buy' && instDir === 'buy' && indiDir === 'sell') {
-    head = '외국인·기관 동반 매수, 개인 차익실현';    tail = '매수 우세';
-  } else if (foreDir === 'buy' && instDir === 'buy') {
-    head = '외국인·기관 동반 매수 유입';              tail = '매수 우세 흐름';
-  } else if (foreDir === 'sell' && instDir === 'sell') {
-    head = '외국인·기관 동반 이탈';                   tail = '수급 부담';
-  } else if (foreDir === 'buy' && instMix) {
-    head = '외국인 매수 주도, 기관 내부 혼조';        tail = '수급 중립권 관망';
-  } else if (foreDir === 'buy' && instDir === 'neu') {
-    head = '외국인 주도 매수세 유입, 기관 관망';      tail = '수급 개선';
-  } else if (foreDir === 'buy' && instDir === 'sell') {
-    head = '외국인 매수·기관 매도 혼조';              tail = '방향성 제한';
-  } else if (instDir === 'buy' && foreDir === 'neu') {
-    head = instMix ? '기관 내부 혼조 속 순매수 우세' : '기관 주도 매수세 강화, 외국인 관망';
-    tail = '매수 우세';
-  } else if (instDir === 'buy' && foreDir === 'sell') {
-    head = '기관 매수, 외국인 이탈 혼조';             tail = '방향성 제한';
-  } else if (foreDir === 'sell' && instDir === 'neu') {
-    head = instMix ? '외국인 이탈, 기관 내부 혼조' : '외국인 이탈, 기관 관망';
-    tail = '수급 부담';
-  } else if (instDir === 'sell' && foreDir === 'neu') {
-    head = instMix ? '기관 내부 혼조 속 순매도' : '기관 약세, 외국인 관망';
-    tail = '수급 중립 하단';
-  } else if (foreDir === 'sell' && indiDir === 'buy') {
-    head = '개인 매수 집중, 외국인 이탈';             tail = '단기 수급 불균형';
-  } else if (instDir === 'sell' && indiDir === 'buy') {
-    head = '개인 매수 집중, 기관 이탈';               tail = '단기 수급 불균형';
-  } else if (foreDir === 'neu' && instDir === 'neu') {
-    if      (indiDir === 'buy')  { head = '개인 매수 집중, 기관·외국인 관망'; tail = '수급 중립'; }
-    else if (indiDir === 'sell') { head = '개인 차익실현, 전반적 관망';        tail = '중립 관망'; }
-    else                         { head = '수급 방향성 미미';                  tail = '중립 관망'; }
-  } else {
-    head = instMix ? '기관 내부 혼조 속 방향성 불명확' : '수급 방향성 불명확';
-    tail = '중립 — 관망';
-  }
-
-  return `${head} — ${tail}`;
+// ── 단계별 분석 리포트 렌더 (tab-report 전용) ────────────────────────────────
+function renderReport(d) {
+  const stepsList = document.getElementById('steps-list');
+  if (!stepsList) return;
+  stepsList.innerHTML = `<div style="text-align:center;padding:32px 16px;color:#8b949e;font-size:13px">
+    <div style="font-size:28px;margin-bottom:12px">🔬</div>
+    단계별 분석 내용이 <strong style="color:#58a6ff">AI 진단</strong> 탭으로 이동되었습니다.<br>
+    <span style="font-size:12px;margin-top:8px;display:inline-block">각 지표 항목을 클릭하면 상세 분석을 확인할 수 있습니다.</span>
+  </div>`;
 }
-
 // ── 5-차원 종목 진단 렌더 ────────────────────────────────────────────────────
 function renderDiagnosis(d, isKrx) {
   const diagEl = document.getElementById('ai-diagnosis-chart');
@@ -6674,23 +6499,17 @@ function renderDiagnosis(d, isKrx) {
 
 // ── 투자자 수급 렌더 (KRX 전용) ────────────────────────────────────────────
 function renderInvestorFlow(d, isKrx) {
-  const card     = document.getElementById('investor-flow-card');
   const badge    = document.getElementById('investor-badge');
   const retryBtn = document.getElementById('investor-flow-retry');
   const skelEl   = document.getElementById('investor-flow-skeleton');
   const contEl   = document.getElementById('investor-flow-content');
-  if (!card) return;
 
-  // US 종목 → 카드 완전 숨김
-  if (!isKrx) { card.style.display = 'none'; if (badge) badge.classList.remove('visible'); return; }
-
-  // KRX 종목이면 항상 카드 표시
-  card.style.display = '';
+  // US 종목 → 배지만 제거 (수급 흐름 행 자체가 KRX 전용이므로 아코디언 없음)
+  if (!isKrx) { if (badge) badge.classList.remove('visible'); return; }
 
   const flow = d.investor_flow;
 
-  // ok=false: 비동기 자동 로드가 진행 중이므로 스켈레톤 표시
-  // (loadInvestorFlowAsync가 완료되면 이 함수를 다시 호출하여 ok=true 또는 에러 렌더링)
+  // ok=false: 비동기 자동 로드 진행 중 — 아코디언 내부에 스켈레톤 표시
   if (!flow || !flow.ok) {
     if (skelEl) skelEl.style.display = '';
     if (contEl) contEl.innerHTML = '';
@@ -6820,7 +6639,6 @@ async function retryInvestorFlow() {
   await loadInvestorFlowAsync(currentData.symbol);
 }
 
-// ── 수급 흐름 아코디언 토글 ─────────────────────────────────────────────────
 function toggleInvestorFlowAccordion() {
   const acc   = document.getElementById('investor-flow-accordion');
   const arrow = document.getElementById('investor-flow-arrow');
@@ -6990,15 +6808,6 @@ function renderForecast(d, isKrx) {
       };
 
       bpEl.innerHTML = `
-        ${fib.f382 ? `
-        <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:14px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:#8b949e">
-          <span>📐 피보나치 기준 (60일)</span>
-          <span>▲ 고점 <b style="color:#cdd9e5">${fmt(fib.h60, isKrx)}</b></span>
-          <span>▼ 저점 <b style="color:#cdd9e5">${fmt(fib.l60, isKrx)}</b></span>
-          <span>38.2% <b style="color:#f97316">${fmt(fib.f382, isKrx)}</b></span>
-          <span>50.0% <b style="color:#d29922">${fmt(fib.f500, isKrx)}</b></span>
-          <span>61.8% <b style="color:#388bfd">${fmt(fib.f618, isKrx)}</b></span>
-        </div>` : ''}
         <div class="buy-price-grid">
           ${bp.aggressive_bands && bp.aggressive_bands.length
             ? buyBands('aggressive_bands', '#f97316', '공격적 매수', '⚡', true)
@@ -7016,9 +6825,6 @@ function renderForecast(d, isKrx) {
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     rgEl.innerHTML = `
-      ${risk.vol_state ? `<div style="grid-column:1/-1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;font-size:12px;color:#8b949e;margin-bottom:2px">
-        📊 ${risk.vol_state}<br><span style="font-size:11px">${risk.vol_trend || ''}</span>
-      </div>` : ''}
       ${riskEntries.map(sc => `
       <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
         <div class="risk-icon">${sc.icon}</div>
@@ -7828,8 +7634,7 @@ function renderFlowTab(d) {
   const newsSub = finnSent && finnSent.bullish_pct != null
     ? `긍정 ${posN}% · 부정 ${negN}%`
     : `호재 ${posN}건 · 악재 ${negN}건`;
-  const matrixEl = document.getElementById('flow-matrix');
-  if (matrixEl) matrixEl.innerHTML = `
+  document.getElementById('flow-matrix').innerHTML = `
     <div class="sig-cell">
       <div class="sig-cell-label">📰 뉴스 감성</div>
       <div class="sig-cell-val ${newsSentClr}">${newsSentLbl}</div>
@@ -7847,10 +7652,9 @@ function renderFlowTab(d) {
         ${rsi > 70 ? '과매수 구간' : rsi < 30 ? '과매도 구간' : '중립 구간'}
       </div>
     </div>`;
-  const recBadgeEl = document.getElementById('flow-rec-badge');
-  if (recBadgeEl) { recBadgeEl.className = 'rec-badge-lg ' + recCls; recBadgeEl.textContent = recLbl + ' · 신뢰도 ' + conf; }
-  const rationaleEl = document.getElementById('flow-rationale');
-  if (rationaleEl) rationaleEl.textContent = rationale;
+  document.getElementById('flow-rec-badge').className = 'rec-badge-lg ' + recCls;
+  document.getElementById('flow-rec-badge').textContent = recLbl + ' · 신뢰도 ' + conf;
+  document.getElementById('flow-rationale').textContent = rationale;
 
   // 섹터 정보 (스크리너 데이터 활용)
   const sectorCard = document.getElementById('flow-sector-card');
