@@ -6838,19 +6838,29 @@ function renderPullbackIntoAI(d, isKrx) {
       손절 원칙: 손실은 짧게 (-5%~-8% 이내) | 구조가 무너지면 미련 없이 정리
     </div>`;
 
-  // ── 아코디언 행 빌더 (dimBar 패턴과 동일) ────────────────────────
-  const pbDimBar = (emoji, label, val, desc, aId, content, extraBorder) => `
+  // ── 눌림목 dim 점수 → 색상·레이블 (5단계, renderDiagnosis의 _dg와 동일 기준) ──
+  const _pbDg = v => v >= 75 ? { c:C.green,  lbl:'우수'  }
+                   : v >= 55 ? { c:C.blue,   lbl:'양호'  }
+                   : v >= 40 ? { c:C.orange, lbl:'보통'  }
+                   : v >= 25 ? { c:'#f97316',lbl:'주의'  }
+                   :           { c:C.red,    lbl:'위험'  };
+
+  // ── 아코디언 행 빌더 ──────────────────────────────────────────────
+  const pbDimBar = (emoji, label, val, desc, aId, content, extraBorder) => {
+    const { c: pbC, lbl: pbLbl } = _pbDg(val);
+    return `
     <div class="diag-dim diag-dim-clickable" onclick="toggleDimAccordion('${aId}')" ${extraBorder ? `style="border-color:${extraBorder}"` : ''}>
       <div class="diag-dim-head">
         <span class="diag-dim-label">${emoji} ${label} <span id="arrow-${aId}" style="font-size:11px;color:#8b949e;display:inline-block;transition:transform .25s">▼</span></span>
-        <span class="diag-dim-score" style="color:${val >= 65 ? C.green : val >= 40 ? C.orange : C.red}">${val}점 · ${val >= 65 ? '양호' : val >= 40 ? '보통' : '주의'}</span>
+        <span class="diag-dim-score" style="color:${pbC}">${val}점 · ${pbLbl}</span>
       </div>
-      <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${val}%;background:${val >= 65 ? C.green : val >= 40 ? C.orange : C.red}"></div></div>
+      <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${val}%;background:${pbC}"></div></div>
       <div class="diag-dim-desc">${desc}</div>
     </div>
     <div id="${aId}" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
       <div style="display:flex;flex-direction:column;gap:8px">${content}</div>
     </div>`;
+  };
 
   // display:contents로 선언된 플레이스홀더에 직접 diag-dim 행들을 삽입
   el.innerHTML =
@@ -7283,17 +7293,31 @@ function renderDiagnosis(d, isKrx) {
   }
   const patScore = Math.min(100, Math.max(0, pScore));
 
-  // ── 종합 등급 계산 ────────────────────────────────────────────────
+  // ── 종합 등급 계산 (8단계 세분화 체계) ─────────────────────────────
+  // threshold: A(82+) A-(72+) B(62+) B-(52+) C(42+) C-(30+) D(15+) D-(0+)
   const dims = [techScore, momentumScore, volScore, supplyScore, patScore];
   const avg  = Math.round(dims.reduce((a, b) => a + b, 0) / dims.length);
-  const grade      = avg >= 80 ? 'A+' : avg >= 65 ? 'A' : avg >= 50 ? 'B' : avg >= 35 ? 'C' : 'D';
-  const gradeColor = avg >= 65 ? '#3fb950' : avg >= 50 ? '#d29922' : '#f85149';
-  const gradeText  = avg >= 80 ? '매우 우수' : avg >= 65 ? '우수' : avg >= 50 ? '보통' : avg >= 35 ? '주의' : '위험';
-  const gradeDesc  = avg >= 65
-    ? '기술적 지표 전반이 양호한 상태입니다.'
-    : avg >= 50
-    ? '일부 지표가 혼재되어 추가 관찰이 필요합니다.'
-    : '여러 지표에서 위험 신호가 감지됩니다.';
+
+  // 분산(표준편차) — 항목 간 불균형 감지
+  const dimVariance = Math.round(Math.sqrt(dims.reduce((s, v) => s + (v - avg) ** 2, 0) / dims.length));
+
+  const _gm = (() => {
+    if      (avg >= 82) return { grade:'A',  color:'#3fb950', text:'최우수',   desc:'전 지표가 강한 상승 추세를 지지합니다.' };
+    else if (avg >= 72) return { grade:'A-', color:'#3fb950', text:'우수',     desc:'기술적 지표 전반이 양호하며 추세가 유지되고 있습니다.' };
+    else if (avg >= 62) return { grade:'B',  color:'#58a6ff', text:'양호',     desc:'주요 지표가 긍정적이나 일부 확인이 필요합니다.' };
+    else if (avg >= 52) return { grade:'B-', color:'#d29922', text:'보통 이상', desc:'대체로 안정적이나 일부 지표가 혼재되어 있습니다.' };
+    else if (avg >= 42) return { grade:'C',  color:'#d29922', text:'보통',     desc:'지표가 혼재되어 추가 관찰이 필요합니다.' };
+    else if (avg >= 30) return { grade:'C-', color:'#f97316', text:'주의',     desc:'일부 지표에서 경고 신호가 감지됩니다.' };
+    else if (avg >= 15) return { grade:'D',  color:'#f85149', text:'위험',     desc:'여러 지표에서 위험 신호가 감지됩니다.' };
+    else                return { grade:'D-', color:'#f85149', text:'매우 위험', desc:'전 지표에서 강한 위험 신호가 감지됩니다.' };
+  })();
+  const grade      = _gm.grade;
+  const gradeColor = _gm.color;
+  const gradeText  = _gm.text;
+  // 항목 간 분산이 클 때 설명 보완
+  const gradeDesc  = dimVariance >= 22
+    ? _gm.desc + ' 단, 항목 간 편차(' + dimVariance + 'pt)가 있어 약점 지표를 확인하세요.'
+    : _gm.desc;
 
   // ── 각 차원 설명 텍스트 ────────────────────────────────────────
   const techDesc   = `종합 기술점수 ${score}점 · ${score >= 65 ? '매수 우위' : score >= 40 ? '중립' : '매도 우위'}`;
@@ -7342,10 +7366,17 @@ function renderDiagnosis(d, isKrx) {
   const stepVolume = allSteps.filter(st => st.step.startsWith('4.'));
   const stepPat    = allSteps.filter(st => !st.step.match(/^[1234]\./));
 
+  // ── dim 점수 → 색상·레이블 헬퍼 (5단계) ────────────────────────────
+  // 75+:우수(초록) / 55+:양호(파랑) / 40+:보통(노랑) / 25+:주의(주황) / 0+:위험(빨강)
+  const _dg = v => v >= 75 ? { c:'#3fb950', lbl:'우수'  }
+                 : v >= 55 ? { c:'#58a6ff', lbl:'양호'  }
+                 : v >= 40 ? { c:'#d29922', lbl:'보통'  }
+                 : v >= 25 ? { c:'#f97316', lbl:'주의'  }
+                 :           { c:'#f85149', lbl:'위험'  };
+
   // ── 렌더 헬퍼 ─────────────────────────────────────────────────────
   const dimBar = (emoji, label, val, desc, opts = {}) => {
-    const c   = val >= 65 ? '#3fb950' : val >= 40 ? '#d29922' : '#f85149';
-    const lbl = val >= 65 ? '양호' : val >= 40 ? '보통' : '주의';
+    const { c, lbl } = _dg(val);
     if (opts.accordionId) {
       const aId = opts.accordionId;
       return `<div class="diag-dim diag-dim-clickable" onclick="toggleDimAccordion('${aId}')">
@@ -7382,7 +7413,7 @@ function renderDiagnosis(d, isKrx) {
 
   diagEl.innerHTML = `
     <div class="diag-grade-row">
-      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${grade}</div>
+      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor};font-size:${grade.length > 1 ? '19px' : '26px'}">${grade}</div>
       <div class="diag-grade-info" style="flex:1">
         <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· 5항목 평균 ${avg}점</span></div>
         <div class="diag-grade-sub">${gradeDesc}</div>
@@ -7422,8 +7453,7 @@ function renderDiagnosis(d, isKrx) {
         const wPct  = parseFloat(vSt.weight) || 10;
         const maxSc = wPct / 2;
         const barVal = Math.max(0, Math.min(100, Math.round(50 + (vSt.score / maxSc) * 30)));
-        const vc    = barVal >= 65 ? '#3fb950' : barVal >= 40 ? '#d29922' : '#f85149';
-        const vlbl  = barVal >= 65 ? '양호' : barVal >= 40 ? '보통' : '주의';
+        const { c: vc, lbl: vlbl } = _dg(barVal);
         const vdesc = vSt.result.split(' | ').filter(l => l.trim()).join(' · ') || '거래량 분석 완료';
         return `<div class="diag-dim">
           <div class="diag-dim-head">
