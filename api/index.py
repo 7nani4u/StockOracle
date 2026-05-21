@@ -6115,19 +6115,17 @@ input::placeholder{color:#484f58}
       <!-- AI 탭 -->
       <div id="tab-ai" style="display:none">
         <div class="ai-diagnosis-layout">
-          <!-- 종목 진단 (rec badge + 5-차원 진단 + 수급 아코디언 통합) -->
+          <!-- 종목 진단 (흐름 단계 → 5차원 진단 → 눌림목 분석 통합 출력) -->
           <div class="card ai-report-card">
             <div class="card-title">🔬 종목 진단</div>
             <div id="ai-diagnosis-chart"></div>
           </div>
-          <!-- 4행: 섹터 / 업종 정보 -->
+          <!-- 섹터 / 업종 정보 -->
           <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
             <div class="card-title">🏭 섹터 / 업종 정보</div>
             <div id="flow-sector-content"></div>
           </div>
         </div>
-        <!-- 눌림목 분석: 흐름 단계 + 체크리스트 + 세력 패턴 + 구조 붕괴 손절 -->
-        <div id="pullback-ai-section"></div>
       </div>
 
       <!-- 단계별 분석 리포트 탭 -->
@@ -6852,24 +6850,20 @@ function renderPullbackIntoAI(d, isKrx) {
       <div style="display:flex;flex-direction:column;gap:8px">${content}</div>
     </div>`;
 
-  el.innerHTML = `
-  <div class="card" style="margin-top:12px">
-    <div class="card-title">📈 눌림목 흐름 분석</div>
-    <div class="diag-dims">
-      ${pbDimBar('🔄', '현재 흐름 단계', stageVal,
+  // display:contents로 선언된 플레이스홀더에 직접 diag-dim 행들을 삽입
+  el.innerHTML =
+      pbDimBar('🔄', '현재 흐름 단계', stageVal,
           `${stageLabels[pa.flow_stage] || '단계 불명'} · ${pa.flow_desc ? pa.flow_desc.substring(0,40) + (pa.flow_desc.length > 40 ? '…' : '') : ''}`,
-          'pb-flow', flowAccContent)}
-      ${pbDimBar('✅', '눌림목 체크리스트', pbVal,
+          'pb-flow', flowAccContent)
+    + pbDimBar('✅', '눌림목 체크리스트', pbVal,
           `${pa.pullback_grade} · ${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length} 조건 충족 · ${pa.pullback_desc ? pa.pullback_desc.substring(0,35) + (pa.pullback_desc.length > 35 ? '…' : '') : ''}`,
-          'pb-check', checkAccContent)}
-      ${pbDimBar('🎭', `세력 혼들림 패턴${pa.bb_squeeze ? ' · 볼린저 수축' : ''}`, mfVal,
+          'pb-check', checkAccContent)
+    + pbDimBar('🎭', `세력 혼들림 패턴${pa.bb_squeeze ? ' · 볼린저 수축' : ''}`, mfVal,
           mfCount > 0 ? `${mfCount}개 패턴 감지 — 구조 생존 여부 확인 필요` : '세력 혼들림 패턴 미감지 — 구조 유지 중',
-          'pb-manip', mfAccContent)}
-      ${pbDimBar('🛑', `구조 붕괴 손절 기준`, slVal,
+          'pb-manip', mfAccContent)
+    + pbDimBar('🛑', '구조 붕괴 손절 기준', slVal,
           `${pa.breakdown_verdict} · ${pa.sl_triggered}개 조건 충족`,
-          'pb-sl', slAccContent)}
-    </div>
-  </div>`;
+          'pb-sl', slAccContent);
 }
 
 // ── 예측 탭: ③ 핵심 구간  ④ 분할 매수  ⑤ ATR 리스크  ⑥ 손익비 시나리오 ──────
@@ -7418,6 +7412,7 @@ function renderDiagnosis(d, isKrx) {
     </div>
     <div id="flow-rationale" style="display:none"></div>
     <div class="diag-dims">
+      <div id="pullback-ai-section" style="display:contents"></div>
       ${dimBar('📊', '기술적 추세',   techScore,    techDesc,  {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel, {accordionId:'dim-mom',  accordionContent: buildStepHtml(stepMom)})}
       ${dimBar('🌊', '변동성 안정도', volScore,      volDesc,   {accordionId:'dim-vol',  accordionContent: buildStepHtml(stepVol)})}
@@ -8595,20 +8590,87 @@ function renderFlowTab(d) {
   else if (rsi < 30) { posZone='low_zone'; posZoneLbl='과매도 (RSI ' + rsi.toFixed(0) + ')'; posZoneClr='sig-up'; }
   else { posZoneLbl = 'RSI ' + rsi.toFixed(0) + ' (중립)'; }
 
-  // ── 3-신호 → 추천 ──
+  // ── 핵심 데이터 추출 ──
   const score = d.score || 50;
-  let rec, recLbl, recCls, conf, rationale;
-  const upSig = [newsSent==='positive', trendDir==='up', posZone==='low_zone'].filter(Boolean).length;
-  const dnSig = [newsSent==='negative', trendDir==='down', posZone==='high_zone'].filter(Boolean).length;
-  if      (upSig === 3)               { rec='strong_buy';  recLbl='강한 상승 기대'; recCls='rec-strong-buy'; conf='높음'; rationale='3개 신호 모두 상승 일치'; }
-  else if (upSig === 2 && score >= 50){ rec='buy';          recLbl='상승 기대';      recCls='rec-buy';        conf='중간'; rationale='2개 상승 신호 · 기술적 점수 양호'; }
-  else if (dnSig === 3)               { rec='strong_sell'; recLbl='강한 하락 경계'; recCls='rec-strong-sell'; conf='높음'; rationale='3개 신호 모두 하락 일치'; }
-  else if (dnSig === 2 && score < 50) { rec='sell';         recLbl='하락 경계';      recCls='rec-sell';       conf='중간'; rationale='2개 하락 신호 · 기술적 점수 미흡'; }
-  else                                { rec='hold';         recLbl='관망';           recCls='rec-hold';        conf='낮음'; rationale='신호 혼재 — 추가 확인 필요'; }
+  const sigSum = ((d.indicator_signals || {}).summary) || {};
+  // weighted_score: -100 ~ +100 (indicator_signals에서 계산된 종합 가중 점수)
+  const wscore  = sigSum.weighted_score || 0;
+  const buyN    = sigSum.buy   || 0;
+  const sellN   = sigSum.sell  || 0;
+  const watchN  = sigSum.watch || 0;
+  const totalN  = sigSum.total || Math.max(1, buyN + sellN + watchN);
 
-  // 기술적 점수 보정
-  if (rec==='buy'  && score >= 65) { rec='strong_buy';  recLbl='강한 상승 기대'; recCls='rec-strong-buy'; conf='높음'; rationale += ' · 기술 점수 ' + score + '점'; }
-  if (rec==='sell' && score <= 35) { rec='strong_sell'; recLbl='강한 하락 경계'; recCls='rec-strong-sell'; conf='높음'; rationale += ' · 기술 점수 ' + score + '점'; }
+  // ── 보조 신호 (뉴스·추세·RSI) ──
+  const upBonus = [newsSent==='positive', trendDir==='up', posZone==='low_zone'].filter(Boolean).length;
+  const dnBonus = [newsSent==='negative', trendDir==='down', posZone==='high_zone'].filter(Boolean).length;
+
+  // ── 눌림목 분석 데이터 ──
+  const pa = d.pullback_analysis;
+  const flowStage  = pa ? (pa.flow_stage  || 0) : 0;
+  const pbQuality  = pa ? (pa.pullback_score_pct || 0) : 0;
+  const slTriggered= pa ? (pa.sl_triggered || 0) : 0;
+
+  // ── 통합 효과 점수 계산 ──
+  // score(0-100) + wscore 보정(-25~+25) + 보조신호 보정(-10~+10)
+  const wNorm  = wscore / 4;                    // -25 ~ +25
+  const bNorm  = (upBonus - dnBonus) * 4;       // -12 ~ +12
+  // 눌림목 단계(4)이면서 체크리스트 품질이 높을 때 최대 +8점 부스트
+  const pbBoost = (flowStage === 4 && pbQuality >= 50)
+    ? Math.round((pbQuality - 50) / 6.25)       // 0 ~ +8
+    : 0;
+  // 구조 붕괴 조건이 트리거 됐을 때 페널티
+  const slPenalty = slTriggered >= 2 ? -10 : slTriggered === 1 ? -4 : 0;
+  const effScore = Math.min(100, Math.max(0, score + wNorm + bNorm + pbBoost + slPenalty));
+
+  // ── 추천 결정 (effScore 1차 기준) ──
+  let rec, recLbl, recCls, confLabel, rationale;
+
+  if      (effScore >= 73) { rec='strong_buy';  recLbl='적극 매수';       recCls='rec-strong-buy'; }
+  else if (effScore >= 62) { rec='buy';          recLbl='매수 우위';        recCls='rec-buy';        }
+  else if (effScore >= 54) { rec='weak_buy';     recLbl='단기 반등 가능';   recCls='rec-buy';        }
+  else if (effScore >= 44) { rec='hold';         recLbl='관망 권장';        recCls='rec-hold';       }
+  else if (effScore >= 34) { rec='weak_sell';    recLbl='추세 약화';        recCls='rec-sell';       }
+  else                     { rec='sell';         recLbl='리스크 높음';      recCls='rec-sell';       }
+
+  // ── 눌림목 특별 케이스 오버라이드 ──
+  if (flowStage === 4 && pbQuality >= 65 && score >= 48 && slTriggered === 0) {
+    rec='buy'; recLbl='눌림목 진입 기회'; recCls='rec-buy';
+  }
+  // 구조 붕괴 2개 이상: 최소 추세 약화 이상으로 격하
+  if (slTriggered >= 2 && (rec==='strong_buy' || rec==='buy' || rec==='weak_buy')) {
+    rec='hold'; recLbl='구조 점검 필요'; recCls='rec-hold';
+  }
+
+  // ── 신뢰도: 지표 신호 일관성 + ADX 추세 강도 기반 ──
+  // buyN 또는 sellN이 totalN 중 얼마나 지배적인지
+  const dominance = totalN > 0 ? Math.max(buyN, sellN) / totalN : 0;
+  const absWscore = Math.abs(wscore);
+  if      (dominance >= 0.65 || absWscore >= 50) confLabel = '높음';
+  else if (dominance >= 0.50 || absWscore >= 30) confLabel = '보통';
+  else if (dominance >= 0.38 || absWscore >= 15) confLabel = '중간';
+  else                                            confLabel = '낮음';
+
+  // sell 계열이면 신뢰도 대신 리스크 강조
+  const confText = (rec==='sell' || rec==='weak_sell')
+    ? (confLabel === '높음' ? '리스크 높음' : confLabel === '보통' ? '리스크 보통' : '리스크 주의')
+    : ('신뢰도 ' + confLabel);
+
+  // ── 근거 문구 ──
+  const reasonParts = [`기술점수 ${score}점`];
+  if      (wscore >= 30)  reasonParts.push('지표 매수 우세');
+  else if (wscore <= -30) reasonParts.push('지표 매도 우세');
+  if (trendDir === 'up')   reasonParts.push('MA20 상승');
+  else if (trendDir==='down') reasonParts.push('MA20 하락');
+  if (newsSent === 'positive') reasonParts.push('뉴스 긍정');
+  else if (newsSent==='negative') reasonParts.push('뉴스 부정');
+  if (posZone === 'low_zone')  reasonParts.push('RSI 과매도');
+  else if (posZone==='high_zone') reasonParts.push('RSI 과매수 주의');
+  if (flowStage === 4 && pbQuality >= 65) reasonParts.push('눌림목 진입 조건 충족');
+  if (slTriggered >= 2) reasonParts.push('구조 붕괴 경고 ' + slTriggered + '건');
+  rationale = reasonParts.join(' · ');
+
+  // ── 이하 기존 conf 변수 참조 교체 ──
+  const conf = confLabel;
 
   // 신호 매트릭스 렌더
   const newsSub = finnSent && finnSent.bullish_pct != null
@@ -8636,7 +8698,7 @@ function renderFlowTab(d) {
   const flowRecBadge = document.getElementById('flow-rec-badge');
   if (flowRecBadge) {
     flowRecBadge.className = 'rec-badge-lg ' + recCls;
-    flowRecBadge.textContent = recLbl + ' · 신뢰도 ' + conf;
+    flowRecBadge.textContent = recLbl + ' · ' + confText;
   }
   const flowRationale = document.getElementById('flow-rationale');
   if (flowRationale) flowRationale.textContent = rationale;
