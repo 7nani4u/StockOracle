@@ -4057,14 +4057,14 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "market": _mkt,
     }
 
-def calc_trading_decision(dd: Dict, last_price: float, atr: float, score: float, market: str = "KRX") -> Dict:
+def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float, market: str = "KRX") -> Dict:
     """
-    주식 매매 판단 알고리즘 (손절/교체/보유 의사결정 플로우)
-    ─────────────────────────────────────────────────────
-    플로우: 매수 시나리오 확인 → 구조 붕괴 여부 → 기회비용 점수화 → 의사결정
-    점수화 5개 축 (각 0~2점, 합계 0~10점):
-      1. 구조(추세/지지)  2. 거래대금(수급)  3. 위치(가격위치)
-      4. 손익비(R/R)      5. 테마 강도 (고정 1점 — 외부 데이터 불가)
+    눌림목 분석 + 실전형 손익비 자리 진단
+    ─────────────────────────────────────────────────────────────────────
+    이미지 1: 급등 추세 종목의 눌림목 공통 특징 (5단계 흐름 구조)
+      - 거래량 감소 / RSI 50~60 재정렬 / 20MA 지지 / OBV 유지 / 급등봉 저가 미이탈
+    이미지 2: 실전형 손익비 좋은 자리 (구간(zone) 기반 분할매수)
+      - 핵심 일치가격대(지지/저항 전환) / 세력 혼들림 패턴 감지 / 4단계 분할 진입
     """
     def _last(k, default=0.0):
         a = dd.get(k, [])
@@ -4076,273 +4076,404 @@ def calc_trading_decision(dd: Dict, last_price: float, atr: float, score: float,
 
     closes  = _arr("Close");  highs   = _arr("High");   lows    = _arr("Low")
     volumes = _arr("Volume"); opens   = _arr("Open")
+    obv_arr = _arr("OBV")
     ema20   = _arr("EMA20");  ema50   = _arr("EMA50")
     ma20    = _arr("MA20");   ma60    = _arr("MA60");    ma120   = _arr("MA120")
     adx_arr = _arr("ADX");    dip_arr = _arr("DI_Plus"); dim_arr = _arr("DI_Minus")
-    bb_u    = _last("BB_Upper"); bb_l = _last("BB_Lower"); bb_m = _last("BB_Middle")
-    rsi_val = _last("RSI", 50.0)
+    rsi_arr = _arr("RSI")
+    bb_u_arr = _arr("BB_Upper"); bb_l_arr = _arr("BB_Lower"); bb_m_arr = _arr("BB_Middle")
+    bb_u    = bb_u_arr[-1] if bb_u_arr else 0.0
+    bb_l    = bb_l_arr[-1] if bb_l_arr else 0.0
+    bb_m    = bb_m_arr[-1] if bb_m_arr else 0.0
+    rsi_val = rsi_arr[-1] if rsi_arr else 50.0
     rnd     = 4 if market == "US" else 0
 
     if not atr or atr != atr:
         atr = last_price * 0.02
 
-    # ── 1. 매수 시나리오 분류 ─────────────────────────────────────────
-    scenario = "추세 추종"
-    scenario_detail = ""
-    if closes and highs and len(highs) >= 20:
-        h20 = max(highs[-20:])
-        if last_price >= h20 * 0.99:
-            scenario = "돌파 매수"
-            scenario_detail = f"20일 고점({h20:,.{rnd}f}) 근방 돌파 진입 구간"
-        elif lows and last_price <= min(lows[-10:]) * 1.03:
-            scenario = "반등 매수"
-            scenario_detail = f"10일 저점 근방 반등 진입 구간"
+    vol_avg = float(np.mean(volumes[-20:])) if len(volumes) >= 20 else (float(np.mean(volumes)) if volumes else 1.0)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SECTION A: 눌림목 분석 (급등 추세 종목의 눌림목 공통 특징)
+    # ═══════════════════════════════════════════════════════════════════
+
+    # ── A1. 급등봉 감지 (최근 60봉 내 거래량 2x 이상 + 양봉 + 3% 이상) ──
+    surge_candles = []
+    if len(closes) >= 5 and len(volumes) >= 20:
+        for i in range(max(-60, -len(closes)), -1):
+            v_ratio = volumes[i] / vol_avg if vol_avg > 0 else 1.0
+            body_pct = (closes[i] - opens[i]) / opens[i] * 100 if opens[i] > 0 else 0
+            if v_ratio >= 2.0 and closes[i] > opens[i] and body_pct >= 3.0:
+                surge_candles.append({"idx": i, "close": closes[i], "low": lows[i],
+                                      "vol_ratio": round(v_ratio, 1), "body_pct": round(body_pct, 1)})
+    last_surge = surge_candles[-1] if surge_candles else None
+
+    # ── A2. 급등봉 저가 미이탈 확인 ──────────────────────────────────
+    surge_low_intact = False
+    surge_low_price  = None
+    surge_low_desc   = "급등봉 없음 (기준 미설정)"
+    if last_surge:
+        surge_low_price = last_surge["low"]
+        if last_price > surge_low_price:
+            surge_low_intact = True
+            surge_low_desc = f"급등봉 저가 {surge_low_price:,.{rnd}f} 유지 중 (구조 붕괴 아님)"
         else:
-            scenario_detail = "EMA/추세선 기반 추세 추종 진입"
+            surge_low_desc = f"급등봉 저가 {surge_low_price:,.{rnd}f} 이탈 — 추세 붕괴 위험"
 
-    # ── 2. 구조 붕괴 감지 (4가지 조건) ──────────────────────────────
-    breakdown_flags = {}
-
-    # 조건 A: 핵심 지지선(최근 20일 저점) 이탈
-    support_break = False
-    support_level = None
-    if lows and len(lows) >= 5:
-        recent_lows = sorted(lows[-20:])
-        support_level = float(np.mean(recent_lows[:3]))
-        support_break = last_price < support_level
-    breakdown_flags["지지선 이탈"] = {
-        "triggered": support_break,
-        "desc": f"현재가({last_price:,.{rnd}f}) < 지지선({support_level:,.{rnd}f})" if support_level else "데이터 부족",
-    }
-
-    # 조건 B: 돌파 실패 (전 고점 돌파 후 되돌림 + 거래량)
-    breakout_fail = False
-    bf_desc = "해당 없음"
-    if highs and volumes and len(highs) >= 5 and len(volumes) >= 2:
-        prev_high = max(highs[-5:-1]) if len(highs) >= 5 else highs[-1]
-        vol_avg   = float(np.mean(volumes[-20:])) if len(volumes) >= 20 else float(np.mean(volumes))
-        prev_close = closes[-2] if len(closes) >= 2 else last_price
-        # 전봉 고점 돌파 후 당봉에서 전 고점 아래로 되돌림 + 거래량 증가
-        if prev_close > prev_high and last_price < prev_high:
-            vol_ratio = volumes[-1] / vol_avg if vol_avg > 0 else 1.0
-            if vol_ratio >= 1.2:
-                breakout_fail = True
-                bf_desc = f"전 고점({prev_high:,.{rnd}f}) 돌파 실패, 거래량 {vol_ratio:.1f}x"
-    breakdown_flags["돌파 실패"] = {"triggered": breakout_fail, "desc": bf_desc}
-
-    # 조건 C: EMA 역배열 전환 (저점 하락 전환)
-    ema_bear = False
-    ema_desc = "해당 없음"
-    if ema20 and ema50 and len(ema20) >= 2 and len(ema50) >= 2:
-        cur_bear  = ema20[-1] < ema50[-1] and last_price < ema20[-1]
-        prev_bull = ema20[-2] >= ema50[-2]
-        if cur_bear:
-            ema_bear = True
-            ema_desc = f"EMA20({ema20[-1]:,.{rnd}f}) < EMA50({ema50[-1]:,.{rnd}f}) 역배열 + 현재가 하회"
-        elif ma20 and ma60 and len(ma20) >= 2 and len(ma60) >= 2:
-            if ma20[-1] < ma60[-1] and last_price < ma20[-1]:
-                ema_bear = True
-                ema_desc = f"MA20({ma20[-1]:,.{rnd}f}) < MA60({ma60[-1]:,.{rnd}f}) 역배열"
-    breakdown_flags["EMA 역배열"] = {"triggered": ema_bear, "desc": ema_desc}
-
-    # 조건 D: 거래량 실린 대형 음봉
-    vol_bear_candle = False
-    vbc_desc = "해당 없음"
-    if volumes and closes and opens and len(volumes) >= 20:
-        vol_avg = float(np.mean(volumes[-20:]))
-        vol_ratio_now = volumes[-1] / vol_avg if vol_avg > 0 else 1.0
-        body_pct = (opens[-1] - closes[-1]) / opens[-1] * 100 if opens[-1] > 0 else 0
-        if vol_ratio_now >= 2.0 and closes[-1] < opens[-1] and body_pct >= 2.0:
-            vol_bear_candle = True
-            vbc_desc = f"거래량 {vol_ratio_now:.1f}x 음봉, 하락폭 {body_pct:.1f}%"
-    breakdown_flags["거래량 음봉"] = {"triggered": vol_bear_candle, "desc": vbc_desc}
-
-    structure_broken = support_break or breakout_fail or ema_bear or vol_bear_candle
-    breakdown_count  = sum(1 for v in breakdown_flags.values() if v["triggered"])
-
-    # ── 3. 점수화 비교표 (5개 항목 × 2점 = 10점) ─────────────────────
-    scores_detail = {}
-
-    # 3-1. 구조(추세/지지) 점수
-    struct_score = 0
-    struct_reason = ""
-    if ema20 and ema50 and len(ema20) >= 1 and len(ema50) >= 1:
-        if ema20[-1] > ema50[-1] and last_price > ema20[-1]:
-            struct_score = 2; struct_reason = "EMA 정배열 + 현재가 EMA 상회"
-        elif ema20[-1] > ema50[-1] or last_price > (ema20[-1] if ema20 else last_price):
-            struct_score = 1; struct_reason = "부분 정배열 또는 횡보"
+    # ── A3. 거래량 감소 확인 (눌림목 핵심: 매도세 약화) ──────────────
+    vol_decreasing = False
+    vol_trend_desc = "데이터 부족"
+    if len(volumes) >= 10:
+        recent_5  = float(np.mean(volumes[-5:]))
+        prev_5_10 = float(np.mean(volumes[-10:-5]))
+        vol_dec_ratio = recent_5 / prev_5_10 if prev_5_10 > 0 else 1.0
+        vol_vs_surge  = recent_5 / vol_avg if vol_avg > 0 else 1.0
+        if vol_dec_ratio < 0.8 and vol_vs_surge < 1.0:
+            vol_decreasing = True
+            vol_trend_desc = f"거래량 {vol_dec_ratio:.1f}x 감소 — 매도세 약화, 눌림목 이상적"
+        elif vol_dec_ratio >= 1.2:
+            vol_trend_desc = f"거래량 {vol_dec_ratio:.1f}x 증가 — 매도 지속 가능성 (눌림목 불안정)"
         else:
-            struct_score = 0; struct_reason = "역배열 — 하락 구조"
-    elif ma20 and ma60 and len(ma20) >= 1:
-        if ma20[-1] > ma60[-1] and last_price > ma20[-1]:
-            struct_score = 2; struct_reason = "MA 정배열"
-        elif ma20[-1] > ma60[-1]:
-            struct_score = 1; struct_reason = "MA 부분 정배열"
+            vol_trend_desc = f"거래량 {vol_dec_ratio:.1f}x 보통"
+
+    # ── A4. RSI 50~60 재정렬 확인 (과열 해소 후 재상승 준비) ──────────
+    rsi_pullback_zone = False
+    rsi_zone_desc = f"RSI {rsi_val:.1f}"
+    if 45 <= rsi_val <= 65:
+        rsi_pullback_zone = True
+        rsi_zone_desc = f"RSI {rsi_val:.1f} — 50~60 재정렬 구간 (눌림목 이상적, 40 이하 붕괴 아님)"
+    elif rsi_val > 65:
+        rsi_zone_desc = f"RSI {rsi_val:.1f} — 과열 구간, 눌림목 미완성"
+    elif rsi_val < 40:
+        rsi_zone_desc = f"RSI {rsi_val:.1f} — 40 이하 붕괴 위험 (눌림목 실패 패턴)"
+
+    # ── A5. 20MA(중기) 지지 확인 ──────────────────────────────────────
+    ma20_support = False
+    ma20_desc = "MA20 데이터 없음"
+    ma20_val = ma20[-1] if ma20 else None
+    ma60_val = ma60[-1] if ma60 else None
+    if ma20_val:
+        dist_pct = (last_price - ma20_val) / ma20_val * 100
+        if -3.0 <= dist_pct <= 5.0:
+            ma20_support = True
+            ma20_desc = f"MA20({ma20_val:,.{rnd}f}) 근접 지지 중 ({dist_pct:+.1f}%)"
+        elif dist_pct > 5.0:
+            ma20_desc = f"MA20({ma20_val:,.{rnd}f}) 상회 ({dist_pct:+.1f}%) — 아직 눌림목 미진행"
         else:
-            struct_score = 0; struct_reason = "MA 역배열"
+            ma20_desc = f"MA20({ma20_val:,.{rnd}f}) 하회 ({dist_pct:+.1f}%) — 지지 붕괴 주의"
+
+    # ── A6. OBV 유지/상승 확인 (매집 강도 유지) ──────────────────────
+    obv_healthy = False
+    obv_desc = "OBV 데이터 없음"
+    if len(obv_arr) >= 10:
+        obv_trend = obv_arr[-1] - obv_arr[-10]
+        obv_5_trend = obv_arr[-1] - obv_arr[-5]
+        if obv_trend > 0:
+            obv_healthy = True
+            obv_desc = "OBV 상승 추세 유지 — 세력 이탈 없음, 매집 강도 유지"
+        elif obv_5_trend > 0:
+            obv_healthy = True
+            obv_desc = "OBV 단기 반등 — 소폭 조정 후 회복 중"
+        else:
+            obv_desc = "OBV 하락 — 세력 이탈 가능성, 눌림목 실패 패턴 주의"
+
+    # ── A7. 음봉 크기 축소 확인 (에너지 재정렬 진행 중) ──────────────
+    bear_shrinking = False
+    bear_shrink_desc = "데이터 부족"
+    if len(closes) >= 8 and len(opens) >= 8:
+        bear_bodies = []
+        for i in range(-8, 0):
+            if closes[i] < opens[i] and opens[i] > 0:
+                bear_bodies.append(abs(closes[i] - opens[i]) / opens[i] * 100)
+        if len(bear_bodies) >= 3:
+            first_half = float(np.mean(bear_bodies[:len(bear_bodies)//2]))
+            second_half = float(np.mean(bear_bodies[len(bear_bodies)//2:]))
+            if second_half < first_half * 0.8:
+                bear_shrinking = True
+                bear_shrink_desc = f"음봉 크기 축소 ({first_half:.1f}% → {second_half:.1f}%) — 매도세 약화"
+            else:
+                bear_shrink_desc = f"음봉 크기 유지/확대 ({second_half:.1f}%) — 매도 지속"
+        else:
+            bear_shrink_desc = "음봉 부족 — 횡보 또는 양봉 구간"
+
+    # ── A8. 눌림목 점수 종합 (7개 항목 체크리스트) ───────────────────
+    pb_checks = [
+        {"item": "거래량 감소",         "pass": vol_decreasing,    "desc": vol_trend_desc,   "weight": 2},
+        {"item": "RSI 50~60 재정렬",    "pass": rsi_pullback_zone, "desc": rsi_zone_desc,    "weight": 2},
+        {"item": "20MA 지지",           "pass": ma20_support,      "desc": ma20_desc,        "weight": 2},
+        {"item": "OBV 유지/상승",       "pass": obv_healthy,       "desc": obv_desc,         "weight": 2},
+        {"item": "급등봉 저가 미이탈",  "pass": surge_low_intact,  "desc": surge_low_desc,   "weight": 2},
+        {"item": "음봉 크기 축소",      "pass": bear_shrinking,    "desc": bear_shrink_desc, "weight": 1},
+    ]
+    pb_pass_count    = sum(1 for c in pb_checks if c["pass"])
+    pb_score         = sum(c["weight"] for c in pb_checks if c["pass"])
+    pb_max_score     = sum(c["weight"] for c in pb_checks)
+    pb_score_pct     = round(pb_score / pb_max_score * 100)
+
+    if pb_pass_count >= 5:
+        pb_grade = "이상적인 눌림목"; pb_color = "green"
+        pb_desc  = "재상승 가능성 높음 — 모든 조건 거의 충족, 분할 진입 검토 가능"
+    elif pb_pass_count >= 3:
+        pb_grade = "보통 눌림목";    pb_color = "yellow"
+        pb_desc  = "일부 조건 미충족 — 추가 확인 후 신중한 진입"
     else:
-        struct_score = 1; struct_reason = "데이터 부족, 중립 처리"
-    scores_detail["구조(추세/지지)"] = {"score": struct_score, "max": 2, "reason": struct_reason}
+        pb_grade = "실패 패턴 의심"; pb_color = "red"
+        pb_desc  = "추세 붕괴 가능성 — 진입 자제, 손절 기준 재설정"
 
-    # 3-2. 거래대금(수급) 점수
-    vol_score = 0
-    vol_reason = ""
-    if volumes and len(volumes) >= 2:
-        vol_avg   = float(np.mean(volumes[-20:])) if len(volumes) >= 20 else float(np.mean(volumes))
-        vol_ratio = volumes[-1] / vol_avg if vol_avg > 0 else 1.0
-        if vol_ratio >= 1.5:
-            vol_score = 2; vol_reason = f"거래량 {vol_ratio:.1f}x 급증 (20일 평균 대비)"
-        elif vol_ratio >= 0.7:
-            vol_score = 1; vol_reason = f"거래량 {vol_ratio:.1f}x 보통"
+    # ── A9. 현재 흐름 단계 감지 (1~5단계) ────────────────────────────
+    flow_stage = 1; flow_desc = ""
+    adx_val = adx_arr[-1] if adx_arr else 20.0
+    if ma20_val and ma60_val and len(closes) >= 60:
+        is_uptrend = ma20_val > ma60_val and last_price > ma20_val
+        # 최근 60봉 내 급등봉 존재 여부
+        has_surge  = len(surge_candles) > 0
+        vol_surge_now = (volumes[-1] / vol_avg >= 1.5) if vol_avg > 0 and volumes else False
+
+        if not has_surge and not is_uptrend:
+            flow_stage = 1; flow_desc = "장기 바닥 매집 — 횡보+거래량 감소+OBV 바닥 전환 확인 필요"
+        elif has_surge and not vol_decreasing and vol_surge_now:
+            flow_stage = 2; flow_desc = "거래량 폭증 및 돌파 — 이슈/테마 결합 + 이격 확대 단계"
+        elif has_surge and not vol_decreasing and rsi_val > 65:
+            flow_stage = 3; flow_desc = "1차 급등 진행 중 — RSI 과열(70+), 거래량 급증, 강한 상승"
+        elif has_surge and vol_decreasing and rsi_pullback_zone:
+            flow_stage = 4; flow_desc = "눌림목 형성 중 — 에너지 재정렬, 주황 점선 구간 진입 적기"
+        elif has_surge and vol_surge_now and rsi_val > 60:
+            flow_stage = 5; flow_desc = "재상승 및 재돌파 — 거래량 증가+RSI 60이상, 추세 가속"
         else:
-            vol_score = 0; vol_reason = f"거래량 {vol_ratio:.1f}x 급감"
-    scores_detail["거래대금(수급)"] = {"score": vol_score, "max": 2, "reason": vol_reason or "데이터 없음"}
+            flow_stage = 3; flow_desc = "급등 후 조정 — 단계 판별 추가 확인 필요"
 
-    # 3-3. 위치(가격위치) 점수 — 52주(250봉) 기준 백분위
-    pos_score = 0
-    pos_reason = ""
-    if highs and lows and len(highs) >= 20:
-        n = min(250, len(highs))
-        h_max = max(highs[-n:]); l_min = min(lows[-n:])
-        price_pct = (last_price - l_min) / (h_max - l_min) * 100 if h_max > l_min else 50.0
-        if price_pct <= 30:
-            pos_score = 2; pos_reason = f"가격 위치 {price_pct:.0f}% — 저점 근접 / 돌파 직전"
-        elif price_pct <= 70:
-            pos_score = 1; pos_reason = f"가격 위치 {price_pct:.0f}% — 중간 구간"
-        else:
-            pos_score = 0; pos_reason = f"가격 위치 {price_pct:.0f}% — 고점/과열권"
-    scores_detail["위치(가격위치)"] = {"score": pos_score, "max": 2, "reason": pos_reason or "데이터 없음"}
+    # ═══════════════════════════════════════════════════════════════════
+    # SECTION B: 실전형 손익비 자리 분석 (구간(zone) 기반)
+    # ═══════════════════════════════════════════════════════════════════
 
-    # 3-4. 손익비(R/R) 점수
-    rr_score = 0
-    rr_ratio = 0.0
-    rr_reason = ""
-    sl_price  = round(last_price - atr * 2.0, rnd)
-    tp1_price = round(last_price + atr * 2.0 * 2.0, rnd)  # 1차 익절 (2R)
-    tp2_price = round(last_price + atr * 2.0 * 4.0, rnd)  # 2차 익절 (4R)
-    trail_stop = round(last_price - atr * 1.5, rnd)
-    risk_amt   = last_price - sl_price
-    if highs and len(highs) >= 20:
-        near_resist = max(highs[-20:])
-        reward_amt  = near_resist - last_price if near_resist > last_price else atr * 4.0
-    else:
-        reward_amt = atr * 4.0
-    rr_ratio = round(reward_amt / risk_amt, 2) if risk_amt > 0 else 0.0
-    if rr_ratio >= 2.0:
-        rr_score = 2; rr_reason = f"손익비 {rr_ratio:.1f}:1 — 유리"
-    elif rr_ratio >= 1.0:
-        rr_score = 1; rr_reason = f"손익비 {rr_ratio:.1f}:1 — 보통"
-    else:
-        rr_score = 0; rr_reason = f"손익비 {rr_ratio:.1f}:1 — 불리"
-    scores_detail["손익비(R/R)"] = {"score": rr_score, "max": 2, "reason": rr_reason}
+    # ── B1. 핵심 구간(Zone) 산출 ─────────────────────────────────────
+    n60  = min(60,  len(closes)); n120 = min(120, len(closes)); n250 = min(250, len(closes))
+    h60  = max(highs[-n60:])   if highs else last_price * 1.1
+    l60  = min(lows[-n60:])    if lows  else last_price * 0.9
+    h120 = max(highs[-n120:])  if highs else last_price * 1.15
+    l120 = min(lows[-n120:])   if lows  else last_price * 0.85
 
-    # 3-5. 테마 강도 (외부 데이터 불가 — 중립 고정)
-    theme_score = 1
-    scores_detail["테마 강도"] = {"score": theme_score, "max": 2, "reason": "수동 확인 필요 (주도/관련/소멸)"}
+    # 핵심 일치가격대: 최근 20일 종가 25~75 백분위 구간 (지지/저항 전환 밀집대)
+    closes_20 = sorted(closes[-20:]) if len(closes) >= 20 else sorted(closes)
+    core_zone_low   = float(np.percentile(closes_20, 25)) if closes_20 else last_price * 0.95
+    core_zone_high  = float(np.percentile(closes_20, 75)) if closes_20 else last_price * 1.05
+    # 핵심 구간이 역전되는 경우 보정
+    if core_zone_high <= core_zone_low:
+        core_zone_high = last_price * 1.03
+        core_zone_low  = last_price * 0.97
 
-    total_score_10 = struct_score + vol_score + pos_score + rr_score + theme_score
+    # 상단 저항대: 60일 고점 (현재가보다 높아야 의미 있음, 낮으면 Fib 연장 사용)
+    resist_high = h60 if h60 > last_price * 1.01 else last_price * 1.08
+    resist_low  = resist_high * 0.97
 
-    # ── 4. ADX 횡보 필터 ──────────────────────────────────────────────
-    adx_val   = adx_arr[-1]  if adx_arr  else 20.0
-    dip_val   = dip_arr[-1]  if dip_arr  else 0.0
-    dim_val   = dim_arr[-1]  if dim_arr  else 0.0
-    adx_filter_pass = adx_val >= 20.0
-    adx_note  = f"ADX {adx_val:.1f} — " + ("추세 유효" if adx_filter_pass else "횡보 구간 (진입 주의)")
+    # 하단 방어 구간: MA60 또는 60일 저점 중 현재가에 가장 가까운 값 기준
+    ma_floor_candidates = [x for x in [
+        ma60[-1]  if ma60  and ma60[-1]  < last_price * 0.98 else None,
+        ma20[-1]  if ma20  and ma20[-1]  < last_price * 0.95 else None,
+        l60 * 1.01,
+    ] if x is not None]
+    ma_floor = max(ma_floor_candidates) if ma_floor_candidates else last_price * 0.88
+    defense_high = ma_floor * 1.02
+    defense_low  = ma_floor * 0.98
 
-    # ── 5. 볼린저 밴드 수축 감지 ────────────────────────────────────
-    bb_squeeze = False
-    bb_note = ""
+    # ── B2. 4단계 분할 진입 구간 산출 ────────────────────────────────
+    entry_zones = []
+    rnd2 = rnd
+    # 1차: 탐색 매수 (현재가 기준 상단 저항대 하단)
+    e1_high = min(last_price * 1.005, resist_low)
+    e1_low  = e1_high - atr * 0.5
+    entry_zones.append({
+        "stage": "1차 (탐색 매수)",
+        "range": [round(e1_low, rnd2), round(e1_high, rnd2)],
+        "ratio": "10~20%",
+        "desc":  "일치가격대 상단 최초 도달 — 반응 확인 소액 진입",
+        "color": "#58a6ff",
+    })
+    # 2차: 눌림목 매수 (핵심 일치가격대)
+    e2_high = round(core_zone_high, rnd2)
+    e2_low  = round(core_zone_low,  rnd2)
+    entry_zones.append({
+        "stage": "2차 (눌림목 매수)",
+        "range": [e2_low, e2_high],
+        "ratio": "20~40%",
+        "desc":  "지지대 재테스트 구간 — 거래량 감소 + 지지 확인",
+        "color": "#3fb950",
+    })
+    # 3차: 재확인 매수 (반등 확인 후)
+    e3_high = round(core_zone_high * 1.01, rnd2)
+    e3_low  = round(core_zone_low  * 1.00, rnd2)
+    entry_zones.append({
+        "stage": "3차 (재확인 매수)",
+        "range": [e3_low, e3_high],
+        "ratio": "20~30%",
+        "desc":  "반등 후 지지 유지 확인 — 단기 고점 돌파 시",
+        "color": "#d29922",
+    })
+    # 4차: 돌파 추격 (저항 돌파 확인)
+    e4_trigger = round(resist_low * 1.005, rnd2)
+    entry_zones.append({
+        "stage": "4차 (돌파 추격)",
+        "range": [e4_trigger, round(resist_high * 1.01, rnd2)],
+        "ratio": "10~20%",
+        "desc":  f"저항선({resist_low:,.{rnd}f}) 돌파 시 — 거래량 동반 확인 필수",
+        "color": "#f78166",
+    })
+
+    # ── B3. ATR 기반 손절/익절 산출 ──────────────────────────────────
+    # 손절: ATR×2 또는 구조 붕괴 기준 (60MA 이탈) 중 낮은 값
+    atr_sl      = last_price - atr * 2.0
+    struct_sl   = defense_low
+    sl_price    = round(max(atr_sl, struct_sl), rnd2)   # 더 높은(타이트한) 손절선
+    sl_pct      = round((sl_price - last_price) / last_price * 100, 2)
+
+    # 목표가: 상단 저항대 중간값 (반드시 현재가보다 높아야 의미 있음)
+    target_raw   = (resist_high + resist_low) / 2
+    target_main  = round(max(target_raw, last_price * 1.05), rnd2)
+    target_high2 = round(max(resist_high * 1.05, last_price * 1.10), rnd2)
+    risk_amt     = last_price - sl_price if last_price > sl_price else atr * 2.0
+    reward_main  = target_main - last_price
+    rr_main      = round(reward_main / risk_amt, 2) if risk_amt > 0 else 0.0
+
+    # 트레일링: 고점 대비 ATR×1.5
+    trail_stop = round(last_price - atr * 1.5, rnd2)
+
+    # ── B4. 세력 혼들림 패턴 감지 ────────────────────────────────────
+    manipulation_flags = []
+    # 패턴 1: 지지선 이탈 척 (장중 이탈 후 종가 회복)
+    if len(closes) >= 3 and len(lows) >= 3:
+        for i in range(-5, -1):
+            if (lows[i] < core_zone_low * 0.99 and
+                    closes[i] > core_zone_low * 0.99):
+                manipulation_flags.append({
+                    "pattern": "지지선 이탈 척 (손절 유도)",
+                    "color": "orange",
+                    "desc":  "장중 지지선 일시 이탈 후 종가 회복 — 손절 털기 후 재매집 신호",
+                    "action": "종가 기준 확인, 다음날 반등 시 매수 검토",
+                })
+                break
+    # 패턴 2: 거래량 급증 + 장대 음봉 후 다음날 양봉 회복
+    if len(closes) >= 3 and len(volumes) >= 3:
+        for i in range(-5, -1):
+            v_ratio = volumes[i] / vol_avg if vol_avg > 0 else 1.0
+            body_dn = (opens[i] - closes[i]) / opens[i] * 100 if opens[i] > 0 else 0
+            if v_ratio >= 1.5 and body_dn >= 2.0:
+                if i + 1 < 0 and closes[i+1] > opens[i+1]:
+                    manipulation_flags.append({
+                        "pattern": "장중 급락 후 회복 (공포 자극)",
+                        "color": "yellow",
+                        "desc":  f"거래량 {v_ratio:.1f}x 음봉 후 양봉 회복 — 공포 극대화 후 흡수",
+                        "action": "다음날 흐름 확인 후 대응",
+                    })
+                    break
+    # 패턴 3: 볼린저 밴드 수축 (긴 횡보 — 인내심 소멸 유도)
+    bb_squeeze_here = False
     if bb_u and bb_l and bb_m and bb_m > 0:
-        bb_width     = (bb_u - bb_l) / bb_m * 100
-        bb_closes    = _arr("BB_Upper")
-        bb_lows_arr  = _arr("BB_Lower")
-        bb_mids_arr  = _arr("BB_Middle")
-        if len(bb_closes) >= 20 and len(bb_lows_arr) >= 20 and len(bb_mids_arr) >= 20:
-            widths_20 = [(bb_closes[i] - bb_lows_arr[i]) / bb_mids_arr[i] * 100
-                         for i in range(-20, 0) if bb_mids_arr[i] > 0]
-            if widths_20:
-                avg_width = float(np.mean(widths_20))
-                if bb_width < avg_width * 0.8:
-                    bb_squeeze = True
-                    bb_note = f"밴드 수축 ({bb_width:.1f}%) — 큰 방향 돌파 임박"
-                elif bb_width > avg_width * 1.2:
-                    bb_note = f"밴드 확장 ({bb_width:.1f}%) — 추세 발생 중"
-                else:
-                    bb_note = f"밴드 보통 ({bb_width:.1f}%)"
-        else:
-            bb_note = f"밴드폭 {bb_width:.1f}%"
+        bb_width = (bb_u - bb_l) / bb_m * 100
+        if len(bb_u_arr) >= 20 and len(bb_l_arr) >= 20 and len(bb_m_arr) >= 20:
+            widths = [(bb_u_arr[i] - bb_l_arr[i]) / bb_m_arr[i] * 100
+                      for i in range(-20, 0) if bb_m_arr[i] > 0]
+            if widths:
+                avg_w = float(np.mean(widths))
+                if bb_width < avg_w * 0.75:
+                    bb_squeeze_here = True
+                    manipulation_flags.append({
+                        "pattern": "긴 횡보 — 인내심 소멸 유도",
+                        "color": "blue",
+                        "desc":  f"볼린저 밴드 수축 ({bb_width:.1f}%, 평균 {avg_w:.1f}%) — 에너지 응축, 방향 돌파 임박",
+                        "action": "상단 돌파 시 추세 동승, 거래량 감소 구간 유지",
+                    })
 
-    # ── 6. 최종 의사결정 ─────────────────────────────────────────────
-    if structure_broken:
-        if breakdown_count >= 2:
-            decision = "기계적 손절"
-            decision_color = "red"
-            decision_detail = f"구조 붕괴 조건 {breakdown_count}개 동시 충족 — 미련 없이 손절 후 재진입 후보 탐색"
-        else:
-            decision = "손절 검토"
-            decision_color = "orange"
-            decision_detail = f"구조 붕괴 조건 1개 충족 — 추가 확인 후 손절 여부 판단"
+    # ── B5. 구조 붕괴 손절 기준 (4개 조건) ──────────────────────────
+    sl_conditions = [
+        {"cond": "종가 기준 60MA 이탈",
+         "triggered": (ma60_val is not None and last_price < ma60_val),
+         "desc": f"현재가({last_price:,.{rnd}f}) vs MA60({ma60_val:,.{rnd}f})" if ma60_val else "MA60 없음"},
+        {"cond": "거래량 실린 하락 (평균 150%+)",
+         "triggered": (volumes[-1] / vol_avg >= 1.5 if volumes and vol_avg > 0 else False) and
+                      (closes[-1] < opens[-1] if closes and opens else False),
+         "desc": f"거래량 {volumes[-1]/vol_avg:.1f}x + 음봉" if volumes and vol_avg > 0 else "데이터 없음"},
+        {"cond": "이탈 후 회복 실패 (2~3일 내 재하락)",
+         "triggered": (len(closes) >= 3 and
+                       closes[-3] < core_zone_low and
+                       closes[-2] < core_zone_low and
+                       closes[-1] < core_zone_low),
+         "desc": f"3일 연속 핵심 지지대({core_zone_low:,.{rnd}f}) 하회"},
+        {"cond": "60MA 하향 이탈",
+         "triggered": (ma60_val is not None and
+                       len(ma60) >= 2 and
+                       ma60[-1] < ma60[-2] and
+                       last_price < ma60[-1]),
+         "desc": f"MA60 하향 전환 + 현재가 하회" if ma60_val else "MA60 없음"},
+    ]
+    sl_triggered = sum(1 for s in sl_conditions if s["triggered"])
+
+    if sl_triggered >= 2:
+        breakdown_verdict = "구조 붕괴 — 손절 실행"
+        breakdown_color   = "red"
+    elif sl_triggered == 1:
+        breakdown_verdict = "경계 신호 — 추가 확인 필요"
+        breakdown_color   = "orange"
     else:
-        if total_score_10 >= 8:
-            decision = "보유 (강한 유지)"
-            decision_color = "green"
-            decision_detail = f"구조 유지 + 점수 {total_score_10}/10 — 추가 매수 또는 확신 보유"
-        elif total_score_10 >= 6:
-            decision = "보유 유지"
-            decision_color = "green"
-            decision_detail = f"구조 유지 + 점수 {total_score_10}/10 — 현 시나리오 유지, 추가 상승 가능"
-        elif total_score_10 >= 4:
-            decision = "부분 교체 검토 (30~50%)"
-            decision_color = "yellow"
-            decision_detail = f"구조 유지이나 점수 {total_score_10}/10 — 더 강한 종목 확인 시 부분 교체"
-        else:
-            decision = "전량 교체 검토"
-            decision_color = "orange"
-            decision_detail = f"구조 유지이나 점수 {total_score_10}/10 — 더 강한 종목으로 교체 고려"
+        breakdown_verdict = "구조 유지 중"
+        breakdown_color   = "green"
 
-    # ── 7. 교체 기준 안내 ────────────────────────────────────────────
-    switch_guide = [
-        {"condition": f"후보 점수 ≥ 현재 점수({total_score_10}) + 3점",
-         "action": "전량 교체 (확실한 우위)"},
-        {"condition": f"후보 점수 ≥ 현재 점수({total_score_10}) + 1점",
-         "action": "부분 교체 30~50% (애매한 우위)"},
-        {"condition": f"후보 점수 ≤ 현재 점수({total_score_10})",
-         "action": "보유 유지 (교체 불필요)"},
-    ]
-
-    # ── 8. 사후 관리 체크리스트 ──────────────────────────────────────
-    post_mgmt = [
-        f"손절선: {sl_price:,.{rnd}f}원 (ATR × 2.0 = {atr*2:.{rnd}f}원)",
-        f"1차 익절: {tp1_price:,.{rnd}f}원 (+2R, 50% 청산)",
-        f"2차 익절: {tp2_price:,.{rnd}f}원 (+4R, 나머지 청산)",
-        f"트레일링: 고점 대비 ATR × 1.5 ({atr*1.5:,.{rnd}f}원) 하락 시 청산",
-        "1~3일 단위 재평가 — 구조 붕괴 여부 재확인",
-        "하루 교체 1회 제한 — 손절 후 무리한 추격 금지",
-    ]
+    # ── B6. 손익비 시나리오 3가지 ────────────────────────────────────
+    rr_scenarios = []
+    for label, tp, entry_adj in [
+        ("시나리오 ① 이상적 흐름",   target_main,   0.0),
+        ("시나리오 ② 횡보 후 돌파",  target_main,   atr * 0.3),
+        ("시나리오 ③ 흔들림 후 반등", target_main,  atr * 0.6),
+    ]:
+        entry_p = last_price + entry_adj
+        risk_p  = entry_p - sl_price
+        reward_p= tp - entry_p
+        rr_s    = round(reward_p / risk_p, 2) if risk_p > 0 else 0.0
+        rr_scenarios.append({
+            "label":       label,
+            "entry":       round(entry_p, rnd2),
+            "target":      round(tp, rnd2),
+            "stop":        sl_price,
+            "rr":          rr_s,
+            "viable":      rr_s >= 2.0,
+        })
 
     return {
-        "scenario":         scenario,
-        "scenario_detail":  scenario_detail,
-        "structure_broken": structure_broken,
-        "breakdown_count":  breakdown_count,
-        "breakdown_flags":  breakdown_flags,
-        "scores":           scores_detail,
-        "total_score":      total_score_10,
-        "adx_filter":       {"pass": adx_filter_pass, "note": adx_note, "value": round(adx_val, 1)},
-        "bb_squeeze":       {"active": bb_squeeze, "note": bb_note},
-        "decision":         decision,
-        "decision_color":   decision_color,
-        "decision_detail":  decision_detail,
-        "switch_guide":     switch_guide,
-        "risk_levels": {
-            "stop_loss":    sl_price,
-            "tp1":          tp1_price,
-            "tp2":          tp2_price,
-            "trailing_stop": trail_stop,
-            "rr_ratio":     rr_ratio,
-            "atr":          round(atr, rnd),
+        # ─ 눌림목 분석 ─
+        "flow_stage":          flow_stage,
+        "flow_desc":           flow_desc,
+        "pullback_checks":     pb_checks,
+        "pullback_pass_count": pb_pass_count,
+        "pullback_score":      pb_score,
+        "pullback_score_pct":  pb_score_pct,
+        "pullback_grade":      pb_grade,
+        "pullback_grade_color":pb_color,
+        "pullback_desc":       pb_desc,
+        "surge_candles_count": len(surge_candles),
+        "last_surge_low":      surge_low_price,
+        # ─ 손익비 자리 분석 ─
+        "zones": {
+            "resistance": {"high": round(resist_high, rnd2), "low": round(resist_low, rnd2)},
+            "core":       {"high": round(core_zone_high, rnd2), "low": round(core_zone_low, rnd2)},
+            "defense":    {"high": round(defense_high, rnd2),   "low": round(defense_low, rnd2)},
         },
-        "post_mgmt":        post_mgmt,
+        "entry_zones":     entry_zones,
+        "stop_loss":       sl_price,
+        "stop_loss_pct":   sl_pct,
+        "target_main":     target_main,
+        "target_ext":      target_high2,
+        "trail_stop":      trail_stop,
+        "rr_main":         rr_main,
+        "rr_scenarios":    rr_scenarios,
+        # ─ 세력 혼들림 패턴 ─
+        "manipulation_flags":  manipulation_flags,
+        "bb_squeeze":          bb_squeeze_here,
+        # ─ 구조 붕괴 판단 ─
+        "sl_conditions":       sl_conditions,
+        "sl_triggered":        sl_triggered,
+        "breakdown_verdict":   breakdown_verdict,
+        "breakdown_color":     breakdown_color,
+        "atr":                 round(atr, rnd2),
+        "market":              market,
     }
 
 
@@ -4784,7 +4915,7 @@ def route(path: str, params: Dict) -> Dict:
         indicator_signals= calc_indicator_signals(dd)
         risk             = calc_risk(last, atr_val, market, dd)
         buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market)
-        trading_decision = calc_trading_decision(dd, last, atr_val, score, market)
+        pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market)
         target_price     = calc_target_price(dd, last, atr_val, period, market)
                 
         return {
@@ -4818,7 +4949,7 @@ def route(path: str, params: Dict) -> Dict:
             "indicator_signals": indicator_signals,
             "buy_price": buy_price,
             "target_price": target_price,
-            "trading_decision": trading_decision,
+            "pullback_analysis": pullback_analysis,
             "news": news or [], "naver": naver, "us_enriched": us_enriched,
             "investor_flow": investor_flow,
         }
@@ -5937,7 +6068,7 @@ input::placeholder{color:#484f58}
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
         <button class="tab-btn" onclick="switchTab('report')" style="display:none">📝 단계별 리포트</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 예측</button>
-        <button class="tab-btn" onclick="switchTab('trading')">⚖️ 매매판단</button>
+        <button class="tab-btn" onclick="switchTab('trading')">📉 눌림목/손익비</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스</button>
         <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">📋 KRX</button>
       </div>
@@ -5992,9 +6123,9 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
-      <!-- 매매 판단 탭 -->
+      <!-- 눌림목/손익비 탭 -->
       <div id="tab-trading" style="display:none">
-        <div id="trading-decision-section"></div>
+        <div id="pullback-analysis-section"></div>
       </div>
 
       <!-- 예측 탭 -->
@@ -6580,8 +6711,8 @@ function renderResult(d) {
   renderReport(d);
   // 예측/리스크
   renderForecast(d, isKrx);
-  // 매매 판단 알고리즘
-  renderTradingDecision(d, isKrx);
+  // 눌림목/손익비 분석
+  renderPullbackAnalysis(d, isKrx);
   // 기술적 지표 시그널 & 피봇 포인트
   renderTechnicalSignals(d);
   renderPivotPoints(d, isKrx);
@@ -6598,157 +6729,210 @@ function renderAI(d, isKrx) {
   renderInvestorFlow(d, isKrx);
 }
 
-// ── 매매 판단 알고리즘 렌더 ────────────────────────────────────────────────────
-function renderTradingDecision(d, isKrx) {
-  const el = document.getElementById('trading-decision-section');
+// ── 눌림목/손익비 분석 렌더 ──────────────────────────────────────────────────
+function renderPullbackAnalysis(d, isKrx) {
+  const el = document.getElementById('pullback-analysis-section');
   if (!el) return;
-  const td = d.trading_decision;
-  if (!td) { el.innerHTML = '<div style="padding:20px;color:#8b949e;text-align:center">매매 판단 데이터 없음</div>'; return; }
+  const pa = d.pullback_analysis;
+  if (!pa) { el.innerHTML = '<div style="padding:20px;color:#8b949e;text-align:center">분석 데이터 없음</div>'; return; }
 
-  const clr = { red:'#f85149', orange:'#d29922', yellow:'#e3b341', green:'#3fb950', blue:'#58a6ff' };
-  const dc  = td.decision_color || 'blue';
-  const decisionClr = clr[dc] || clr.blue;
+  const C = { red:'#f85149', orange:'#d29922', yellow:'#e3b341', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e' };
+  const fmtP = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  const fmtN = v => Number(v).toLocaleString('ko-KR');
 
-  // 구조 붕괴 플래그 렌더
-  const flagRows = Object.entries(td.breakdown_flags || {}).map(([name, info]) => {
-    const icon = info.triggered ? '🔴' : '🟢';
-    const color = info.triggered ? clr.red : clr.green;
+  // 단계 배지 색상
+  const stageColors = ['','#484f58','#d29922','#f85149','#3fb950','#58a6ff'];
+  const stageLabels = ['','① 바닥 매집','② 돌파','③ 1차 급등','④ 눌림목','⑤ 재급등'];
+  const stageC = stageColors[pa.flow_stage] || C.gray;
+
+  // 눌림목 체크리스트
+  const checkRows = (pa.pullback_checks || []).map(c => {
+    const ic = c.pass ? '✅' : '❌';
+    const tc = c.pass ? C.green : C.red;
     return `<tr>
-      <td style="padding:6px 10px;color:#cdd9e5">${icon} ${name}</td>
-      <td style="padding:6px 10px;color:${color};font-size:12px">${info.desc}</td>
+      <td style="padding:5px 8px;white-space:nowrap">${ic} <span style="color:#cdd9e5">${c.item}</span></td>
+      <td style="padding:5px 8px;color:${tc};font-size:12px">${c.desc}</td>
     </tr>`;
   }).join('');
 
-  // 점수 항목 렌더
-  const scoreRows = Object.entries(td.scores || {}).map(([name, info]) => {
-    const s = info.score; const m = info.max;
-    const barW = Math.round((s / m) * 100);
-    const barC = s === m ? clr.green : s > 0 ? clr.yellow : '#484f58';
+  // 분할 진입 구간
+  const entryRows = (pa.entry_zones || []).map(z => `
+    <div style="border-left:3px solid ${z.color};padding:8px 10px;margin-bottom:8px;background:#1c2128;border-radius:0 6px 6px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+        <span style="color:${z.color};font-weight:700;font-size:13px">${z.stage}</span>
+        <span style="color:#e6edf3;font-size:13px;font-weight:600">${fmtP(z.range[0])} ~ ${fmtP(z.range[1])}</span>
+        <span style="background:#30363d;border-radius:4px;padding:2px 8px;color:#8b949e;font-size:11px">${z.ratio}</span>
+      </div>
+      <div style="color:#8b949e;font-size:12px;margin-top:4px">${z.desc}</div>
+    </div>`).join('');
+
+  // 손익비 시나리오
+  const rrRows = (pa.rr_scenarios || []).map(s => {
+    const rrC = s.rr >= 2.3 ? C.green : s.rr >= 2.0 ? C.yellow : C.red;
+    return `<div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${s.viable ? C.green : '#30363d'}">
+      <div style="color:#cdd9e5;font-size:12px;font-weight:600;margin-bottom:6px">${s.label}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px">
+        <span>진입 <b style="color:#e6edf3">${fmtP(s.entry)}</b></span>
+        <span>목표 <b style="color:${C.green}">${fmtP(s.target)}</b></span>
+        <span>손절 <b style="color:${C.red}">${fmtP(s.stop)}</b></span>
+        <span style="color:${rrC};font-weight:700">R/R ${s.rr}:1</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // 구조 붕괴 손절 조건
+  const slRows = (pa.sl_conditions || []).map(s => {
+    const ic = s.triggered ? '🔴' : '🟢';
+    const tc = s.triggered ? C.red : C.green;
     return `<tr>
-      <td style="padding:6px 10px;color:#cdd9e5;min-width:110px">${name}</td>
-      <td style="padding:6px 10px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <div style="width:80px;background:#21262d;border-radius:4px;height:8px">
-            <div style="width:${barW}%;background:${barC};height:8px;border-radius:4px"></div>
-          </div>
-          <span style="color:${barC};font-weight:700">${s}/${m}</span>
-        </div>
-      </td>
-      <td style="padding:6px 10px;color:#8b949e;font-size:12px">${info.reason}</td>
+      <td style="padding:5px 8px;white-space:nowrap">${ic} <span style="color:#cdd9e5;font-size:12px">${s.cond}</span></td>
+      <td style="padding:5px 8px;color:${tc};font-size:11px">${s.desc}</td>
     </tr>`;
   }).join('');
 
-  // 교체 기준 렌더
-  const switchRows = (td.switch_guide || []).map(g =>
-    `<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid #21262d">
-      <span style="color:#58a6ff;font-size:12px;white-space:nowrap">${g.condition}</span>
-      <span style="color:#8b949e;font-size:12px">→</span>
-      <span style="color:#e6edf3;font-size:12px">${g.action}</span>
-    </div>`
-  ).join('');
+  // 세력 혼들림 패턴
+  const mfHtml = pa.manipulation_flags && pa.manipulation_flags.length > 0
+    ? pa.manipulation_flags.map(f => `
+      <div style="border-left:3px solid ${C[f.color]||C.orange};padding:8px 10px;background:#1c2128;border-radius:0 6px 6px 0;margin-bottom:6px">
+        <div style="color:${C[f.color]||C.orange};font-weight:700;font-size:12px">${f.pattern}</div>
+        <div style="color:#8b949e;font-size:12px;margin-top:3px">${f.desc}</div>
+        <div style="color:#58a6ff;font-size:12px;margin-top:3px">대응: ${f.action}</div>
+      </div>`).join('')
+    : `<div style="color:#8b949e;font-size:13px;padding:8px 0">감지된 세력 혼들림 패턴 없음</div>`;
 
-  // 리스크 레벨
-  const rl = td.risk_levels || {};
-  const fmt = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
-
-  // 사후 관리
-  const pmRows = (td.post_mgmt || []).map(t =>
-    `<li style="padding:4px 0;color:#cdd9e5;font-size:13px">${t}</li>`
-  ).join('');
+  const pbGC = C[pa.pullback_grade_color] || C.blue;
+  const bvC  = C[pa.breakdown_color]      || C.gray;
 
   el.innerHTML = `
-  <!-- 1. 매수 시나리오 + 구조 상태 -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">① 매수 시나리오 확인</div>
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:8px 0">
-      <span style="background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:6px 14px;color:#58a6ff;font-weight:700">${td.scenario}</span>
-      <span style="color:#8b949e;font-size:13px">${td.scenario_detail}</span>
-    </div>
-  </div>
+  <!-- ══ SECTION A: 눌림목 분석 ══ -->
 
-  <!-- 2. 구조 붕괴 여부 -->
+  <!-- A1. 현재 흐름 단계 -->
   <div class="card" style="margin-bottom:12px">
-    <div class="card-title">② 구조 붕괴 여부 판단</div>
-    <div style="padding:8px 0 12px">
-      <div style="display:inline-flex;align-items:center;gap:10px;background:#1c2128;border:2px solid ${td.structure_broken ? clr.red : clr.green};border-radius:8px;padding:10px 18px;margin-bottom:12px">
-        <span style="font-size:22px">${td.structure_broken ? '🔴' : '🟢'}</span>
-        <div>
-          <div style="color:${td.structure_broken ? clr.red : clr.green};font-weight:700;font-size:15px">
-            ${td.structure_broken ? '구조 붕괴 감지' : '구조 유지'}
-          </div>
-          <div style="color:#8b949e;font-size:12px">붕괴 조건 ${td.breakdown_count}개 충족</div>
-        </div>
+    <div class="card-title">① 현재 흐름 단계 (5단계 구조)</div>
+    <div style="display:flex;align-items:center;gap:14px;padding:10px 0;flex-wrap:wrap">
+      <div style="background:${stageC};border-radius:8px;padding:8px 18px;font-size:20px;font-weight:700;color:#fff">
+        ${stageLabels[pa.flow_stage] || '단계 불명'}
       </div>
-      <table style="width:100%;border-collapse:collapse">
-        ${flagRows}
-      </table>
+      <div style="color:#cdd9e5;font-size:13px;line-height:1.6;flex:1">${pa.flow_desc}</div>
+    </div>
+    <div style="display:flex;gap:4px;margin-top:8px">
+      ${[1,2,3,4,5].map(i => `
+        <div style="flex:1;height:6px;border-radius:3px;background:${i <= pa.flow_stage ? stageColors[i] : '#21262d'}"></div>
+      `).join('')}
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:#484f58">
+      <span>바닥</span><span>돌파</span><span>급등</span><span style="color:${C.green};font-weight:700">눌림목</span><span>재급등</span>
     </div>
   </div>
 
-  <!-- 3. 점수화 비교표 -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">③ 기회비용 점수화 (현재 종목)</div>
-    <div style="padding:8px 0">
-      <table style="width:100%;border-collapse:collapse">
-        ${scoreRows}
-        <tr style="border-top:2px solid #30363d">
-          <td style="padding:8px 10px;color:#e6edf3;font-weight:700">합계</td>
-          <td style="padding:8px 10px" colspan="2">
-            <span style="font-size:20px;font-weight:700;color:${td.total_score >= 7 ? clr.green : td.total_score >= 5 ? clr.yellow : clr.red}">${td.total_score}<span style="font-size:14px;color:#8b949e"> / 10점</span></span>
-          </td>
-        </tr>
-      </table>
-      <div style="margin-top:8px;padding:8px;background:#1c2128;border-radius:6px">
-        <div style="font-size:12px;color:#8b949e;margin-bottom:6px">필터 상태</div>
-        <div style="font-size:12px;color:${td.adx_filter.pass ? clr.green : clr.orange}">${td.adx_filter.note}</div>
-        ${td.bb_squeeze.note ? `<div style="font-size:12px;color:${td.bb_squeeze.active ? clr.yellow : '#8b949e'};margin-top:4px">${td.bb_squeeze.note}</div>` : ''}
+  <!-- A2. 눌림목 체크리스트 -->
+  <div class="card" style="margin-bottom:12px;border:2px solid ${pbGC}">
+    <div class="card-title">② 눌림목 체크리스트</div>
+    <div style="display:flex;align-items:center;gap:14px;padding:10px 0 8px;flex-wrap:wrap">
+      <div style="text-align:center;min-width:80px">
+        <div style="font-size:28px;font-weight:700;color:${pbGC}">${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length}</div>
+        <div style="font-size:11px;color:#8b949e">조건 충족</div>
+      </div>
+      <div>
+        <div style="color:${pbGC};font-weight:700;font-size:16px">${pa.pullback_grade}</div>
+        <div style="color:#cdd9e5;font-size:12px;margin-top:4px;max-width:280px">${pa.pullback_desc}</div>
+      </div>
+      <div style="margin-left:auto;text-align:right">
+        <div style="font-size:22px;font-weight:700;color:${pbGC}">${pa.pullback_score_pct}%</div>
+        <div style="font-size:11px;color:#8b949e">품질 점수</div>
       </div>
     </div>
+    <table style="width:100%;border-collapse:collapse;margin-top:4px">
+      ${checkRows}
+    </table>
+    ${pa.last_surge_low ? `<div style="margin-top:8px;padding:6px 10px;background:#1c2128;border-radius:6px;font-size:12px;color:#8b949e">급등봉 ${pa.surge_candles_count}개 감지 | 급등봉 저가 기준선: <b style="color:#e6edf3">${fmtP(pa.last_surge_low)}</b></div>` : ''}
   </div>
 
-  <!-- 4. 최종 의사결정 -->
-  <div class="card" style="margin-bottom:12px;border:2px solid ${decisionClr}">
-    <div class="card-title">④ 최종 의사결정</div>
-    <div style="padding:12px 0">
-      <div style="font-size:22px;font-weight:700;color:${decisionClr};margin-bottom:8px">${td.decision}</div>
-      <div style="color:#cdd9e5;font-size:13px;line-height:1.6">${td.decision_detail}</div>
+  <!-- ══ SECTION B: 실전형 손익비 자리 ══ -->
+
+  <!-- B1. 핵심 구간(Zone) -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">③ 핵심 가격 구간 (Zone)</div>
+    <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.red};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-weight:600">상단 저항대 (목표)</span>
+        <span style="color:${C.red};font-weight:700">${fmtP(pa.zones.resistance.low)} ~ ${fmtP(pa.zones.resistance.high)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.green};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-weight:600">핵심 일치가격대 (지지/저항 전환)</span>
+        <span style="color:${C.green};font-weight:700">${fmtP(pa.zones.core.low)} ~ ${fmtP(pa.zones.core.high)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.blue};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-weight:600">하단 방어 구간 (추세선+MA 밀집)</span>
+        <span style="color:${C.blue};font-weight:700">${fmtP(pa.zones.defense.low)} ~ ${fmtP(pa.zones.defense.high)}</span>
+      </div>
     </div>
   </div>
 
-  <!-- 리스크 레벨 -->
+  <!-- B2. 분할 진입 전략 -->
   <div class="card" style="margin-bottom:12px">
-    <div class="card-title">ATR 기반 리스크 관리</div>
+    <div class="card-title">④ 분할 매수 전략 (한 번에 물량 투입 금지)</div>
+    <div style="padding:8px 0">${entryRows}</div>
+    <div style="padding:6px 10px;background:#1c2128;border-radius:6px;color:#8b949e;font-size:12px;margin-top:4px">
+      원칙: 한 번에 물량 투입 금지 → 분할매수로 평균단가 낮추고 리스크 분산
+    </div>
+  </div>
+
+  <!-- B3. ATR 기반 손절/익절 -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">⑤ ATR 기반 리스크 관리</div>
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:8px 0">
-      <div style="background:#1c2128;border-radius:6px;padding:10px">
-        <div style="font-size:11px;color:#8b949e">손절선 (ATR × 2.0)</div>
-        <div style="font-size:16px;font-weight:700;color:${clr.red}">${fmt(rl.stop_loss)}</div>
+      <div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${C.red}">
+        <div style="font-size:11px;color:#8b949e">손절선 (구조 붕괴 기준)</div>
+        <div style="font-size:16px;font-weight:700;color:${C.red}">${fmtP(pa.stop_loss)}</div>
+        <div style="font-size:11px;color:${C.orange};margin-top:3px">${pa.stop_loss_pct}% | 손실은 작게 (-5~8% 이내)</div>
+      </div>
+      <div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${C.green}">
+        <div style="font-size:11px;color:#8b949e">목표가 (저항대 중간)</div>
+        <div style="font-size:16px;font-weight:700;color:${C.green}">${fmtP(pa.target_main)}</div>
+        <div style="font-size:11px;color:#8b949e;margin-top:3px">R/R ${pa.rr_main}:1</div>
       </div>
       <div style="background:#1c2128;border-radius:6px;padding:10px">
-        <div style="font-size:11px;color:#8b949e">1차 익절 (+2R)</div>
-        <div style="font-size:16px;font-weight:700;color:${clr.green}">${fmt(rl.tp1)}</div>
-      </div>
-      <div style="background:#1c2128;border-radius:6px;padding:10px">
-        <div style="font-size:11px;color:#8b949e">2차 익절 (+4R)</div>
-        <div style="font-size:16px;font-weight:700;color:${clr.green}">${fmt(rl.tp2)}</div>
+        <div style="font-size:11px;color:#8b949e">2차 목표 (돌파 후)</div>
+        <div style="font-size:16px;font-weight:700;color:${C.blue}">${fmtP(pa.target_ext)}</div>
       </div>
       <div style="background:#1c2128;border-radius:6px;padding:10px">
         <div style="font-size:11px;color:#8b949e">트레일링 스탑</div>
-        <div style="font-size:16px;font-weight:700;color:${clr.blue}">${fmt(rl.trailing_stop)}</div>
+        <div style="font-size:16px;font-weight:700;color:${C.purple}">${fmtP(pa.trail_stop)}</div>
+        <div style="font-size:11px;color:#8b949e;margin-top:3px">ATR × 1.5</div>
       </div>
     </div>
-    <div style="padding:6px 0;color:#8b949e;font-size:12px">손익비 ${rl.rr_ratio}:1 | ATR ${isKrx ? Number(rl.atr).toLocaleString('ko-KR') + '원' : '$' + Number(rl.atr).toFixed(2)}</div>
   </div>
 
-  <!-- 교체 기준 안내 -->
+  <!-- B4. 손익비 시나리오 -->
   <div class="card" style="margin-bottom:12px">
-    <div class="card-title">후보 종목 교체 기준</div>
-    <div style="padding:8px 0">${switchRows}</div>
+    <div class="card-title">⑥ 손익비 시나리오 (3가지)</div>
+    <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0">${rrRows}</div>
+    <div style="padding:8px 10px;background:#1c2128;border-radius:6px;margin-top:4px;font-size:12px;color:#8b949e">
+      손익비는 "얼마를 벌까?"가 아니라 <b style="color:#e6edf3">"얼마를 잃지 않을까?"</b>에서 시작한다.
+    </div>
   </div>
 
-  <!-- 사후 관리 체크리스트 -->
-  <div class="card">
-    <div class="card-title">⑤ 사후 관리 체크리스트</div>
-    <ul style="padding:8px 0 0 16px;margin:0;list-style:disc">${pmRows}</ul>
+  <!-- B5. 세력 혼들림 패턴 -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">⑦ 세력 혼들림(착오작전) 패턴 감지${pa.bb_squeeze ? ' — <span style="color:'+C.yellow+'">볼린저 수축 감지</span>' : ''}</div>
+    <div style="padding:8px 0">${mfHtml}</div>
+    <div style="padding:6px 10px;background:#1c2128;border-radius:6px;font-size:12px;color:#8b949e;margin-top:4px">
+      핵심: 혼들림에 겁먹지 말고, 구조가 죽었는지 아닌지를 판단하는 것!
+    </div>
+  </div>
+
+  <!-- B6. 구조 붕괴 손절 기준 -->
+  <div class="card" style="border:2px solid ${bvC}">
+    <div class="card-title">⑧ 구조 붕괴 손절 기준 (${pa.sl_triggered}개 조건 충족)</div>
+    <div style="display:inline-flex;align-items:center;gap:10px;padding:10px 0 8px">
+      <span style="font-size:20px">${pa.sl_triggered >= 2 ? '🔴' : pa.sl_triggered === 1 ? '🟡' : '🟢'}</span>
+      <span style="color:${bvC};font-weight:700;font-size:15px">${pa.breakdown_verdict}</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse">${slRows}</table>
+    <div style="padding:8px 10px;background:#1c2128;border-radius:6px;margin-top:8px;font-size:12px;color:#8b949e">
+      손절 원칙: 손실은 짧게 (-5%~-8% 이내) | 구조가 무너지면 미련 없이 정리
+    </div>
   </div>
   `;
 }
