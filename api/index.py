@@ -4057,7 +4057,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "market": _mkt,
     }
 
-def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float, market: str = "KRX") -> Dict:
+def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float, market: str = "KRX", target_price_data: Dict = None) -> Dict:
     """
     눌림목 분석 + 실전형 손익비 자리 진단
     ─────────────────────────────────────────────────────────────────────
@@ -4326,10 +4326,23 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
     sl_price    = round(max(atr_sl, struct_sl), rnd2)   # 더 높은(타이트한) 손절선
     sl_pct      = round((sl_price - last_price) / last_price * 100, 2)
 
-    # 목표가: 상단 저항대 중간값 (반드시 현재가보다 높아야 의미 있음)
-    target_raw   = (resist_high + resist_low) / 2
-    target_main  = round(max(target_raw, last_price * 1.05), rnd2)
-    target_high2 = round(max(resist_high * 1.05, last_price * 1.10), rnd2)
+    # 목표가: 앙상블 예측 → 저항대 → 최소 5% 상승 순으로 우선 적용
+    forecast_min = None; forecast_max = None; forecast_source = "기술적 저항대 기반"
+    if target_price_data and isinstance(target_price_data, dict):
+        _fmin = target_price_data.get("min_price")
+        _fmax = target_price_data.get("max_price")
+        if _fmin and float(_fmin) > last_price:
+            forecast_min = float(_fmin); forecast_max = float(_fmax) if _fmax else forecast_min * 1.05
+            forecast_source = f"앙상블 예측 ({target_price_data.get('period','—')})"
+
+    if forecast_min:
+        target_main  = round(forecast_min, rnd2)
+        target_high2 = round(forecast_max, rnd2)
+    else:
+        target_raw   = (resist_high + resist_low) / 2
+        target_main  = round(max(target_raw, last_price * 1.05), rnd2)
+        target_high2 = round(max(resist_high * 1.05, last_price * 1.10), rnd2)
+
     risk_amt     = last_price - sl_price if last_price > sl_price else atr * 2.0
     reward_main  = target_main - last_price
     rr_main      = round(reward_main / risk_amt, 2) if risk_amt > 0 else 0.0
@@ -4461,6 +4474,7 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
         "stop_loss_pct":   sl_pct,
         "target_main":     target_main,
         "target_ext":      target_high2,
+        "target_source":   forecast_source,
         "trail_stop":      trail_stop,
         "rr_main":         rr_main,
         "rr_scenarios":    rr_scenarios,
@@ -4915,8 +4929,8 @@ def route(path: str, params: Dict) -> Dict:
         indicator_signals= calc_indicator_signals(dd)
         risk             = calc_risk(last, atr_val, market, dd)
         buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market)
-        pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market)
         target_price     = calc_target_price(dd, last, atr_val, period, market)
+        pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
                 
         return {
             "symbol": sym, "company": company or sym, "market": market,
@@ -6888,9 +6902,11 @@ function renderPullbackAnalysis(d, isKrx) {
         <div style="font-size:11px;color:${C.orange};margin-top:3px">${pa.stop_loss_pct}% | 손실은 작게 (-5~8% 이내)</div>
       </div>
       <div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${C.green}">
-        <div style="font-size:11px;color:#8b949e">목표가 (저항대 중간)</div>
+        <div style="font-size:11px;color:#8b949e">목표가 (1차)</div>
         <div style="font-size:16px;font-weight:700;color:${C.green}">${fmtP(pa.target_main)}</div>
-        <div style="font-size:11px;color:#8b949e;margin-top:3px">R/R ${pa.rr_main}:1</div>
+        <div style="font-size:11px;color:${pa.target_source && pa.target_source.includes('앙상블') ? C.blue : C.gray};margin-top:3px">
+          R/R ${pa.rr_main}:1 · ${pa.target_source || '기술적 분석'}
+        </div>
       </div>
       <div style="background:#1c2128;border-radius:6px;padding:10px">
         <div style="font-size:11px;color:#8b949e">2차 목표 (돌파 후)</div>
