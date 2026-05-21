@@ -6082,7 +6082,6 @@ input::placeholder{color:#484f58}
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
         <button class="tab-btn" onclick="switchTab('report')" style="display:none">📝 단계별 리포트</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 예측</button>
-        <button class="tab-btn" onclick="switchTab('trading')">📉 눌림목/손익비</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스</button>
         <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">📋 KRX</button>
       </div>
@@ -6127,6 +6126,8 @@ input::placeholder{color:#484f58}
             <div id="flow-sector-content"></div>
           </div>
         </div>
+        <!-- 눌림목 분석: 흐름 단계 + 체크리스트 + 세력 패턴 + 구조 붕괴 손절 -->
+        <div id="pullback-ai-section"></div>
       </div>
 
       <!-- 단계별 분석 리포트 탭 -->
@@ -6135,11 +6136,6 @@ input::placeholder{color:#484f58}
           <div class="card-title">📝 단계별 분석 리포트</div>
           <div id="steps-list" style="display:flex;flex-direction:column;gap:10px"></div>
         </div>
-      </div>
-
-      <!-- 눌림목/손익비 탭 -->
-      <div id="tab-trading" style="display:none">
-        <div id="pullback-analysis-section"></div>
       </div>
 
       <!-- 예측 탭 -->
@@ -6156,6 +6152,8 @@ input::placeholder{color:#484f58}
           <div class="card-title">🎯 현재가 기준 매수 적정 가격 예측</div>
           <div id="buy-price-section"></div>
         </div>
+        <!-- 눌림목 분석: 핵심 구간 + 분할 매수 + ATR 리스크 + 손익비 시나리오 -->
+        <div id="pullback-forecast-section"></div>
         <div class="card">
           <div class="card-title">🛡️ 리스크 관리 (ATR 기반)</div>
           <div class="risk-grid" id="risk-grid"></div>
@@ -6725,8 +6723,8 @@ function renderResult(d) {
   renderReport(d);
   // 예측/리스크
   renderForecast(d, isKrx);
-  // 눌림목/손익비 분석
-  renderPullbackAnalysis(d, isKrx);
+  // 예측 탭: 핵심 구간·분할 매수·ATR·손익비
+  renderPullbackIntoForecast(d, isKrx);
   // 기술적 지표 시그널 & 피봇 포인트
   renderTechnicalSignals(d);
   renderPivotPoints(d, isKrx);
@@ -6741,9 +6739,226 @@ function renderResult(d) {
 function renderAI(d, isKrx) {
   renderDiagnosis(d, isKrx);
   renderInvestorFlow(d, isKrx);
+  renderPullbackIntoAI(d, isKrx);
 }
 
-// ── 눌림목/손익비 분석 렌더 ──────────────────────────────────────────────────
+// ── 눌림목 분석 공통 초기화 헬퍼 ────────────────────────────────────────────
+function _pullbackInit(d, isKrx) {
+  const pa = d.pullback_analysis;
+  if (!pa) return null;
+  const C = { red:'#f85149', orange:'#d29922', yellow:'#e3b341', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e' };
+  const fmtP = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  const stageColors = ['','#484f58','#d29922','#f85149','#3fb950','#58a6ff'];
+  const stageLabels = ['','① 바닥 매집','② 돌파','③ 1차 급등','④ 눌림목','⑤ 재급등'];
+  return { pa, C, fmtP, stageColors, stageLabels };
+}
+
+// ── AI 진단 탭: ① 현재 흐름 단계  ② 눌림목 체크리스트  ⑦ 세력 패턴  ⑧ 구조 붕괴 손절 ──
+function renderPullbackIntoAI(d, isKrx) {
+  const el = document.getElementById('pullback-ai-section');
+  if (!el) return;
+  const init = _pullbackInit(d, isKrx);
+  if (!init) { el.innerHTML = ''; return; }
+  const { pa, C, fmtP, stageColors, stageLabels } = init;
+
+  const stageC = stageColors[pa.flow_stage] || C.gray;
+  const pbGC   = C[pa.pullback_grade_color] || C.blue;
+  const bvC    = C[pa.breakdown_color]      || C.gray;
+
+  const checkRows = (pa.pullback_checks || []).map(c => {
+    const ic = c.pass ? '✅' : '❌';
+    const tc = c.pass ? C.green : C.red;
+    return `<tr>
+      <td style="padding:5px 8px;white-space:nowrap">${ic} <span style="color:#cdd9e5">${c.item}</span></td>
+      <td style="padding:5px 8px;color:${tc};font-size:12px">${c.desc}</td>
+    </tr>`;
+  }).join('');
+
+  const mfHtml = pa.manipulation_flags && pa.manipulation_flags.length > 0
+    ? pa.manipulation_flags.map(f => `
+      <div style="border-left:3px solid ${C[f.color]||C.orange};padding:8px 10px;background:#1c2128;border-radius:0 6px 6px 0;margin-bottom:6px">
+        <div style="color:${C[f.color]||C.orange};font-weight:700;font-size:12px">${f.pattern}</div>
+        <div style="color:#8b949e;font-size:12px;margin-top:3px">${f.desc}</div>
+        <div style="color:#58a6ff;font-size:12px;margin-top:3px">대응: ${f.action}</div>
+      </div>`).join('')
+    : `<div style="color:#8b949e;font-size:13px;padding:8px 0">감지된 세력 혼들림 패턴 없음</div>`;
+
+  const slRows = (pa.sl_conditions || []).map(s => {
+    const ic = s.triggered ? '🔴' : '🟢';
+    const tc = s.triggered ? C.red : C.green;
+    return `<tr>
+      <td style="padding:5px 8px;white-space:nowrap">${ic} <span style="color:#cdd9e5;font-size:12px">${s.cond}</span></td>
+      <td style="padding:5px 8px;color:${tc};font-size:11px">${s.desc}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+  <!-- A1. 현재 흐름 단계 -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">① 현재 흐름 단계 (5단계 구조)</div>
+    <div style="display:flex;align-items:center;gap:14px;padding:10px 0;flex-wrap:wrap">
+      <div style="background:${stageC};border-radius:8px;padding:8px 18px;font-size:20px;font-weight:700;color:#fff">
+        ${stageLabels[pa.flow_stage] || '단계 불명'}
+      </div>
+      <div style="color:#cdd9e5;font-size:13px;line-height:1.6;flex:1">${pa.flow_desc}</div>
+    </div>
+    <div style="display:flex;gap:4px;margin-top:8px">
+      ${[1,2,3,4,5].map(i => `
+        <div style="flex:1;height:6px;border-radius:3px;background:${i <= pa.flow_stage ? stageColors[i] : '#21262d'}"></div>
+      `).join('')}
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:#484f58">
+      <span>바닥</span><span>돌파</span><span>급등</span><span style="color:${C.green};font-weight:700">눌림목</span><span>재급등</span>
+    </div>
+  </div>
+
+  <!-- A2. 눌림목 체크리스트 -->
+  <div class="card" style="margin-bottom:12px;border:2px solid ${pbGC}">
+    <div class="card-title">② 눌림목 체크리스트</div>
+    <div style="display:flex;align-items:center;gap:14px;padding:10px 0 8px;flex-wrap:wrap">
+      <div style="text-align:center;min-width:80px">
+        <div style="font-size:28px;font-weight:700;color:${pbGC}">${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length}</div>
+        <div style="font-size:11px;color:#8b949e">조건 충족</div>
+      </div>
+      <div>
+        <div style="color:${pbGC};font-weight:700;font-size:16px">${pa.pullback_grade}</div>
+        <div style="color:#cdd9e5;font-size:12px;margin-top:4px;max-width:280px">${pa.pullback_desc}</div>
+      </div>
+      <div style="margin-left:auto;text-align:right">
+        <div style="font-size:22px;font-weight:700;color:${pbGC}">${pa.pullback_score_pct}%</div>
+        <div style="font-size:11px;color:#8b949e">품질 점수</div>
+      </div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin-top:4px">
+      ${checkRows}
+    </table>
+    ${pa.last_surge_low ? `<div style="margin-top:8px;padding:6px 10px;background:#1c2128;border-radius:6px;font-size:12px;color:#8b949e">급등봉 ${pa.surge_candles_count}개 감지 | 급등봉 저가 기준선: <b style="color:#e6edf3">${fmtP(pa.last_surge_low)}</b></div>` : ''}
+  </div>
+
+  <!-- B5. 세력 혼들림 패턴 -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">⑦ 세력 혼들림(착오작전) 패턴 감지${pa.bb_squeeze ? ' — <span style="color:'+C.yellow+'">볼린저 수축 감지</span>' : ''}</div>
+    <div style="padding:8px 0">${mfHtml}</div>
+    <div style="padding:6px 10px;background:#1c2128;border-radius:6px;font-size:12px;color:#8b949e;margin-top:4px">
+      핵심: 혼들림에 겁먹지 말고, 구조가 죽었는지 아닌지를 판단하는 것!
+    </div>
+  </div>
+
+  <!-- B6. 구조 붕괴 손절 기준 -->
+  <div class="card" style="border:2px solid ${bvC}">
+    <div class="card-title">⑧ 구조 붕괴 손절 기준 (${pa.sl_triggered}개 조건 충족)</div>
+    <div style="display:inline-flex;align-items:center;gap:10px;padding:10px 0 8px">
+      <span style="font-size:20px">${pa.sl_triggered >= 2 ? '🔴' : pa.sl_triggered === 1 ? '🟡' : '🟢'}</span>
+      <span style="color:${bvC};font-weight:700;font-size:15px">${pa.breakdown_verdict}</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse">${slRows}</table>
+    <div style="padding:8px 10px;background:#1c2128;border-radius:6px;margin-top:8px;font-size:12px;color:#8b949e">
+      손절 원칙: 손실은 짧게 (-5%~-8% 이내) | 구조가 무너지면 미련 없이 정리
+    </div>
+  </div>
+  `;
+}
+
+// ── 예측 탭: ③ 핵심 구간  ④ 분할 매수  ⑤ ATR 리스크  ⑥ 손익비 시나리오 ──────
+function renderPullbackIntoForecast(d, isKrx) {
+  const el = document.getElementById('pullback-forecast-section');
+  if (!el) return;
+  const init = _pullbackInit(d, isKrx);
+  if (!init) { el.innerHTML = ''; return; }
+  const { pa, C, fmtP } = init;
+
+  const entryRows = (pa.entry_zones || []).map(z => `
+    <div style="border-left:3px solid ${z.color};padding:8px 10px;margin-bottom:8px;background:#1c2128;border-radius:0 6px 6px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+        <span style="color:${z.color};font-weight:700;font-size:13px">${z.stage}</span>
+        <span style="color:#e6edf3;font-size:13px;font-weight:600">${fmtP(z.range[0])} ~ ${fmtP(z.range[1])}</span>
+        <span style="background:#30363d;border-radius:4px;padding:2px 8px;color:#8b949e;font-size:11px">${z.ratio}</span>
+      </div>
+      <div style="color:#8b949e;font-size:12px;margin-top:4px">${z.desc}</div>
+    </div>`).join('');
+
+  const rrRows = (pa.rr_scenarios || []).map(s => {
+    const rrC = s.rr >= 2.3 ? C.green : s.rr >= 2.0 ? C.yellow : C.red;
+    return `<div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${s.viable ? C.green : '#30363d'}">
+      <div style="color:#cdd9e5;font-size:12px;font-weight:600;margin-bottom:6px">${s.label}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px">
+        <span>진입 <b style="color:#e6edf3">${fmtP(s.entry)}</b></span>
+        <span>목표 <b style="color:${C.green}">${fmtP(s.target)}</b></span>
+        <span>손절 <b style="color:${C.red}">${fmtP(s.stop)}</b></span>
+        <span style="color:${rrC};font-weight:700">R/R ${s.rr}:1</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+  <!-- B1. 핵심 구간(Zone) -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">③ 핵심 가격 구간 (Zone)</div>
+    <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.red};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-weight:600">상단 저항대 (목표)</span>
+        <span style="color:${C.red};font-weight:700">${fmtP(pa.zones.resistance.low)} ~ ${fmtP(pa.zones.resistance.high)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.green};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-weight:600">핵심 일치가격대 (지지/저항 전환)</span>
+        <span style="color:${C.green};font-weight:700">${fmtP(pa.zones.core.low)} ~ ${fmtP(pa.zones.core.high)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.blue};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-weight:600">하단 방어 구간 (추세선+MA 밀집)</span>
+        <span style="color:${C.blue};font-weight:700">${fmtP(pa.zones.defense.low)} ~ ${fmtP(pa.zones.defense.high)}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- B2. 분할 진입 전략 -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">④ 분할 매수 전략 (한 번에 물량 투입 금지)</div>
+    <div style="padding:8px 0">${entryRows}</div>
+    <div style="padding:6px 10px;background:#1c2128;border-radius:6px;color:#8b949e;font-size:12px;margin-top:4px">
+      원칙: 한 번에 물량 투입 금지 → 분할매수로 평균단가 낮추고 리스크 분산
+    </div>
+  </div>
+
+  <!-- B3. ATR 기반 손절/익절 -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">⑤ ATR 기반 리스크 관리</div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:8px 0">
+      <div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${C.red}">
+        <div style="font-size:11px;color:#8b949e">손절선 (구조 붕괴 기준)</div>
+        <div style="font-size:16px;font-weight:700;color:${C.red}">${fmtP(pa.stop_loss)}</div>
+        <div style="font-size:11px;color:${C.orange};margin-top:3px">${pa.stop_loss_pct}% | 손실은 작게 (-5~8% 이내)</div>
+      </div>
+      <div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${C.green}">
+        <div style="font-size:11px;color:#8b949e">목표가 (1차)</div>
+        <div style="font-size:16px;font-weight:700;color:${C.green}">${fmtP(pa.target_main)}</div>
+        <div style="font-size:11px;color:${pa.target_source && pa.target_source.includes('앙상블') ? C.blue : C.gray};margin-top:3px">
+          R/R ${pa.rr_main}:1 · ${pa.target_source || '기술적 분석'}
+        </div>
+      </div>
+      <div style="background:#1c2128;border-radius:6px;padding:10px">
+        <div style="font-size:11px;color:#8b949e">2차 목표 (돌파 후)</div>
+        <div style="font-size:16px;font-weight:700;color:${C.blue}">${fmtP(pa.target_ext)}</div>
+      </div>
+      <div style="background:#1c2128;border-radius:6px;padding:10px">
+        <div style="font-size:11px;color:#8b949e">트레일링 스탑</div>
+        <div style="font-size:16px;font-weight:700;color:${C.purple}">${fmtP(pa.trail_stop)}</div>
+        <div style="font-size:11px;color:#8b949e;margin-top:3px">ATR × 1.5</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- B4. 손익비 시나리오 -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="card-title">⑥ 손익비 시나리오 (3가지)</div>
+    <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0">${rrRows}</div>
+    <div style="padding:8px 10px;background:#1c2128;border-radius:6px;margin-top:4px;font-size:12px;color:#8b949e">
+      손익비는 "얼마를 벌까?"가 아니라 <b style="color:#e6edf3">"얼마를 잃지 않을까?"</b>에서 시작한다.
+    </div>
+  </div>
+  `;
+}
+
+// ── (하위 호환) 눌림목/손익비 분석 렌더 — 더 이상 사용하지 않음 ───────────────
 function renderPullbackAnalysis(d, isKrx) {
   const el = document.getElementById('pullback-analysis-section');
   if (!el) return;
@@ -7955,7 +8170,7 @@ function renderCharts(d, isKrx) {
 }
 
 // ── 탭 전환 ──
-const ALL_TABS = ['chart','ai','report','forecast','trading','news','evening'];
+const ALL_TABS = ['chart','ai','report','forecast','news','evening'];
 function switchTab(tab) {
   currentTab = tab;
   ALL_TABS.forEach(t => {
