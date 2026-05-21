@@ -7295,29 +7295,48 @@ function renderDiagnosis(d, isKrx) {
 
   // ── 종합 등급 계산 (8단계 세분화 체계) ─────────────────────────────
   // threshold: A(82+) A-(72+) B(62+) B-(52+) C(42+) C-(30+) D(15+) D-(0+)
+  const hasSupply = (isKrx && flow && flow.ok) || (!isKrx && d.us_enriched && d.us_enriched && d.us_enriched.sentiment);
   const dims = [techScore, momentumScore, volScore, supplyScore, patScore];
-  const avg  = Math.round(dims.reduce((a, b) => a + b, 0) / dims.length);
+  const dimNameMap = ['기술추세', '모멘텀', '변동성', '수급', '패턴신호'];
+  const activeDimsInfo = dims.map((v, i) => ({ v, name: dimNameMap[i], active: i !== 3 || hasSupply }));
+  const activeDims = activeDimsInfo.filter(x => x.active);
+  const activeItemCount = activeDims.length;
+  const avg  = Math.round(activeDims.reduce((s, x) => s + x.v, 0) / activeItemCount);
 
   // 분산(표준편차) — 항목 간 불균형 감지
-  const dimVariance = Math.round(Math.sqrt(dims.reduce((s, v) => s + (v - avg) ** 2, 0) / dims.length));
+  const dimVariance = Math.round(Math.sqrt(activeDims.reduce((s, x) => s + (x.v - avg) ** 2, 0) / activeItemCount));
 
   const _gm = (() => {
-    if      (avg >= 82) return { grade:'A',  color:'#3fb950', text:'최우수',   desc:'전 지표가 강한 상승 추세를 지지합니다.' };
-    else if (avg >= 72) return { grade:'A-', color:'#3fb950', text:'우수',     desc:'기술적 지표 전반이 양호하며 추세가 유지되고 있습니다.' };
-    else if (avg >= 62) return { grade:'B',  color:'#58a6ff', text:'양호',     desc:'주요 지표가 긍정적이나 일부 확인이 필요합니다.' };
-    else if (avg >= 52) return { grade:'B-', color:'#d29922', text:'보통 이상', desc:'대체로 안정적이나 일부 지표가 혼재되어 있습니다.' };
-    else if (avg >= 42) return { grade:'C',  color:'#d29922', text:'보통',     desc:'지표가 혼재되어 추가 관찰이 필요합니다.' };
-    else if (avg >= 30) return { grade:'C-', color:'#f97316', text:'주의',     desc:'일부 지표에서 경고 신호가 감지됩니다.' };
-    else if (avg >= 15) return { grade:'D',  color:'#f85149', text:'위험',     desc:'여러 지표에서 위험 신호가 감지됩니다.' };
-    else                return { grade:'D-', color:'#f85149', text:'매우 위험', desc:'전 지표에서 강한 위험 신호가 감지됩니다.' };
+    if      (avg >= 82) return { grade:'A',  color:'#3fb950', text:'최우수',   };
+    else if (avg >= 72) return { grade:'A-', color:'#3fb950', text:'우수',     };
+    else if (avg >= 62) return { grade:'B',  color:'#58a6ff', text:'양호',     };
+    else if (avg >= 52) return { grade:'B-', color:'#d29922', text:'보통 이상', };
+    else if (avg >= 42) return { grade:'C',  color:'#d29922', text:'보통',     };
+    else if (avg >= 30) return { grade:'C-', color:'#f97316', text:'주의',     };
+    else if (avg >= 15) return { grade:'D',  color:'#f85149', text:'위험',     };
+    else                return { grade:'D-', color:'#f85149', text:'매우 위험', };
   })();
   const grade      = _gm.grade;
   const gradeColor = _gm.color;
   const gradeText  = _gm.text;
-  // 항목 간 분산이 클 때 설명 보완
-  const gradeDesc  = dimVariance >= 22
-    ? _gm.desc + ' 단, 항목 간 편차(' + dimVariance + 'pt)가 있어 약점 지표를 확인하세요.'
-    : _gm.desc;
+
+  // 동적 설명문 — 강세/약세 항목 이름 명시
+  const strongItems = activeDimsInfo.filter(x => x.active && x.v >= 72).map(x => x.name);
+  const weakItems   = activeDimsInfo.filter(x => x.active && x.v <  40).map(x => x.name);
+  const varNote = dimVariance >= 22 ? ` (편차 ${dimVariance}pt — 약점 항목 집중 확인)` : '';
+  const gradeDesc = (() => {
+    if (weakItems.length === 0 && strongItems.length >= 3)
+      return `${strongItems.join(' · ')} 등 ${strongItems.length}개 지표 강세 — 추세가 명확합니다.${varNote}`;
+    if (weakItems.length === 0 && strongItems.length >= 1)
+      return `전 지표가 안정 구간입니다. ${strongItems.join(' · ')} 중심으로 긍정적.${varNote}`;
+    if (weakItems.length === 0)
+      return `전 지표가 안정 구간에 있습니다. ${activeItemCount}개 항목 모두 경고 없음.${varNote}`;
+    if (weakItems.length === 1)
+      return `[${weakItems[0]}] 주의 — 나머지 ${activeItemCount - 1}개 지표는 양호합니다.${varNote}`;
+    if (weakItems.length === 2)
+      return `[${weakItems.join(' · ')}] 두 지표에서 경고 신호가 감지됩니다.${varNote}`;
+    return `[${weakItems.join(' · ')}] 등 ${weakItems.length}개 지표에서 경고 신호가 감지됩니다.${varNote}`;
+  })();
 
   // ── 각 차원 설명 텍스트 ────────────────────────────────────────
   const techDesc   = `종합 기술점수 ${score}점 · ${score >= 65 ? '매수 우위' : score >= 40 ? '중립' : '매도 우위'}`;
@@ -7415,7 +7434,7 @@ function renderDiagnosis(d, isKrx) {
     <div class="diag-grade-row">
       <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor};font-size:${grade.length > 1 ? '19px' : '26px'}">${grade}</div>
       <div class="diag-grade-info" style="flex:1">
-        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· 5항목 평균 ${avg}점</span></div>
+        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· ${activeItemCount}항목 평균 ${avg}점</span></div>
         <div class="diag-grade-sub">${gradeDesc}</div>
       </div>
       <span id="flow-rec-badge" class="rec-badge-lg rec-hold" style="flex-shrink:0">분석 중...</span>
