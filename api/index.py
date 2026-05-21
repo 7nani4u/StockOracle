@@ -6146,15 +6146,17 @@ input::placeholder{color:#484f58}
           <div class="card-title">📈 향후 주가 상승 가능 범위 (목표가 예측)</div>
           <div id="target-price-section"></div>
         </div>
+        <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
         <div class="card">
-          <div class="card-title">🎯 현재가 기준 매수 적정 가격 예측</div>
+          <div class="card-title">🎯 현재가 기준 매수 전략</div>
           <div id="buy-price-section"></div>
+          <div id="pullback-forecast-section"></div>
         </div>
-        <!-- 눌림목 분석: 핵심 구간 + 분할 매수 + ATR 리스크 + 손익비 시나리오 -->
-        <div id="pullback-forecast-section"></div>
+        <!-- 리스크 관리 카드: 시나리오 + ATR 기반 정밀 가격 통합 -->
         <div class="card">
           <div class="card-title">🛡️ 리스크 관리 (ATR 기반)</div>
           <div class="risk-grid" id="risk-grid"></div>
+          <div id="pullback-atr-section"></div>
         </div>
       </div>
 
@@ -6897,70 +6899,47 @@ function renderPullbackIntoForecast(d, isKrx) {
     </div>`;
   }).join('');
 
+  // 현재가 위치와 핵심 구간의 관계 해석
+  const curPrice = d ? (d.last_close || 0) : 0;
+  const zones = pa.zones || {};
+  const inCoreZone = zones.core && curPrice >= zones.core.low && curPrice <= zones.core.high;
+  const aboveResist = zones.resistance && curPrice > zones.resistance.high;
+  const zoneDesc = aboveResist
+    ? '현재가가 저항대 위에 위치합니다. 돌파 지속 여부를 확인하세요.'
+    : inCoreZone
+    ? '현재가가 핵심 지지/저항 전환 구간에 위치합니다. 반응을 주시하세요.'
+    : zones.defense && curPrice < zones.defense.low
+    ? '현재가가 방어 구간 아래입니다. 추가 하락 방어선을 확인하세요.'
+    : '현재가 위치를 핵심 구간과 비교하여 진입 타이밍을 판단하세요.';
+
   el.innerHTML = `
-  <!-- B1. 핵심 구간(Zone) -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">③ 핵심 가격 구간 (Zone)</div>
-    <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0">
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.red};border-radius:0 6px 6px 0">
-        <span style="color:#cdd9e5;font-weight:600">상단 저항대 (목표)</span>
-        <span style="color:${C.red};font-weight:700">${fmtP(pa.zones.resistance.low)} ~ ${fmtP(pa.zones.resistance.high)}</span>
+  <!-- 핵심 가격 구간 -->
+  <div style="margin-top:16px;border-top:1px solid #21262d;padding-top:16px">
+    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📍 핵심 가격 구간</div>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:10px">${zoneDesc}</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#161b22;border-left:3px solid ${C.red};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-size:12px;font-weight:600">저항대 (목표)</span>
+        <span style="color:${C.red};font-size:13px;font-weight:700">${fmtP(pa.zones.resistance.low)} ~ ${fmtP(pa.zones.resistance.high)}</span>
       </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.green};border-radius:0 6px 6px 0">
-        <span style="color:#cdd9e5;font-weight:600">핵심 일치가격대 (지지/저항 전환)</span>
-        <span style="color:${C.green};font-weight:700">${fmtP(pa.zones.core.low)} ~ ${fmtP(pa.zones.core.high)}</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#161b22;border-left:3px solid ${C.green};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-size:12px;font-weight:600">핵심 가격대 (지지↔저항)</span>
+        <span style="color:${C.green};font-size:13px;font-weight:700">${fmtP(pa.zones.core.low)} ~ ${fmtP(pa.zones.core.high)}</span>
       </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1c2128;border-left:4px solid ${C.blue};border-radius:0 6px 6px 0">
-        <span style="color:#cdd9e5;font-weight:600">하단 방어 구간 (추세선+MA 밀집)</span>
-        <span style="color:${C.blue};font-weight:700">${fmtP(pa.zones.defense.low)} ~ ${fmtP(pa.zones.defense.high)}</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- B2. 분할 진입 전략 -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">④ 분할 매수 전략 (한 번에 물량 투입 금지)</div>
-    <div style="padding:8px 0">${entryRows}</div>
-    <div style="padding:6px 10px;background:#1c2128;border-radius:6px;color:#8b949e;font-size:12px;margin-top:4px">
-      원칙: 한 번에 물량 투입 금지 → 분할매수로 평균단가 낮추고 리스크 분산
-    </div>
-  </div>
-
-  <!-- B3. ATR 기반 손절/익절 -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">⑤ ATR 기반 리스크 관리</div>
-    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:8px 0">
-      <div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${C.red}">
-        <div style="font-size:11px;color:#8b949e">손절선 (구조 붕괴 기준)</div>
-        <div style="font-size:16px;font-weight:700;color:${C.red}">${fmtP(pa.stop_loss)}</div>
-        <div style="font-size:11px;color:${C.orange};margin-top:3px">${pa.stop_loss_pct}% | 손실은 작게 (-5~8% 이내)</div>
-      </div>
-      <div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${C.green}">
-        <div style="font-size:11px;color:#8b949e">목표가 (1차)</div>
-        <div style="font-size:16px;font-weight:700;color:${C.green}">${fmtP(pa.target_main)}</div>
-        <div style="font-size:11px;color:${pa.target_source && pa.target_source.includes('앙상블') ? C.blue : C.gray};margin-top:3px">
-          R/R ${pa.rr_main}:1 · ${pa.target_source || '기술적 분석'}
-        </div>
-      </div>
-      <div style="background:#1c2128;border-radius:6px;padding:10px">
-        <div style="font-size:11px;color:#8b949e">2차 목표 (돌파 후)</div>
-        <div style="font-size:16px;font-weight:700;color:${C.blue}">${fmtP(pa.target_ext)}</div>
-      </div>
-      <div style="background:#1c2128;border-radius:6px;padding:10px">
-        <div style="font-size:11px;color:#8b949e">트레일링 스탑</div>
-        <div style="font-size:16px;font-weight:700;color:${C.purple}">${fmtP(pa.trail_stop)}</div>
-        <div style="font-size:11px;color:#8b949e;margin-top:3px">ATR × 1.5</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#161b22;border-left:3px solid ${C.blue};border-radius:0 6px 6px 0">
+        <span style="color:#cdd9e5;font-size:12px;font-weight:600">방어 구간 (추세선+MA)</span>
+        <span style="color:${C.blue};font-size:13px;font-weight:700">${fmtP(pa.zones.defense.low)} ~ ${fmtP(pa.zones.defense.high)}</span>
       </div>
     </div>
   </div>
 
-  <!-- B4. 손익비 시나리오 -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">⑥ 손익비 시나리오 (3가지)</div>
-    <div style="display:flex;flex-direction:column;gap:8px;padding:8px 0">${rrRows}</div>
-    <div style="padding:8px 10px;background:#1c2128;border-radius:6px;margin-top:4px;font-size:12px;color:#8b949e">
-      손익비는 "얼마를 벌까?"가 아니라 <b style="color:#e6edf3">"얼마를 잃지 않을까?"</b>에서 시작한다.
+  <!-- 분할 매수 전략 -->
+  <div style="margin-top:16px;border-top:1px solid #21262d;padding-top:16px">
+    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📊 분할 매수 전략</div>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:10px">
+      물량을 한 번에 투입하지 않고 구간별로 나눠 평균 단가를 낮추는 전략입니다.
     </div>
+    ${entryRows}
   </div>
   `;
 }
@@ -7622,6 +7601,57 @@ function toggleDimAccordion(id) {
   if (arrow) arrow.style.transform = nowHidden ? 'rotate(180deg)' : 'rotate(0deg)';
 }
 
+// ── 리스크 관리 카드 하단: 눌림목 기반 ATR 정밀 가격 설정 ────────────────────
+function renderPullbackATR(d, isKrx) {
+  const el = document.getElementById('pullback-atr-section');
+  if (!el) return;
+  const pa = d.pullback_analysis;
+  if (!pa || !pa.stop_loss) { el.innerHTML = ''; return; }
+
+  const C = { red:'#f85149', orange:'#d29922', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e' };
+  const fmtP = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+
+  // R/R 색상
+  const rrC = pa.rr_main >= 2.3 ? C.green : pa.rr_main >= 1.5 ? C.orange : C.red;
+  // 목표가 출처 강조
+  const srcIsEnsemble = pa.target_source && pa.target_source.includes('앙상블');
+  const srcC = srcIsEnsemble ? C.blue : C.gray;
+
+  el.innerHTML = `
+    <div style="margin-top:18px;border-top:1px solid #21262d;padding-top:16px">
+      <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">
+        📌 눌림목 분석 기반 정밀 가격 설정
+      </div>
+      <div style="font-size:12px;color:#8b949e;line-height:1.6;margin-bottom:12px">
+        ATR(14) 변동성과 구조 분석을 결합해 산출한 손절·목표가입니다.
+        위 시나리오 카드와 함께 참고하여 실제 매매 기준으로 활용하세요.
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+        <div style="background:#0d1117;border-radius:8px;padding:11px 12px;border:1px solid ${C.red}">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">손절선</div>
+          <div style="font-size:17px;font-weight:800;color:${C.red}">${fmtP(pa.stop_loss)}</div>
+          <div style="font-size:11px;color:${C.orange};margin-top:4px">${pa.stop_loss_pct}% 손실 — 이탈 시 미련 없이 정리</div>
+        </div>
+        <div style="background:#0d1117;border-radius:8px;padding:11px 12px;border:1px solid ${C.green}">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">1차 목표가</div>
+          <div style="font-size:17px;font-weight:800;color:${C.green}">${fmtP(pa.target_main)}</div>
+          <div style="font-size:11px;color:${rrC};margin-top:4px">R/R ${pa.rr_main}:1</div>
+          <div style="font-size:10px;color:${srcC};margin-top:2px">${pa.target_source || '기술적 분석'}</div>
+        </div>
+        <div style="background:#0d1117;border-radius:8px;padding:11px 12px;border:1px solid #30363d">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">2차 목표 (돌파 후)</div>
+          <div style="font-size:17px;font-weight:800;color:${C.blue}">${fmtP(pa.target_ext)}</div>
+          <div style="font-size:11px;color:#8b949e;margin-top:4px">1차 돌파 확인 후 홀딩 기준</div>
+        </div>
+        <div style="background:#0d1117;border-radius:8px;padding:11px 12px;border:1px solid #30363d">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">트레일링 스탑</div>
+          <div style="font-size:17px;font-weight:800;color:${C.purple}">${fmtP(pa.trail_stop)}</div>
+          <div style="font-size:11px;color:#8b949e;margin-top:4px">ATR × 1.5 — 수익 보전 기준</div>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderForecast(d, isKrx) {
   const risk = d.risk_scenarios;
   const bp   = d.buy_price;
@@ -7787,9 +7817,6 @@ function renderForecast(d, isKrx) {
           ${bp.aggressive_bands && bp.aggressive_bands.length
             ? buyBands('aggressive_bands', '#f97316', '공격적 매수', '⚡', true)
             : buyZone('aggressive', '#f97316', '공격적 매수', '⚡')}
-          ${bp.recommended_bands && bp.recommended_bands.length
-            ? buyBands('recommended_bands', '#3fb950', '추천 매수 구간', '✅', false)
-            : buyZone('recommended', '#3fb950', '추천 매수 구간', '✅')}
         </div>`;
     }
   }
@@ -7846,6 +7873,8 @@ function renderForecast(d, isKrx) {
         <div style="font-size:10px;color:#484f58;margin-top:4px">ATR배수 — 목표:×${sc.atr_mul_tgt} / 손절:×${sc.atr_mul_stp}</div>
       </div>`).join('')}`;
   }
+  // 리스크 카드 하단: 눌림목 분석 기반 정밀 가격 설정
+  renderPullbackATR(d, isKrx);
 }
 
 function renderTechnicalSignals(d) {
