@@ -6761,10 +6761,45 @@ function renderPullbackIntoAI(d, isKrx) {
   if (!init) { el.innerHTML = ''; return; }
   const { pa, C, fmtP, stageColors, stageLabels } = init;
 
-  const stageC = stageColors[pa.flow_stage] || C.gray;
-  const pbGC   = C[pa.pullback_grade_color] || C.blue;
-  const bvC    = C[pa.breakdown_color]      || C.gray;
+  // ── 점수/색상 계산 ────────────────────────────────────────────────
+  // ① 흐름 단계: stage 1~5 → 20~100점
+  const stageVal = (pa.flow_stage || 0) * 20;
+  const stageC   = stageColors[pa.flow_stage] || C.gray;
+  const stageLbl = stageVal >= 80 ? '급등/재급등' : stageVal >= 60 ? '양호' : stageVal >= 40 ? '보통' : '초기';
 
+  // ② 눌림목 체크리스트: pullback_score_pct 그대로
+  const pbVal = pa.pullback_score_pct || 0;
+  const pbC   = pbVal >= 65 ? C.green : pbVal >= 40 ? C.orange : C.red;
+  const pbLbl = pbVal >= 65 ? '양호' : pbVal >= 40 ? '보통' : '주의';
+
+  // ⑦ 세력 혼들림: 패턴 0개=85, 1개=55, 2개+=25
+  const mfCount = (pa.manipulation_flags || []).length;
+  const mfVal   = mfCount === 0 ? 85 : mfCount === 1 ? 55 : 25;
+  const mfC     = mfVal >= 65 ? C.green : mfVal >= 40 ? C.orange : C.red;
+  const mfLbl   = mfVal >= 65 ? '패턴 없음' : mfVal >= 40 ? '주의 1건' : '다수 감지';
+
+  // ⑧ 구조 붕괴: sl_triggered 0=85, 1=50, 2+=20
+  const slVal = pa.sl_triggered === 0 ? 85 : pa.sl_triggered === 1 ? 50 : 20;
+  const slC   = slVal >= 65 ? C.green : slVal >= 40 ? C.orange : C.red;
+  const slLbl = slVal >= 65 ? '안전' : slVal >= 40 ? '경고' : '위험';
+
+  // ── 아코디언 콘텐츠 빌더 ─────────────────────────────────────────
+  // ① 흐름 단계 아코디언
+  const flowAccContent = `
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <div style="background:${stageC};border-radius:8px;padding:6px 14px;font-size:15px;font-weight:700;color:#fff">
+        ${stageLabels[pa.flow_stage] || '단계 불명'}
+      </div>
+      <div style="color:#cdd9e5;font-size:13px;line-height:1.6;flex:1">${pa.flow_desc}</div>
+    </div>
+    <div style="display:flex;gap:4px">
+      ${[1,2,3,4,5].map(i => `<div style="flex:1;height:6px;border-radius:3px;background:${i <= pa.flow_stage ? stageColors[i] : '#21262d'}"></div>`).join('')}
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:#484f58">
+      <span>바닥</span><span>돌파</span><span>급등</span><span style="color:${C.green};font-weight:700">눌림목</span><span>재급등</span>
+    </div>`;
+
+  // ② 눌림목 체크리스트 아코디언
   const checkRows = (pa.pullback_checks || []).map(c => {
     const ic = c.pass ? '✅' : '❌';
     const tc = c.pass ? C.green : C.red;
@@ -6773,16 +6808,22 @@ function renderPullbackIntoAI(d, isKrx) {
       <td style="padding:5px 8px;color:${tc};font-size:12px">${c.desc}</td>
     </tr>`;
   }).join('');
+  const checkAccContent = `
+    <table style="width:100%;border-collapse:collapse">${checkRows}</table>
+    ${pa.last_surge_low ? `<div style="margin-top:8px;padding:6px 10px;background:#21262d;border-radius:6px;font-size:12px;color:#8b949e">급등봉 ${pa.surge_candles_count}개 감지 | 급등봉 저가 기준선: <b style="color:#e6edf3">${fmtP(pa.last_surge_low)}</b></div>` : ''}`;
 
-  const mfHtml = pa.manipulation_flags && pa.manipulation_flags.length > 0
+  // ⑦ 세력 혼들림 아코디언
+  const mfItems = pa.manipulation_flags && pa.manipulation_flags.length > 0
     ? pa.manipulation_flags.map(f => `
-      <div style="border-left:3px solid ${C[f.color]||C.orange};padding:8px 10px;background:#1c2128;border-radius:0 6px 6px 0;margin-bottom:6px">
+      <div style="border-left:3px solid ${C[f.color]||C.orange};padding:8px 10px;background:#21262d;border-radius:0 6px 6px 0">
         <div style="color:${C[f.color]||C.orange};font-weight:700;font-size:12px">${f.pattern}</div>
         <div style="color:#8b949e;font-size:12px;margin-top:3px">${f.desc}</div>
-        <div style="color:#58a6ff;font-size:12px;margin-top:3px">대응: ${f.action}</div>
+        <div style="color:${C.blue};font-size:12px;margin-top:3px">대응: ${f.action}</div>
       </div>`).join('')
-    : `<div style="color:#8b949e;font-size:13px;padding:8px 0">감지된 세력 혼들림 패턴 없음</div>`;
+    : `<div style="color:#8b949e;font-size:13px;padding:4px 0">감지된 세력 혼들림 패턴 없음</div>`;
+  const mfAccContent = mfItems + `<div style="margin-top:8px;padding:6px 10px;background:#21262d;border-radius:6px;font-size:12px;color:#8b949e">핵심: 혼들림에 겁먹지 말고, 구조가 죽었는지 아닌지를 판단하는 것!</div>`;
 
+  // ⑧ 구조 붕괴 손절 아코디언
   const slRows = (pa.sl_conditions || []).map(s => {
     const ic = s.triggered ? '🔴' : '🟢';
     const tc = s.triggered ? C.red : C.green;
@@ -6791,72 +6832,44 @@ function renderPullbackIntoAI(d, isKrx) {
       <td style="padding:5px 8px;color:${tc};font-size:11px">${s.desc}</td>
     </tr>`;
   }).join('');
+  const slAccContent = `
+    <table style="width:100%;border-collapse:collapse">${slRows}</table>
+    <div style="margin-top:8px;padding:6px 10px;background:#21262d;border-radius:6px;font-size:12px;color:#8b949e">
+      손절 원칙: 손실은 짧게 (-5%~-8% 이내) | 구조가 무너지면 미련 없이 정리
+    </div>`;
+
+  // ── 아코디언 행 빌더 (dimBar 패턴과 동일) ────────────────────────
+  const pbDimBar = (emoji, label, val, desc, aId, content, extraBorder) => `
+    <div class="diag-dim diag-dim-clickable" onclick="toggleDimAccordion('${aId}')" ${extraBorder ? `style="border-color:${extraBorder}"` : ''}>
+      <div class="diag-dim-head">
+        <span class="diag-dim-label">${emoji} ${label} <span id="arrow-${aId}" style="font-size:11px;color:#8b949e;display:inline-block;transition:transform .25s">▼</span></span>
+        <span class="diag-dim-score" style="color:${val >= 65 ? C.green : val >= 40 ? C.orange : C.red}">${val}점 · ${val >= 65 ? '양호' : val >= 40 ? '보통' : '주의'}</span>
+      </div>
+      <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${val}%;background:${val >= 65 ? C.green : val >= 40 ? C.orange : C.red}"></div></div>
+      <div class="diag-dim-desc">${desc}</div>
+    </div>
+    <div id="${aId}" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
+      <div style="display:flex;flex-direction:column;gap:8px">${content}</div>
+    </div>`;
 
   el.innerHTML = `
-  <!-- A1. 현재 흐름 단계 -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">① 현재 흐름 단계 (5단계 구조)</div>
-    <div style="display:flex;align-items:center;gap:14px;padding:10px 0;flex-wrap:wrap">
-      <div style="background:${stageC};border-radius:8px;padding:8px 18px;font-size:20px;font-weight:700;color:#fff">
-        ${stageLabels[pa.flow_stage] || '단계 불명'}
-      </div>
-      <div style="color:#cdd9e5;font-size:13px;line-height:1.6;flex:1">${pa.flow_desc}</div>
+  <div class="card" style="margin-top:12px">
+    <div class="card-title">📈 눌림목 흐름 분석</div>
+    <div class="diag-dims">
+      ${pbDimBar('🔄', '현재 흐름 단계', stageVal,
+          `${stageLabels[pa.flow_stage] || '단계 불명'} · ${pa.flow_desc ? pa.flow_desc.substring(0,40) + (pa.flow_desc.length > 40 ? '…' : '') : ''}`,
+          'pb-flow', flowAccContent)}
+      ${pbDimBar('✅', '눌림목 체크리스트', pbVal,
+          `${pa.pullback_grade} · ${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length} 조건 충족 · ${pa.pullback_desc ? pa.pullback_desc.substring(0,35) + (pa.pullback_desc.length > 35 ? '…' : '') : ''}`,
+          'pb-check', checkAccContent)}
+      ${pbDimBar('🎭', `세력 혼들림 패턴${pa.bb_squeeze ? ' · 볼린저 수축' : ''}`, mfVal,
+          mfCount > 0 ? `${mfCount}개 패턴 감지 — 구조 생존 여부 확인 필요` : '세력 혼들림 패턴 미감지 — 구조 유지 중',
+          'pb-manip', mfAccContent)}
+      ${pbDimBar('🛑', `구조 붕괴 손절 기준`, slVal,
+          `${pa.breakdown_verdict} · ${pa.sl_triggered}개 조건 충족`,
+          'pb-sl', slAccContent)}
     </div>
-    <div style="display:flex;gap:4px;margin-top:8px">
-      ${[1,2,3,4,5].map(i => `
-        <div style="flex:1;height:6px;border-radius:3px;background:${i <= pa.flow_stage ? stageColors[i] : '#21262d'}"></div>
-      `).join('')}
-    </div>
-    <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:#484f58">
-      <span>바닥</span><span>돌파</span><span>급등</span><span style="color:${C.green};font-weight:700">눌림목</span><span>재급등</span>
-    </div>
-  </div>
-
-  <!-- A2. 눌림목 체크리스트 -->
-  <div class="card" style="margin-bottom:12px;border:2px solid ${pbGC}">
-    <div class="card-title">② 눌림목 체크리스트</div>
-    <div style="display:flex;align-items:center;gap:14px;padding:10px 0 8px;flex-wrap:wrap">
-      <div style="text-align:center;min-width:80px">
-        <div style="font-size:28px;font-weight:700;color:${pbGC}">${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length}</div>
-        <div style="font-size:11px;color:#8b949e">조건 충족</div>
-      </div>
-      <div>
-        <div style="color:${pbGC};font-weight:700;font-size:16px">${pa.pullback_grade}</div>
-        <div style="color:#cdd9e5;font-size:12px;margin-top:4px;max-width:280px">${pa.pullback_desc}</div>
-      </div>
-      <div style="margin-left:auto;text-align:right">
-        <div style="font-size:22px;font-weight:700;color:${pbGC}">${pa.pullback_score_pct}%</div>
-        <div style="font-size:11px;color:#8b949e">품질 점수</div>
-      </div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;margin-top:4px">
-      ${checkRows}
-    </table>
-    ${pa.last_surge_low ? `<div style="margin-top:8px;padding:6px 10px;background:#1c2128;border-radius:6px;font-size:12px;color:#8b949e">급등봉 ${pa.surge_candles_count}개 감지 | 급등봉 저가 기준선: <b style="color:#e6edf3">${fmtP(pa.last_surge_low)}</b></div>` : ''}
-  </div>
-
-  <!-- B5. 세력 혼들림 패턴 -->
-  <div class="card" style="margin-bottom:12px">
-    <div class="card-title">⑦ 세력 혼들림(착오작전) 패턴 감지${pa.bb_squeeze ? ' — <span style="color:'+C.yellow+'">볼린저 수축 감지</span>' : ''}</div>
-    <div style="padding:8px 0">${mfHtml}</div>
-    <div style="padding:6px 10px;background:#1c2128;border-radius:6px;font-size:12px;color:#8b949e;margin-top:4px">
-      핵심: 혼들림에 겁먹지 말고, 구조가 죽었는지 아닌지를 판단하는 것!
-    </div>
-  </div>
-
-  <!-- B6. 구조 붕괴 손절 기준 -->
-  <div class="card" style="border:2px solid ${bvC}">
-    <div class="card-title">⑧ 구조 붕괴 손절 기준 (${pa.sl_triggered}개 조건 충족)</div>
-    <div style="display:inline-flex;align-items:center;gap:10px;padding:10px 0 8px">
-      <span style="font-size:20px">${pa.sl_triggered >= 2 ? '🔴' : pa.sl_triggered === 1 ? '🟡' : '🟢'}</span>
-      <span style="color:${bvC};font-weight:700;font-size:15px">${pa.breakdown_verdict}</span>
-    </div>
-    <table style="width:100%;border-collapse:collapse">${slRows}</table>
-    <div style="padding:8px 10px;background:#1c2128;border-radius:6px;margin-top:8px;font-size:12px;color:#8b949e">
-      손절 원칙: 손실은 짧게 (-5%~-8% 이내) | 구조가 무너지면 미련 없이 정리
-    </div>
-  </div>
-  `;
+  </div>`;
 }
 
 // ── 예측 탭: ③ 핵심 구간  ④ 분할 매수  ⑤ ATR 리스크  ⑥ 손익비 시나리오 ──────
