@@ -5555,6 +5555,9 @@ input::placeholder{color:#484f58}
   .ovs-counts{gap:8px;font-size:11px}
   .indicator-item{padding:10px}
   .ind-desc{font-size:11px}
+  /* 종목 진단 등급행 모바일: rec-badge를 아래 행으로 */
+  .diag-grade-row{flex-wrap:wrap;gap:10px;align-items:flex-start}
+  #flow-rec-badge{flex:0 0 100%;text-align:center;display:block;margin:0}
 }
 
 /* ── Pull-to-Refresh 인디케이터 ── */
@@ -5734,8 +5737,8 @@ input::placeholder{color:#484f58}
 .diag-grade-row{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px}
 .diag-grade-badge{font-size:26px;font-weight:900;width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:3px solid;border-radius:50%;flex-shrink:0;letter-spacing:-1px}
 .diag-grade-info{display:flex;flex-direction:column;gap:3px}
-.diag-grade-title{font-size:15px;font-weight:700}
-.diag-grade-sub{font-size:11px;color:#8b949e}
+.diag-grade-title{font-size:15px;font-weight:700;word-break:keep-all;overflow-wrap:anywhere}
+.diag-grade-sub{font-size:11px;color:#8b949e;word-break:keep-all;overflow-wrap:anywhere}
 .diag-dims{display:flex;flex-direction:column;gap:10px}
 .diag-dim{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px}
 .diag-dim-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
@@ -6749,7 +6752,7 @@ function _pullbackInit(d, isKrx) {
   const C = { red:'#f85149', orange:'#d29922', yellow:'#e3b341', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e' };
   const fmtP = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
   const stageColors = ['','#484f58','#d29922','#f85149','#3fb950','#58a6ff'];
-  const stageLabels = ['','① 바닥 매집','② 돌파','③ 1차 급등','④ 눌림목','⑤ 재급등'];
+  const stageLabels = ['','바닥 매집','돌파','1차 급등','눌림목','재급등'];
   return { pa, C, fmtP, stageColors, stageLabels };
 }
 
