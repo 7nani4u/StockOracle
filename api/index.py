@@ -6824,7 +6824,7 @@ function renderPullbackIntoAI(d, isKrx) {
         <div style="color:${C.blue};font-size:12px;margin-top:3px">대응: ${f.action}</div>
       </div>`).join('')
     : `<div style="color:#8b949e;font-size:13px;padding:4px 0">감지된 세력 혼들림 패턴 없음</div>`;
-  const mfAccContent = mfItems + `<div style="margin-top:8px;padding:6px 10px;background:#21262d;border-radius:6px;font-size:12px;color:#8b949e">핵심: 혼들림에 겁먹지 말고, 구조가 죽었는지 아닌지를 판단하는 것!</div>`;
+  const mfAccContent = mfItems;
 
   // ⑧ 구조 붕괴 손절 아코디언
   const slRows = (pa.sl_conditions || []).map(s => {
@@ -7147,9 +7147,6 @@ function renderPullbackAnalysis(d, isKrx) {
   <div class="card" style="margin-bottom:12px">
     <div class="card-title">⑦ 세력 혼들림(착오작전) 패턴 감지${pa.bb_squeeze ? ' — <span style="color:'+C.yellow+'">볼린저 수축 감지</span>' : ''}</div>
     <div style="padding:8px 0">${mfHtml}</div>
-    <div style="padding:6px 10px;background:#1c2128;border-radius:6px;font-size:12px;color:#8b949e;margin-top:4px">
-      핵심: 혼들림에 겁먹지 말고, 구조가 죽었는지 아닌지를 판단하는 것!
-    </div>
   </div>
 
   <!-- B6. 구조 붕괴 손절 기준 -->
