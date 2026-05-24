@@ -1846,15 +1846,17 @@ def _us_calc_volume(df, period=20):
     return {"ratio": round(ratio, 2), "spike": ratio >= 1.5}
 
 def _us_calc_rs(close, spy_close, period=20):
-    """SPY 대비 상대강도"""
+    """SPY/KOSPI 대비 상대강도 (rs5/rs10/rs20/rs60)"""
     n = min(len(close), len(spy_close))
     if n < period:
         return None
     c = close.iloc[-n:]; s = spy_close.iloc[-n:]
     rs20 = float((c.iloc[-1]/c.iloc[-period] - 1)*100 - (s.iloc[-1]/s.iloc[-period] - 1)*100)
-    rs5 = float((c.iloc[-1]/c.iloc[-5] - 1)*100 - (s.iloc[-1]/s.iloc[-5] - 1)*100) if n >= 5 else 0.0
+    rs5  = float((c.iloc[-1]/c.iloc[-5]  - 1)*100 - (s.iloc[-1]/s.iloc[-5]  - 1)*100) if n >= 5  else 0.0
     rs10 = float((c.iloc[-1]/c.iloc[-10] - 1)*100 - (s.iloc[-1]/s.iloc[-10] - 1)*100) if n >= 10 else 0.0
-    return {"rs20": round(rs20, 2), "outperform": sum([rs5 > 0, rs10 > 0, rs20 > 0]) >= 2}
+    rs60 = float((c.iloc[-1]/c.iloc[-60] - 1)*100 - (s.iloc[-1]/s.iloc[-60] - 1)*100) if n >= 60 else None
+    return {"rs20": round(rs20, 2), "outperform": sum([rs5 > 0, rs10 > 0, rs20 > 0]) >= 2,
+            "rs60": round(rs60, 2) if rs60 is not None else None}
 
 def _us_calc_week52(close, lookback=252):
     """52주 위치 계산"""
@@ -2119,15 +2121,210 @@ def _us_surge_score(a, pm_change_pct):
         elif k < 30: score += 3
     return score
 
+# =============================================================================
+# KR 장기 투자 전용 분석 모듈
+# =============================================================================
+
+_KR_THEME_MAP = {
+    "005930.KS": "AI/반도체", "000660.KS": "AI/반도체", "009150.KS": "AI/반도체",
+    "018260.KS": "AI/반도체",
+    "373220.KS": "2차전지", "006400.KS": "2차전지", "247540.KQ": "2차전지",
+    "086520.KQ": "2차전지", "066970.KQ": "2차전지", "003670.KS": "2차전지",
+    "051910.KS": "2차전지소재",
+    "015760.KS": "전력/에너지", "036460.KS": "전력/에너지",
+    "010120.KS": "전력/에너지", "267260.KS": "전력/에너지",
+    "009830.KS": "신재생에너지",
+    "012450.KS": "방산", "079550.KS": "방산",
+    "034020.KS": "원전/방산",
+    "329180.KS": "조선/방산", "042660.KS": "조선", "009540.KS": "조선", "010140.KS": "조선",
+    "068270.KS": "바이오/헬스케어", "207940.KS": "바이오/헬스케어",
+    "196170.KQ": "바이오/헬스케어", "028300.KQ": "바이오/헬스케어",
+    "058470.KQ": "AI/전자부품",
+    "035420.KS": "인터넷/플랫폼", "035720.KS": "인터넷/플랫폼",
+    "323410.KS": "핀테크", "377300.KS": "핀테크",
+    "259960.KS": "게임", "036570.KS": "게임", "251270.KS": "게임",
+    "352820.KS": "엔터", "005380.KS": "자동차/전기차", "000270.KS": "자동차/전기차",
+    "012330.KS": "자동차부품",
+    "105560.KS": "금융", "055550.KS": "금융", "086790.KS": "금융", "316140.KS": "금융",
+    "005490.KS": "소재/철강", "004020.KS": "소재/철강",
+}
+_KR_THEME_PRIORITY = {
+    "AI/반도체", "2차전지", "전력/에너지", "방산", "조선/방산", "조선",
+    "원전/방산", "바이오/헬스케어", "2차전지소재", "AI/전자부품",
+}
+
+def _kr_calc_ma_align(df):
+    """중장기 이동평균선 정배열 분석 (60/120/240일)"""
+    if "Close" not in df.columns or len(df) < 60:
+        return None
+    c = df["Close"]
+    cur = float(c.iloc[-1])
+    ma60 = float(c.rolling(60).mean().iloc[-1])
+    result = {
+        "ma60": round(ma60, 0), "ma120": None, "ma240": None,
+        "aligned": False, "partial_aligned": False, "trend_reversal": False,
+        "above_ma60": cur > ma60, "above_ma120": None, "above_ma240": None,
+    }
+    if len(df) >= 120:
+        ma120 = float(c.rolling(120).mean().iloc[-1])
+        result["ma120"] = round(ma120, 0)
+        result["above_ma120"] = cur > ma120
+        result["partial_aligned"] = bool(cur > ma60 > ma120)
+        if len(df) >= 240:
+            ma240 = float(c.rolling(240).mean().iloc[-1])
+            result["ma240"] = round(ma240, 0)
+            result["above_ma240"] = cur > ma240
+            result["aligned"] = bool(cur > ma60 > ma120 > ma240)
+            result["trend_reversal"] = bool(ma60 > ma120 and ma120 < ma240)
+        else:
+            result["aligned"] = result["partial_aligned"]
+    return result
+
+def _kr_calc_mdd(df, window=252):
+    """최대 낙폭(MDD) 계산"""
+    if "Close" not in df.columns or len(df) < 20:
+        return None
+    c = df["Close"].iloc[-min(window, len(df)):]
+    rolling_max = c.cummax()
+    drawdown = (c - rolling_max) / rolling_max * 100
+    mdd = float(drawdown.min())
+    cur_dd = float(drawdown.iloc[-1])
+    return {"mdd": round(mdd, 1), "cur_drawdown": round(cur_dd, 1)}
+
+def _kr_calc_trend_status(a, ma_align, w52):
+    """추세 상태 레이블 판별"""
+    adx = a.get("adx"); macd = a.get("macd")
+    if ma_align:
+        if ma_align.get("aligned"):
+            if adx and adx["adx"] >= 25 and adx["direction"] == "bullish":
+                return "강한 상승"
+            return "상승"
+        if ma_align.get("trend_reversal"):
+            return "추세 전환"
+        if ma_align.get("partial_aligned"):
+            return "눌림목" if (adx and adx.get("strength") == "weak") else "중기 상승"
+    if w52 and w52["pos"] <= 25:
+        return "초기 반등" if (macd and macd["macd"] > macd["signal"]) else "바닥권"
+    if adx and adx.get("strength") == "weak":
+        return "횡보"
+    return "혼조"
+
+def _kr_longterm_score(a, tkr, fundamentals=None):
+    """KR 장기 투자 100점 종합 스코어링
+    추세(25) + 수급(20) + 밸류(15) + 성장성(15) + 안정성(10) + 저평가/반등(10) + 테마(5)
+    """
+    rsi = a.get("rsi"); macd = a.get("macd"); bb = a.get("bollinger")
+    vol = a.get("volume"); adx = a.get("adx"); rs = a.get("rs")
+    w52 = a.get("week52"); klt = a.get("kalman_lt"); obv = a.get("obv")
+    sq = a.get("squeeze"); ma_align = a.get("ma_align"); mdd_d = a.get("mdd_data")
+    f = fundamentals or {}
+
+    # ── 하드 필터 ──────────────────────────────────────────────────────
+    if rsi and rsi["v"] >= 80: return -1, {}
+    if vol and vol["ratio"] < 0.5: return -1, {}
+    if adx and adx["adx"] >= 30 and adx["direction"] == "bearish": return -1, {}
+    if mdd_d and mdd_d["mdd"] < -50:
+        if not (w52 and w52["pos"] <= 15 and macd and macd["macd"] > macd["signal"]):
+            return -1, {}
+
+    bd = {}
+
+    # 1. 추세 (max 25)
+    ts = 0
+    if ma_align:
+        ts += 10 if ma_align.get("aligned") else (6 if ma_align.get("partial_aligned") else
+              (4 if ma_align.get("trend_reversal") else (2 if ma_align.get("above_ma60") else 0)))
+    if adx:
+        if adx["direction"] == "bullish":
+            ts += 8 if adx["adx"] >= 30 else (5 if adx["adx"] >= 25 else 3)
+        elif adx["direction"] == "neutral": ts += 1
+    if macd:
+        if macd["macd"] > macd["signal"] and macd["macd"] > 0: ts += 7
+        elif macd["macd"] > macd["signal"]: ts += 4
+        elif macd.get("cross"): ts += 5
+    bd["trend"] = min(ts, 25)
+
+    # 2. 수급 (max 20)
+    ss = 0
+    if obv:
+        ss += (8 if obv["obv"] > obv["obv_sma"] else 5) if obv["trend"] == "accumulation" else (4 if obv.get("divergence") else 0)
+    if vol:
+        r = vol["ratio"]
+        ss += 7 if r >= 1.5 else (5 if r >= 1.2 else (3 if r >= 1.0 else 0))
+    if rs:
+        r60 = rs.get("rs60") or 0; r20 = rs.get("rs20") or 0
+        ss += 5 if r60 > 5 else (3 if r60 > 0 else (2 if r20 > 0 else 0))
+    bd["supply"] = min(ss, 20)
+
+    # 3. 밸류 (max 15)
+    vs = 0
+    if w52:
+        p = w52["pos"]
+        vs += 6 if p <= 30 else (4 if p <= 50 else (2 if p <= 70 else 0))
+    per = f.get("per")
+    if per and per > 0:
+        vs += 5 if per < 10 else (4 if per < 15 else (3 if per < 20 else (2 if per < 30 else 0)))
+    pbr = f.get("pbr")
+    if pbr and pbr > 0:
+        vs += 4 if pbr < 1.0 else (3 if pbr < 1.5 else (2 if pbr < 2.0 else (1 if pbr < 3.0 else 0)))
+    bd["value"] = min(vs, 15)
+
+    # 4. 성장성 (max 15)
+    gs = 0
+    eps_growth = f.get("eps_growth")
+    if eps_growth is not None:
+        gs += 6 if eps_growth > 30 else (4 if eps_growth > 15 else (2 if eps_growth > 0 else 0))
+    roe = f.get("roe")
+    if roe is not None:
+        gs += 5 if roe > 20 else (4 if roe > 15 else (3 if roe > 10 else (1 if roe > 5 else 0)))
+    rev_growth = f.get("rev_growth")
+    if rev_growth is not None:
+        gs += 4 if rev_growth > 20 else (3 if rev_growth > 10 else (1 if rev_growth > 0 else 0))
+    bd["growth"] = min(gs, 15)
+
+    # 5. 안정성 (max 10)
+    sts = 0
+    if rsi:
+        v = rsi["v"]
+        sts += 4 if 40 <= v <= 60 else (3 if (35 <= v < 40 or 60 < v <= 65) else (1 if (30 <= v < 35 or 65 < v <= 70) else 0))
+    if mdd_d:
+        sts += 3 if mdd_d["mdd"] > -15 else (2 if mdd_d["mdd"] > -25 else (1 if mdd_d["mdd"] > -35 else 0))
+    if bb:
+        z = bb["z"]
+        sts += 3 if 0.0 <= z <= 1.5 else (2 if -0.5 <= z < 0.0 else 0)
+    bd["stability"] = min(sts, 10)
+
+    # 6. 저평가/반등 특수 (max 10)
+    us = 0
+    if w52:
+        p = w52["pos"]
+        if p <= 20 and macd and macd["macd"] > macd["signal"]: us += 5
+        elif p <= 30 and obv and obv["trend"] == "accumulation": us += 4
+        elif p <= 30: us += 2
+    if klt and klt["velocity"] > 0:
+        cl_v = a.get("close", 1) or 1
+        vp = (klt["velocity"] / cl_v) * 100
+        us += 3 if vp > 0.3 else (2 if vp > 0.1 else 1)
+    if sq and sq["momentum"] > 0:
+        us += 2 if not sq["on"] else (1 if sq.get("count", 0) >= 5 else 0)
+    bd["undervalue"] = min(us, 10)
+
+    # 7. 테마 (max 5)
+    theme = _KR_THEME_MAP.get(tkr, "")
+    bd["theme"] = 5 if theme in _KR_THEME_PRIORITY else (2 if theme else 0)
+
+    return sum(bd.values()), bd
+
+
 @ttl_cache(14400)  # 4시간 캐시
 def fetch_kr_longterm_reco():
-    """국내(KRX) 장기 투자 추천 Top 3 (추세 추종 + 칼만 필터)"""
+    """국내(KRX) 장기 투자 추천 Top 5 (기술·수급·펀더멘털 통합 스코어링)"""
     try:
-        # KR_STOCK_MAP: {이름: ticker.KS/.KQ}
-        name_map = {v: k for k, v in KR_STOCK_MAP.items()}  # ticker → 이름
-        kr_tickers = list(KR_STOCK_MAP.values())
-        all_dl = kr_tickers + ["^KS11"]   # KOSPI 지수 benchmark
-        raw = yf.download(all_dl, period="1y", interval="1d",
+        name_map = {v: k for k, v in KR_STOCK_MAP.items()}
+        kr_tickers = list(dict.fromkeys(KR_STOCK_MAP.values()))  # dedup
+        all_dl = kr_tickers + ["^KS11"]
+        # 2년 데이터 — 240일 MA 계산 필요
+        raw = yf.download(all_dl, period="2y", interval="1d",
                           progress=False, auto_adjust=True, threads=True)
         if raw.empty:
             return {"error": "데이터 없음", "items": []}
@@ -2135,6 +2332,38 @@ def fetch_kr_longterm_reco():
         if isinstance(raw.columns, pd.MultiIndex):
             if "^KS11" in raw.columns.get_level_values(1):
                 kospi_df = raw.xs("^KS11", axis=1, level=1).dropna(how="all")
+
+        # ── 펀더멘털 병렬 수집 ─────────────────────────────────────────
+        fundamentals = {}
+        def _fetch_fund(tkr):
+            try:
+                info = yf.Ticker(tkr).info
+                per = info.get("trailingPE") or info.get("forwardPE")
+                pbr = info.get("priceToBook")
+                roe_raw = info.get("returnOnEquity")
+                roe = round(float(roe_raw) * 100, 1) if roe_raw else None
+                eps_curr = float(info.get("trailingEps") or 0)
+                eps_fwd  = float(info.get("forwardEps")  or 0)
+                eps_growth = round(((eps_fwd / eps_curr) - 1) * 100, 1) if eps_curr > 0 and eps_fwd else None
+                rev_raw = info.get("revenueGrowth")
+                rev_growth = round(float(rev_raw) * 100, 1) if rev_raw else None
+                return {
+                    "per": round(float(per), 1) if per else None,
+                    "pbr": round(float(pbr), 2) if pbr else None,
+                    "roe": roe, "eps_growth": eps_growth,
+                    "rev_growth": rev_growth,
+                    "mktcap": info.get("marketCap"),
+                }
+            except Exception:
+                return {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            futs = {ex.submit(_fetch_fund, tkr): tkr for tkr in kr_tickers}
+            for fut in concurrent.futures.as_completed(futs, timeout=20):
+                tkr2 = futs[fut]
+                try: fundamentals[tkr2] = fut.result()
+                except Exception: fundamentals[tkr2] = {}
+
+        # ── 후보 종목 분석 ──────────────────────────────────────────────
         candidates = []
         for tkr in kr_tickers:
             try:
@@ -2146,59 +2375,133 @@ def fetch_kr_longterm_reco():
                 if len(df) < 60: continue
                 a = _us_analyze_ticker(df, kospi_df)
                 if not a: continue
-                score = _us_longterm_score(a)
+                a["ma_align"] = _kr_calc_ma_align(df)
+                a["mdd_data"] = _kr_calc_mdd(df)
+                score, breakdown = _kr_longterm_score(a, tkr, fundamentals.get(tkr, {}))
                 if score < 0: continue
-                candidates.append((tkr, score, a))
+                candidates.append((tkr, score, a, breakdown))
             except Exception:
                 continue
+
         candidates.sort(key=lambda x: x[1], reverse=True)
         results = []
-        for tkr, score, a in candidates[:3]:
+        for tkr, score, a, breakdown in candidates[:5]:
             rsi = a.get("rsi"); macd = a.get("macd"); adx = a.get("adx")
             rs = a.get("rs"); w52 = a.get("week52"); klt = a.get("kalman_lt")
             obv = a.get("obv"); sq = a.get("squeeze")
+            ma_align = a.get("ma_align"); mdd_d = a.get("mdd_data")
+            f = fundamentals.get(tkr, {})
             cl = a.get("close", 0)
             atr_v = a.get("atr") or 0
-            if atr_v > 0:
-                target = round(cl + atr_v * 2.0, 0)
-                stop = round(cl - atr_v * 2.0, 0)
+
+            # 목표가 (칼만 예측 + 장기 ATR 혼합)
+            if klt and klt["predicted"] > cl:
+                target = round(max(klt["predicted"] * 1.05, cl * 1.10), 0)
+            elif atr_v > 0:
+                target = round(cl + atr_v * 3.0, 0)
             else:
-                target = round(cl * 1.08, 0)
-                stop = round(cl * 0.92, 0)
-            reasons = []
-            if adx and adx["direction"] == "bullish":
-                reasons.append(f"ADX {adx['adx']:.1f} — 상승 추세 확인")
-            if rs and rs["rs20"] > 0:
-                reasons.append(f"KOSPI 대비 20일 +{rs['rs20']:.1f}% 아웃퍼폼")
-            if macd and macd["macd"] > macd["signal"]:
-                reasons.append("MACD 상승 모멘텀 유지")
+                target = round(cl * 1.15, 0)
+            stop = round(cl - atr_v * 2.0, 0) if atr_v > 0 else round(cl * 0.85, 0)
+            exp_ret = round(((target - cl) / cl * 100), 1) if cl else 0
+
+            trend_status = _kr_calc_trend_status(a, ma_align, w52)
+
+            # AI 방향성
             if klt and cl:
-                exp_ret = ((klt["predicted"] - cl) / cl) * 100
-                reasons.append(f"칼만 40일 예측 {klt['predicted']:,.0f}원 ({'+' if exp_ret >= 0 else ''}{exp_ret:.1f}%)")
+                vp = (klt["velocity"] / cl * 100)
+                ai_dir = "강한 상승" if vp > 0.3 else ("상승" if vp > 0.05 else ("중립" if vp > -0.05 else "하락"))
+            else:
+                ai_dir = "분석 불가"
+
+            # 핵심 추천 사유
+            reasons = []
+            if ma_align:
+                if ma_align.get("aligned"):
+                    reasons.append("60/120/240일 이동평균 완전 정배열 — 강한 장기 상승 구조")
+                elif ma_align.get("partial_aligned"):
+                    reasons.append("60/120일 이동평균 정배열 — 중장기 상승 추세 유지")
+                elif ma_align.get("trend_reversal"):
+                    reasons.append("MA60이 MA120 돌파 — 장기 추세 전환 신호")
+            if adx and adx["direction"] == "bullish" and adx["adx"] >= 20:
+                reasons.append(f"ADX {adx['adx']:.1f} — 상승 추세 강도 확인")
+            rs60 = (rs.get("rs60") or 0) if rs else 0
+            rs20_v = (rs.get("rs20") or 0) if rs else 0
+            if rs and rs60 > 0:
+                reasons.append(f"KOSPI 대비 60일 +{rs60:.1f}% 아웃퍼폼 (업종 상대 강도 우위)")
+            elif rs and rs20_v > 0:
+                reasons.append(f"KOSPI 대비 20일 +{rs20_v:.1f}% 아웃퍼폼")
+            if macd and macd["macd"] > macd["signal"]:
+                reasons.append("MACD 상승 모멘텀" + (" (골든크로스)" if macd.get("cross") else ""))
+            if klt and cl:
+                kr_ret = ((klt["predicted"] - cl) / cl) * 100
+                reasons.append(f"칼만 40일 예측 {klt['predicted']:,.0f}원 ({'+' if kr_ret >= 0 else ''}{kr_ret:.1f}%)")
             if obv and obv["trend"] == "accumulation":
-                reasons.append("OBV 매집 구간 — 세력 매수 중")
+                reasons.append("OBV 매집 구간 — 기관/외국인 선행 매수 포착")
+            if w52 and w52["pos"] <= 30:
+                reasons.append(f"52주 저점 대비 {w52['pos']:.0f}% 위치 — 저점 반등 초기 구간")
+            if f.get("per") and f["per"] < 15:
+                reasons.append(f"PER {f['per']:.1f}배 저평가 — 실적 대비 주가 매력")
+            if f.get("roe") and f["roe"] and f["roe"] > 10:
+                reasons.append(f"ROE {f['roe']:.1f}% — 우량 자본 수익성")
+            theme = _KR_THEME_MAP.get(tkr, "")
+            if theme in _KR_THEME_PRIORITY:
+                reasons.append(f"시장 주도 테마 [{theme}] — 섹터 상승 모멘텀")
             if sq and not sq["on"] and sq["momentum"] > 0:
-                reasons.append("Squeeze 해제 — 상승 돌파 진행")
-            if rsi:
-                reasons.append(f"RSI {rsi['v']:.1f} — 건강한 모멘텀 구간")
-            if w52:
-                reasons.append(f"52주 {w52['pos']:.0f}% 위치 — 성장 여력")
+                reasons.append("TTM Squeeze 해제 — 압축 후 상승 돌파 진행")
+
+            # 리스크 요소
+            risks = []
+            if rsi and rsi["v"] > 65:
+                risks.append(f"RSI {rsi['v']:.0f} 과열 — 단기 눌림 가능")
+            if w52 and w52["pos"] >= 80:
+                risks.append("52주 고점 근처 — 차익 실현 압력")
+            if mdd_d and mdd_d["mdd"] < -30:
+                risks.append(f"최대 낙폭 {mdd_d['mdd']:.0f}% — 고변동성 종목")
+            if not (ma_align and (ma_align.get("aligned") or ma_align.get("partial_aligned"))):
+                risks.append("이동평균 정배열 미달 — 추세 재확인 필요")
+            if f.get("per") and f["per"] > 30:
+                risks.append(f"PER {f['per']:.0f}배 — 고평가 가능성")
+            if not risks:
+                risks.append("특이 리스크 없음 (지속적인 모니터링 권장)")
+
+            # 보유기간
+            if trend_status in ("강한 상승", "상승") and score >= 70:
+                holding = "6개월~1년"
+            elif trend_status in ("중기 상승", "추세 전환", "초기 반등"):
+                holding = "3~6개월"
+            else:
+                holding = "3개월~"
+
+            confidence_label = ("매우 높음" if score >= 80 else
+                               ("높음" if score >= 65 else ("보통" if score >= 50 else "주의")))
+
             results.append({
                 "ticker": tkr,
                 "name": name_map.get(tkr, tkr),
                 "close": cl,
                 "change_pct": a.get("change_pct", 0),
                 "score": score,
-                "confidence": "High" if score >= 70 else "Medium",
+                "score_breakdown": breakdown,
+                "confidence": "High" if score >= 65 else "Medium",
+                "confidence_label": confidence_label,
                 "target_price": target,
                 "stop_loss": stop,
-                "holding_period": "1-3개월",
+                "expected_return": exp_ret,
+                "holding_period": holding,
+                "trend_status": trend_status,
+                "ai_direction": ai_dir,
                 "reasons": reasons[:5],
+                "risks": risks[:3],
+                "theme": theme,
                 "currency": "KRW",
                 "rsi": rsi["v"] if rsi else None,
                 "adx": adx["adx"] if adx else None,
-                "rs20": rs["rs20"] if rs else None,
+                "rs20": rs20_v,
+                "rs60": rs60,
                 "kalman_predicted": klt["predicted"] if klt else None,
+                "ma_aligned": ma_align.get("aligned") if ma_align else False,
+                "mdd": mdd_d["mdd"] if mdd_d else None,
+                "per": f.get("per"), "pbr": f.get("pbr"), "roe": f.get("roe"),
             })
         return {"items": results, "ts": int(time.time())}
     except Exception as e:
@@ -5937,6 +6240,21 @@ input::placeholder{color:#484f58}
 .us-surge-pm{font-size:17px;font-weight:700;color:#3fb950}
 .us-surge-inds{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
 .us-surge-ind{font-size:10px;padding:2px 6px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#8b949e}
+/* ── KR 장기 투자 전용 ── */
+.kr-lt-card{border-top:2px solid #388bfd}
+.kr-lt-status-badge{font-size:11px;padding:2px 8px;border-radius:12px;border:1px solid;font-weight:600;letter-spacing:.02em}
+.kr-lt-breakdown{margin:10px 0;display:flex;flex-direction:column;gap:5px}
+.kr-lt-bd-row{display:flex;align-items:center;gap:6px;font-size:11px}
+.kr-lt-bd-label{color:#8b949e;min-width:46px;text-align:right}
+.kr-lt-bd-bar-wrap{flex:1;height:6px;background:#21262d;border-radius:3px;overflow:hidden}
+.kr-lt-bd-bar{height:100%;border-radius:3px;transition:width .4s}
+.kr-lt-bd-val{color:#8b949e;min-width:36px;text-align:right;font-variant-numeric:tabular-nums}
+.kr-lt-risks{display:flex;flex-direction:column;gap:3px;margin-bottom:6px}
+.kr-lt-risk{font-size:11px;color:#d2a522;padding:4px 8px;background:rgba(210,162,34,.08);border-radius:6px;border-left:2px solid rgba(210,162,34,.4);line-height:1.4}
+.kr-lt-fund{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.kr-lt-fund-tag{font-size:10px;padding:2px 7px;background:#21262d;border:1px solid #30363d;border-radius:10px;color:#8b949e;font-variant-numeric:tabular-nums}
+.kr-lt-theme-badge{font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(56,139,253,.15);color:#58a6ff;border:1px solid rgba(56,139,253,.3);font-weight:600}
+.us-reco-reason::before{display:none}
 </style>
 </head>
 <body>
@@ -6308,7 +6626,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px">
       <div>
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇰🇷 국내 장기 투자 추천</h2>
-        <p style="font-size:12px;color:#8b949e">추세 추종 · 칼만 필터 기반 Top 3</p>
+        <p style="font-size:12px;color:#8b949e">기술·수급·펀더멘털 통합 스코어링 Top 5</p>
       </div>
     </div>
     <div class="home-section">
@@ -6318,7 +6636,7 @@ input::placeholder{color:#484f58}
       </div>
       <div id="kr-lt-content" style="display:none">
         <div class="us-reco-header">
-          <span class="us-reco-title">🇰🇷 국내 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">추세 추종·칼만 필터 Top 3</span></span>
+          <span class="us-reco-title">🇰🇷 국내 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">100점 종합 스코어링 Top 5</span></span>
           <button onclick="loadKrLongterm(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
         </div>
         <div class="us-reco-cards" id="kr-lt-cards"></div>
@@ -9445,46 +9763,123 @@ function renderKrLongtermCards(items) {
   if (!el) return;
   _krLtTickers = new Set((items || []).map(function(it) { return it.ticker; }));
   if (!items.length) {
-    el.innerHTML = '<div class="us-reco-empty">현재 국내 장기 추천 조건에 부합하는 종목이 없습니다.<br>칼만 상승 추세 + 복합 기술 조건을 충족하는 국내 종목이 발견되면 표시됩니다.</div>';
+    el.innerHTML = '<div class="us-reco-empty">현재 국내 장기 추천 조건에 부합하는 종목이 없습니다.<br>장기 투자 스코어링 조건을 충족하는 종목이 발견되면 표시됩니다.</div>';
     return;
   }
-  el.innerHTML = items.map(function(it) {
-    var pctCls = (it.change_pct || 0) >= 0 ? 'grn' : 'red';
+
+  var trendColors = {
+    '강한 상승': '#3fb950', '상승': '#56d364', '중기 상승': '#7ee787',
+    '눌림목': '#d29922', '추세 전환': '#58a6ff', '초기 반등': '#79c0ff',
+    '바닥권': '#ff7b72', '횡보': '#8b949e', '혼조': '#6e7681'
+  };
+  var aiDirColors = { '강한 상승': '#3fb950', '상승': '#56d364', '중립': '#8b949e', '하락': '#ff7b72' };
+  var bdLabels = { trend:'추세', supply:'수급', value:'밸류', growth:'성장성', stability:'안정성', undervalue:'저평가', theme:'테마' };
+  var bdMax    = { trend:25,    supply:20,    value:15,    growth:15,       stability:10,      undervalue:10,        theme:5 };
+
+  el.innerHTML = items.map(function(it, idx) {
+    var pctCls  = (it.change_pct || 0) >= 0 ? 'grn' : 'red';
     var pctSign = (it.change_pct || 0) >= 0 ? '+' : '';
+    var expSign = (it.expected_return || 0) >= 0 ? '+' : '';
     var badgeCls = it.confidence === 'High' ? 'us-reco-badge-high' : 'us-reco-badge-med';
-    var badgeTxt = it.confidence === 'High' ? '확신도 높음' : '확신도 보통';
-    var reasons = (it.reasons || []).map(function(r) {
-      return '<div class="us-reco-reason">' + r + '</div>';
-    }).join('');
-    var kpred = it.kalman_predicted;
-    var kpredHtml = '';
-    if (kpred && it.close) {
-      var kret = (((kpred - it.close) / it.close) * 100).toFixed(1);
-      kpredHtml = '<div class="us-reco-pi"><div class="us-reco-pi-label">칼만 40일 예측</div>' +
-        '<div class="us-reco-pi-val">' + kpred.toLocaleString() + '원 <span style="font-size:11px;color:#8b949e">' +
-        (parseFloat(kret) >= 0 ? '+' : '') + kret + '%</span></div></div>';
+    var trendColor = trendColors[it.trend_status] || '#8b949e';
+    var aiColor    = aiDirColors[it.ai_direction]  || '#8b949e';
+
+    // 점수 세부 분해 바
+    var bdHtml = '';
+    if (it.score_breakdown) {
+      bdHtml = '<div class="kr-lt-breakdown">';
+      Object.keys(bdLabels).forEach(function(k) {
+        var val = it.score_breakdown[k] || 0;
+        var maxV = bdMax[k];
+        var pct = Math.round((val / maxV) * 100);
+        var barColor = pct >= 80 ? '#3fb950' : (pct >= 50 ? '#d29922' : '#484f58');
+        bdHtml += '<div class="kr-lt-bd-row">' +
+          '<span class="kr-lt-bd-label">' + bdLabels[k] + '</span>' +
+          '<div class="kr-lt-bd-bar-wrap"><div class="kr-lt-bd-bar" style="width:' + pct + '%;background:' + barColor + '"></div></div>' +
+          '<span class="kr-lt-bd-val">' + val + '/' + maxV + '</span>' +
+        '</div>';
+      });
+      bdHtml += '</div>';
     }
-    return '<div class="us-reco-card">' +
+
+    // 추천 사유
+    var reasons = (it.reasons || []).map(function(r) {
+      return '<div class="us-reco-reason">▸ ' + r + '</div>';
+    }).join('');
+
+    // 리스크
+    var risks = (it.risks || []).map(function(r) {
+      return '<div class="kr-lt-risk">⚠ ' + r + '</div>';
+    }).join('');
+
+    // 칼만 예측
+    var kpredHtml = '';
+    if (it.kalman_predicted && it.close) {
+      var kret = (((it.kalman_predicted - it.close) / it.close) * 100).toFixed(1);
+      kpredHtml = '<div class="us-reco-pi"><div class="us-reco-pi-label">칼만 40일 예측</div>' +
+        '<div class="us-reco-pi-val">' + it.kalman_predicted.toLocaleString() + '원' +
+        ' <span style="font-size:11px;color:#8b949e">' + (parseFloat(kret) >= 0 ? '+' : '') + kret + '%</span></div></div>';
+    }
+
+    // 펀더멘털 배지
+    var fundHtml = '';
+    var fundItems = [];
+    if (it.per  != null) fundItems.push('PER ' + it.per + '배');
+    if (it.pbr  != null) fundItems.push('PBR ' + it.pbr + '배');
+    if (it.roe  != null) fundItems.push('ROE ' + it.roe + '%');
+    if (it.rs60 != null && it.rs60 !== 0) fundItems.push('RS60 ' + (it.rs60 >= 0 ? '+' : '') + it.rs60.toFixed(1) + '%');
+    if (it.mdd  != null) fundItems.push('MDD ' + it.mdd + '%');
+    if (fundItems.length) {
+      fundHtml = '<div class="kr-lt-fund">' + fundItems.map(function(f) {
+        return '<span class="kr-lt-fund-tag">' + f + '</span>';
+      }).join('') + '</div>';
+    }
+
+    // 테마 배지
+    var themeHtml = it.theme ? '<span class="kr-lt-theme-badge"># ' + it.theme + '</span>' : '';
+
+    return '<div class="us-reco-card kr-lt-card">' +
+      /* ── 헤더 ── */
       '<div class="us-reco-card-header">' +
-        '<div><span class="us-reco-ticker">' + (it.name || it.ticker) + '</span>' +
-          '<span style="font-size:10px;color:#484f58;margin-left:6px;font-family:monospace">' + it.ticker + '</span></div>' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span style="font-size:13px;color:#8b949e;font-weight:600">#' + (idx+1) + '</span>' +
+          '<span class="us-reco-ticker">' + (it.name || it.ticker) + '</span>' +
+          '<span style="font-size:10px;color:#484f58;font-family:monospace">' + it.ticker + '</span>' +
+          themeHtml +
+        '</div>' +
         '<div style="display:flex;align-items:center;gap:6px">' +
           '<span class="us-reco-score">점수 ' + it.score + '</span>' +
-          '<span class="us-reco-badge ' + badgeCls + '">' + badgeTxt + '</span>' +
+          '<span class="us-reco-badge ' + badgeCls + '">' + (it.confidence_label || (it.confidence === 'High' ? '확신도 높음' : '확신도 보통')) + '</span>' +
         '</div>' +
       '</div>' +
+      /* ── 추세 상태 + AI 방향 ── */
+      '<div style="display:flex;gap:8px;margin:8px 0 4px;flex-wrap:wrap">' +
+        '<span class="kr-lt-status-badge" style="background:' + trendColor + '22;color:' + trendColor + ';border-color:' + trendColor + '55">📊 ' + (it.trend_status || '') + '</span>' +
+        '<span class="kr-lt-status-badge" style="background:' + aiColor + '22;color:' + aiColor + ';border-color:' + aiColor + '55">🤖 AI: ' + (it.ai_direction || '') + '</span>' +
+        '<span class="kr-lt-status-badge" style="background:#21262d;color:#8b949e;border-color:#30363d">⏱ ' + (it.holding_period || '') + '</span>' +
+      '</div>' +
+      /* ── 가격 정보 ── */
       '<div class="us-reco-prices">' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">현재가</div>' +
-          '<div class="us-reco-pi-val">' + (it.close || 0).toLocaleString() + '원' +
-          ' <span class="' + pctCls + '" style="font-size:12px">' + pctSign + (it.change_pct || 0).toFixed(2) + '%</span></div></div>' +
+          '<div class="us-reco-pi-val">' + (it.close || 0).toLocaleString() + '원 ' +
+          '<span class="' + pctCls + '" style="font-size:12px">' + pctSign + (it.change_pct || 0).toFixed(2) + '%</span></div></div>' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">목표가</div>' +
-          '<div class="us-reco-pi-val grn">' + (it.target_price || 0).toLocaleString() + '원</div></div>' +
+          '<div class="us-reco-pi-val grn">' + (it.target_price || 0).toLocaleString() + '원' +
+          ' <span style="font-size:11px;color:#3fb950">' + expSign + (it.expected_return || 0).toFixed(1) + '%</span></div></div>' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">손절가</div>' +
           '<div class="us-reco-pi-val red">' + (it.stop_loss || 0).toLocaleString() + '원</div></div>' +
         kpredHtml +
       '</div>' +
+      /* ── 점수 분해 ── */
+      bdHtml +
+      /* ── 핵심 추천 사유 ── */
+      '<div style="margin:10px 0 4px;font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.04em">핵심 추천 사유</div>' +
       '<div class="us-reco-reasons">' + reasons + '</div>' +
-      '<div class="us-reco-holding">⏱ 보유기간 ' + (it.holding_period || '') + '</div>' +
+      /* ── 리스크 ── */
+      (risks ? '<div style="margin:8px 0 4px;font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.04em">리스크 요소</div>' +
+        '<div class="kr-lt-risks">' + risks + '</div>' : '') +
+      /* ── 펀더멘털 태그 ── */
+      fundHtml +
     '</div>';
   }).join('');
 }
