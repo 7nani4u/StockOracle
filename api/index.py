@@ -7330,8 +7330,7 @@ function renderDiagnosis(d, isKrx) {
     ? `${grade[0]}<span class="grade-hyphen">-</span>`
     : grade;
 
-  // ── 등급별 배지 텍스트 체계 (8단계 세분화) ──────────────────────────────
-  // 행동 지침: 등급마다 고유한 투자 행동을 명시 (A와 A-가 구분됨)
+  // ── 등급별 행동 지침 (8단계) — 배지 좌측 레이블로 사용 ──────────────────
   const _grActionMap = {
     'A' : '적극 매수',
     'A-': '매수 우위',
@@ -7342,36 +7341,9 @@ function renderDiagnosis(d, isKrx) {
     'D' : '매도 고려',
     'D-': '즉시 점검',
   };
-  // 상태 인사이트: 등급 기본값 + 실제 데이터 기반 동적 오버라이드
-  const _grStateBase = {
-    'A' : '전 지표 강세',
-    'A-': '추세 안정',
-    'B' : '기술 우호',
-    'B-': '혼조 국면',
-    'C' : '모멘텀 약화',
-    'C-': '하방 압력',
-    'D' : '다중 경고',
-    'D-': '손실 위험',
-  };
-  const _badgeState = (() => {
-    // 실제 지표 데이터로 더 구체적인 인사이트 제공
-    if ((grade === 'A' || grade === 'A-') && strongItems.length >= 4)
-      return '전 지표 강세';
-    if ((grade === 'A-') && dimVariance >= 22)
-      return `편차 ${dimVariance}pt 주의`;
-    if ((grade === 'B' || grade === 'B-') && weakItems.length >= 2)
-      return `약점 ${weakItems.length}개 감지`;
-    if ((grade === 'B-') && dimVariance >= 22)
-      return `편차 ${dimVariance}pt`;
-    if ((grade === 'C' || grade === 'C-') && dimVariance >= 22)
-      return `편차 ${dimVariance}pt`;
-    if ((grade === 'C') && weakItems.length >= 2)
-      return `${weakItems.length}개 지표 경고`;
-    if ((grade === 'D' || grade === 'D-') && weakItems.length >= 3)
-      return `${weakItems.length}개 경고`;
-    return _grStateBase[grade] || gradeText;
-  })();
-  const badgeInitText = `${_grActionMap[grade] || gradeText} · ${_badgeState}`;
+  // 초기 배지: flow 계산 완료 전 등급 기반 레이블만 표시
+  // (flow 함수에서 종합 점수·신뢰도 포함한 최종 텍스트로 덮어씀)
+  const badgeInitText = `${_grActionMap[grade] || gradeText} · ${gradeText}`;
 
   // 동적 설명문 — 강세/약세 항목 이름 명시
   const strongItems = activeDimsInfo.filter(x => x.active && x.v >= 72).map(x => x.name);
@@ -8830,12 +8802,14 @@ function renderFlowTab(d) {
   if (flowRecBadge) {
     const _gc  = flowRecBadge.dataset.gradeColor;
     const _gb  = flowRecBadge.dataset.gradeBg;
-    const _bt  = flowRecBadge.dataset.badgeText; // 등급 기반 사전 계산 텍스트
+    const _bt  = flowRecBadge.dataset.badgeText; // 등급 행동 지침 포함 초기 텍스트
+    // 등급 행동 지침(좌측) + 종합점수(중간) + 신뢰도(우측)
+    // ex) "관망 유지 · 종합 47점 · 신뢰도 보통"
+    const _action = _bt ? _bt.split(' · ')[0] : recLbl;
     flowRecBadge.className = 'rec-badge-lg';
-    // 등급 기반 텍스트를 우선 표시, 없으면 flow 기반으로 폴백
-    flowRecBadge.textContent = _bt || (recLbl + ' · ' + confText);
+    flowRecBadge.textContent = `${_action} · 종합 ${effScore}점 · ${confText}`;
     if (_gc) {
-      flowRecBadge.style.color      = _gc;
+      flowRecBadge.style.color       = _gc;
       flowRecBadge.style.borderColor = _gc;
       flowRecBadge.style.background  = _gb || '#21262d';
     } else {
