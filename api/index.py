@@ -1583,45 +1583,131 @@ def fetch_kr_toss_metrics(item: dict):
 
 def to_toss_product_code(ticker: str, market: str = None) -> str:
     """
-    StockOracle / yfinance ticker → 토스증권 productCode 변환.
+    StockOracle / yfinance ticker → 토스증권 productCode 즉시 변환 (KRX 전용).
     국내(KRX): 005930.KS / 005930.KQ → A005930
-    해외(US): 단순 변환 없음 → "" 반환 (Toss 내부 코드와 1:1 매핑 불가)
+    해외(US): 단순 공식 없음 → "" (→ _fetch_toss_us_product_code 사용)
     """
     if not ticker:
         return ""
-    # 국내 yfinance 포맷 처리
     if ticker.endswith((".KS", ".KQ")):
         return "A" + ticker.split(".")[0]
-    # 해외 종목: 별도 매핑 없음
+    return ""
+
+
+# 토스증권 API 공통 요청 헤더
+_TOSS_API_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+    "Origin": "https://www.tossinvest.com",
+    "Referer": "https://www.tossinvest.com/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+}
+
+
+@ttl_cache(86400)  # 24시간 — productCode는 변하지 않음
+def _fetch_toss_us_product_code(ticker: str) -> str:
+    """
+    미국 주식 ticker → 토스증권 productCode 조회.
+    Toss 검색 API를 호출해 productCode를 획득, 24시간 캐싱.
+    여러 엔드포인트를 순차 시도하고, 실패 시 빈 문자열 반환.
+
+    Toss productCode 형식 예시:
+      NASDAQ: NAS0230913004 / NYSE: NYS... / AMEX: AMX...
+    """
+    # 검색 엔드포인트 우선순위 (실제 동작 확인 순서)
+    search_endpoints = [
+        "https://wts-info-api.tossinvest.com/api/v1/search",
+        "https://wts-info-api.tossinvest.com/api/v2/search",
+        "https://wts-info-api.tossinvest.com/api/v1/products/search",
+        "https://wts-info-api.tossinvest.com/api/v1/search/products",
+    ]
+    ticker_upper = ticker.upper()
+
+    for url in search_endpoints:
+        try:
+            resp = requests.get(
+                url,
+                params={"query": ticker_upper, "size": 10},
+                headers=_TOSS_API_HEADERS,
+                timeout=8,
+            )
+            if resp.status_code not in (200, 201):
+                continue
+
+            data = resp.json()
+
+            # ── 응답 구조 유연 파싱 ─────────────────────────────────────
+            # Toss API 버전마다 최상위 키가 다를 수 있음
+            candidates: list = []
+            if isinstance(data, list):
+                candidates = data
+            elif isinstance(data, dict):
+                # result.stocks / result.products / result.items / data / list 등
+                root = data.get("result") or data
+                if isinstance(root, list):
+                    candidates = root
+                else:
+                    for key in ("stocks", "products", "items", "data", "list", "body"):
+                        val = root.get(key) if isinstance(root, dict) else None
+                        if isinstance(val, list):
+                            candidates = val
+                            break
+
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                # 가능한 ticker 키들 순서대로 확인
+                item_sym = (
+                    item.get("stockCode")
+                    or item.get("ticker")
+                    or item.get("symbol")
+                    or item.get("symbolCode")
+                    or item.get("code")
+                    or ""
+                ).upper().strip()
+                if item_sym == ticker_upper:
+                    code = (item.get("productCode") or item.get("id") or "")
+                    if code and isinstance(code, str):
+                        print(f"[Toss US코드] {ticker} → {code} (via {url})")
+                        return code
+
+        except Exception as e:
+            print(f"[Toss US코드] {url} 실패 ({ticker}): {type(e).__name__}: {e}")
+            continue
+
+    print(f"[Toss US코드] {ticker} productCode 조회 실패 — 전 엔드포인트 소진")
     return ""
 
 
 @ttl_cache(300)
 def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     """
-    토스증권 AI 요약 단일 종목 조회.
+    토스증권 AI 요약 단일 종목 조회 (KRX + US 모두 지원).
     POST https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals
-    - 국내(KRX) 종목만 productCode 변환 가능 → supported=True
-    - 해외(US) 종목은 매핑 불가 → supported=False, ai_summary=""
-    - 실패 시 빈 문자열 반환 (UI 깨짐 방지)
-    - TTL 5분 캐싱으로 동일 종목 반복 호출 최소화
+
+    KRX: ticker "005930.KS" → productCode "A005930" (즉시 변환)
+    US : ticker "AAPL" → Toss 검색 API로 productCode 획득 (24h 캐싱)
+    실패 시 빈 문자열 반환 — UI 절대 깨지지 않음.
     """
-    code = to_toss_product_code(ticker, market)
+    # ── productCode 결정 ──────────────────────────────────────────────────
+    if market == "KRX":
+        code = to_toss_product_code(ticker, market)
+    else:
+        # US 및 기타 해외: 검색 API로 productCode 취득 (24h 캐싱)
+        code = _fetch_toss_us_product_code(ticker)
+
     if not code:
         return {"ai_summary": "", "product_code": "", "supported": False}
 
+    # ── AI 요약 조회 ─────────────────────────────────────────────────────
     url = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        "Origin": "https://www.tossinvest.com",
-        "Referer": "https://www.tossinvest.com/",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-    }
+    headers = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
     try:
         resp = requests.post(
             url,
@@ -1643,7 +1729,7 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
             "supported": True,
         }
     except Exception as e:
-        print(f"[Toss AI Summary] 조회 실패 ({ticker}): {type(e).__name__}: {e}")
+        print(f"[Toss AI Summary] 조회 실패 ({ticker}/{code}): {type(e).__name__}: {e}")
         return {"ai_summary": "", "product_code": code, "supported": True}
 
 
@@ -10366,8 +10452,8 @@ function renderUsSurgeCards(items, note) {
 // ── 토스증권 AI 요약 ──────────────────────────────────────────────────────
 /**
  * 토스증권 AI 요약 비동기 조회 및 렌더링.
- * - KRX 종목: /api/toss-ai-summary 호출 → reasoningDescription 표시
- * - US 종목 : productCode 매핑 불가 → "국내 종목 전용" 안내
+ * - KRX 종목: productCode "A{code}" 즉시 변환 후 AI signals API 호출
+ * - US  종목: Toss 검색 API로 productCode 조회(24h 캐싱) 후 AI signals API 호출
  * - 로딩/성공/실패 상태를 각각 UI에 반영하며 에러 시 카드가 깨지지 않음
  * @param {string} ticker - yfinance 형식 ticker (e.g. "005930.KS", "AAPL")
  * @param {string} market - "KRX" | "US"
@@ -10378,17 +10464,7 @@ function fetchTossAiSummary(ticker, market) {
   var timeEl    = document.getElementById('r-toss-time');
   if (!cardEl || !summaryEl) return;
 
-  // ── US 종목: productCode 매핑 불가 → 안내 메시지 표시 ──────────────
-  if (market !== 'KRX') {
-    summaryEl.style.color     = '#484f58';
-    summaryEl.style.fontSize  = '11px';
-    summaryEl.style.fontWeight = '';
-    summaryEl.textContent = '국내(KRX) 종목 전용';
-    if (timeEl) timeEl.textContent = '';
-    return;
-  }
-
-  // ── 로딩 상태 ────────────────────────────────────────────────────────
+  // ── 로딩 상태 (KRX + US 모두 조회 시도) ─────────────────────────────
   summaryEl.innerHTML =
     '<span class="toss-ai-spinner"></span>' +
     '<span style="color:#484f58;font-size:11px">조회 중...</span>';
@@ -10413,6 +10489,15 @@ function fetchTossAiSummary(ticker, market) {
         summaryEl.style.fontSize  = '11px';
         summaryEl.style.fontWeight = '';
         summaryEl.textContent = '조회 불가';
+        return;
+      }
+
+      // supported=false: productCode 조회 자체가 실패 (US 검색 불가 종목)
+      if (data && data.supported === false) {
+        summaryEl.style.color     = '#484f58';
+        summaryEl.style.fontSize  = '11px';
+        summaryEl.style.fontWeight = '';
+        summaryEl.textContent = '종목 코드 조회 실패';
         return;
       }
 
