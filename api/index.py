@@ -5645,7 +5645,7 @@ input::placeholder{color:#484f58}
 .sig-cell-label{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
 .sig-cell-val{font-size:13px;font-weight:700}
 .sig-up{color:#f85149}.sig-down{color:#388bfd}.sig-neutral{color:#8b949e}
-.rec-badge-lg{display:inline-block;padding:5px 16px;border-radius:20px;font-size:13px;font-weight:700;margin-bottom:4px}
+.rec-badge-lg{display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap;line-height:1.2}
 .rec-strong-buy{background:#0d2d1a;color:#3fb950;border:1px solid #1a4730}
 .rec-buy{background:#0d2020;color:#238636;border:1px solid #155724}
 .rec-hold{background:#2d2200;color:#d29922;border:1px solid #4a3800}
@@ -5735,7 +5735,8 @@ input::placeholder{color:#484f58}
 
 /* ── 종목 진단 (AI진단 탭 신규) ── */
 .diag-grade-row{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px}
-.diag-grade-badge{font-size:26px;font-weight:900;width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:3px solid;border-radius:50%;flex-shrink:0;letter-spacing:-1px}
+.diag-grade-badge{font-size:26px;font-weight:900;width:58px;height:58px;display:flex;align-items:center;justify-content:center;border:3px solid;border-radius:50%;flex-shrink:0;letter-spacing:0;line-height:1;white-space:nowrap}
+.grade-hyphen{display:inline-block;font-size:0.78em;transform:translateY(-1px);margin-left:0.5px;font-weight:900}
 .diag-grade-info{display:flex;flex-direction:column;gap:3px}
 .diag-grade-title{font-size:15px;font-weight:700;word-break:keep-all;overflow-wrap:anywhere}
 .diag-grade-sub{font-size:11px;color:#8b949e;word-break:keep-all;overflow-wrap:anywhere}
@@ -7320,6 +7321,58 @@ function renderDiagnosis(d, isKrx) {
   const gradeColor = _gm.color;
   const gradeText  = _gm.text;
 
+  // 등급 색상 → 어두운 배경 매핑 (rec-badge 배경에 사용)
+  const _gradeBgMap = {'#3fb950':'#0d2d1a','#58a6ff':'#0d1b33','#d29922':'#2d2200','#f97316':'#2d1500','#f85149':'#2d1515'};
+  const gradeBg = _gradeBgMap[gradeColor] || '#21262d';
+
+  // 하이픈(-) 포함 등급의 baseline 보정용 HTML
+  const gradeHtml = grade.includes('-')
+    ? `${grade[0]}<span class="grade-hyphen">-</span>`
+    : grade;
+
+  // ── 등급별 배지 텍스트 체계 (8단계 세분화) ──────────────────────────────
+  // 행동 지침: 등급마다 고유한 투자 행동을 명시 (A와 A-가 구분됨)
+  const _grActionMap = {
+    'A' : '적극 매수',
+    'A-': '매수 우위',
+    'B' : '단계적 매수',
+    'B-': '신중 접근',
+    'C' : '관망 유지',
+    'C-': '보유 재검토',
+    'D' : '매도 고려',
+    'D-': '즉시 점검',
+  };
+  // 상태 인사이트: 등급 기본값 + 실제 데이터 기반 동적 오버라이드
+  const _grStateBase = {
+    'A' : '전 지표 강세',
+    'A-': '추세 안정',
+    'B' : '기술 우호',
+    'B-': '혼조 국면',
+    'C' : '모멘텀 약화',
+    'C-': '하방 압력',
+    'D' : '다중 경고',
+    'D-': '손실 위험',
+  };
+  const _badgeState = (() => {
+    // 실제 지표 데이터로 더 구체적인 인사이트 제공
+    if ((grade === 'A' || grade === 'A-') && strongItems.length >= 4)
+      return '전 지표 강세';
+    if ((grade === 'A-') && dimVariance >= 22)
+      return `편차 ${dimVariance}pt 주의`;
+    if ((grade === 'B' || grade === 'B-') && weakItems.length >= 2)
+      return `약점 ${weakItems.length}개 감지`;
+    if ((grade === 'B-') && dimVariance >= 22)
+      return `편차 ${dimVariance}pt`;
+    if ((grade === 'C' || grade === 'C-') && dimVariance >= 22)
+      return `편차 ${dimVariance}pt`;
+    if ((grade === 'C') && weakItems.length >= 2)
+      return `${weakItems.length}개 지표 경고`;
+    if ((grade === 'D' || grade === 'D-') && weakItems.length >= 3)
+      return `${weakItems.length}개 경고`;
+    return _grStateBase[grade] || gradeText;
+  })();
+  const badgeInitText = `${_grActionMap[grade] || gradeText} · ${_badgeState}`;
+
   // 동적 설명문 — 강세/약세 항목 이름 명시
   const strongItems = activeDimsInfo.filter(x => x.active && x.v >= 72).map(x => x.name);
   const weakItems   = activeDimsInfo.filter(x => x.active && x.v <  40).map(x => x.name);
@@ -7432,12 +7485,12 @@ function renderDiagnosis(d, isKrx) {
 
   diagEl.innerHTML = `
     <div class="diag-grade-row">
-      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor};font-size:${grade.length > 1 ? '19px' : '26px'}">${grade}</div>
+      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${gradeHtml}</div>
       <div class="diag-grade-info" style="flex:1">
         <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· ${activeItemCount}항목 평균 ${avg}점</span></div>
         <div class="diag-grade-sub">${gradeDesc}</div>
       </div>
-      <span id="flow-rec-badge" class="rec-badge-lg rec-hold" style="flex-shrink:0">분석 중...</span>
+      <span id="flow-rec-badge" class="rec-badge-lg" style="flex-shrink:0;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
     </div>
     <div id="flow-rationale" style="display:none"></div>
     <div class="diag-dims">
@@ -8775,8 +8828,19 @@ function renderFlowTab(d) {
     </div>`;
   const flowRecBadge = document.getElementById('flow-rec-badge');
   if (flowRecBadge) {
-    flowRecBadge.className = 'rec-badge-lg ' + recCls;
-    flowRecBadge.textContent = recLbl + ' · ' + confText;
+    const _gc  = flowRecBadge.dataset.gradeColor;
+    const _gb  = flowRecBadge.dataset.gradeBg;
+    const _bt  = flowRecBadge.dataset.badgeText; // 등급 기반 사전 계산 텍스트
+    flowRecBadge.className = 'rec-badge-lg';
+    // 등급 기반 텍스트를 우선 표시, 없으면 flow 기반으로 폴백
+    flowRecBadge.textContent = _bt || (recLbl + ' · ' + confText);
+    if (_gc) {
+      flowRecBadge.style.color      = _gc;
+      flowRecBadge.style.borderColor = _gc;
+      flowRecBadge.style.background  = _gb || '#21262d';
+    } else {
+      flowRecBadge.className = 'rec-badge-lg ' + recCls;
+    }
   }
   const flowRationale = document.getElementById('flow-rationale');
   if (flowRationale) flowRationale.textContent = rationale;
