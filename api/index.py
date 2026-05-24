@@ -2318,7 +2318,7 @@ def _kr_longterm_score(a, tkr, fundamentals=None):
 
 @ttl_cache(14400)  # 4시간 캐시
 def fetch_kr_longterm_reco():
-    """국내(KRX) 장기 투자 추천 Top 5 (기술·수급·펀더멘털 통합 스코어링)"""
+    """국내(KRX) 장기 투자 추천 Top 10 (기술·수급·펀더멘털 통합 스코어링)"""
     try:
         name_map = {v: k for k, v in KR_STOCK_MAP.items()}
         kr_tickers = list(dict.fromkeys(KR_STOCK_MAP.values()))  # dedup
@@ -2385,7 +2385,7 @@ def fetch_kr_longterm_reco():
 
         candidates.sort(key=lambda x: x[1], reverse=True)
         results = []
-        for tkr, score, a, breakdown in candidates[:5]:
+        for tkr, score, a, breakdown in candidates[:10]:
             rsi = a.get("rsi"); macd = a.get("macd"); adx = a.get("adx")
             rs = a.get("rs"); w52 = a.get("week52"); klt = a.get("kalman_lt")
             obv = a.get("obv"); sq = a.get("squeeze")
@@ -2509,7 +2509,7 @@ def fetch_kr_longterm_reco():
 
 @ttl_cache(14400)  # 4시간 캐시
 def fetch_us_longterm_reco():
-    """장기 투자 추천 Top 3 (추세 추종 + 칼만 필터)"""
+    """미국 장기 투자 추천 Top 10 (기술·수급·펀더멘털 통합 스코어링)"""
     try:
         tickers = [t for t in _US_RECO_UNIVERSE[:100] if t not in {"SPY","QQQ","DIA","IWM"}]
         all_dl = tickers + ["SPY"]
@@ -2539,53 +2539,100 @@ def fetch_us_longterm_reco():
                 continue
         candidates.sort(key=lambda x: x[1], reverse=True)
         results = []
-        for tkr, score, a in candidates[:3]:
+        for tkr, score, a in candidates[:10]:
             rsi = a.get("rsi"); macd = a.get("macd"); adx = a.get("adx")
             rs = a.get("rs"); w52 = a.get("week52"); klt = a.get("kalman_lt")
             obv = a.get("obv"); sq = a.get("squeeze")
             cl = a.get("close", 0)
             atr_v = a.get("atr") or 0
-            if atr_v > 0:
-                target = round(cl + atr_v * 2.0, 2)
-                stop = round(cl - atr_v * 2.0, 2)
+            if klt and klt["predicted"] > cl:
+                target = round(max(klt["predicted"] * 1.05, cl * 1.08), 2)
+            elif atr_v > 0:
+                target = round(cl + atr_v * 3.0, 2)
             else:
-                target = round(cl * 1.08, 2)
-                stop = round(cl * 0.92, 2)
-            reasons = []
-            if adx and adx["direction"] == "bullish":
-                reasons.append(f"ADX {adx['adx']:.1f} — 상승 추세 확인")
-            if rs and rs["rs20"] > 0:
-                reasons.append(f"SPY 대비 20일 +{rs['rs20']:.1f}% 아웃퍼폼")
-            if macd and macd["macd"] > macd["signal"]:
-                reasons.append("MACD 상승 모멘텀 유지")
+                target = round(cl * 1.15, 2)
+            stop = round(cl - atr_v * 2.0, 2) if atr_v > 0 else round(cl * 0.85, 2)
+            exp_ret = round(((target - cl) / cl * 100), 1) if cl else 0
+            # 추세 상태
+            rs60 = (rs.get("rs60") or 0) if rs else 0
+            rs20_v = (rs.get("rs20") or 0) if rs else 0
+            if adx and adx["adx"] >= 25 and adx["direction"] == "bullish":
+                trend_status = "강한 상승"
+            elif adx and adx["direction"] == "bullish":
+                trend_status = "상승"
+            elif w52 and w52["pos"] <= 25 and macd and macd["macd"] > macd["signal"]:
+                trend_status = "초기 반등"
+            elif w52 and w52["pos"] <= 25:
+                trend_status = "바닥권"
+            elif adx and adx.get("strength") == "weak":
+                trend_status = "횡보"
+            else:
+                trend_status = "혼조"
+            # AI 방향성
             if klt and cl:
-                exp_ret = ((klt["predicted"] - cl) / cl) * 100
-                reasons.append(f"칼만 40일 예측 ${klt['predicted']:.2f} ({'+' if exp_ret >= 0 else ''}{exp_ret:.1f}%)")
+                vp = (klt["velocity"] / cl * 100)
+                ai_dir = "강한 상승" if vp > 0.3 else ("상승" if vp > 0.05 else ("중립" if vp > -0.05 else "하락"))
+            else:
+                ai_dir = "분석 불가"
+            # 보유기간
+            if trend_status in ("강한 상승", "상승") and score >= 70:
+                holding = "6개월~1년"
+            elif trend_status in ("초기 반등",):
+                holding = "3~6개월"
+            else:
+                holding = "3개월~"
+            # 추천 사유
+            reasons = []
+            if adx and adx["direction"] == "bullish" and adx["adx"] >= 20:
+                reasons.append(f"ADX {adx['adx']:.1f} — 상승 추세 강도 확인")
+            if rs and rs60 > 0:
+                reasons.append(f"SPY 대비 60일 +{rs60:.1f}% 아웃퍼폼")
+            elif rs and rs20_v > 0:
+                reasons.append(f"SPY 대비 20일 +{rs20_v:.1f}% 아웃퍼폼")
+            if macd and macd["macd"] > macd["signal"]:
+                reasons.append("MACD 상승 모멘텀" + (" (골든크로스)" if macd.get("cross") else ""))
+            if klt and cl:
+                kr_ret = ((klt["predicted"] - cl) / cl) * 100
+                reasons.append(f"칼만 40일 예측 ${klt['predicted']:.2f} ({'+' if kr_ret >= 0 else ''}{kr_ret:.1f}%)")
             if obv and obv["trend"] == "accumulation":
-                reasons.append("OBV 매집 구간 — 세력 매수 중")
+                reasons.append("OBV 매집 구간 — 기관/세력 선행 매수")
+            if w52 and w52["pos"] <= 30:
+                reasons.append(f"52주 저점 대비 {w52['pos']:.0f}% — 저점 반등 초기 구간")
             if sq and not sq["on"] and sq["momentum"] > 0:
-                reasons.append("Squeeze 해제 — 상승 돌파 진행")
+                reasons.append("TTM Squeeze 해제 — 압축 후 상승 돌파 진행")
             if rsi:
                 reasons.append(f"RSI {rsi['v']:.1f} — 건강한 모멘텀 구간")
-            if w52:
-                reasons.append(f"52주 {w52['pos']:.0f}% 위치 — 성장 여력")
+            # 리스크
+            risks = []
+            if rsi and rsi["v"] > 65:
+                risks.append(f"RSI {rsi['v']:.0f} 과열 — 단기 눌림 가능")
+            if w52 and w52["pos"] >= 80:
+                risks.append("52주 고점 근처 — 차익 실현 압력")
+            if not risks:
+                risks.append("특이 리스크 없음 (지속적인 모니터링 권장)")
+            confidence_label = ("매우 높음" if score >= 80 else
+                               ("높음" if score >= 65 else ("보통" if score >= 50 else "주의")))
             results.append({
                 "ticker": tkr,
                 "close": cl,
                 "change_pct": a.get("change_pct", 0),
                 "score": score,
-                "confidence": "High" if score >= 70 else "Medium",
+                "confidence": "High" if score >= 65 else "Medium",
+                "confidence_label": confidence_label,
                 "target_price": target,
                 "stop_loss": stop,
-                "holding_period": "1-3개월",
+                "expected_return": exp_ret,
+                "holding_period": holding,
+                "trend_status": trend_status,
+                "ai_direction": ai_dir,
                 "reasons": reasons[:5],
+                "risks": risks[:3],
                 "rsi": rsi["v"] if rsi else None,
                 "adx": adx["adx"] if adx else None,
-                "macd_signal": "골든크로스" if macd and macd["cross"] else ("상승" if macd and macd["macd"] > macd["signal"] else None),
-                "rs20": rs["rs20"] if rs else None,
+                "rs20": rs20_v,
+                "rs60": rs60,
                 "week52_pos": w52["pos"] if w52 else None,
                 "kalman_predicted": klt["predicted"] if klt else None,
-                "kalman_velocity": klt["velocity"] if klt else None,
             })
         return {"items": results, "ts": int(time.time())}
     except Exception as e:
@@ -6626,7 +6673,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px">
       <div>
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇰🇷 국내 장기 투자 추천</h2>
-        <p style="font-size:12px;color:#8b949e">기술·수급·펀더멘털 통합 스코어링 Top 5</p>
+        <p style="font-size:12px;color:#8b949e">기술·수급·펀더멘털 통합 스코어링 Top 10</p>
       </div>
     </div>
     <div class="home-section">
@@ -6636,7 +6683,7 @@ input::placeholder{color:#484f58}
       </div>
       <div id="kr-lt-content" style="display:none">
         <div class="us-reco-header">
-          <span class="us-reco-title">🇰🇷 국내 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">100점 종합 스코어링 Top 5</span></span>
+          <span class="us-reco-title">🇰🇷 국내 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">100점 종합 스코어링 Top 10</span></span>
           <button onclick="loadKrLongterm(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
         </div>
         <div class="us-reco-cards" id="kr-lt-cards"></div>
@@ -6653,7 +6700,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px">
       <div>
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇺🇸 미국 장기 투자 추천</h2>
-        <p style="font-size:12px;color:#8b949e">추세 추종 · 칼만 필터 기반 Top 3</p>
+        <p style="font-size:12px;color:#8b949e">기술·수급·펀더멘털 통합 스코어링 Top 10</p>
       </div>
     </div>
     <div class="home-section">
@@ -6663,7 +6710,7 @@ input::placeholder{color:#484f58}
       </div>
       <div id="us-lt-content" style="display:none">
         <div class="us-reco-header">
-          <span class="us-reco-title">🇺🇸 미국 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">추세 추종·칼만 필터 Top 3</span></span>
+          <span class="us-reco-title">🇺🇸 미국 장기 투자 추천 <span style="font-size:11px;color:#484f58;font-weight:400">기술·수급 통합 스코어링 Top 10</span></span>
           <button onclick="loadUsLongterm(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
         </div>
         <div class="us-reco-cards" id="us-lt-cards"></div>
@@ -9773,8 +9820,6 @@ function renderKrLongtermCards(items) {
     '바닥권': '#ff7b72', '횡보': '#8b949e', '혼조': '#6e7681'
   };
   var aiDirColors = { '강한 상승': '#3fb950', '상승': '#56d364', '중립': '#8b949e', '하락': '#ff7b72' };
-  var bdLabels = { trend:'추세', supply:'수급', value:'밸류', growth:'성장성', stability:'안정성', undervalue:'저평가', theme:'테마' };
-  var bdMax    = { trend:25,    supply:20,    value:15,    growth:15,       stability:10,      undervalue:10,        theme:5 };
 
   el.innerHTML = items.map(function(it, idx) {
     var pctCls  = (it.change_pct || 0) >= 0 ? 'grn' : 'red';
@@ -9783,24 +9828,6 @@ function renderKrLongtermCards(items) {
     var badgeCls = it.confidence === 'High' ? 'us-reco-badge-high' : 'us-reco-badge-med';
     var trendColor = trendColors[it.trend_status] || '#8b949e';
     var aiColor    = aiDirColors[it.ai_direction]  || '#8b949e';
-
-    // 점수 세부 분해 바
-    var bdHtml = '';
-    if (it.score_breakdown) {
-      bdHtml = '<div class="kr-lt-breakdown">';
-      Object.keys(bdLabels).forEach(function(k) {
-        var val = it.score_breakdown[k] || 0;
-        var maxV = bdMax[k];
-        var pct = Math.round((val / maxV) * 100);
-        var barColor = pct >= 80 ? '#3fb950' : (pct >= 50 ? '#d29922' : '#484f58');
-        bdHtml += '<div class="kr-lt-bd-row">' +
-          '<span class="kr-lt-bd-label">' + bdLabels[k] + '</span>' +
-          '<div class="kr-lt-bd-bar-wrap"><div class="kr-lt-bd-bar" style="width:' + pct + '%;background:' + barColor + '"></div></div>' +
-          '<span class="kr-lt-bd-val">' + val + '/' + maxV + '</span>' +
-        '</div>';
-      });
-      bdHtml += '</div>';
-    }
 
     // 추천 사유
     var reasons = (it.reasons || []).map(function(r) {
@@ -9870,8 +9897,6 @@ function renderKrLongtermCards(items) {
           '<div class="us-reco-pi-val red">' + (it.stop_loss || 0).toLocaleString() + '원</div></div>' +
         kpredHtml +
       '</div>' +
-      /* ── 점수 분해 ── */
-      bdHtml +
       /* ── 핵심 추천 사유 ── */
       '<div style="margin:10px 0 4px;font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.04em">핵심 추천 사유</div>' +
       '<div class="us-reco-reasons">' + reasons + '</div>' +
@@ -9913,45 +9938,93 @@ function renderUsLongtermCards(items) {
   if (!el) return;
   _usLtTickers = new Set((items || []).map(function(it) { return it.ticker; }));
   if (!items.length) {
-    el.innerHTML = '<div class="us-reco-empty">현재 장기 추천 조건에 부합하는 종목이 없습니다.<br>칼만 상승 추세 + 복합 기술 조건을 충족하는 종목이 발견되면 표시됩니다.</div>';
+    el.innerHTML = '<div class="us-reco-empty">현재 장기 추천 조건에 부합하는 종목이 없습니다.<br>기술·수급 통합 조건을 충족하는 종목이 발견되면 표시됩니다.</div>';
     return;
   }
-  el.innerHTML = items.map(function(it) {
-    var pctCls = (it.change_pct || 0) >= 0 ? 'grn' : 'red';
+
+  var trendColors = {
+    '강한 상승': '#3fb950', '상승': '#56d364', '중기 상승': '#7ee787',
+    '눌림목': '#d29922', '추세 전환': '#58a6ff', '초기 반등': '#79c0ff',
+    '바닥권': '#ff7b72', '횡보': '#8b949e', '혼조': '#6e7681'
+  };
+  var aiDirColors = { '강한 상승': '#3fb950', '상승': '#56d364', '중립': '#8b949e', '하락': '#ff7b72' };
+
+  el.innerHTML = items.map(function(it, idx) {
+    var pctCls  = (it.change_pct || 0) >= 0 ? 'grn' : 'red';
     var pctSign = (it.change_pct || 0) >= 0 ? '+' : '';
+    var expSign = (it.expected_return || 0) >= 0 ? '+' : '';
     var badgeCls = it.confidence === 'High' ? 'us-reco-badge-high' : 'us-reco-badge-med';
-    var badgeTxt = it.confidence === 'High' ? '확신도 높음' : '확신도 보통';
+    var trendColor = trendColors[it.trend_status] || '#8b949e';
+    var aiColor    = aiDirColors[it.ai_direction]  || '#8b949e';
+
+    // 추천 사유
     var reasons = (it.reasons || []).map(function(r) {
-      return '<div class="us-reco-reason">' + r + '</div>';
+      return '<div class="us-reco-reason">▸ ' + r + '</div>';
     }).join('');
-    var kpred = it.kalman_predicted;
+
+    // 리스크
+    var risks = (it.risks || []).map(function(r) {
+      return '<div class="kr-lt-risk">⚠ ' + r + '</div>';
+    }).join('');
+
+    // 칼만 예측
     var kpredHtml = '';
-    if (kpred && it.close) {
-      var kret = (((kpred - it.close) / it.close) * 100).toFixed(1);
+    if (it.kalman_predicted && it.close) {
+      var kret = (((it.kalman_predicted - it.close) / it.close) * 100).toFixed(1);
       kpredHtml = '<div class="us-reco-pi"><div class="us-reco-pi-label">칼만 40일 예측</div>' +
-        '<div class="us-reco-pi-val">$' + kpred.toFixed(2) + ' <span style="font-size:11px;color:#8b949e">' +
-        (parseFloat(kret) >= 0 ? '+' : '') + kret + '%</span></div></div>';
+        '<div class="us-reco-pi-val">$' + it.kalman_predicted.toFixed(2) +
+        ' <span style="font-size:11px;color:#8b949e">' + (parseFloat(kret) >= 0 ? '+' : '') + kret + '%</span></div></div>';
     }
-    return '<div class="us-reco-card">' +
+
+    // 보조 지표 태그
+    var fundItems = [];
+    if (it.rsi  != null) fundItems.push('RSI ' + it.rsi.toFixed(1));
+    if (it.adx  != null) fundItems.push('ADX ' + it.adx.toFixed(1));
+    if (it.rs60 != null && it.rs60 !== 0) fundItems.push('RS60 ' + (it.rs60 >= 0 ? '+' : '') + it.rs60.toFixed(1) + '%');
+    else if (it.rs20 != null && it.rs20 !== 0) fundItems.push('RS20 ' + (it.rs20 >= 0 ? '+' : '') + it.rs20.toFixed(1) + '%');
+    if (it.week52_pos != null) fundItems.push('52주 ' + it.week52_pos.toFixed(0) + '%');
+    var fundHtml = fundItems.length ? '<div class="kr-lt-fund">' + fundItems.map(function(f) {
+      return '<span class="kr-lt-fund-tag">' + f + '</span>';
+    }).join('') + '</div>' : '';
+
+    return '<div class="us-reco-card kr-lt-card">' +
+      /* ── 헤더 ── */
       '<div class="us-reco-card-header">' +
-        '<span class="us-reco-ticker">' + it.ticker + '</span>' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span style="font-size:13px;color:#8b949e;font-weight:600">#' + (idx+1) + '</span>' +
+          '<span class="us-reco-ticker">' + it.ticker + '</span>' +
+        '</div>' +
         '<div style="display:flex;align-items:center;gap:6px">' +
           '<span class="us-reco-score">점수 ' + it.score + '</span>' +
-          '<span class="us-reco-badge ' + badgeCls + '">' + badgeTxt + '</span>' +
+          '<span class="us-reco-badge ' + badgeCls + '">' + (it.confidence_label || (it.confidence === 'High' ? '확신도 높음' : '확신도 보통')) + '</span>' +
         '</div>' +
       '</div>' +
+      /* ── 추세 상태 + AI 방향 ── */
+      '<div style="display:flex;gap:8px;margin:8px 0 4px;flex-wrap:wrap">' +
+        '<span class="kr-lt-status-badge" style="background:' + trendColor + '22;color:' + trendColor + ';border-color:' + trendColor + '55">📊 ' + (it.trend_status || '') + '</span>' +
+        '<span class="kr-lt-status-badge" style="background:' + aiColor + '22;color:' + aiColor + ';border-color:' + aiColor + '55">🤖 AI: ' + (it.ai_direction || '') + '</span>' +
+        '<span class="kr-lt-status-badge" style="background:#21262d;color:#8b949e;border-color:#30363d">⏱ ' + (it.holding_period || '') + '</span>' +
+      '</div>' +
+      /* ── 가격 정보 ── */
       '<div class="us-reco-prices">' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">현재가</div>' +
           '<div class="us-reco-pi-val">$' + (it.close || 0).toFixed(2) +
           ' <span class="' + pctCls + '" style="font-size:12px">' + pctSign + (it.change_pct || 0).toFixed(2) + '%</span></div></div>' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">목표가</div>' +
-          '<div class="us-reco-pi-val grn">$' + (it.target_price || 0).toFixed(2) + '</div></div>' +
+          '<div class="us-reco-pi-val grn">$' + (it.target_price || 0).toFixed(2) +
+          ' <span style="font-size:11px;color:#3fb950">' + expSign + (it.expected_return || 0).toFixed(1) + '%</span></div></div>' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">손절가</div>' +
           '<div class="us-reco-pi-val red">$' + (it.stop_loss || 0).toFixed(2) + '</div></div>' +
         kpredHtml +
       '</div>' +
+      /* ── 핵심 추천 사유 ── */
+      '<div style="margin:10px 0 4px;font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.04em">핵심 추천 사유</div>' +
       '<div class="us-reco-reasons">' + reasons + '</div>' +
-      '<div class="us-reco-holding">⏱ 보유기간 ' + (it.holding_period || '') + '</div>' +
+      /* ── 리스크 ── */
+      (risks ? '<div style="margin:8px 0 4px;font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.04em">리스크 요소</div>' +
+        '<div class="kr-lt-risks">' + risks + '</div>' : '') +
+      /* ── 보조 지표 태그 ── */
+      fundHtml +
     '</div>';
   }).join('');
 }
