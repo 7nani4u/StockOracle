@@ -1582,11 +1582,7 @@ def fetch_kr_toss_metrics(item: dict):
         return None
 
 def to_toss_product_code(ticker: str, market: str = None) -> str:
-    """
-    StockOracle / yfinance ticker → 토스증권 productCode 즉시 변환 (KRX 전용).
-    국내(KRX): 005930.KS / 005930.KQ → A005930
-    해외(US): 단순 공식 없음 → "" (→ _fetch_toss_us_product_code 사용)
-    """
+    """KRX ticker → 토스증권 productCode 즉시 변환 (국내 전용)."""
     if not ticker:
         return ""
     if ticker.endswith((".KS", ".KQ")):
@@ -1594,7 +1590,7 @@ def to_toss_product_code(ticker: str, market: str = None) -> str:
     return ""
 
 
-# 토스증권 API 공통 요청 헤더
+# ── 토스증권 API 공통 요청 헤더 ──────────────────────────────────────────
 _TOSS_API_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1608,129 +1604,283 @@ _TOSS_API_HEADERS = {
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-site",
 }
+_TOSS_AI_BATCH_URL  = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals"
+_TOSS_AI_DETAIL_URL = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals/detail"
 
 
-@ttl_cache(86400)  # 24시간 — productCode는 변하지 않음
+def _toss_batch_api(product_code: str) -> dict:
+    """
+    Toss AI signals 배치 API 호출.
+    POST /api/v1/dashboard/wts/overview/ai-signals
+    {"productCodes": [product_code]}
+    """
+    headers = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
+    try:
+        resp = requests.post(
+            _TOSS_AI_BATCH_URL,
+            headers=headers,
+            json={"productCodes": [product_code]},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return {"ai_summary": "", "product_code": product_code, "supported": True}
+        signals = resp.json().get("result", {}).get("signals", [])
+        for s in signals:
+            if isinstance(s, dict) and s.get("productCode") == product_code:
+                txt = s.get("reasoningDescription", "")
+                if txt:
+                    print(f"[Toss Batch] {product_code} → {txt[:30]}...")
+                return {"ai_summary": txt, "product_code": product_code, "supported": True}
+        return {"ai_summary": "", "product_code": product_code, "supported": True}
+    except Exception as e:
+        print(f"[Toss Batch] 실패 ({product_code}): {e}")
+        return {"ai_summary": "", "product_code": product_code, "supported": True}
+
+
+def _toss_detail_api(product_code: str, product_type: str) -> str:
+    """
+    Toss AI signals 상세 API 호출.
+    GET /detail?productCode={}&productType={}
+    성공 시 요약 텍스트, 실패 시 "".
+    """
+    try:
+        resp = requests.get(
+            _TOSS_AI_DETAIL_URL,
+            params={"productCode": product_code, "productType": product_type},
+            headers=_TOSS_API_HEADERS,
+            timeout=6,
+        )
+        if resp.status_code != 200:
+            return ""
+        desc = (resp.json().get("result") or {}).get("reasoning", {}).get("description", "")
+        if desc:
+            print(f"[Toss Detail] {product_code}/{product_type} → {desc[:30]}...")
+        return desc or ""
+    except Exception:
+        return ""
+
+
+def _parse_toss_candidates(data, ticker_upper: str) -> str:
+    """
+    Toss 검색 API 응답(JSON)에서 ticker에 해당하는 productCode 추출.
+    응답 구조가 다양할 수 있어 여러 키를 탐색.
+    """
+    # 후보 리스트 추출
+    candidates: list = []
+    if isinstance(data, list):
+        candidates = data
+    elif isinstance(data, dict):
+        root = data.get("result") or data
+        if isinstance(root, list):
+            candidates = root
+        elif isinstance(root, dict):
+            for key in ("stocks", "products", "items", "data", "list", "body",
+                        "content", "searchResults", "results"):
+                val = root.get(key)
+                if isinstance(val, list):
+                    candidates = val
+                    break
+
+    # ticker 매칭
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        sym = (
+            item.get("stockCode") or item.get("ticker") or item.get("symbol")
+            or item.get("symbolCode") or item.get("code") or ""
+        ).upper().strip()
+        if sym == ticker_upper:
+            code = item.get("productCode") or item.get("id") or ""
+            if code and isinstance(code, str):
+                return code
+    return ""
+
+
+def _deep_find_product_code(obj, ticker_upper: str) -> str:
+    """JSON 객체에서 ticker에 매칭되는 productCode를 재귀 탐색 (웹 스크래핑용)."""
+    if isinstance(obj, dict):
+        sym = (
+            obj.get("stockCode") or obj.get("ticker") or obj.get("symbol") or ""
+        ).upper()
+        if sym == ticker_upper:
+            code = obj.get("productCode") or ""
+            if code:
+                return code
+        for v in obj.values():
+            r = _deep_find_product_code(v, ticker_upper)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for item in obj:
+            r = _deep_find_product_code(item, ticker_upper)
+            if r:
+                return r
+    return ""
+
+
+@ttl_cache(86400)  # 24시간 캐싱 — productCode는 변하지 않음
 def _fetch_toss_us_product_code(ticker: str) -> str:
     """
-    미국 주식 ticker → 토스증권 productCode 조회.
-    Toss 검색 API를 호출해 productCode를 획득, 24시간 캐싱.
-    여러 엔드포인트를 순차 시도하고, 실패 시 빈 문자열 반환.
+    미국 주식 ticker → 토스증권 productCode 다단계 조회.
 
-    Toss productCode 형식 예시:
-      NASDAQ: NAS0230913004 / NYSE: NYS... / AMEX: AMX...
+    전략 순서:
+      1) Toss 검색 API GET (stock-infos, search, products namespaces)
+      2) Toss 검색 API POST 변형
+      3) tossinvest.com 웹 페이지 __NEXT_DATA__ 스크래핑
+
+    Toss productCode 형식: NAS... / NYS... / AMX...
     """
-    # 검색 엔드포인트 우선순위 (실제 동작 확인 순서)
-    search_endpoints = [
-        "https://wts-info-api.tossinvest.com/api/v1/search",
-        "https://wts-info-api.tossinvest.com/api/v2/search",
-        "https://wts-info-api.tossinvest.com/api/v1/products/search",
-        "https://wts-info-api.tossinvest.com/api/v1/search/products",
+    import re as _re, json as _json
+    ticker_upper = ticker.upper().strip()
+    headers_post = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
+
+    # ── 전략 1: GET 검색 엔드포인트 ────────────────────────────────────
+    get_attempts = [
+        # stock-infos 네임스페이스 (기존 KRX 수급 API와 동일 base)
+        ("https://wts-info-api.tossinvest.com/api/v1/stock-infos/search",
+         {"query": ticker_upper, "size": 10}),
+        ("https://wts-info-api.tossinvest.com/api/v1/stock-infos/search",
+         {"query": ticker_upper, "size": 10, "market": "OVERSEAS"}),
+        # search 네임스페이스
+        ("https://wts-info-api.tossinvest.com/api/v1/search/stocks",
+         {"query": ticker_upper, "size": 10}),
+        ("https://wts-info-api.tossinvest.com/api/v1/search",
+         {"query": ticker_upper, "size": 10, "market": "OVERSEAS"}),
+        ("https://wts-info-api.tossinvest.com/api/v1/search",
+         {"query": ticker_upper, "size": 10, "productType": "FOREIGN_STOCKS"}),
+        ("https://wts-info-api.tossinvest.com/api/v1/search",
+         {"query": ticker_upper, "size": 10}),
+        # products 네임스페이스
+        ("https://wts-info-api.tossinvest.com/api/v1/products/search",
+         {"query": ticker_upper, "size": 10, "market": "OVERSEAS"}),
+        ("https://wts-info-api.tossinvest.com/api/v1/products/search",
+         {"query": ticker_upper, "size": 10}),
+        ("https://wts-info-api.tossinvest.com/api/v2/search",
+         {"query": ticker_upper, "size": 10}),
+        ("https://wts-info-api.tossinvest.com/api/v1/search/products",
+         {"query": ticker_upper, "size": 10}),
     ]
-    ticker_upper = ticker.upper()
-
-    for url in search_endpoints:
+    for url, params in get_attempts:
         try:
-            resp = requests.get(
-                url,
-                params={"query": ticker_upper, "size": 10},
-                headers=_TOSS_API_HEADERS,
-                timeout=8,
-            )
-            if resp.status_code not in (200, 201):
-                continue
-
-            data = resp.json()
-
-            # ── 응답 구조 유연 파싱 ─────────────────────────────────────
-            # Toss API 버전마다 최상위 키가 다를 수 있음
-            candidates: list = []
-            if isinstance(data, list):
-                candidates = data
-            elif isinstance(data, dict):
-                # result.stocks / result.products / result.items / data / list 등
-                root = data.get("result") or data
-                if isinstance(root, list):
-                    candidates = root
-                else:
-                    for key in ("stocks", "products", "items", "data", "list", "body"):
-                        val = root.get(key) if isinstance(root, dict) else None
-                        if isinstance(val, list):
-                            candidates = val
-                            break
-
-            for item in candidates:
-                if not isinstance(item, dict):
-                    continue
-                # 가능한 ticker 키들 순서대로 확인
-                item_sym = (
-                    item.get("stockCode")
-                    or item.get("ticker")
-                    or item.get("symbol")
-                    or item.get("symbolCode")
-                    or item.get("code")
-                    or ""
-                ).upper().strip()
-                if item_sym == ticker_upper:
-                    code = (item.get("productCode") or item.get("id") or "")
-                    if code and isinstance(code, str):
-                        print(f"[Toss US코드] {ticker} → {code} (via {url})")
-                        return code
-
+            resp = requests.get(url, params=params,
+                                headers=_TOSS_API_HEADERS, timeout=6)
+            if resp.status_code == 200:
+                code = _parse_toss_candidates(resp.json(), ticker_upper)
+                if code:
+                    print(f"[Toss US코드] {ticker} → {code} (GET {url})")
+                    return code
         except Exception as e:
-            print(f"[Toss US코드] {url} 실패 ({ticker}): {type(e).__name__}: {e}")
-            continue
+            print(f"[Toss US코드] GET {url} 오류: {e}")
 
-    print(f"[Toss US코드] {ticker} productCode 조회 실패 — 전 엔드포인트 소진")
+    # ── 전략 2: POST 검색 엔드포인트 ────────────────────────────────────
+    post_attempts = [
+        ("https://wts-info-api.tossinvest.com/api/v1/search",
+         {"query": ticker_upper, "market": "OVERSEAS", "size": 10}),
+        ("https://wts-info-api.tossinvest.com/api/v1/search",
+         {"query": ticker_upper, "productType": "FOREIGN_STOCKS", "size": 10}),
+        ("https://wts-info-api.tossinvest.com/api/v1/search/stocks",
+         {"query": ticker_upper, "size": 10}),
+        ("https://wts-info-api.tossinvest.com/api/v1/products/search",
+         {"query": ticker_upper, "market": "OVERSEAS", "size": 10}),
+    ]
+    for url, body in post_attempts:
+        try:
+            resp = requests.post(url, json=body,
+                                 headers=headers_post, timeout=6)
+            if resp.status_code == 200:
+                code = _parse_toss_candidates(resp.json(), ticker_upper)
+                if code:
+                    print(f"[Toss US코드] {ticker} → {code} (POST {url})")
+                    return code
+        except Exception as e:
+            print(f"[Toss US코드] POST {url} 오류: {e}")
+
+    # ── 전략 3: 웹 페이지 __NEXT_DATA__ 스크래핑 ────────────────────────
+    scrape_urls = [
+        f"https://www.tossinvest.com/search?q={ticker_upper}",
+        f"https://www.tossinvest.com/search?query={ticker_upper}",
+    ]
+    page_headers = {**_TOSS_API_HEADERS,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+    for surl in scrape_urls:
+        try:
+            resp = requests.get(surl, headers=page_headers, timeout=10)
+            if resp.status_code == 200:
+                m = _re.search(
+                    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+                    resp.text, _re.DOTALL
+                )
+                if m:
+                    nd = _json.loads(m.group(1))
+                    code = _deep_find_product_code(nd, ticker_upper)
+                    if code:
+                        print(f"[Toss US코드] {ticker} → {code} (__NEXT_DATA__)")
+                        return code
+        except Exception as e:
+            print(f"[Toss US코드] 스크래핑 {surl} 오류: {e}")
+
+    print(f"[Toss US코드] {ticker}: 전 전략 실패 — productCode 조회 불가")
     return ""
 
 
 @ttl_cache(300)
 def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     """
-    토스증권 AI 요약 단일 종목 조회 (KRX + US 모두 지원).
-    POST https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals
+    토스증권 AI 요약 조회 — KRX + US/해외 모두 지원.
 
-    KRX: ticker "005930.KS" → productCode "A005930" (즉시 변환)
-    US : ticker "AAPL" → Toss 검색 API로 productCode 획득 (24h 캐싱)
-    실패 시 빈 문자열 반환 — UI 절대 깨지지 않음.
+    KRX 전략:
+      · productCode "A{code}" 즉시 변환 → 배치 API
+
+    US/해외 전략 (순서대로, 성공 즉시 반환):
+      1) 상세 API(detail)에 ticker + productType 직접 전달
+         → 검색 없이 ticker 자체가 productCode로 동작하면 즉시 성공
+      2) 배치 API에 ticker 직접 전달 (동일 시도)
+      3) 검색 API(_fetch_toss_us_product_code, 24h 캐싱)로 productCode 획득
+         → 획득한 productCode로 배치 API + 상세 API 재시도
+
+    실패 시 ai_summary="" 반환 — UI 절대 깨지지 않음.
     """
-    # ── productCode 결정 ──────────────────────────────────────────────────
+    # ── KRX ──────────────────────────────────────────────────────────────
     if market == "KRX":
         code = to_toss_product_code(ticker, market)
-    else:
-        # US 및 기타 해외: 검색 API로 productCode 취득 (24h 캐싱)
-        code = _fetch_toss_us_product_code(ticker)
+        if not code:
+            return {"ai_summary": "", "product_code": "", "supported": False}
+        return _toss_batch_api(code)
 
+    # ── US / 해외 ─────────────────────────────────────────────────────────
+    ticker_upper = ticker.upper().strip()
+
+    # 전략 1: 상세 API에 ticker 자체를 productCode로 직접 시도
+    # (일부 productType에서는 ticker symbol 그대로 수락하는 경우 있음)
+    for pt in ("STOCKS", "FOREIGN_STOCKS", "US_STOCKS",
+               "OVERSEAS_STOCKS", "OVERSEAS", "LISTED_OVERSEAS"):
+        txt = _toss_detail_api(ticker_upper, pt)
+        if txt:
+            return {"ai_summary": txt, "product_code": ticker_upper, "supported": True}
+
+    # 전략 2: 배치 API에 ticker 직접 시도
+    result = _toss_batch_api(ticker_upper)
+    if result.get("ai_summary"):
+        return result
+
+    # 전략 3: 검색 API로 실제 productCode 획득 후 재시도
+    code = _fetch_toss_us_product_code(ticker_upper)
     if not code:
         return {"ai_summary": "", "product_code": "", "supported": False}
 
-    # ── AI 요약 조회 ─────────────────────────────────────────────────────
-    url = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals"
-    headers = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
-    try:
-        resp = requests.post(
-            url,
-            headers=headers,
-            json={"productCodes": [code]},
-            timeout=8,
-        )
-        resp.raise_for_status()
-        raw = resp.json()
-        signals = raw.get("result", {}).get("signals", [])
-        summary = ""
-        for s in signals:
-            if isinstance(s, dict) and s.get("productCode") == code:
-                summary = s.get("reasoningDescription", "")
-                break
-        return {
-            "ai_summary": summary,
-            "product_code": code,
-            "supported": True,
-        }
-    except Exception as e:
-        print(f"[Toss AI Summary] 조회 실패 ({ticker}/{code}): {type(e).__name__}: {e}")
-        return {"ai_summary": "", "product_code": code, "supported": True}
+    # productCode로 배치 API 시도
+    result = _toss_batch_api(code)
+    if result.get("ai_summary"):
+        return result
+
+    # productCode로 상세 API도 시도
+    for pt in ("STOCKS", "FOREIGN_STOCKS", "US_STOCKS", "OVERSEAS_STOCKS", "OVERSEAS"):
+        txt = _toss_detail_api(code, pt)
+        if txt:
+            return {"ai_summary": txt, "product_code": code, "supported": True}
+
+    # productCode는 얻었지만 AI 요약 없음
+    return {"ai_summary": "", "product_code": code, "supported": True}
 
 
 @ttl_cache(3600)
@@ -5649,12 +5799,61 @@ def route(path: str, params: Dict) -> Dict:
         return fetch_toss_overseas_screener(sort_by=sort_by, sort_order=sort_order)
 
     if path == "/api/toss-ai-summary":
-        # 토스증권 AI 요약 단일 종목 조회 (KRX 전용, TTL 5분)
+        # 토스증권 AI 요약 단일 종목 조회 (KRX + US, TTL 5분)
         t_raw  = params.get("ticker", "").strip()
         m_raw  = params.get("market", "").strip().upper()
         if not t_raw:
             return {"error": "ticker 파라미터 필요", "ai_summary": "", "supported": False}
         return fetch_toss_ai_summary(t_raw, m_raw)
+
+    if path == "/api/toss-debug":
+        # 토스증권 productCode 조회 디버그 (US 종목 문제 진단용)
+        # 캐시 우회 버전 — 실제 네트워크 응답 상태를 직접 반환
+        t_raw = params.get("ticker", "").strip().upper()
+        if not t_raw:
+            return {"error": "ticker 파라미터 필요"}
+        debug_info: dict = {"ticker": t_raw, "endpoints": []}
+        test_urls = [
+            ("GET", "https://wts-info-api.tossinvest.com/api/v1/stock-infos/search",
+             {"query": t_raw, "size": 5}),
+            ("GET", "https://wts-info-api.tossinvest.com/api/v1/search/stocks",
+             {"query": t_raw, "size": 5}),
+            ("GET", "https://wts-info-api.tossinvest.com/api/v1/search",
+             {"query": t_raw, "size": 5, "market": "OVERSEAS"}),
+            ("GET", "https://wts-info-api.tossinvest.com/api/v1/search",
+             {"query": t_raw, "size": 5}),
+            ("GET", "https://wts-info-api.tossinvest.com/api/v1/products/search",
+             {"query": t_raw, "size": 5}),
+        ]
+        for method, url, p in test_urls:
+            entry: dict = {"method": method, "url": url, "params": p}
+            try:
+                r = requests.get(url, params=p, headers=_TOSS_API_HEADERS, timeout=6)
+                entry["status"] = r.status_code
+                try:
+                    body = r.json()
+                    # 응답 상위 구조만 반환 (전체는 너무 큼)
+                    if isinstance(body, dict):
+                        entry["top_keys"] = list(body.keys())[:10]
+                        result_part = body.get("result") or body
+                        if isinstance(result_part, dict):
+                            entry["result_keys"] = list(result_part.keys())[:10]
+                    entry["sample"] = str(body)[:400]
+                except Exception:
+                    entry["body_raw"] = r.text[:200]
+            except Exception as e:
+                entry["error"] = f"{type(e).__name__}: {e}"
+            debug_info["endpoints"].append(entry)
+        # 상세 API 직접 시도 결과도 포함
+        detail_results = []
+        for pt in ("STOCKS", "FOREIGN_STOCKS", "US_STOCKS", "OVERSEAS_STOCKS", "OVERSEAS"):
+            txt = _toss_detail_api(t_raw, pt)
+            detail_results.append({"productType": pt, "result": txt or "(없음)"})
+        debug_info["detail_api_attempts"] = detail_results
+        # 배치 API 직접 시도
+        batch_result = _toss_batch_api(t_raw)
+        debug_info["batch_api_with_ticker"] = batch_result
+        return debug_info
 
     if path == "/api/cron":
         try:
