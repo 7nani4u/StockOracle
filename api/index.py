@@ -3671,7 +3671,7 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         },
     }
 
-def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict, market: str = "KRX") -> Dict:
+def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict, market: str = "KRX", period: str = "1y") -> Dict:
     """매수 적정 가격 예측 — 다중 지표 기반 정밀 구간 산출"""
     lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
     highs    = [float(x) for x in dd.get("High",  []) if x is not None]
@@ -3719,13 +3719,27 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     lows20 = sorted([x for x in lows[-20:] if x > 0])
     strong_support = float(np.mean(lows20[:3])) if len(lows20) >= 3 else support_zone
 
-    # 피보나치 되돌림 (최근 60일 고점/저점 기준)
-    h60 = max(highs[-60:]) if len(highs) >= 60 else max(highs) if highs else last_price * 1.1
-    l60 = min(lows[-60:])  if len(lows)  >= 60 else min(lows)  if lows  else last_price * 0.9
-    fib_range = h60 - l60
+    # 피보나치 되돌림 — 선택한 분석 기간 기준으로 동적 계산
+    _fib_bars_map = {
+        '1d': 5,  '3d': 10, '1wk': 10, '2wk': 14,
+        '1mo': 25, '3mo': 65, '6mo': 130,
+        '1y': 252, '2y': 504, '5y': 1260,
+    }
+    _fib_lbl_map = {
+        '1d': '초단기·1일',  '3d': '초단기·3일', '1wk': '초단기·1주', '2wk': '단기·2주',
+        '1mo': '단기·1개월', '3mo': '중기·3개월', '6mo': '장기·6개월',
+        '1y': '장기·1년',   '2y': '장기·2년',   '5y': '장기·5년',
+    }
+    _fib_n = min(_fib_bars_map.get(period, len(highs)), len(highs)) if highs else 1
+    fib_period_label = _fib_lbl_map.get(period, f'최근 {_fib_n}봉')
+    h60 = max(highs[-_fib_n:]) if highs else last_price * 1.1
+    l60 = min(lows[-_fib_n:])  if lows  else last_price * 0.9
+    fib_range = h60 - l60 if h60 > l60 else last_price * 0.01
+    fib_236 = h60 - fib_range * 0.236
     fib_382 = h60 - fib_range * 0.382
     fib_500 = h60 - fib_range * 0.500
     fib_618 = h60 - fib_range * 0.618
+    fib_786 = h60 - fib_range * 0.786
 
     # ── 거래량 가중 평균가 (최근 20일 VWAP 근사) ──────────────────────
     vwap_approx = None
@@ -4047,7 +4061,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "support_zone": r(support_zone),
         "fib": {
             "h60": r(h60), "l60": r(l60),
-            "f382": r(fib_382), "f500": r(fib_500), "f618": r(fib_618),
+            "f236": r(fib_236), "f382": r(fib_382), "f500": r(fib_500),
+            "f618": r(fib_618), "f786": r(fib_786),
+            "period_label": fib_period_label,
         },
         "rsi": round(rsi, 1),
         "rsi_context": rsi_ctx,
@@ -4928,7 +4944,7 @@ def route(path: str, params: Dict) -> Dict:
         pivot_points     = calc_pivot_points(dd)
         indicator_signals= calc_indicator_signals(dd)
         risk             = calc_risk(last, atr_val, market, dd)
-        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market)
+        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period)
         target_price     = calc_target_price(dd, last, atr_val, period, market)
         pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
                 
@@ -5484,11 +5500,10 @@ input::placeholder{color:#484f58}
   .metric-price-card{grid-column:span 3}
   .metric-volume-card{grid-column:span 1}
   .metric-atr-card{grid-column:span 2}
-  #r-fib-card{grid-column:span 2}
+  #r-fib-card{grid-column:1/-1}
   .metric-price-row{gap:14px}
-  #r-fib-content>div{gap:8px}
-  #r-fib-content span{white-space:nowrap}
-  #r-fib-content b{white-space:nowrap;text-align:right}
+  #r-fib-content .fib-levels-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 16px}
+  #r-fib-content .fib-zone-bar{display:none}
   .two-col-grid{grid-template-columns:1fr;gap:10px}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
@@ -5534,8 +5549,8 @@ input::placeholder{color:#484f58}
   .metric-price-row{justify-content:space-between;gap:10px}
   #r-prob{font-size:10px!important;gap:3px!important}
   #r-fib-card .m-label{white-space:nowrap}
-  #r-fib-content{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px!important}
-  #r-fib-content>div{display:flex!important;justify-content:space-between!important;align-items:baseline;background:#0d1117;border-radius:7px;padding:6px 8px}
+  #r-fib-content .fib-levels-grid{grid-template-columns:1fr!important}
+  #r-fib-content .fib-zone-bar{display:block!important}
   .m-label{font-size:10px}
   .m-value{font-size:16px}
   .card{padding:12px;border-radius:10px}
@@ -6059,7 +6074,7 @@ input::placeholder{color:#484f58}
         <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
         <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card metric-atr-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
-        <div class="metric-card" id="r-fib-card" style="display:none"><div class="m-label">📐 피보나치 기준 (60일)</div><div id="r-fib-content" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div></div>
+        <div class="metric-card" id="r-fib-card" style="display:none"><div class="m-label" id="r-fib-label">📐 피보나치 기준</div><div id="r-fib-content" style="margin-top:8px;font-size:12px"></div></div>
       </div>
       <div id="r-naver-fund" style="display:none" class="card">
         <div class="card-title">🏢 기업 펀더멘털 (네이버 금융)</div>
@@ -6673,17 +6688,89 @@ function renderResult(d) {
     atrPctEl.style.display = 'none';
   }
 
-  // 피보나치 카드 → 상단 핵심 지표 영역
+  // 피보나치 카드 → 상단 핵심 지표 영역 (분석 기간 동적 반영)
   const fibCard    = document.getElementById('r-fib-card');
   const fibContent = document.getElementById('r-fib-content');
+  const fibLabel   = document.getElementById('r-fib-label');
   const _fib = (d.buy_price && d.buy_price.fib) || {};
   if (fibCard && fibContent && _fib.f382) {
+    const _pl  = _fib.period_label || '분석 기간';
+    if (fibLabel) fibLabel.textContent = `📐 피보나치 기준 (${_pl})`;
+    const cur  = d.last_close || 0;
+
+    // ── 현재가 구간 판단 (h60 > f236 > f382 > f500 > f618 > f786 > l60) ──
+    const _zone = (() => {
+      if (cur >= _fib.h60)  return { lbl:'▲ 고점 상단 — 조정 미발생',          bg:'#0d2d1a', txt:'#3fb950' };
+      if (cur >= _fib.f236) return { lbl:'조정 초반 (0 ~ 0.236) — 강세 유지',   bg:'#0d1b33', txt:'#58a6ff' };
+      if (cur >= _fib.f382) return { lbl:'얕은 조정 (0.236 ~ 0.382)',           bg:'#0d1b33', txt:'#58a6ff' };
+      if (cur >= _fib.f500) return { lbl:'📌 1차 매수 후보 구간 (0.382 ~ 0.5)', bg:'#2d1500', txt:'#f97316' };
+      if (cur >= _fib.f618) return { lbl:'📌 2차 매수 후보 구간 (0.5 ~ 0.618)', bg:'#2d2200', txt:'#d29922' };
+      if (cur >= _fib.f786) return { lbl:'⚠️ 3차 주의 구간 (0.618 ~ 0.786)',    bg:'#2d1515', txt:'#f85149' };
+      if (cur >  _fib.l60)  return { lbl:'🛑 0.786 이탈 — 신규 매수 중단 검토', bg:'#2d1515', txt:'#f85149' };
+      return                        { lbl:'🛑 스윙 저점 이탈 — 전략 무효화',     bg:'#2d1515', txt:'#f85149' };
+    })();
+
+    // 레벨 도달 여부: 현재가가 해당 레벨 이하로 내려온 적 있는지 (cur <= fib_level)
+    const _tag = (lvl) => cur <= lvl
+      ? `<span style="font-size:10px;color:#3fb950;font-weight:600">✅ 도달</span>`
+      : `<span style="font-size:10px;color:#484f58">⬜</span>`;
+
+    // 레벨 행 빌더
+    const _lvRow = (label, val, clr, showTag = false) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d">
+        <span style="color:#8b949e;min-width:80px">${label}</span>
+        <span style="display:flex;align-items:center;gap:10px">
+          ${showTag ? _tag(val) : ''}
+          <b style="color:${clr}">${fmt(val, isKrx)}</b>
+        </span>
+      </div>`;
+
     fibContent.innerHTML = `
-      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">▲ 고점</span><b style="color:#cdd9e5">${fmt(_fib.h60, isKrx)}</b></div>
-      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">▼ 저점</span><b style="color:#cdd9e5">${fmt(_fib.l60, isKrx)}</b></div>
-      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">38.2%</span><b style="color:#f97316">${fmt(_fib.f382, isKrx)}</b></div>
-      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">50.0%</span><b style="color:#d29922">${fmt(_fib.f500, isKrx)}</b></div>
-      <div style="display:flex;justify-content:space-between"><span style="color:#8b949e">61.8%</span><b style="color:#388bfd">${fmt(_fib.f618, isKrx)}</b></div>`;
+      <!-- 현재가 구간 배지 -->
+      <div style="background:${_zone.bg};color:${_zone.txt};padding:5px 10px;border-radius:7px;font-size:11px;font-weight:700;margin-bottom:10px;border:1px solid ${_zone.txt}55">
+        ${_zone.lbl}
+      </div>
+
+      <!-- 스윙 고저점 + 현재가 요약 -->
+      <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:100px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;text-align:center">
+          <div style="font-size:10px;color:#8b949e">스윙 고점</div>
+          <div style="font-size:13px;font-weight:700;color:#cdd9e5;margin-top:2px">${fmt(_fib.h60, isKrx)}</div>
+        </div>
+        <div style="flex:1;min-width:100px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;text-align:center">
+          <div style="font-size:10px;color:#8b949e">현재가</div>
+          <div style="font-size:13px;font-weight:700;color:#e6edf3;margin-top:2px">${fmt(cur, isKrx)}</div>
+        </div>
+        <div style="flex:1;min-width:100px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;text-align:center">
+          <div style="font-size:10px;color:#8b949e">스윙 저점</div>
+          <div style="font-size:13px;font-weight:700;color:#cdd9e5;margin-top:2px">${fmt(_fib.l60, isKrx)}</div>
+        </div>
+      </div>
+
+      <!-- 피보나치 레벨 테이블 -->
+      <div style="margin-bottom:10px">
+        <div style="font-size:10px;color:#484f58;margin-bottom:4px">피보나치 되돌림 가격</div>
+        ${_lvRow('0.236',   _fib.f236, '#8b949e', true)}
+        ${_lvRow('0.382 ①', _fib.f382, '#f97316', true)}
+        ${_lvRow('0.500 ②', _fib.f500, '#d29922', true)}
+        ${_lvRow('0.618 ③', _fib.f618, '#388bfd', true)}
+        ${_lvRow('0.786',   _fib.f786, '#f85149', true)}
+      </div>
+
+      <!-- 분할매수 구간 해석 -->
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px">
+        <div style="font-size:11px;font-weight:700;color:#e6edf3;margin-bottom:8px">📌 분할매수 구간 해석</div>
+        <div style="font-size:11px;color:#8b949e;line-height:1.8;display:flex;flex-direction:column;gap:2px">
+          <div><b style="color:#f97316">① 0.382 도달</b> — 강한 추세 유지 + 거래량 유지 시 1차 매수 후보 (비중 25~30%)</div>
+          <div><b style="color:#d29922">② 0.500 도달</b> — 일반 눌림 구간, RSI 과매도 근접 시 2차 매수 후보 (비중 30%)</div>
+          <div><b style="color:#388bfd">③ 0.618 도달</b> — 핵심 구간, 지지 캔들·거래량·이동평균 확인 후 3차 (비중 30~40%)</div>
+          <div style="color:#484f58">· 0.786 도달 시 전략 위험 구간 — 추세 확인 후 선택적 소액 접근</div>
+          <div style="color:#484f58">· 0.786 명확 이탈 또는 스윙 저점 이탈 시 신규 매수 중단, 손절 검토</div>
+        </div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d;font-size:10px;color:#484f58;line-height:1.6">
+          ⚠️ 피보나치는 매수 확정 신호가 아닌 후보 구간 도구입니다. RSI·이동평균·거래량·지지 캔들을 반드시 병행 확인하세요.
+        </div>
+      </div>`;
     fibCard.style.display = 'block';
   } else if (fibCard) {
     fibCard.style.display = 'none';
