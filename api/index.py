@@ -7348,7 +7348,7 @@ function renderDiagnosis(d, isKrx) {
   // 동적 설명문 — 강세/약세 항목 이름 명시
   const strongItems = activeDimsInfo.filter(x => x.active && x.v >= 72).map(x => x.name);
   const weakItems   = activeDimsInfo.filter(x => x.active && x.v <  40).map(x => x.name);
-  const varNote = dimVariance >= 22 ? ` (편차 ${dimVariance}pt — 약점 항목 집중 확인)` : '';
+  const varNote = '';
   const gradeDesc = (() => {
     if (weakItems.length === 0 && strongItems.length >= 3)
       return `${strongItems.join(' · ')} 등 ${strongItems.length}개 지표 강세 — 추세가 명확합니다.${varNote}`;
@@ -8807,7 +8807,7 @@ function renderFlowTab(d) {
     // ex) "관망 유지 · 종합 47점 · 신뢰도 보통"
     const _action = _bt ? _bt.split(' · ')[0] : recLbl;
     flowRecBadge.className = 'rec-badge-lg';
-    flowRecBadge.textContent = `${_action} · 종합 ${effScore}점 · ${confText}`;
+    flowRecBadge.textContent = `${_action} · 종합 ${effScore.toFixed(1)}점 · ${confText}`;
     if (_gc) {
       flowRecBadge.style.color       = _gc;
       flowRecBadge.style.borderColor = _gc;
