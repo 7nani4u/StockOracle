@@ -1776,6 +1776,36 @@ _US_RECO_UNIVERSE = [
     "GRAB","PDD","BABA","UBER","DASH","ABNB","RBLX","U","ZM","ARM",
 ]
 
+# 급등 스캐너 전용 유니버스 — 고베타·변동성 중심, 뉴스·실적에 강하게 반응하는 종목
+_US_SURGE_UNIVERSE = list(dict.fromkeys([
+    # AI/반도체 — 뉴스·실적에 가장 민감
+    "NVDA","AMD","SMCI","ARM","MU","QCOM","INTC","MRVL","AMAT","LRCX","KLAC",
+    # 빅테크 — 개별 이슈 빈번
+    "AAPL","MSFT","META","AMZN","GOOGL","NFLX","TSLA",
+    # 클라우드/AI 소프트웨어 — 실적 시즌에 급변
+    "CRWD","NET","DDOG","SNOW","PLTR","APP","AXON","PANW","NOW","ZS","OKTA",
+    # 핀테크/블록체인 — 변동성 극상
+    "COIN","MSTR","HOOD","SOFI","AFRM","UPST","PYPL","SQ",
+    # 소비/중형 성장주 — 개별 모멘텀
+    "MELI","UBER","DASH","ABNB","SPOT","SNAP","RBLX","SE","PDD","BABA","GRAB",
+    "PINS","TWLO","ZM","U",
+    # 바이오/제약 — 임상·FDA에 급등
+    "MRNA","BNTX","LLY","ABBV","VRTX","REGN","GILD","AMGN","SGEN",
+    # 에너지/원자재 — 유가·지정학 민감
+    "CVX","XOM","OXY","SLB","FCX","COP",
+    # 방산/항공 — 수주·갈등 이슈
+    "LMT","RTX","BA","NOC","GD",
+    # 중국 ADR — 규제·무역 민감
+    "NIO","XPEV","LI","JD","BIDU","PDD",
+    # 이머징 테크 — 소형 고변동
+    "IONQ","JOBY","RIVN","LCID","ACHR",
+    # 전통 대형주 (실적 반응)
+    "JPM","GS","MS","BAC","V","MA","UNH","HD","WMT","COST","MCD","KO",
+    "JNJ","PG","CAT","GE","IBM","ISRG","HON","DE","TMO","MRK","ABBV",
+    "CRM","ADBE","ORCL","ACN","INTU","TXN","ADI","BKNG","SPGI","BLK",
+    "UNP","ETN","ADP","CB","NEE","DUK","SO","EOG",
+]))
+
 def _us_calc_rsi(close, period=14):
     """RSI 계산"""
     if len(close) < period + 1:
@@ -2077,48 +2107,76 @@ def _us_longterm_score(a):
         elif sq["on"] and sq["momentum"] > 0: score += 4
     return score
 
-def _us_surge_score(a, pm_change_pct):
-    """개장 급등 점수 (하드 필터 실패 시 -1)"""
+def _us_surge_score(a, pm_change_pct, rvol=0.0):
+    """개장 급등 점수 (하드 필터 실패 시 -1, 통과 시 0~100)
+    PM모멘텀30 + RVOL20 + 전일거래량10 + Squeeze15 + 상대강도10 + ADX8 + BB돌파5 + Stoch5 = 103
+    """
     rsi = a.get("rsi"); adx = a.get("adx"); rs = a.get("rs")
     bb = a.get("bollinger"); vol = a.get("volume"); sq = a.get("squeeze")
     stoch = a.get("stochastic"); w52 = a.get("week52")
-    # 하드 필터
-    if adx and adx["adx"] > 30 and adx["direction"] == "bearish": return -1
-    if rsi and rsi["v"] > 85: return -1
-    if pm_change_pct < 1.5: return -1
+
+    # 하드 필터 — 기준 완화 (명백한 하락/극단 과열만 제거)
+    if adx and adx["adx"] > 35 and adx["direction"] == "bearish": return -1
+    if rsi and rsi["v"] > 88: return -1
+    if pm_change_pct < 1.0: return -1  # 1.5% → 1.0% 완화
+
     score = 0
-    # PM 모멘텀 (max 25)
-    if pm_change_pct >= 5.0: score += 25
-    elif pm_change_pct >= 3.0: score += 20
-    elif pm_change_pct >= 2.0: score += 15
-    elif pm_change_pct >= 1.5: score += 10
-    # 거래량 (max 15, 전일 기준 폴백)
+
+    # 1. PM 모멘텀 (max 30) — 핵심 트리거
+    if pm_change_pct >= 10.0: score += 30
+    elif pm_change_pct >= 7.0:  score += 26
+    elif pm_change_pct >= 5.0:  score += 22
+    elif pm_change_pct >= 3.0:  score += 17
+    elif pm_change_pct >= 2.0:  score += 13
+    elif pm_change_pct >= 1.5:  score += 9
+    else:                       score += 5   # 1.0~1.5%
+
+    # 2. PM RVOL — 프리마켓 상대거래량 (max 20) — 기관/세력 관심도
+    if rvol >= 5.0:   score += 20
+    elif rvol >= 3.0: score += 15
+    elif rvol >= 2.0: score += 10
+    elif rvol >= 1.5: score += 6
+    elif rvol >= 1.0: score += 3
+
+    # 3. 전일 일봉 거래량 (max 10) — RVOL 없을 때 보완
     if vol:
-        if vol["spike"]: score += 15
-        elif vol["ratio"] >= 1.0: score += 7
-    # 갭 설정 (max 10): BB 상단 돌파 or 52주 고점 근처
-    pm_p = a.get("pm_price", a.get("close", 0)) or 0
-    if bb and pm_p and pm_p > bb["upper"]: score += 5
-    if w52 and w52["pos"] >= 90: score += 5
-    # Squeeze 해제 (max 10)
+        if vol["spike"]: score += 10
+        elif vol["ratio"] >= 1.3: score += 7
+        elif vol["ratio"] >= 1.0: score += 4
+
+    # 4. Squeeze 해제 (max 15) — 압축 후 돌파 = 급등 핵심 패턴
     if sq:
-        if not sq["on"] and sq["momentum"] > 0 and sq["direction"] == "increasing": score += 10
-        elif not sq["on"] and sq["momentum"] > 0: score += 6
-    # 상대강도 (max 8)
+        if not sq["on"] and sq["momentum"] > 0 and sq["direction"] == "increasing": score += 15
+        elif not sq["on"] and sq["momentum"] > 0: score += 10
+        elif sq["on"] and sq["momentum"] > 0 and sq["count"] >= 5: score += 8
+        elif sq["on"] and sq["momentum"] > 0: score += 5
+
+    # 5. 상대강도 (max 10)
     if rs:
-        if rs["rs20"] > 5: score += 8
-        elif rs["rs20"] > 0: score += 5
-    # ADX (max 7)
+        r60 = rs.get("rs60") or 0; r20 = rs.get("rs20") or 0
+        best = max(r60, r20)
+        if best > 10: score += 10
+        elif best > 5:  score += 7
+        elif best > 0:  score += 4
+
+    # 6. ADX (max 8)
     if adx:
         if adx["direction"] == "bullish":
-            if adx["adx"] >= 30: score += 7
-            elif adx["adx"] >= 25: score += 4
+            if adx["adx"] >= 30: score += 8
+            elif adx["adx"] >= 25: score += 5
+            elif adx["adx"] >= 20: score += 3
         elif adx["strength"] == "weak": score += 2
-    # Stochastic (max 5)
+
+    # 7. BB 상단 돌파 (max 5)
+    pm_p = a.get("pm_price", a.get("close", 0)) or 0
+    if bb and pm_p and pm_p > bb["upper"]: score += 5
+
+    # 8. Stochastic (max 5)
     if stoch:
         k = stoch["k"]
         if 30 <= k <= 70: score += 5
         elif k < 30: score += 3
+
     return score
 
 # =============================================================================
@@ -2638,11 +2696,11 @@ def fetch_us_longterm_reco():
     except Exception as e:
         return {"error": str(e), "items": []}
 
-@ttl_cache(1800)  # 30분 캐시
+@ttl_cache(900)  # 15분 캐시 (프리마켓 빠른 갱신)
 def fetch_us_opening_surge():
-    """개장 급등 추천 Top 3 (PM 배치 스캔 → 기술적 분석)"""
+    """미국 개장 급등 추천 Top 10 (PM RVOL + ATR 스캐닝)"""
     try:
-        # ── 미국 동부시간(ET) 세션 감지 ─────────────────────────────────
+        # ── 세션 감지 ────────────────────────────────────────────────
         try:
             from zoneinfo import ZoneInfo as _ZI
             _et_now = dt.now(_ZI("America/New_York"))
@@ -2651,136 +2709,222 @@ def fetch_us_opening_surge():
             _m = _utc_now.month
             _et_now = _utc_now + timedelta(hours=(-4 if 3 <= _m <= 10 else -5))
         _et_h = _et_now.hour + _et_now.minute / 60.0
+        _time_str = _et_now.strftime("%H:%M")
         if 4.0 <= _et_h < 9.5:
             _session = "premarket"
-            _session_label = "프리마켓 (ET 04:00~09:30)"
+            _session_label = f"프리마켓 (ET {_time_str})"
         elif 9.5 <= _et_h < 16.0:
             _session = "regular"
-            _session_label = "정규장 (ET 09:30~16:00)"
+            _session_label = f"정규장 (ET {_time_str})"
         elif 16.0 <= _et_h < 20.0:
             _session = "afterhours"
-            _session_label = "시간외거래 (ET 16:00~20:00)"
+            _session_label = f"시간외거래 (ET {_time_str})"
         else:
             _session = "closed"
-            _session_label = "장 외 시간 (ET 20:00~04:00)"
+            _session_label = f"장 외 시간 (ET {_time_str})"
 
-        tickers = _US_RECO_UNIVERSE
-        # 전일 종가 배치 조회 (5거래일 일봉)
+        tickers = _US_SURGE_UNIVERSE  # 대형주+고변동 전용 유니버스
+
+        # ── 기준 종가 + 평균 거래량 조회 ────────────────────────────
         daily = yf.download(tickers, period="5d", interval="1d",
                             progress=False, auto_adjust=True, threads=True)
         if daily.empty:
             return {"error": "데이터 없음", "items": []}
-        # ── prev_close: 마지막 완료된 거래일 종가 ──────────────────────
-        # iloc[-1]은 장중/시간외에 오늘의 미완성 봉일 수 있으므로
-        # 마지막 봉의 날짜가 오늘이면 iloc[-2](전일 종가)를 사용한다.
+
         today_utc = dt.utcnow().date()
         try:
             last_bar_date = pd.Timestamp(daily.index[-1]).date()
         except Exception:
             last_bar_date = today_utc
-        _pc_idx = -2 if (last_bar_date >= today_utc and len(daily) >= 2) else -1
-        if isinstance(daily.columns, pd.MultiIndex):
-            prev_close = daily["Close"].iloc[_pc_idx]
+
+        # prev_close 인덱스 결정
+        # - afterhours: 오늘 정규장이 닫혔으므로 오늘 종가(-1) 기준
+        # - premarket/regular: 오늘 봉이 미완성이면 -2(전일 종가) 기준
+        if _session == "afterhours":
+            _pc_idx = -1
+        elif last_bar_date == today_utc and len(daily) >= 2:
+            _pc_idx = -2
         else:
-            prev_close = pd.Series({tickers[0]: float(daily["Close"].iloc[_pc_idx])})
-        # 프리마켓/시간외 데이터 배치 조회 (1분봉, pre/post 포함)
+            _pc_idx = -1
+
+        avg_daily_vol: Dict[str, float] = {}
+        if isinstance(daily.columns, pd.MultiIndex):
+            prev_close_s = daily["Close"].iloc[_pc_idx]
+            try:
+                vdf = daily["Volume"]
+                for tkr in tickers:
+                    if tkr in vdf.columns:
+                        v = vdf[tkr].dropna()
+                        avg_daily_vol[tkr] = float(v.mean()) if len(v) > 0 else 0.0
+            except Exception:
+                pass
+        else:
+            prev_close_s = pd.Series({tickers[0]: float(daily["Close"].iloc[_pc_idx])})
+
+        # ── 실시간/PM 1분봉 조회 ────────────────────────────────────
         pm_raw = yf.download(tickers, period="1d", interval="1m",
                              prepost=True, progress=False, auto_adjust=True, threads=True)
         if pm_raw.empty:
-            return {"items": [], "note": f"현재 시세 데이터 없음 — 현재 세션: {_session_label}"}
+            _note = f"현재 시세 없음 ({_session_label}) — 프리마켓(04:00~09:30 ET)에 다시 확인"
+            return {"items": [], "note": _note, "session": _session, "session_label": _session_label}
+
+        # PM 거래량 합산 (RVOL 계산용)
+        pm_vol_map: Dict[str, float] = {}
+        try:
+            if isinstance(pm_raw.columns, pd.MultiIndex):
+                vdf = pm_raw["Volume"]
+                for tkr in tickers:
+                    if tkr in vdf.columns:
+                        pm_vol_map[tkr] = float(vdf[tkr].dropna().sum())
+        except Exception:
+            pass
+
         if isinstance(pm_raw.columns, pd.MultiIndex):
             latest_price = pm_raw["Close"].iloc[-1]
         else:
             latest_price = pd.Series({tickers[0]: float(pm_raw["Close"].iloc[-1])})
-        # PM 변동률 계산 및 필터
+
+        # ── PM 변동률 계산 + RVOL 추정 ──────────────────────────────
+        _pm_elapsed = max(0.1, min(_et_h - 4.0, 5.5)) if _session == "premarket" else 6.5
+
         gainers = []
         for tkr in tickers:
             try:
-                pc = float(prev_close.get(tkr, 0) or 0)
+                pc = float(prev_close_s.get(tkr, 0) or 0)
                 lp = float(latest_price.get(tkr, 0) or 0)
                 if pc <= 0 or lp <= 0: continue
                 chg = (lp - pc) / pc * 100
-                if chg >= 1.5:
-                    gainers.append((tkr, round(lp, 2), round(chg, 2)))
+                if chg < 1.0: continue  # 1.5% → 1.0% 완화
+                # RVOL = PM 누적 거래량 / (평균 일일거래량 × PM 경과비율)
+                pm_vol = pm_vol_map.get(tkr, 0)
+                avg_vol = avg_daily_vol.get(tkr, 0)
+                if avg_vol > 0 and pm_vol > 0:
+                    rvol = round(pm_vol / (avg_vol * _pm_elapsed / 6.5), 2)
+                else:
+                    rvol = 0.0
+                gainers.append((tkr, round(lp, 2), round(chg, 2), rvol))
             except Exception:
                 continue
+
         if not gainers:
-            _time_str = _et_now.strftime("%H:%M")
-            _note = f"+1.5% 이상 급등 종목 없음 — 현재 세션: {_session_label} ({_time_str} ET)"
             if _session == "closed":
-                _note += " | 프리마켓(04:00~09:30 ET) 시간에 다시 확인하세요"
+                _note = f"장 외 시간 ({_time_str} ET) — 프리마켓(04:00~09:30 ET)에 다시 확인하세요"
             elif _session == "regular":
-                _note += " | 정규장 중 — 전일 대비 급등 종목이 없거나 조건 미충족"
-            return {"items": [], "note": _note}
+                _note = f"정규장 중 ({_time_str} ET) — 전일 대비 1% 이상 상승 종목 없음"
+            elif _session == "afterhours":
+                _note = f"시간외 ({_time_str} ET) — 전일 종가 대비 1% 이상 상승 종목 없음"
+            else:
+                _note = f"+1.0% 이상 급등 종목 없음 ({_session_label})"
+            return {"items": [], "note": _note, "session": _session, "session_label": _session_label}
+
         gainers.sort(key=lambda x: x[2], reverse=True)
-        gainers = gainers[:30]
+        gainers = gainers[:60]  # 30 → 60 확대
+        gainer_dict = {g[0]: (g[1], g[2], g[3]) for g in gainers}
         gainer_tickers = [g[0] for g in gainers]
-        gainer_dict = {g[0]: (g[1], g[2]) for g in gainers}
-        # 기술적 분석용 3개월 데이터 조회
+
+        # ── 기술적 분석 (3개월 일봉) ─────────────────────────────────
         hist_raw = yf.download(gainer_tickers, period="3mo", interval="1d",
                                progress=False, auto_adjust=True, threads=True)
         spy_raw = yf.download(["SPY"], period="3mo", interval="1d",
                               progress=False, auto_adjust=True, threads=True)
         spy_df = spy_raw if not spy_raw.empty else None
+
         candidates = []
-        for tkr, (pm_price, pm_chg) in gainer_dict.items():
+        for tkr, (pm_price, pm_chg, rvol) in gainer_dict.items():
             try:
                 if isinstance(hist_raw.columns, pd.MultiIndex):
                     if tkr not in hist_raw.columns.get_level_values(1): continue
                     df = hist_raw.xs(tkr, axis=1, level=1).dropna(how="all")
                 else:
                     df = hist_raw.copy()
-                if len(df) < 20: continue
+                if len(df) < 10: continue  # 20 → 10 완화
                 a = _us_analyze_ticker(df, spy_df)
                 a["pm_price"] = pm_price
-                s = _us_surge_score(a, pm_chg)
-                if s < 30: continue
-                candidates.append((tkr, s, a, pm_price, pm_chg))
+                s = _us_surge_score(a, pm_chg, rvol)
+                if s < 0: continue  # 하드 필터만 (30점 임계값 제거)
+                candidates.append((tkr, s, a, pm_price, pm_chg, rvol))
             except Exception:
                 continue
+
+        # 점수 부족 시 fallback: 하드필터만 통과한 종목 중 PM 변동률 기준 보완
+        if len(candidates) < 5:
+            for g in gainers:
+                tkr, lp, chg, rvol = g
+                if any(c[0] == tkr for c in candidates): continue
+                candidates.append((tkr, max(0, int(chg * 3)), {
+                    "close": lp, "change_pct": chg, "pm_price": lp,
+                    "atr": None, "rsi": None, "adx": None, "rs": None,
+                    "volume": None, "squeeze": None, "stochastic": None,
+                }, lp, chg, rvol))
+
         candidates.sort(key=lambda x: x[1], reverse=True)
         results = []
-        for tkr, score, a, pm_price, pm_chg in candidates[:3]:
+        _surge_label = {"premarket": "프리마켓", "regular": "정규장",
+                        "afterhours": "시간외", "closed": "전일비"}.get(_session, "전일비")
+
+        for tkr, score, a, pm_price, pm_chg, rvol in candidates[:10]:
             rsi = a.get("rsi"); adx = a.get("adx"); rs = a.get("rs")
             vol = a.get("volume"); sq = a.get("squeeze"); stoch = a.get("stochastic")
             atr_v = a.get("atr") or 0
             if atr_v > 0:
-                target = round(pm_price + atr_v * 1.0, 2)
-                stop = round(pm_price - atr_v * 0.5, 2)
+                target = round(pm_price + atr_v * 1.5, 2)
+                stop   = round(pm_price - atr_v * 0.5, 2)
             else:
-                est = pm_price * 0.02
+                est    = pm_price * 0.025
                 target = round(pm_price + est, 2)
-                stop = round(pm_price - est * 0.5, 2)
+                stop   = round(pm_price - est * 0.5, 2)
             ret = round(((target - pm_price) / pm_price) * 100, 2) if pm_price > 0 else 0
-            rr = round((target - pm_price) / (pm_price - stop), 2) if pm_price > stop else 0
-            _surge_label = {"premarket": "프리마켓", "regular": "정규장", "afterhours": "시간외"}.get(_session, "전일비")
-            reasons = [f"{_surge_label} +{pm_chg:.2f}% 급등"]
-            if sq and not sq["on"] and sq["momentum"] > 0: reasons.append("Squeeze 해제 — 돌파 진행")
-            elif sq and sq["on"] and sq["momentum"] > 0: reasons.append(f"Squeeze ON {sq['count']}일 — 돌파 임박")
-            if rs and rs["rs20"] > 0: reasons.append(f"SPY 대비 +{rs['rs20']:.1f}% 아웃퍼폼")
-            if adx and adx["direction"] == "bullish": reasons.append(f"ADX {adx['adx']:.1f} 상승 추세")
-            if vol and vol["spike"]: reasons.append(f"전일 거래량 급증 ({vol['ratio']:.1f}x)")
+            rr  = round((target - pm_price) / (pm_price - stop), 2) if pm_price > stop > 0 else 0
+
+            reasons = [f"{_surge_label} +{pm_chg:.2f}% 급등 (전일 종가 대비)"]
+            if rvol >= 2.0: reasons.append(f"PM RVOL {rvol:.1f}x — 프리마켓 거래량 폭증 (강한 매수세)")
+            elif rvol >= 1.0: reasons.append(f"PM RVOL {rvol:.1f}x — 평균 대비 거래량 증가")
+            if sq and not sq["on"] and sq["momentum"] > 0:
+                reasons.append("TTM Squeeze 해제 — 압축 후 상승 돌파 진행")
+            elif sq and sq["on"] and sq["momentum"] > 0:
+                reasons.append(f"Squeeze ON {sq['count']}일 지속 — 돌파 임박")
+            rs60 = (rs.get("rs60") or 0) if rs else 0
+            rs20_v = (rs.get("rs20") or 0) if rs else 0
+            if rs and rs60 > 0: reasons.append(f"SPY 대비 60일 +{rs60:.1f}% 아웃퍼폼")
+            elif rs and rs20_v > 0: reasons.append(f"SPY 대비 20일 +{rs20_v:.1f}% 아웃퍼폼")
+            if adx and adx["direction"] == "bullish":
+                reasons.append(f"ADX {adx['adx']:.1f} — 상승 추세 강도 확인")
+            if vol and vol["spike"]: reasons.append(f"전일 거래량 스파이크 ({vol['ratio']:.1f}x)")
+
             warning = []
-            if rsi and rsi["v"] > 70: warning.append(f"RSI {rsi['v']:.1f} 과매수 주의")
+            if rsi and rsi["v"] > 70: warning.append(f"RSI {rsi['v']:.1f} 과매수 — 단기 과열")
             if stoch and stoch["overbought"]: warning.append(f"Stochastic 과매수 (%K:{stoch['k']:.1f})")
+            if pm_chg < 1.5: warning.append("상승률 1.5% 미만 — 관심 수준, 추가 확인 필요")
+
+            if score >= 50:   confidence_label = "강력 추천"
+            elif score >= 35: confidence_label = "추천"
+            elif score >= 20: confidence_label = "주목"
+            else:             confidence_label = "관심"
+
             results.append({
                 "ticker": tkr,
                 "pm_price": pm_price,
                 "pm_change_pct": pm_chg,
+                "rvol": rvol,
                 "close": a.get("close", 0),
                 "score": score,
+                "confidence_label": confidence_label,
                 "target_price": target,
                 "stop_loss": stop,
                 "target_return": ret,
                 "risk_reward": rr,
-                "holding_period": "30분~1시간",
+                "holding_period": "30분~2시간",
                 "reasons": reasons[:5],
                 "warning": warning,
                 "rsi": rsi["v"] if rsi else None,
                 "adx": adx["adx"] if adx else None,
-                "rs20": rs["rs20"] if rs else None,
+                "rs20": rs20_v,
+                "rs60": rs60,
             })
-        return {"items": results, "ts": int(time.time()), "session": _session, "session_label": _session_label}
+        return {
+            "items": results, "ts": int(time.time()),
+            "session": _session, "session_label": _session_label,
+        }
     except Exception as e:
         return {"error": str(e), "items": []}
 
@@ -6727,7 +6871,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px">
       <div>
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇺🇸 미국 개장 급등 추천</h2>
-        <p style="font-size:12px;color:#8b949e">PM 스캔 · ATR 기반 당일 모멘텀 Top 3</p>
+        <p style="font-size:12px;color:#8b949e">PM RVOL · ATR 기반 당일 모멘텀 Top 10</p>
       </div>
     </div>
     <div class="home-section">
@@ -6738,7 +6882,7 @@ input::placeholder{color:#484f58}
       <div id="us-surge-content" style="display:none">
         <div class="us-reco-header">
           <span class="us-reco-title">🇺🇸 미국 개장 급등 추천
-            <span style="font-size:11px;color:#484f58;font-weight:400">PM 스캔·ATR 기반 Top 3</span>
+            <span style="font-size:11px;color:#484f58;font-weight:400">PM RVOL·ATR 기반 Top 10</span>
             <span id="us-surge-session-label" style="font-size:10px;color:#8b949e;font-weight:400;margin-left:6px"></span>
           </span>
           <button onclick="loadUsSurge(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
@@ -10068,26 +10212,51 @@ function renderUsSurgeCards(items, note) {
     el.innerHTML = '<div class="us-reco-empty">' + msg + '</div>';
     return;
   }
-  el.innerHTML = filtered.map(function(it) {
+  var confColors = {
+    '강력 추천': {bg:'rgba(46,160,67,.15)', border:'rgba(46,160,67,.5)', color:'#3fb950'},
+    '추천':      {bg:'rgba(56,139,253,.12)', border:'rgba(56,139,253,.4)', color:'#58a6ff'},
+    '주목':      {bg:'rgba(187,128,9,.12)', border:'rgba(187,128,9,.4)', color:'#d29922'},
+    '관심':      {bg:'rgba(110,118,129,.12)', border:'rgba(110,118,129,.4)', color:'#8b949e'}
+  };
+  el.innerHTML = filtered.map(function(it, idx) {
+    var rank = idx + 1;
+    var conf = it.confidence_label || '관심';
+    var cc = confColors[conf] || confColors['관심'];
+    var confBadge = '<span class="kr-lt-status-badge" style="background:' + cc.bg + ';border-color:' + cc.border + ';color:' + cc.color + '">' + conf + '</span>';
+
+    var pmChg = it.pm_change_pct || 0;
+    var pmColor = pmChg >= 0 ? '#3fb950' : '#f85149';
+    var pmSign  = pmChg >= 0 ? '+' : '';
+
     var reasons = (it.reasons || []).map(function(r) {
       return '<div class="us-reco-reason">' + r + '</div>';
     }).join('');
     var warnings = (it.warning || []).map(function(w) {
-      return '<div class="us-reco-warning">⚠ ' + w + '</div>';
+      return '<div class="kr-lt-risk">⚠ ' + w + '</div>';
     }).join('');
+
     var inds = [];
-    if (it.rsi != null) inds.push('RSI ' + it.rsi.toFixed(1));
-    if (it.adx != null) inds.push('ADX ' + it.adx.toFixed(1));
-    if (it.rs20 != null) inds.push('RS20 ' + (it.rs20 >= 0 ? '+' : '') + it.rs20.toFixed(1) + '%');
-    return '<div class="us-reco-card">' +
-      '<div class="us-reco-card-header">' +
+    if (it.rsi  != null) inds.push('RSI '  + it.rsi.toFixed(1));
+    if (it.adx  != null) inds.push('ADX '  + it.adx.toFixed(1));
+    if (it.rvol != null) inds.push('RVOL ' + it.rvol.toFixed(1) + 'x');
+    if (it.rs60 != null) inds.push('RS60 ' + (it.rs60 >= 0 ? '+' : '') + it.rs60.toFixed(1) + '%');
+    else if (it.rs20 != null) inds.push('RS20 ' + (it.rs20 >= 0 ? '+' : '') + it.rs20.toFixed(1) + '%');
+
+    var indHtml = inds.length
+      ? '<div class="kr-lt-fund">' + inds.map(function(i) { return '<span class="kr-lt-fund-tag">' + i + '</span>'; }).join('') + '</div>'
+      : '';
+
+    return '<div class="us-reco-card kr-lt-card">' +
+      '<div class="us-reco-card-header" style="gap:6px">' +
+        '<span style="font-size:13px;font-weight:700;color:#8b949e;min-width:26px">#' + rank + '</span>' +
         '<span class="us-reco-ticker">' + it.ticker + '</span>' +
-        '<span class="us-reco-score">점수 ' + it.score + '</span>' +
+        confBadge +
+        '<span class="us-reco-score" style="margin-left:auto">점수 ' + it.score + '</span>' +
       '</div>' +
       '<div class="us-reco-prices">' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">PM 가격</div>' +
           '<div class="us-surge-pm">$' + (it.pm_price || 0).toFixed(2) +
-          ' <span style="font-size:13px">+' + (it.pm_change_pct || 0).toFixed(2) + '%</span></div></div>' +
+          ' <span style="font-size:13px;color:' + pmColor + '">' + pmSign + pmChg.toFixed(2) + '%</span></div></div>' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">목표가 (ATR)</div>' +
           '<div class="us-reco-pi-val grn">$' + (it.target_price || 0).toFixed(2) +
           ' <span style="font-size:11px">(+' + (it.target_return || 0).toFixed(1) + '%)</span></div></div>' +
@@ -10096,10 +10265,10 @@ function renderUsSurgeCards(items, note) {
         '<div class="us-reco-pi"><div class="us-reco-pi-label">R:R</div>' +
           '<div class="us-reco-pi-val">' + (it.risk_reward || 0).toFixed(2) + ':1</div></div>' +
       '</div>' +
-      (inds.length ? '<div class="us-surge-inds">' + inds.map(function(i) { return '<span class="us-surge-ind">' + i + '</span>'; }).join('') + '</div>' : '') +
-      '<div class="us-reco-reasons" style="margin-top:8px">' + reasons + '</div>' +
-      warnings +
-      '<div class="us-reco-holding">⏱ 보유기간 ' + (it.holding_period || '') + ' · 당일 매도 필수</div>' +
+      (reasons ? '<div class="us-reco-reasons" style="margin-top:8px"><div style="font-size:11px;color:#8b949e;font-weight:600;margin-bottom:4px">⚡ 급등 신호</div>' + reasons + '</div>' : '') +
+      (warnings ? '<div class="kr-lt-risks" style="margin-top:6px">' + warnings + '</div>' : '') +
+      indHtml +
+      '<div class="us-reco-holding" style="margin-top:8px">⏱ ' + (it.holding_period || '당일 매도 필수') + '</div>' +
     '</div>';
   }).join('');
 }
