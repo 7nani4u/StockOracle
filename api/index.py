@@ -6718,22 +6718,7 @@ function renderResult(d) {
       return                        { lbl:'🛑 스윙 저점 이탈 — 전략 무효화',     bg:'#2d1515', txt:'#f85149' };
     })();
 
-    // 레벨 도달 여부: 현재가가 해당 레벨 이하로 내려온 적 있는지 (cur <= fib_level)
-    const _tag = (lvl) => cur <= lvl
-      ? `<span style="font-size:10px;color:#3fb950;font-weight:600">✅ 도달</span>`
-      : `<span style="font-size:10px;color:#484f58">⬜</span>`;
-
-    // 레벨 행 빌더
-    const _lvRow = (label, val, clr, showTag = false) => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d">
-        <span style="color:#8b949e;min-width:80px">${label}</span>
-        <span style="display:flex;align-items:center;gap:10px">
-          ${showTag ? _tag(val) : ''}
-          <b style="color:${clr}">${fmt(val, isKrx)}</b>
-        </span>
-      </div>`;
-
-    // 피보나치 되돌림 가격 행 빌더 (현재가가 해당 레벨 이하면 ✅)
+    // 피보나치 레벨 행 빌더 (현재가 <= 레벨이면 ✅ 도달)
     const _lvRow = (label, val, clr, showTag = false) => `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #21262d">
         <span style="color:#8b949e;font-size:11px;min-width:60px">${label}</span>
