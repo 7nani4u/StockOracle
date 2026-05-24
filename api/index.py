@@ -1581,6 +1581,72 @@ def fetch_kr_toss_metrics(item: dict):
     except Exception:
         return None
 
+def to_toss_product_code(ticker: str, market: str = None) -> str:
+    """
+    StockOracle / yfinance ticker → 토스증권 productCode 변환.
+    국내(KRX): 005930.KS / 005930.KQ → A005930
+    해외(US): 단순 변환 없음 → "" 반환 (Toss 내부 코드와 1:1 매핑 불가)
+    """
+    if not ticker:
+        return ""
+    # 국내 yfinance 포맷 처리
+    if ticker.endswith((".KS", ".KQ")):
+        return "A" + ticker.split(".")[0]
+    # 해외 종목: 별도 매핑 없음
+    return ""
+
+
+@ttl_cache(300)
+def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
+    """
+    토스증권 AI 요약 단일 종목 조회.
+    POST https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals
+    - 국내(KRX) 종목만 productCode 변환 가능 → supported=True
+    - 해외(US) 종목은 매핑 불가 → supported=False, ai_summary=""
+    - 실패 시 빈 문자열 반환 (UI 깨짐 방지)
+    - TTL 5분 캐싱으로 동일 종목 반복 호출 최소화
+    """
+    code = to_toss_product_code(ticker, market)
+    if not code:
+        return {"ai_summary": "", "product_code": "", "supported": False}
+
+    url = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://www.tossinvest.com",
+        "Referer": "https://www.tossinvest.com/",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+    }
+    try:
+        resp = requests.post(
+            url,
+            headers=headers,
+            json={"productCodes": [code]},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+        signals = raw.get("result", {}).get("signals", [])
+        summary = ""
+        for s in signals:
+            if isinstance(s, dict) and s.get("productCode") == code:
+                summary = s.get("reasoningDescription", "")
+                break
+        return {
+            "ai_summary": summary,
+            "product_code": code,
+            "supported": True,
+        }
+    except Exception as e:
+        print(f"[Toss AI Summary] 조회 실패 ({ticker}): {type(e).__name__}: {e}")
+        return {"ai_summary": "", "product_code": code, "supported": True}
+
+
 @ttl_cache(3600)
 def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc") -> dict:
     """
@@ -5496,6 +5562,14 @@ def route(path: str, params: Dict) -> Dict:
             sort_order = "desc"
         return fetch_toss_overseas_screener(sort_by=sort_by, sort_order=sort_order)
 
+    if path == "/api/toss-ai-summary":
+        # 토스증권 AI 요약 단일 종목 조회 (KRX 전용, TTL 5분)
+        t_raw  = params.get("ticker", "").strip()
+        m_raw  = params.get("market", "").strip().upper()
+        if not t_raw:
+            return {"error": "ticker 파라미터 필요", "ai_summary": "", "supported": False}
+        return fetch_toss_ai_summary(t_raw, m_raw)
+
     if path == "/api/cron":
         try:
             fetch_screener()
@@ -5741,13 +5815,18 @@ input::placeholder{color:#484f58}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* 메트릭 카드 */
-.metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.metrics-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
 .metric-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
-/* 카드 기본 span — 데스크탑 기준 */
+/* 카드 기본 span — 데스크탑 기준 (5열 그리드: 2+1+1+1) */
 .metric-price-card{grid-column:span 2}
 .metric-volume-card{grid-column:span 1}
 .metric-atr-card{grid-column:span 1}
+.metric-toss-card{grid-column:span 1}
 #r-fib-card{grid-column:1/-1}
+/* 토스증권 AI 요약 카드 내부 스타일 */
+.toss-ai-summary{font-size:13px;font-weight:600;color:#e6edf3;line-height:1.55;margin-top:4px;word-break:keep-all}
+.toss-ai-time{font-size:10px;color:#484f58;margin-top:6px}
+.toss-ai-spinner{display:inline-block;width:10px;height:10px;border:2px solid #30363d;border-top-color:#1f6feb;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:5px}
 /* 피보나치 카드 내부 2열 레이아웃 */
 .fib-inner{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
 .fib-inner-left{display:flex;flex-direction:column;gap:8px}
@@ -5968,6 +6047,8 @@ input::placeholder{color:#484f58}
 /* ── 태블릿 (≤ 900px) ── */
 @media(max-width:900px){
   .metrics-grid{grid-template-columns:repeat(2,1fr)}
+  /* 900px: 2열 그리드 — 토스 카드 전체 너비 (텍스트 공간 확보) */
+  .metric-toss-card{grid-column:span 2}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
   .indicator-grid{grid-template-columns:1fr}
@@ -6002,7 +6083,8 @@ input::placeholder{color:#484f58}
   .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:start}
   .metric-price-card{grid-column:span 3}
   .metric-volume-card{grid-column:span 1}
-  .metric-atr-card{grid-column:1/-1}
+  .metric-atr-card{grid-column:span 2}
+  .metric-toss-card{grid-column:span 2}
   #r-fib-card{grid-column:1/-1}
   /* 피보나치 내부: 모바일에서 1열로 전환 */
   .fib-inner{grid-template-columns:1fr!important}
@@ -6040,6 +6122,7 @@ input::placeholder{color:#484f58}
   .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
   .metric-price-card{grid-column:1/-1}
   .metric-volume-card,.metric-atr-card{grid-column:span 2}
+  .metric-toss-card{grid-column:1/-1}
   #r-fib-card{grid-column:1/-1}
   /* 480px 이하: 2열, 카드 패딩 축소로 내용 확보 */
   .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
@@ -6591,6 +6674,11 @@ input::placeholder{color:#484f58}
         <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
         <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
         <div class="metric-card metric-atr-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
+        <div class="metric-card metric-toss-card" id="r-toss-card">
+          <div class="m-label">토스증권 AI 요약</div>
+          <div class="toss-ai-summary" id="r-toss-summary" style="color:#484f58;font-size:11px">-</div>
+          <div class="toss-ai-time" id="r-toss-time"></div>
+        </div>
         <div class="metric-card" id="r-fib-card" style="display:none"><div class="m-label" id="r-fib-label">📐 피보나치 기준</div><div id="r-fib-content" style="margin-top:8px;font-size:12px"></div></div>
       </div>
       <div id="r-naver-fund" style="display:none" class="card">
@@ -7351,6 +7439,8 @@ function renderResult(d) {
   renderPivotPoints(d, isKrx);
   // 뉴스
   renderNews(d, isKrx);
+  // 토스증권 AI 요약 비동기 로드 (KRX 전용, 결과 카드 상단 4번째 메트릭 카드)
+  fetchTossAiSummary(d.symbol, d.market);
   // 탭 초기화
   switchTab('chart');
   // 차트는 탭 전환 후 렌더
@@ -10271,6 +10361,91 @@ function renderUsSurgeCards(items, note) {
       '<div class="us-reco-holding" style="margin-top:8px">⏱ ' + (it.holding_period || '당일 매도 필수') + '</div>' +
     '</div>';
   }).join('');
+}
+
+// ── 토스증권 AI 요약 ──────────────────────────────────────────────────────
+/**
+ * 토스증권 AI 요약 비동기 조회 및 렌더링.
+ * - KRX 종목: /api/toss-ai-summary 호출 → reasoningDescription 표시
+ * - US 종목 : productCode 매핑 불가 → "국내 종목 전용" 안내
+ * - 로딩/성공/실패 상태를 각각 UI에 반영하며 에러 시 카드가 깨지지 않음
+ * @param {string} ticker - yfinance 형식 ticker (e.g. "005930.KS", "AAPL")
+ * @param {string} market - "KRX" | "US"
+ */
+function fetchTossAiSummary(ticker, market) {
+  var cardEl    = document.getElementById('r-toss-card');
+  var summaryEl = document.getElementById('r-toss-summary');
+  var timeEl    = document.getElementById('r-toss-time');
+  if (!cardEl || !summaryEl) return;
+
+  // ── US 종목: productCode 매핑 불가 → 안내 메시지 표시 ──────────────
+  if (market !== 'KRX') {
+    summaryEl.style.color     = '#484f58';
+    summaryEl.style.fontSize  = '11px';
+    summaryEl.style.fontWeight = '';
+    summaryEl.textContent = '국내(KRX) 종목 전용';
+    if (timeEl) timeEl.textContent = '';
+    return;
+  }
+
+  // ── 로딩 상태 ────────────────────────────────────────────────────────
+  summaryEl.innerHTML =
+    '<span class="toss-ai-spinner"></span>' +
+    '<span style="color:#484f58;font-size:11px">조회 중...</span>';
+  if (timeEl) timeEl.textContent = '';
+
+  // ── API 호출 ─────────────────────────────────────────────────────────
+  var url = '/api/toss-ai-summary'
+          + '?ticker=' + encodeURIComponent(ticker)
+          + '&market=' + encodeURIComponent(market);
+
+  fetch(url)
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      var txt = (data && data.ai_summary) || '';
+
+      if (data && data.error) {
+        // 백엔드에서 명시적 에러 반환
+        summaryEl.style.color     = '#484f58';
+        summaryEl.style.fontSize  = '11px';
+        summaryEl.style.fontWeight = '';
+        summaryEl.textContent = '조회 불가';
+        return;
+      }
+
+      if (!txt) {
+        // 요약 텍스트 없음 (API는 성공했지만 데이터 없음)
+        summaryEl.style.color     = '#484f58';
+        summaryEl.style.fontSize  = '11px';
+        summaryEl.style.fontWeight = '';
+        summaryEl.textContent = '요약 없음';
+      } else {
+        // ── 성공: textContent로 XSS 방어 ──────────────────────────────
+        summaryEl.style.color     = '#e6edf3';
+        summaryEl.style.fontSize  = '13px';
+        summaryEl.style.fontWeight = '600';
+        summaryEl.textContent = txt;
+      }
+
+      // 기준 시간 표시
+      if (timeEl) {
+        var now = new Date();
+        var hh  = now.getHours().toString().padStart(2, '0');
+        var mm  = now.getMinutes().toString().padStart(2, '0');
+        timeEl.textContent = '토스증권 기준 ' + hh + ':' + mm;
+      }
+    })
+    .catch(function() {
+      // 네트워크 오류 / JSON 파싱 실패 등
+      summaryEl.style.color     = '#484f58';
+      summaryEl.style.fontSize  = '11px';
+      summaryEl.style.fontWeight = '';
+      summaryEl.textContent = '조회 실패';
+      if (timeEl) timeEl.textContent = '';
+    });
 }
 
 // ── 초기화 ──
