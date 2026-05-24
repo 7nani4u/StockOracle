@@ -5249,6 +5249,15 @@ input::placeholder{color:#484f58}
 /* 메트릭 카드 */
 .metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
 .metric-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
+/* 카드 기본 span — 데스크탑 기준 */
+.metric-price-card{grid-column:span 2}
+.metric-volume-card{grid-column:span 1}
+.metric-atr-card{grid-column:span 1}
+#r-fib-card{grid-column:1/-1}
+/* 피보나치 카드 내부 2열 레이아웃 */
+.fib-inner{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.fib-inner-left{display:flex;flex-direction:column;gap:8px}
+.fib-inner-right{display:flex;flex-direction:column;gap:0}
 .metric-price-row{display:flex;align-items:flex-start;gap:20px;flex-wrap:nowrap}
 .m-label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
 .m-value{font-size:22px;font-weight:700}
@@ -5495,15 +5504,15 @@ input::placeholder{color:#484f58}
   }
   #sidebar.open{transform:translateX(0)}
 
-  /* 그리드 1열 */
+  /* 그리드: 4열 유지, span 재배치 */
   .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:start}
   .metric-price-card{grid-column:span 3}
   .metric-volume-card{grid-column:span 1}
-  .metric-atr-card{grid-column:span 2}
+  .metric-atr-card{grid-column:1/-1}
   #r-fib-card{grid-column:1/-1}
+  /* 피보나치 내부: 모바일에서 1열로 전환 */
+  .fib-inner{grid-template-columns:1fr!important}
   .metric-price-row{gap:14px}
-  #r-fib-content .fib-levels-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 16px}
-  #r-fib-content .fib-zone-bar{display:none}
   .two-col-grid{grid-template-columns:1fr;gap:10px}
   .risk-grid{grid-template-columns:1fr}
   .fund-grid{grid-template-columns:repeat(2,1fr)}
@@ -5549,8 +5558,7 @@ input::placeholder{color:#484f58}
   .metric-price-row{justify-content:space-between;gap:10px}
   #r-prob{font-size:10px!important;gap:3px!important}
   #r-fib-card .m-label{white-space:nowrap}
-  #r-fib-content .fib-levels-grid{grid-template-columns:1fr!important}
-  #r-fib-content .fib-zone-bar{display:block!important}
+  .fib-inner{grid-template-columns:1fr!important}
   .m-label{font-size:10px}
   .m-value{font-size:16px}
   .card{padding:12px;border-radius:10px}
@@ -6725,51 +6733,79 @@ function renderResult(d) {
         </span>
       </div>`;
 
+    // 피보나치 되돌림 가격 행 빌더 (현재가가 해당 레벨 이하면 ✅)
+    const _lvRow = (label, val, clr, showTag = false) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid #21262d">
+        <span style="color:#8b949e;font-size:11px;min-width:60px">${label}</span>
+        <span style="display:flex;align-items:center;gap:8px">
+          ${showTag ? (cur <= val
+            ? `<span style="font-size:10px;color:#3fb950;font-weight:700">✅ 도달</span>`
+            : `<span style="font-size:10px;color:#484f58">⬜</span>`) : ''}
+          <b style="color:${clr};font-size:12px">${fmt(val, isKrx)}</b>
+        </span>
+      </div>`;
+
     fibContent.innerHTML = `
-      <!-- 현재가 구간 배지 -->
-      <div style="background:${_zone.bg};color:${_zone.txt};padding:5px 10px;border-radius:7px;font-size:11px;font-weight:700;margin-bottom:10px;border:1px solid ${_zone.txt}55">
+      <!-- 현재가 구간 배지 (전폭) -->
+      <div style="background:${_zone.bg};color:${_zone.txt};padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;margin-bottom:12px;border:1px solid ${_zone.txt}44">
         ${_zone.lbl}
       </div>
 
-      <!-- 스윙 고저점 + 현재가 요약 -->
-      <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-        <div style="flex:1;min-width:100px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;text-align:center">
-          <div style="font-size:10px;color:#8b949e">스윙 고점</div>
-          <div style="font-size:13px;font-weight:700;color:#cdd9e5;margin-top:2px">${fmt(_fib.h60, isKrx)}</div>
-        </div>
-        <div style="flex:1;min-width:100px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;text-align:center">
-          <div style="font-size:10px;color:#8b949e">현재가</div>
-          <div style="font-size:13px;font-weight:700;color:#e6edf3;margin-top:2px">${fmt(cur, isKrx)}</div>
-        </div>
-        <div style="flex:1;min-width:100px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:6px 10px;text-align:center">
-          <div style="font-size:10px;color:#8b949e">스윙 저점</div>
-          <div style="font-size:13px;font-weight:700;color:#cdd9e5;margin-top:2px">${fmt(_fib.l60, isKrx)}</div>
-        </div>
-      </div>
+      <!-- 2열 내부 레이아웃 -->
+      <div class="fib-inner">
 
-      <!-- 피보나치 레벨 테이블 -->
-      <div style="margin-bottom:10px">
-        <div style="font-size:10px;color:#484f58;margin-bottom:4px">피보나치 되돌림 가격</div>
-        ${_lvRow('0.236',   _fib.f236, '#8b949e', true)}
-        ${_lvRow('0.382 ①', _fib.f382, '#f97316', true)}
-        ${_lvRow('0.500 ②', _fib.f500, '#d29922', true)}
-        ${_lvRow('0.618 ③', _fib.f618, '#388bfd', true)}
-        ${_lvRow('0.786',   _fib.f786, '#f85149', true)}
-      </div>
+        <!-- 좌측: 스윙 요약 + 레벨 테이블 -->
+        <div class="fib-inner-left">
+          <!-- 스윙 고저점 + 현재가 -->
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+            <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px;text-align:center">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px">스윙 고점</div>
+              <div style="font-size:13px;font-weight:700;color:#cdd9e5">${fmt(_fib.h60, isKrx)}</div>
+            </div>
+            <div style="background:#0d1117;border:1px solid ${_zone.txt}66;border-radius:8px;padding:8px;text-align:center">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px">현재가</div>
+              <div style="font-size:13px;font-weight:700;color:${_zone.txt}">${fmt(cur, isKrx)}</div>
+            </div>
+            <div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px;text-align:center">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px">스윙 저점</div>
+              <div style="font-size:13px;font-weight:700;color:#cdd9e5">${fmt(_fib.l60, isKrx)}</div>
+            </div>
+          </div>
+          <!-- 피보나치 레벨 테이블 -->
+          <div>
+            <div style="font-size:10px;color:#484f58;margin-bottom:4px;padding-left:2px">피보나치 되돌림 가격</div>
+            ${_lvRow('0.236',    _fib.f236, '#8b949e', true)}
+            ${_lvRow('0.382  ①', _fib.f382, '#f97316', true)}
+            ${_lvRow('0.500  ②', _fib.f500, '#d29922', true)}
+            ${_lvRow('0.618  ③', _fib.f618, '#388bfd', true)}
+            ${_lvRow('0.786',    _fib.f786, '#f85149', true)}
+          </div>
+        </div>
 
-      <!-- 분할매수 구간 해석 -->
-      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px">
-        <div style="font-size:11px;font-weight:700;color:#e6edf3;margin-bottom:8px">📌 분할매수 구간 해석</div>
-        <div style="font-size:11px;color:#8b949e;line-height:1.8;display:flex;flex-direction:column;gap:2px">
-          <div><b style="color:#f97316">① 0.382 도달</b> — 강한 추세 유지 + 거래량 유지 시 1차 매수 후보 (비중 25~30%)</div>
-          <div><b style="color:#d29922">② 0.500 도달</b> — 일반 눌림 구간, RSI 과매도 근접 시 2차 매수 후보 (비중 30%)</div>
-          <div><b style="color:#388bfd">③ 0.618 도달</b> — 핵심 구간, 지지 캔들·거래량·이동평균 확인 후 3차 (비중 30~40%)</div>
-          <div style="color:#484f58">· 0.786 도달 시 전략 위험 구간 — 추세 확인 후 선택적 소액 접근</div>
-          <div style="color:#484f58">· 0.786 명확 이탈 또는 스윙 저점 이탈 시 신규 매수 중단, 손절 검토</div>
+        <!-- 우측: 분할매수 구간 해석 -->
+        <div class="fib-inner-right" style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px">
+          <div style="font-size:11px;font-weight:700;color:#e6edf3;margin-bottom:10px">📌 분할매수 구간 해석</div>
+          <div style="display:flex;flex-direction:column;gap:8px;font-size:11px;line-height:1.6">
+            <div style="background:#2d1500;border-left:3px solid #f97316;border-radius:0 6px 6px 0;padding:6px 10px">
+              <b style="color:#f97316">① 0.382 도달</b><br>
+              <span style="color:#8b949e">강한 추세 + 거래량 유지 시 1차 매수 후보<br>비중 25~30% 검토</span>
+            </div>
+            <div style="background:#2d2200;border-left:3px solid #d29922;border-radius:0 6px 6px 0;padding:6px 10px">
+              <b style="color:#d29922">② 0.500 도달</b><br>
+              <span style="color:#8b949e">일반 눌림 구간, RSI 과매도 근접 시 2차 후보<br>비중 30% 검토</span>
+            </div>
+            <div style="background:#0d1b33;border-left:3px solid #388bfd;border-radius:0 6px 6px 0;padding:6px 10px">
+              <b style="color:#388bfd">③ 0.618 도달</b><br>
+              <span style="color:#8b949e">핵심 구간, 지지 캔들·거래량·이평선 확인 후 진입<br>비중 30~40% 검토</span>
+            </div>
+            <div style="color:#484f58;font-size:10px;padding:4px 2px;line-height:1.7">
+              · 0.786 이탈 시 전략 위험 — 선택적 소액 또는 관망<br>
+              · 스윙 저점 이탈 시 신규 매수 중단, 손절 검토<br>
+              · 피보나치만으로 매수 확정 금지 — RSI·거래량·캔들 병행
+            </div>
+          </div>
         </div>
-        <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d;font-size:10px;color:#484f58;line-height:1.6">
-          ⚠️ 피보나치는 매수 확정 신호가 아닌 후보 구간 도구입니다. RSI·이동평균·거래량·지지 캔들을 반드시 병행 확인하세요.
-        </div>
+
       </div>`;
     fibCard.style.display = 'block';
   } else if (fibCard) {
