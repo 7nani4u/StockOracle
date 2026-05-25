@@ -1644,14 +1644,18 @@ _TOSS_AI_CACHE_TTL: float = 300.0
 
 def _fetch_toss_us_ranking_productcodes() -> dict:
     """
-    Toss 해외 실시간 랭킹 3개를 병렬로 조회해 name→productCode 매핑을 반환한다.
+    Toss 해외 실시간 랭킹 3개를 병렬로 조회해 ticker→productCode 완전 매핑을 반환한다.
 
-    성능 최적화:
-    - 3개 랭킹 요청을 ThreadPoolExecutor로 병렬 실행 (직렬 대비 ~3배 빠름)
+    핵심 동작:
+    - ETF·레버리지 상품(NVDU, BEX 등): name 필드 == 영문 ticker → 즉시 저장
+    - 개별주(캘러보 그로우어스=CVGW, 마이크론=MU 등): name 필드가 한국어 →
+      stock-infos/{productCode} API로 역조회하여 symbol(ticker)을 확보
     - 빈 결과(API 전체 실패)는 캐시하지 않아 즉시 재시도 가능
-    - requests.Session keep-alive로 TCP/TLS 핸드셰이크 오버헤드 제거
 
-    반환값: {name.upper(): productCode, ...}
+    Toss productCode 형식: US20020322001 / NAS0230913004 / AMX0251113001 ...
+    (NAS.CVGW 같은 단순 접두사·티커 조합 형식이 아님에 주의)
+
+    반환값: {ticker_upper: productCode, ...}
     """
     global _TOSS_RANKING_CACHE, _TOSS_RANKING_CACHE_TS
 
@@ -1686,29 +1690,76 @@ def _fetch_toss_us_ranking_productcodes() -> dict:
         return []
 
     # ── 3개 랭킹 병렬 조회 ───────────────────────────────────────────────
-    name_to_code: dict = {}
+    ticker_to_code: dict = {}     # 최종 결과: ticker_upper → productCode
+    korean_codes: list  = []      # 한국어명 종목 productCode (역조회 대상)
+
     ranking_ids = ("biggest_total_amount", "biggest_change_rate", "biggest_volume")
+    seen_codes: set = set()        # 중복 productCode 방지
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
             for products in ex.map(_fetch_one, ranking_ids, timeout=7):
                 for p in products:
-                    # name 필드: ETF·레버리지 상품은 영문 티커, 개별주는 한국어명
-                    name = (p.get("name") or "").upper().strip()
+                    name = (p.get("name") or "").strip()
                     code = p.get("productCode") or ""
-                    if name and code:
-                        name_to_code[name] = code
+                    if not (name and code) or code in seen_codes:
+                        continue
+                    seen_codes.add(code)
+                    # 영문명 종목(ETF·레버리지): name == ticker → 즉시 저장
+                    # 한국어명 종목(개별주): name ≠ ticker → stock-infos 역조회 필요
+                    if all(ord(c) < 128 for c in name):
+                        ticker_to_code[name.upper()] = code
+                    else:
+                        korean_codes.append(code)
     except Exception as e:
         print(f"[Toss US 랭킹] 병렬 조회 오류: {e}")
 
+    # ── 한국어명 종목: stock-infos/{productCode} 역조회로 ticker 확보 ─────
+    # 예: productCode=US20020322001 → symbol="CVGW" (캘러보 그로우어스)
+    #     productCode=US19890516001 → symbol="MU"   (마이크론 테크놀로지)
+    # stock-infos/search?query={ticker} 는 항상 null 반환 → 역조회만 가능
+    if korean_codes:
+        def _resolve_ticker(pc: str) -> tuple:
+            try:
+                r = _toss_session.get(
+                    f"https://wts-info-api.tossinvest.com/api/v1/stock-infos/{pc}",
+                    timeout=4,
+                )
+                if r.status_code == 200:
+                    result = r.json().get("result") or {}
+                    sym = (result.get("symbol") or "").upper().strip()
+                    if sym:
+                        return (pc, sym)
+            except Exception:
+                pass
+            return (pc, "")
+
+        try:
+            # pool_maxsize=8이므로 실질 동시 연결 수는 8개.
+            # 53개 한국어명 종목 → ceil(53/8)=7라운드 × 4s = ~28s → timeout=35s
+            _workers = min(8, len(korean_codes))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_workers) as ex:
+                _futs = {ex.submit(_resolve_ticker, pc): pc for pc in korean_codes}
+                for _fut in concurrent.futures.as_completed(_futs, timeout=35):
+                    try:
+                        pc, sym = _fut.result()
+                        if sym:
+                            ticker_to_code[sym] = pc
+                    except Exception:
+                        pass
+        except concurrent.futures.TimeoutError:
+            print("[Toss US 랭킹] 한국어명 역조회 timeout (부분 결과 사용)")
+        except Exception as e:
+            print(f"[Toss US 랭킹] 한국어명 역조회 오류: {e}")
+
     # 성공한 경우만 캐시 갱신 (실패 시 빈 dict 캐싱 방지)
-    if name_to_code:
-        _TOSS_RANKING_CACHE    = name_to_code
+    if ticker_to_code:
+        _TOSS_RANKING_CACHE    = ticker_to_code
         _TOSS_RANKING_CACHE_TS = now
-        print(f"[Toss US 랭킹] 캐시 갱신: {len(name_to_code)}개")
+        print(f"[Toss US 랭킹] 캐시 갱신: {len(ticker_to_code)}개")
     else:
         print("[Toss US 랭킹] 전체 실패 — 이전 캐시 유지")
 
-    return name_to_code
+    return ticker_to_code
 
 
 def _toss_batch_api(product_code: str) -> dict:
@@ -1831,16 +1882,17 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
     미국 주식 ticker → 토스증권 productCode 다단계 조회.
 
     전략 순서:
-      0)   랭킹 API 캐시에서 name 매칭 (ETF·레버리지 상품에 최적)
-      0.5) NAS./NYS./AMX./US. 접두사 직접 구성 → 배치 API 병렬 검증
-           (CVGW=NAS.CVGW 처럼 검색 불필요하고 바로 맞출 수 있는 경우)
-      1)   Toss 검색 API GET 10개 병렬 (stock-infos, search, products namespaces)
-      2)   Toss 검색 API POST 4개 병렬
-      3)   tossinvest.com 웹 페이지 __NEXT_DATA__ 스크래핑
-           (/stock/{ticker} 직접 상품 페이지 포함)
+      0) 랭킹 API 캐시에서 ticker 매칭 (ETF·레버리지 + 한국어명 개별주 모두 커버)
+         캐시에는 영문명 종목(name==ticker 직접)과 한국어명 종목(stock-infos 역조회)
+         모두 포함됨 → CVGW, MU 같은 한국어명 종목도 여기서 해결됨.
+      1) Toss 검색 API GET 10개 병렬 (stock-infos, search, products namespaces)
+      2) Toss 검색 API POST 4개 병렬
+      3) tossinvest.com 웹 페이지 __NEXT_DATA__ 스크래핑
+         (/stock/{ticker} 직접 상품 페이지 포함)
 
     성공한 결과만 캐시 저장 → 빈 문자열("")은 절대 캐시되지 않음.
-    Toss productCode 형식: NAS.XX / NYS.XX / AMX.XX / US.XX
+    Toss productCode 형식: US20020322001 / NAS0230913004 / AMX0251113001 ...
+    (NAS.{TICKER} 형식이 아님에 주의)
     """
     global _TOSS_US_PC_CACHE, _TOSS_US_PC_CACHE_TS
     import re as _re, json as _json
@@ -1868,41 +1920,6 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
             return _save_and_return(ranking_cache[ticker_upper], "랭킹 캐시")
     except Exception as _e:
         print(f"[Toss US코드] 랭킹 캐시 조회 오류: {_e}")
-
-    # ── 전략 0.5: 거래소 접두사 직접 구성 → 배치 API 병렬 검증 ─────────
-    # Toss productCode = "{EXCHANGE}.{TICKER}" 형식이므로 후보 4개를 동시에 시도.
-    # NAS.CVGW / NYS.CVGW / AMX.CVGW / US.CVGW 중 하나가 응답에 포함되면 확정.
-    _candidate_codes = [f"{pfx}.{ticker_upper}" for pfx in ("NAS", "NYS", "AMX", "US")]
-
-    def _check_constructed_code(pc: str) -> str:
-        try:
-            resp = _toss_session.post(
-                _TOSS_AI_BATCH_URL,
-                json={"productCodes": [pc], "filters": []},
-                headers={"Content-Type": "application/json"},
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                signals = resp.json().get("result", {}).get("signals", [])
-                for s in signals:
-                    if isinstance(s, dict) and s.get("productCode") == pc:
-                        return pc  # 응답에 포함됐으면 유효한 productCode
-        except Exception:
-            pass
-        return ""
-
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(_candidate_codes)) as _ex:
-            _futs = {_ex.submit(_check_constructed_code, pc): pc for pc in _candidate_codes}
-            for _fut in concurrent.futures.as_completed(_futs, timeout=6):
-                try:
-                    pc = _fut.result()
-                    if pc:
-                        return _save_and_return(pc, "직접 구성")
-                except Exception:
-                    pass
-    except concurrent.futures.TimeoutError:
-        print(f"[Toss US코드] {ticker}: 직접 구성 timeout")
 
     # ── 전략 1: GET 검색 엔드포인트 10개를 병렬 실행 ────────────────────
     # CVGW처럼 한국어명 종목은 랭킹 캐시에서 못 찾고 여기서 검색해야 함.
@@ -6056,7 +6073,16 @@ def route(path: str, params: Dict) -> Dict:
         t_raw = params.get("ticker", "").strip().upper()
         if not t_raw:
             return {"error": "ticker 파라미터 필요"}
-        debug_info: dict = {"ticker": t_raw, "endpoints": []}
+        # 랭킹 캐시 현재 상태 확인 (Korean 역조회 완료 여부)
+        _ranking_snap = dict(_TOSS_RANKING_CACHE)
+        debug_info: dict = {
+            "ticker": t_raw,
+            "ranking_cache_size": len(_ranking_snap),
+            "ticker_in_ranking_cache": t_raw in _ranking_snap,
+            "ranking_productCode": _ranking_snap.get(t_raw, "(없음)"),
+            "ranking_cache_ts_age_s": round(time.monotonic() - _TOSS_RANKING_CACHE_TS, 1),
+            "endpoints": [],
+        }
         test_urls = [
             ("GET", "https://wts-info-api.tossinvest.com/api/v1/stock-infos/search",
              {"query": t_raw, "size": 5}),
