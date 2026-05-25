@@ -1629,6 +1629,18 @@ _TOSS_RANKING_CACHE: dict      = {}
 _TOSS_RANKING_CACHE_TS: float  = 0.0
 _TOSS_RANKING_CACHE_TTL: float = 60.0   # 1분
 
+# ── US productCode 캐시 (성공 결과만 저장; 빈 문자열 캐싱 방지) ─────────────
+# ttl_cache는 실패("")도 캐싱해서 1시간 동안 재시도 불가 → 수동 캐시로 교체.
+_TOSS_US_PC_CACHE: dict      = {}     # {ticker_upper: productCode}
+_TOSS_US_PC_CACHE_TS: dict   = {}     # {ticker_upper: monotonic_timestamp}
+_TOSS_US_PC_CACHE_TTL: float = 3600.0
+
+# ── AI 요약 캐시 (supported=True 결과만 저장; supported=False 캐싱 방지) ──────
+# supported=False를 캐싱하면 productCode 검색 로직 개선 후에도 5분간 재시도 불가.
+_TOSS_AI_CACHE: dict      = {}     # {(ticker_upper, market): result_dict}
+_TOSS_AI_CACHE_TS: dict   = {}     # {(ticker_upper, market): monotonic_timestamp}
+_TOSS_AI_CACHE_TTL: float = 300.0
+
 
 def _fetch_toss_us_ranking_productcodes() -> dict:
     """
@@ -1772,13 +1784,15 @@ def _parse_toss_candidates(data, ticker_upper: str) -> str:
                     candidates = val
                     break
 
-    # ticker 매칭
+    # ticker 매칭 — Toss API가 사용하는 다양한 필드명 전부 시도
     for item in candidates:
         if not isinstance(item, dict):
             continue
         sym = (
             item.get("stockCode") or item.get("ticker") or item.get("symbol")
-            or item.get("symbolCode") or item.get("code") or ""
+            or item.get("symbolCode") or item.get("code")
+            or item.get("tickerSymbol") or item.get("shortCode")
+            or item.get("stockSymbol") or item.get("nameEn") or ""
         ).upper().strip()
         if sym == ticker_upper:
             code = item.get("productCode") or item.get("id") or ""
@@ -1791,11 +1805,14 @@ def _deep_find_product_code(obj, ticker_upper: str) -> str:
     """JSON 객체에서 ticker에 매칭되는 productCode를 재귀 탐색 (웹 스크래핑용)."""
     if isinstance(obj, dict):
         sym = (
-            obj.get("stockCode") or obj.get("ticker") or obj.get("symbol") or ""
+            obj.get("stockCode") or obj.get("ticker") or obj.get("symbol")
+            or obj.get("symbolCode") or obj.get("code")
+            or obj.get("tickerSymbol") or obj.get("shortCode")
+            or obj.get("stockSymbol") or ""
         ).upper()
         if sym == ticker_upper:
-            code = obj.get("productCode") or ""
-            if code:
+            code = obj.get("productCode") or obj.get("id") or ""
+            if code and isinstance(code, str):
                 return code
         for v in obj.values():
             r = _deep_find_product_code(v, ticker_upper)
@@ -1809,36 +1826,85 @@ def _deep_find_product_code(obj, ticker_upper: str) -> str:
     return ""
 
 
-@ttl_cache(3600)  # 1시간 캐싱 — 실패 결과가 24h 고착되는 버그 방지 (productCode는 변하지 않으나 재시도 허용)
 def _fetch_toss_us_product_code(ticker: str) -> str:
     """
     미국 주식 ticker → 토스증권 productCode 다단계 조회.
 
     전략 순서:
-      0) 랭킹 API 캐시에서 name 매칭 (MD 권장: 가장 신뢰성 높음)
-      1) Toss 검색 API GET (stock-infos, search, products namespaces)
-      2) Toss 검색 API POST 변형
-      3) tossinvest.com 웹 페이지 __NEXT_DATA__ 스크래핑
+      0)   랭킹 API 캐시에서 name 매칭 (ETF·레버리지 상품에 최적)
+      0.5) NAS./NYS./AMX./US. 접두사 직접 구성 → 배치 API 병렬 검증
+           (CVGW=NAS.CVGW 처럼 검색 불필요하고 바로 맞출 수 있는 경우)
+      1)   Toss 검색 API GET 10개 병렬 (stock-infos, search, products namespaces)
+      2)   Toss 검색 API POST 4개 병렬
+      3)   tossinvest.com 웹 페이지 __NEXT_DATA__ 스크래핑
+           (/stock/{ticker} 직접 상품 페이지 포함)
 
-    Toss productCode 형식: NAS... / NYS... / AMX... / US...
+    성공한 결과만 캐시 저장 → 빈 문자열("")은 절대 캐시되지 않음.
+    Toss productCode 형식: NAS.XX / NYS.XX / AMX.XX / US.XX
     """
+    global _TOSS_US_PC_CACHE, _TOSS_US_PC_CACHE_TS
     import re as _re, json as _json
     ticker_upper = ticker.upper().strip()
 
+    # ── 수동 캐시 히트 (성공 결과만 저장됨; 실패는 캐시 안함) ─────────────
+    _now = time.monotonic()
+    if ticker_upper in _TOSS_US_PC_CACHE and \
+            (_now - _TOSS_US_PC_CACHE_TS.get(ticker_upper, 0)) < _TOSS_US_PC_CACHE_TTL:
+        return _TOSS_US_PC_CACHE[ticker_upper]
+
+    def _save_and_return(code: str, src: str) -> str:
+        """캐시에 저장하고 반환하는 헬퍼."""
+        _TOSS_US_PC_CACHE[ticker_upper] = code
+        _TOSS_US_PC_CACHE_TS[ticker_upper] = _now
+        print(f"[Toss US코드] {ticker} → {code} ({src})")
+        return code
+
     # ── 전략 0: 랭킹 API 캐시에서 name 기준 매칭 ────────────────────────
     # ETF·레버리지 상품(NVDU, BEX, SMCY 등)은 name == ticker라 즉시 매칭됨.
-    # 개별 종목(마이크론=MU, 스위트그린=SG)은 name이 한국어라 미매칭 → 전략 1~3으로 fallback.
+    # 개별 종목(마이크론=MU, CVGW 등)은 name이 한국어라 미매칭 → 전략 0.5~3으로 fallback.
     try:
         ranking_cache = _fetch_toss_us_ranking_productcodes()
         if ticker_upper in ranking_cache:
-            code = ranking_cache[ticker_upper]
-            print(f"[Toss US코드] {ticker} → {code} (랭킹 캐시)")
-            return code
+            return _save_and_return(ranking_cache[ticker_upper], "랭킹 캐시")
     except Exception as _e:
         print(f"[Toss US코드] 랭킹 캐시 조회 오류: {_e}")
 
+    # ── 전략 0.5: 거래소 접두사 직접 구성 → 배치 API 병렬 검증 ─────────
+    # Toss productCode = "{EXCHANGE}.{TICKER}" 형식이므로 후보 4개를 동시에 시도.
+    # NAS.CVGW / NYS.CVGW / AMX.CVGW / US.CVGW 중 하나가 응답에 포함되면 확정.
+    _candidate_codes = [f"{pfx}.{ticker_upper}" for pfx in ("NAS", "NYS", "AMX", "US")]
+
+    def _check_constructed_code(pc: str) -> str:
+        try:
+            resp = _toss_session.post(
+                _TOSS_AI_BATCH_URL,
+                json={"productCodes": [pc], "filters": []},
+                headers={"Content-Type": "application/json"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                signals = resp.json().get("result", {}).get("signals", [])
+                for s in signals:
+                    if isinstance(s, dict) and s.get("productCode") == pc:
+                        return pc  # 응답에 포함됐으면 유효한 productCode
+        except Exception:
+            pass
+        return ""
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(_candidate_codes)) as _ex:
+            _futs = {_ex.submit(_check_constructed_code, pc): pc for pc in _candidate_codes}
+            for _fut in concurrent.futures.as_completed(_futs, timeout=6):
+                try:
+                    pc = _fut.result()
+                    if pc:
+                        return _save_and_return(pc, "직접 구성")
+                except Exception:
+                    pass
+    except concurrent.futures.TimeoutError:
+        print(f"[Toss US코드] {ticker}: 직접 구성 timeout")
+
     # ── 전략 1: GET 검색 엔드포인트 10개를 병렬 실행 ────────────────────
-    # 이전 직렬(3s×최대4개=12s deadline) 방식에서 병렬(5s, 첫 성공 즉시 반환)으로 변경.
     # CVGW처럼 한국어명 종목은 랭킹 캐시에서 못 찾고 여기서 검색해야 함.
     # 어떤 엔드포인트가 성공하든 5s 이내에 결과 반환.
     get_attempts = [
@@ -1884,8 +1950,7 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
                 try:
                     code = _fut.result()
                     if code:
-                        print(f"[Toss US코드] {ticker} → {code} (GET 병렬)")
-                        return code
+                        return _save_and_return(code, "GET 병렬")
                 except Exception:
                     pass
     except concurrent.futures.TimeoutError:
@@ -1923,15 +1988,16 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
                 try:
                     code = _fut.result()
                     if code:
-                        print(f"[Toss US코드] {ticker} → {code} (POST 병렬)")
-                        return code
+                        return _save_and_return(code, "POST 병렬")
                 except Exception:
                     pass
     except concurrent.futures.TimeoutError:
         print(f"[Toss US코드] {ticker}: POST 병렬 timeout")
 
     # ── 전략 3: 웹 페이지 __NEXT_DATA__ 스크래핑 ────────────────────────
+    # /stock/{ticker} 직접 상품 페이지를 최우선으로 시도 (가장 정확한 JSON 포함)
     scrape_urls = [
+        f"https://www.tossinvest.com/stock/{ticker_upper}",
         f"https://www.tossinvest.com/search?q={ticker_upper}",
         f"https://www.tossinvest.com/search?query={ticker_upper}",
     ]
@@ -1951,16 +2017,14 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
                     nd = _json.loads(m.group(1))
                     code = _deep_find_product_code(nd, ticker_upper)
                     if code:
-                        print(f"[Toss US코드] {ticker} → {code} (__NEXT_DATA__)")
-                        return code
+                        return _save_and_return(code, "__NEXT_DATA__")
         except Exception as e:
             print(f"[Toss US코드] 스크래핑 {surl} 오류: {e}")
 
-    print(f"[Toss US코드] {ticker}: 전 전략 실패 — productCode 조회 불가")
+    print(f"[Toss US코드] {ticker}: 전 전략 실패 — productCode 조회 불가 (캐시 안함)")
     return ""
 
 
-@ttl_cache(300)
 def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     """
     토스증권 AI 요약 조회 — KRX + US/해외 모두 지원.
@@ -1971,22 +2035,40 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     US/해외 전략 (성능 최적화 순서):
       0) 랭킹 캐시(60s TTL) name 매칭 → productCode 즉시 확보 후 배치 API
          성공 시 전략 1~3 완전 스킵 (ETF·레버리지·랭킹 상위 종목)
-      1) 상세 API(detail)에 ticker + productType 직접 전달 (6가지 시도)
+      1) 상세 API(detail)에 ticker + productType 직접 전달 (6가지 병렬)
       2) 배치 API에 ticker 직접 전달
-      3) 검색 API(_fetch_toss_us_product_code, 1h 캐싱 + 12s deadline)로
+      3) 검색 API(_fetch_toss_us_product_code, 성공만 캐싱)로
          productCode 획득 → 배치 API + 상세 API 재시도
 
+    캐시 정책: supported=True 결과만 300s 캐싱.
+               supported=False(미지원·조회실패)는 캐시 안함 → 즉시 재시도 가능.
     실패 시 ai_summary="" 반환 — UI 절대 깨지지 않음.
     """
+    _ticker_upper = ticker.upper().strip()
+    _cache_key = (_ticker_upper, market)
+    _now = time.monotonic()
+
+    # ── 수동 캐시 히트 (supported=True 결과만 저장됨) ─────────────────────
+    if _cache_key in _TOSS_AI_CACHE and \
+            (_now - _TOSS_AI_CACHE_TS.get(_cache_key, 0)) < _TOSS_AI_CACHE_TTL:
+        return _TOSS_AI_CACHE[_cache_key]
+
+    def _cache_ok(result: dict) -> dict:
+        """supported=True 결과를 캐시에 저장 후 반환."""
+        if result.get("supported", False):
+            _TOSS_AI_CACHE[_cache_key] = result
+            _TOSS_AI_CACHE_TS[_cache_key] = _now
+        return result
+
     # ── KRX ──────────────────────────────────────────────────────────────
     if market == "KRX":
         code = to_toss_product_code(ticker, market)
         if not code:
             return {"ai_summary": "", "product_code": "", "supported": False}
-        return _toss_batch_api(code)
+        return _cache_ok(_toss_batch_api(code))
 
     # ── US / 해외 ─────────────────────────────────────────────────────────
-    ticker_upper = ticker.upper().strip()
+    ticker_upper = _ticker_upper
 
     # 전략 0: 랭킹 캐시에서 productCode 즉시 확보 (전략 1~2의 헛된 7회 API 콜 스킵)
     # 랭킹 상위 ETF·레버리지 상품(NVDU, BEX, SMCY 등)은 이 단계에서 완료
@@ -1996,9 +2078,9 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
             code = ranking_cache[ticker_upper]
             result = _toss_batch_api(code)
             if result.get("ai_summary"):
-                return result
+                return _cache_ok(result)
             # productCode는 확보했으나 토스가 아직 미분석
-            return {"ai_summary": "", "product_code": code, "supported": True}
+            return _cache_ok({"ai_summary": "", "product_code": code, "supported": True})
     except Exception as _e:
         print(f"[Toss AI] 랭킹 캐시 오류: {_e}")
 
@@ -2013,7 +2095,7 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
                 try:
                     txt = _fut.result()
                     if txt:
-                        return {"ai_summary": txt, "product_code": ticker_upper, "supported": True}
+                        return _cache_ok({"ai_summary": txt, "product_code": ticker_upper, "supported": True})
                 except Exception:
                     pass
     except concurrent.futures.TimeoutError:
@@ -2022,26 +2104,27 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     # 전략 2: 배치 API에 ticker 직접 시도 (1회 HTTP 콜)
     result = _toss_batch_api(ticker_upper)
     if result.get("ai_summary"):
-        return result
+        return _cache_ok(result)
 
-    # 전략 3: 검색 API로 실제 productCode 획득 후 재시도 (1h 캐싱 + 12s deadline)
+    # 전략 3: 검색 API로 실제 productCode 획득 후 재시도 (성공만 캐싱)
     code = _fetch_toss_us_product_code(ticker_upper)
     if not code:
+        # productCode 조회 실패 → 캐시 안함, 다음 요청에서 재시도
         return {"ai_summary": "", "product_code": "", "supported": False}
 
     # productCode로 배치 API 시도
     result = _toss_batch_api(code)
     if result.get("ai_summary"):
-        return result
+        return _cache_ok(result)
 
     # productCode로 상세 API도 시도
     for pt in ("STOCKS", "FOREIGN_STOCKS", "US_STOCKS", "OVERSEAS_STOCKS", "OVERSEAS"):
         txt = _toss_detail_api(code, pt)
         if txt:
-            return {"ai_summary": txt, "product_code": code, "supported": True}
+            return _cache_ok({"ai_summary": txt, "product_code": code, "supported": True})
 
-    # productCode는 얻었지만 AI 요약 없음
-    return {"ai_summary": "", "product_code": code, "supported": True}
+    # productCode는 얻었지만 AI 요약 없음 (토스 미분석 상태) → 캐시 OK
+    return _cache_ok({"ai_summary": "", "product_code": code, "supported": True})
 
 
 @ttl_cache(3600)
