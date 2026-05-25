@@ -1606,6 +1606,53 @@ _TOSS_API_HEADERS = {
 }
 _TOSS_AI_BATCH_URL  = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals"
 _TOSS_AI_DETAIL_URL = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/overview/ai-signals/detail"
+# MD 분석: 랭킹 API의 productCode가 해외 종목의 가장 신뢰성 높은 식별자
+_TOSS_RANKING_URL   = "https://wts-cert-api.tossinvest.com/api/v2/dashboard/wts/overview/ranking"
+
+
+@ttl_cache(60)  # 1분 TTL — 장중 랭킹 변동 반영
+def _fetch_toss_us_ranking_productcodes() -> dict:
+    """
+    Toss 해외 실시간 랭킹 API에서 name→productCode 매핑 캐시를 구축한다.
+
+    MD 파일 권장 방식: 랭킹 응답의 productCode를 직접 활용하는 것이
+    검색 API/웹 스크래핑보다 훨씬 신뢰성이 높다.
+    (NAS.../NYS.../AMX.../US... 형식의 내부 코드를 정확히 반환)
+
+    반환값: {name.upper(): productCode, ...}
+    """
+    headers = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
+    name_to_code: dict = {}
+
+    for ranking_id in ("biggest_total_amount", "biggest_change_rate", "biggest_volume"):
+        body = {
+            "id": ranking_id,
+            "filters": [
+                "KRX_MANAGEMENT_STOCK",
+                "MARKET_CAP_GREATER_THAN_50M",
+                "STOCKS_PRICE_GREATER_THAN_ONE_DOLLAR",
+            ],
+            "duration": "realtime",
+            "tag": "us",
+        }
+        try:
+            resp = requests.post(
+                _TOSS_RANKING_URL, headers=headers, json=body, timeout=8
+            )
+            if resp.status_code != 200:
+                continue
+            products = resp.json().get("result", {}).get("products", [])
+            for p in products:
+                # name 필드: ETF/레버리지 상품은 영문 티커, 개별주는 한국어명
+                name = (p.get("name") or "").upper().strip()
+                code = p.get("productCode") or ""
+                if name and code:
+                    name_to_code[name] = code
+        except Exception as e:
+            print(f"[Toss US 랭킹] {ranking_id} 오류: {e}")
+
+    print(f"[Toss US 랭킹] productCode 캐시 구축: {len(name_to_code)}개")
+    return name_to_code
 
 
 def _toss_batch_api(product_code: str) -> dict:
@@ -1718,21 +1765,39 @@ def _deep_find_product_code(obj, ticker_upper: str) -> str:
     return ""
 
 
-@ttl_cache(86400)  # 24시간 캐싱 — productCode는 변하지 않음
+@ttl_cache(3600)  # 1시간 캐싱 — 실패 결과가 24h 고착되는 버그 방지 (productCode는 변하지 않으나 재시도 허용)
 def _fetch_toss_us_product_code(ticker: str) -> str:
     """
     미국 주식 ticker → 토스증권 productCode 다단계 조회.
 
     전략 순서:
+      0) 랭킹 API 캐시에서 name 매칭 (MD 권장: 가장 신뢰성 높음)
       1) Toss 검색 API GET (stock-infos, search, products namespaces)
       2) Toss 검색 API POST 변형
       3) tossinvest.com 웹 페이지 __NEXT_DATA__ 스크래핑
 
-    Toss productCode 형식: NAS... / NYS... / AMX...
+    Toss productCode 형식: NAS... / NYS... / AMX... / US...
     """
     import re as _re, json as _json
     ticker_upper = ticker.upper().strip()
     headers_post = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
+
+    # ── 전략 0: 랭킹 API 캐시에서 name 기준 매칭 ────────────────────────
+    # ETF·레버리지 상품(NVDU, BEX, SMCY 등)은 name == ticker라 즉시 매칭됨.
+    # 개별 종목(마이크론=MU, 스위트그린=SG)은 name이 한국어라 미매칭 → 전략 1~3으로 fallback.
+    try:
+        ranking_cache = _fetch_toss_us_ranking_productcodes()
+        if ticker_upper in ranking_cache:
+            code = ranking_cache[ticker_upper]
+            print(f"[Toss US코드] {ticker} → {code} (랭킹 캐시)")
+            return code
+    except Exception as _e:
+        print(f"[Toss US코드] 랭킹 캐시 조회 오류: {_e}")
+
+    # ── 전략 1~3 전체 실행 시간 상한: 12초 ──────────────────────────────
+    # GET 10개(6s×10=60s) + POST 4개(6s×4=24s) + 스크래핑 2개(10s×2=20s) = 최악 104초
+    # deadline을 두어 12초 초과 시 즉시 포기 → 함수 전체 응답 시간 보장
+    _deadline = time.monotonic() + 12.0
 
     # ── 전략 1: GET 검색 엔드포인트 ────────────────────────────────────
     get_attempts = [
@@ -1761,9 +1826,12 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
          {"query": ticker_upper, "size": 10}),
     ]
     for url, params in get_attempts:
+        if time.monotonic() > _deadline:
+            print(f"[Toss US코드] {ticker}: deadline 초과 — GET 전략 조기 종료")
+            break
         try:
             resp = requests.get(url, params=params,
-                                headers=_TOSS_API_HEADERS, timeout=6)
+                                headers=_TOSS_API_HEADERS, timeout=3)
             if resp.status_code == 200:
                 code = _parse_toss_candidates(resp.json(), ticker_upper)
                 if code:
@@ -1784,9 +1852,12 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
          {"query": ticker_upper, "market": "OVERSEAS", "size": 10}),
     ]
     for url, body in post_attempts:
+        if time.monotonic() > _deadline:
+            print(f"[Toss US코드] {ticker}: deadline 초과 — POST 전략 조기 종료")
+            break
         try:
             resp = requests.post(url, json=body,
-                                 headers=headers_post, timeout=6)
+                                 headers=headers_post, timeout=3)
             if resp.status_code == 200:
                 code = _parse_toss_candidates(resp.json(), ticker_upper)
                 if code:
@@ -1796,28 +1867,31 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
             print(f"[Toss US코드] POST {url} 오류: {e}")
 
     # ── 전략 3: 웹 페이지 __NEXT_DATA__ 스크래핑 ────────────────────────
-    scrape_urls = [
-        f"https://www.tossinvest.com/search?q={ticker_upper}",
-        f"https://www.tossinvest.com/search?query={ticker_upper}",
-    ]
-    page_headers = {**_TOSS_API_HEADERS,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-    for surl in scrape_urls:
-        try:
-            resp = requests.get(surl, headers=page_headers, timeout=10)
-            if resp.status_code == 200:
-                m = _re.search(
-                    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-                    resp.text, _re.DOTALL
-                )
-                if m:
-                    nd = _json.loads(m.group(1))
-                    code = _deep_find_product_code(nd, ticker_upper)
-                    if code:
-                        print(f"[Toss US코드] {ticker} → {code} (__NEXT_DATA__)")
-                        return code
-        except Exception as e:
-            print(f"[Toss US코드] 스크래핑 {surl} 오류: {e}")
+    if time.monotonic() <= _deadline:
+        scrape_urls = [
+            f"https://www.tossinvest.com/search?q={ticker_upper}",
+            f"https://www.tossinvest.com/search?query={ticker_upper}",
+        ]
+        page_headers = {**_TOSS_API_HEADERS,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+        for surl in scrape_urls:
+            if time.monotonic() > _deadline:
+                break
+            try:
+                resp = requests.get(surl, headers=page_headers, timeout=6)
+                if resp.status_code == 200:
+                    m = _re.search(
+                        r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+                        resp.text, _re.DOTALL
+                    )
+                    if m:
+                        nd = _json.loads(m.group(1))
+                        code = _deep_find_product_code(nd, ticker_upper)
+                        if code:
+                            print(f"[Toss US코드] {ticker} → {code} (__NEXT_DATA__)")
+                            return code
+            except Exception as e:
+                print(f"[Toss US코드] 스크래핑 {surl} 오류: {e}")
 
     print(f"[Toss US코드] {ticker}: 전 전략 실패 — productCode 조회 불가")
     return ""
@@ -1831,12 +1905,13 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     KRX 전략:
       · productCode "A{code}" 즉시 변환 → 배치 API
 
-    US/해외 전략 (순서대로, 성공 즉시 반환):
-      1) 상세 API(detail)에 ticker + productType 직접 전달
-         → 검색 없이 ticker 자체가 productCode로 동작하면 즉시 성공
-      2) 배치 API에 ticker 직접 전달 (동일 시도)
-      3) 검색 API(_fetch_toss_us_product_code, 24h 캐싱)로 productCode 획득
-         → 획득한 productCode로 배치 API + 상세 API 재시도
+    US/해외 전략 (성능 최적화 순서):
+      0) 랭킹 캐시(60s TTL) name 매칭 → productCode 즉시 확보 후 배치 API
+         성공 시 전략 1~3 완전 스킵 (ETF·레버리지·랭킹 상위 종목)
+      1) 상세 API(detail)에 ticker + productType 직접 전달 (6가지 시도)
+      2) 배치 API에 ticker 직접 전달
+      3) 검색 API(_fetch_toss_us_product_code, 1h 캐싱 + 12s deadline)로
+         productCode 획득 → 배치 API + 상세 API 재시도
 
     실패 시 ai_summary="" 반환 — UI 절대 깨지지 않음.
     """
@@ -1849,6 +1924,20 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
 
     # ── US / 해외 ─────────────────────────────────────────────────────────
     ticker_upper = ticker.upper().strip()
+
+    # 전략 0: 랭킹 캐시에서 productCode 즉시 확보 (전략 1~2의 헛된 7회 API 콜 스킵)
+    # 랭킹 상위 ETF·레버리지 상품(NVDU, BEX, SMCY 등)은 이 단계에서 완료
+    try:
+        ranking_cache = _fetch_toss_us_ranking_productcodes()
+        if ticker_upper in ranking_cache:
+            code = ranking_cache[ticker_upper]
+            result = _toss_batch_api(code)
+            if result.get("ai_summary"):
+                return result
+            # productCode는 확보했으나 토스가 아직 미분석
+            return {"ai_summary": "", "product_code": code, "supported": True}
+    except Exception as _e:
+        print(f"[Toss AI] 랭킹 캐시 오류: {_e}")
 
     # 전략 1: 상세 API에 ticker 자체를 productCode로 직접 시도
     # (일부 productType에서는 ticker symbol 그대로 수락하는 경우 있음)
@@ -1863,7 +1952,7 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     if result.get("ai_summary"):
         return result
 
-    # 전략 3: 검색 API로 실제 productCode 획득 후 재시도
+    # 전략 3: 검색 API로 실제 productCode 획득 후 재시도 (1h 캐싱 + 12s deadline)
     code = _fetch_toss_us_product_code(ticker_upper)
     if not code:
         return {"ai_summary": "", "product_code": "", "supported": False}
@@ -7724,7 +7813,7 @@ function renderResult(d) {
   renderPivotPoints(d, isKrx);
   // 뉴스
   renderNews(d, isKrx);
-  // 토스증권 AI 요약 비동기 로드 (KRX 전용, 결과 카드 상단 4번째 메트릭 카드)
+  // 토스증권 AI 요약 비동기 로드 (KRX + US 공통, 결과 카드 상단 4번째 메트릭 카드)
   fetchTossAiSummary(d.symbol, d.market);
   // 탭 초기화
   switchTab('chart');
@@ -10650,32 +10739,67 @@ function renderUsSurgeCards(items, note) {
 
 // ── 토스증권 AI 요약 ──────────────────────────────────────────────────────
 /**
- * 토스증권 AI 요약 비동기 조회 및 렌더링.
- * - KRX 종목: productCode "A{code}" 즉시 변환 후 AI signals API 호출
- * - US  종목: Toss 검색 API로 productCode 조회(24h 캐싱) 후 AI signals API 호출
- * - 로딩/성공/실패 상태를 각각 UI에 반영하며 에러 시 카드가 깨지지 않음
- * @param {string} ticker - yfinance 형식 ticker (e.g. "005930.KS", "AAPL")
+ * 토스증권 AI 요약 비동기 조회 및 렌더링 (KRX + US 공통).
+ *
+ * [KRX] productCode = "A" + 종목코드 → 즉시 AI signals 배치 API 호출
+ * [US]  전략 순서:
+ *   0) 랭킹 API 캐시에서 name 매칭 (ETF·레버리지 상품 즉시 매칭)
+ *   1) Toss 검색 GET 엔드포인트 다수 시도
+ *   2) Toss 검색 POST 엔드포인트 다수 시도
+ *   3) tossinvest.com __NEXT_DATA__ 스크래핑
+ *   → productCode 확보 후 배치 API + 상세 API 재시도
+ *
+ * 모든 상태(로딩·성공·실패·빈값·타임아웃)를 명확히 표시.
+ * AbortController로 race condition 방지: 연속 검색 시 이전 요청 자동 취소.
+ *
+ * @param {string} ticker - yfinance 형식 ticker (e.g. "005930.KS", "AAPL", "NVDU")
  * @param {string} market - "KRX" | "US"
  */
+
+// 진행 중인 fetch를 취소하기 위한 컨트롤러.
+// 연속 검색 시 이전 응답이 현재 카드를 덮어쓰는 race condition을 방지한다.
+var _tossAiController = null;
+
 function fetchTossAiSummary(ticker, market) {
   var cardEl    = document.getElementById('r-toss-card');
   var summaryEl = document.getElementById('r-toss-summary');
   var timeEl    = document.getElementById('r-toss-time');
   if (!cardEl || !summaryEl) return;
 
-  // ── 로딩 상태 (KRX + US 모두 조회 시도) ─────────────────────────────
+  // ── 이전 진행 중 요청 즉시 취소 (race condition 방지) ────────────────
+  if (_tossAiController) {
+    _tossAiController.abort();
+  }
+  _tossAiController = new AbortController();
+  var signal     = _tossAiController.signal;
+  var isUS       = (market !== 'KRX');
+  var timedOut   = false;
+
+  // ── 로딩 상태 ────────────────────────────────────────────────────────
   summaryEl.innerHTML =
     '<span class="toss-ai-spinner"></span>' +
-    '<span style="color:#484f58;font-size:11px">조회 중...</span>';
+    '<span style="color:#484f58;font-size:11px">' +
+      (isUS ? '해외 요약 조회 중...' : '조회 중...') +
+    '</span>';
   if (timeEl) timeEl.textContent = '';
+
+  // ── 클라이언트 사이드 타임아웃 ──────────────────────────────────────
+  // 백엔드 전략 1~3 직렬 실행 시 최악 수십 초 소요 방지.
+  // 랭킹 캐시 히트 시 KRX 수준(~1s)으로 빠르게 완료되므로 실제론 드물게 발동.
+  var timeoutMs = isUS ? 22000 : 10000;
+  var timeoutId = setTimeout(function() {
+    timedOut = true;
+    if (_tossAiController) _tossAiController.abort();
+  }, timeoutMs);
 
   // ── API 호출 ─────────────────────────────────────────────────────────
   var url = '/api/toss-ai-summary'
           + '?ticker=' + encodeURIComponent(ticker)
           + '&market=' + encodeURIComponent(market);
 
-  fetch(url)
+  fetch(url, { signal: signal })
     .then(function(r) {
+      clearTimeout(timeoutId);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
@@ -10684,32 +10808,33 @@ function fetchTossAiSummary(ticker, market) {
 
       if (data && data.error) {
         // 백엔드에서 명시적 에러 반환
-        summaryEl.style.color     = '#484f58';
-        summaryEl.style.fontSize  = '11px';
+        summaryEl.style.color      = '#484f58';
+        summaryEl.style.fontSize   = '11px';
         summaryEl.style.fontWeight = '';
         summaryEl.textContent = '조회 불가';
         return;
       }
 
-      // supported=false: productCode 조회 자체가 실패 (US 검색 불가 종목)
+      // supported=false: productCode 조회 자체가 실패
+      // US 종목은 토스 랭킹에 없거나 검색 API가 인식 못하는 종목
       if (data && data.supported === false) {
-        summaryEl.style.color     = '#484f58';
-        summaryEl.style.fontSize  = '11px';
+        summaryEl.style.color      = '#484f58';
+        summaryEl.style.fontSize   = '11px';
         summaryEl.style.fontWeight = '';
-        summaryEl.textContent = '종목 코드 조회 실패';
+        summaryEl.textContent = isUS ? '토스증권 미지원 종목' : '종목 코드 조회 실패';
         return;
       }
 
       if (!txt) {
-        // 요약 텍스트 없음 (API는 성공했지만 데이터 없음)
-        summaryEl.style.color     = '#484f58';
-        summaryEl.style.fontSize  = '11px';
+        // productCode 확보됐으나 토스가 아직 미분석
+        summaryEl.style.color      = '#484f58';
+        summaryEl.style.fontSize   = '11px';
         summaryEl.style.fontWeight = '';
         summaryEl.textContent = '요약 없음';
       } else {
         // ── 성공: textContent로 XSS 방어 ──────────────────────────────
-        summaryEl.style.color     = '#e6edf3';
-        summaryEl.style.fontSize  = '13px';
+        summaryEl.style.color      = '#e6edf3';
+        summaryEl.style.fontSize   = '13px';
         summaryEl.style.fontWeight = '600';
         summaryEl.textContent = txt;
       }
@@ -10722,12 +10847,15 @@ function fetchTossAiSummary(ticker, market) {
         timeEl.textContent = '토스증권 기준 ' + hh + ':' + mm;
       }
     })
-    .catch(function() {
-      // 네트워크 오류 / JSON 파싱 실패 등
-      summaryEl.style.color     = '#484f58';
-      summaryEl.style.fontSize  = '11px';
+    .catch(function(err) {
+      clearTimeout(timeoutId);
+      // AbortError: 새 검색이 시작되어 이전 요청이 취소된 경우 → 무시
+      if (err && err.name === 'AbortError' && !timedOut) return;
+      // 타임아웃으로 인한 abort
+      summaryEl.style.color      = '#484f58';
+      summaryEl.style.fontSize   = '11px';
       summaryEl.style.fontWeight = '';
-      summaryEl.textContent = '조회 실패';
+      summaryEl.textContent = timedOut ? '조회 시간 초과' : '조회 실패';
       if (timeEl) timeEl.textContent = '';
     });
 }
