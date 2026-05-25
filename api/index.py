@@ -1837,14 +1837,12 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
     except Exception as _e:
         print(f"[Toss US코드] 랭킹 캐시 조회 오류: {_e}")
 
-    # ── 전략 1~3 전체 실행 시간 상한: 12초 ──────────────────────────────
-    # GET 10개(6s×10=60s) + POST 4개(6s×4=24s) + 스크래핑 2개(10s×2=20s) = 최악 104초
-    # deadline을 두어 12초 초과 시 즉시 포기 → 함수 전체 응답 시간 보장
-    _deadline = time.monotonic() + 12.0
-
-    # ── 전략 1: GET 검색 엔드포인트 ────────────────────────────────────
+    # ── 전략 1: GET 검색 엔드포인트 10개를 병렬 실행 ────────────────────
+    # 이전 직렬(3s×최대4개=12s deadline) 방식에서 병렬(5s, 첫 성공 즉시 반환)으로 변경.
+    # CVGW처럼 한국어명 종목은 랭킹 캐시에서 못 찾고 여기서 검색해야 함.
+    # 어떤 엔드포인트가 성공하든 5s 이내에 결과 반환.
     get_attempts = [
-        # stock-infos 네임스페이스 (기존 KRX 수급 API와 동일 base)
+        # stock-infos 네임스페이스
         ("https://wts-info-api.tossinvest.com/api/v1/stock-infos/search",
          {"query": ticker_upper, "size": 10}),
         ("https://wts-info-api.tossinvest.com/api/v1/stock-infos/search",
@@ -1868,21 +1866,32 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
         ("https://wts-info-api.tossinvest.com/api/v1/search/products",
          {"query": ticker_upper, "size": 10}),
     ]
-    for url, params in get_attempts:
-        if time.monotonic() > _deadline:
-            print(f"[Toss US코드] {ticker}: deadline 초과 — GET 전략 조기 종료")
-            break
-        try:
-            resp = _toss_session.get(url, params=params, timeout=3)
-            if resp.status_code == 200:
-                code = _parse_toss_candidates(resp.json(), ticker_upper)
-                if code:
-                    print(f"[Toss US코드] {ticker} → {code} (GET {url})")
-                    return code
-        except Exception as e:
-            print(f"[Toss US코드] GET {url} 오류: {e}")
 
-    # ── 전략 2: POST 검색 엔드포인트 ────────────────────────────────────
+    def _do_get(url_params):
+        _url, _params = url_params
+        try:
+            r = _toss_session.get(_url, params=_params, timeout=5)
+            if r.status_code == 200:
+                return _parse_toss_candidates(r.json(), ticker_upper)
+        except Exception:
+            pass
+        return ""
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(get_attempts)) as _ex:
+            _futs = {_ex.submit(_do_get, item): item for item in get_attempts}
+            for _fut in concurrent.futures.as_completed(_futs, timeout=7):
+                try:
+                    code = _fut.result()
+                    if code:
+                        print(f"[Toss US코드] {ticker} → {code} (GET 병렬)")
+                        return code
+                except Exception:
+                    pass
+    except concurrent.futures.TimeoutError:
+        print(f"[Toss US코드] {ticker}: GET 병렬 timeout")
+
+    # ── 전략 2: POST 검색 엔드포인트 4개를 병렬 실행 ─────────────────────
     post_attempts = [
         ("https://wts-info-api.tossinvest.com/api/v1/search",
          {"query": ticker_upper, "market": "OVERSEAS", "size": 10}),
@@ -1893,51 +1902,59 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
         ("https://wts-info-api.tossinvest.com/api/v1/products/search",
          {"query": ticker_upper, "market": "OVERSEAS", "size": 10}),
     ]
-    for url, body in post_attempts:
-        if time.monotonic() > _deadline:
-            print(f"[Toss US코드] {ticker}: deadline 초과 — POST 전략 조기 종료")
-            break
+
+    def _do_post(url_body):
+        _url, _body = url_body
         try:
-            resp = _toss_session.post(
-                url, json=body,
-                headers={"Content-Type": "application/json"}, timeout=3,
+            r = _toss_session.post(
+                _url, json=_body,
+                headers={"Content-Type": "application/json"}, timeout=5,
             )
-            if resp.status_code == 200:
-                code = _parse_toss_candidates(resp.json(), ticker_upper)
-                if code:
-                    print(f"[Toss US코드] {ticker} → {code} (POST {url})")
-                    return code
-        except Exception as e:
-            print(f"[Toss US코드] POST {url} 오류: {e}")
+            if r.status_code == 200:
+                return _parse_toss_candidates(r.json(), ticker_upper)
+        except Exception:
+            pass
+        return ""
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(post_attempts)) as _ex:
+            _futs = {_ex.submit(_do_post, item): item for item in post_attempts}
+            for _fut in concurrent.futures.as_completed(_futs, timeout=7):
+                try:
+                    code = _fut.result()
+                    if code:
+                        print(f"[Toss US코드] {ticker} → {code} (POST 병렬)")
+                        return code
+                except Exception:
+                    pass
+    except concurrent.futures.TimeoutError:
+        print(f"[Toss US코드] {ticker}: POST 병렬 timeout")
 
     # ── 전략 3: 웹 페이지 __NEXT_DATA__ 스크래핑 ────────────────────────
-    if time.monotonic() <= _deadline:
-        scrape_urls = [
-            f"https://www.tossinvest.com/search?q={ticker_upper}",
-            f"https://www.tossinvest.com/search?query={ticker_upper}",
-        ]
-        for surl in scrape_urls:
-            if time.monotonic() > _deadline:
-                break
-            try:
-                resp = _toss_session.get(
-                    surl,
-                    headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
-                    timeout=6,
+    scrape_urls = [
+        f"https://www.tossinvest.com/search?q={ticker_upper}",
+        f"https://www.tossinvest.com/search?query={ticker_upper}",
+    ]
+    for surl in scrape_urls:
+        try:
+            resp = _toss_session.get(
+                surl,
+                headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+                timeout=6,
+            )
+            if resp.status_code == 200:
+                m = _re.search(
+                    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+                    resp.text, _re.DOTALL
                 )
-                if resp.status_code == 200:
-                    m = _re.search(
-                        r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-                        resp.text, _re.DOTALL
-                    )
-                    if m:
-                        nd = _json.loads(m.group(1))
-                        code = _deep_find_product_code(nd, ticker_upper)
-                        if code:
-                            print(f"[Toss US코드] {ticker} → {code} (__NEXT_DATA__)")
-                            return code
-            except Exception as e:
-                print(f"[Toss US코드] 스크래핑 {surl} 오류: {e}")
+                if m:
+                    nd = _json.loads(m.group(1))
+                    code = _deep_find_product_code(nd, ticker_upper)
+                    if code:
+                        print(f"[Toss US코드] {ticker} → {code} (__NEXT_DATA__)")
+                        return code
+        except Exception as e:
+            print(f"[Toss US코드] 스크래핑 {surl} 오류: {e}")
 
     print(f"[Toss US코드] {ticker}: 전 전략 실패 — productCode 조회 불가")
     return ""
