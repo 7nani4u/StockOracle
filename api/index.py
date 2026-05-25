@@ -1609,22 +1609,47 @@ _TOSS_AI_DETAIL_URL = "https://wts-info-api.tossinvest.com/api/v1/dashboard/wts/
 # MD 분석: 랭킹 API의 productCode가 해외 종목의 가장 신뢰성 높은 식별자
 _TOSS_RANKING_URL   = "https://wts-cert-api.tossinvest.com/api/v2/dashboard/wts/overview/ranking"
 
+# ── 토스증권 API 전용 HTTP Session ──────────────────────────────────────────
+# TCP/TLS 연결을 재사용(keep-alive)하여 동일 호스트 반복 호출 시
+# 핸드셰이크 오버헤드(100~300ms/콜)를 제거한다.
+# wts-info-api / wts-cert-api 두 호스트 각 최대 8개 연결 풀 유지.
+_toss_session = requests.Session()
+_toss_session.headers.update(_TOSS_API_HEADERS)
+_toss_http_adapter = requests.adapters.HTTPAdapter(
+    pool_connections=4,   # 고유 호스트별 연결 풀 수
+    pool_maxsize=8,       # 풀당 최대 연결 수
+    max_retries=0,        # 재시도는 전략 레벨에서 직접 제어
+)
+_toss_session.mount("https://", _toss_http_adapter)
 
-@ttl_cache(60)  # 1분 TTL — 장중 랭킹 변동 반영
+# ── 랭킹 캐시 (빈 결과 캐시 방지용 수동 관리) ───────────────────────────────
+# ttl_cache는 실패(빈 dict)도 캐싱하므로 수동 캐시로 교체.
+# 성공한 결과만 저장해 API 오류 후 즉시 재시도가 가능하다.
+_TOSS_RANKING_CACHE: dict      = {}
+_TOSS_RANKING_CACHE_TS: float  = 0.0
+_TOSS_RANKING_CACHE_TTL: float = 60.0   # 1분
+
+
 def _fetch_toss_us_ranking_productcodes() -> dict:
     """
-    Toss 해외 실시간 랭킹 API에서 name→productCode 매핑 캐시를 구축한다.
+    Toss 해외 실시간 랭킹 3개를 병렬로 조회해 name→productCode 매핑을 반환한다.
 
-    MD 파일 권장 방식: 랭킹 응답의 productCode를 직접 활용하는 것이
-    검색 API/웹 스크래핑보다 훨씬 신뢰성이 높다.
-    (NAS.../NYS.../AMX.../US... 형식의 내부 코드를 정확히 반환)
+    성능 최적화:
+    - 3개 랭킹 요청을 ThreadPoolExecutor로 병렬 실행 (직렬 대비 ~3배 빠름)
+    - 빈 결과(API 전체 실패)는 캐시하지 않아 즉시 재시도 가능
+    - requests.Session keep-alive로 TCP/TLS 핸드셰이크 오버헤드 제거
 
     반환값: {name.upper(): productCode, ...}
     """
-    headers = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
-    name_to_code: dict = {}
+    global _TOSS_RANKING_CACHE, _TOSS_RANKING_CACHE_TS
 
-    for ranking_id in ("biggest_total_amount", "biggest_change_rate", "biggest_volume"):
+    # ── 캐시 히트 ────────────────────────────────────────────────────────
+    now = time.monotonic()
+    if _TOSS_RANKING_CACHE and (now - _TOSS_RANKING_CACHE_TS) < _TOSS_RANKING_CACHE_TTL:
+        return _TOSS_RANKING_CACHE
+
+    # ── 단일 랭킹 조회 헬퍼 (스레드 내 실행) ─────────────────────────────
+    def _fetch_one(ranking_id: str) -> list:
         body = {
             "id": ranking_id,
             "filters": [
@@ -1636,22 +1661,41 @@ def _fetch_toss_us_ranking_productcodes() -> dict:
             "tag": "us",
         }
         try:
-            resp = requests.post(
-                _TOSS_RANKING_URL, headers=headers, json=body, timeout=8
+            resp = _toss_session.post(
+                _TOSS_RANKING_URL,
+                json=body,
+                headers={"Content-Type": "application/json"},
+                timeout=5,
             )
-            if resp.status_code != 200:
-                continue
-            products = resp.json().get("result", {}).get("products", [])
-            for p in products:
-                # name 필드: ETF/레버리지 상품은 영문 티커, 개별주는 한국어명
-                name = (p.get("name") or "").upper().strip()
-                code = p.get("productCode") or ""
-                if name and code:
-                    name_to_code[name] = code
+            if resp.status_code == 200:
+                return resp.json().get("result", {}).get("products", [])
         except Exception as e:
             print(f"[Toss US 랭킹] {ranking_id} 오류: {e}")
+        return []
 
-    print(f"[Toss US 랭킹] productCode 캐시 구축: {len(name_to_code)}개")
+    # ── 3개 랭킹 병렬 조회 ───────────────────────────────────────────────
+    name_to_code: dict = {}
+    ranking_ids = ("biggest_total_amount", "biggest_change_rate", "biggest_volume")
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            for products in ex.map(_fetch_one, ranking_ids, timeout=7):
+                for p in products:
+                    # name 필드: ETF·레버리지 상품은 영문 티커, 개별주는 한국어명
+                    name = (p.get("name") or "").upper().strip()
+                    code = p.get("productCode") or ""
+                    if name and code:
+                        name_to_code[name] = code
+    except Exception as e:
+        print(f"[Toss US 랭킹] 병렬 조회 오류: {e}")
+
+    # 성공한 경우만 캐시 갱신 (실패 시 빈 dict 캐싱 방지)
+    if name_to_code:
+        _TOSS_RANKING_CACHE    = name_to_code
+        _TOSS_RANKING_CACHE_TS = now
+        print(f"[Toss US 랭킹] 캐시 갱신: {len(name_to_code)}개")
+    else:
+        print("[Toss US 랭킹] 전체 실패 — 이전 캐시 유지")
+
     return name_to_code
 
 
@@ -1659,15 +1703,15 @@ def _toss_batch_api(product_code: str) -> dict:
     """
     Toss AI signals 배치 API 호출.
     POST /api/v1/dashboard/wts/overview/ai-signals
-    {"productCodes": [product_code]}
+    {"productCodes": [product_code], "filters": []}
+    Session keep-alive 사용, timeout 5s (기존 8s).
     """
-    headers = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
     try:
-        resp = requests.post(
+        resp = _toss_session.post(
             _TOSS_AI_BATCH_URL,
-            headers=headers,
-            json={"productCodes": [product_code]},
-            timeout=8,
+            json={"productCodes": [product_code], "filters": []},
+            headers={"Content-Type": "application/json"},
+            timeout=5,
         )
         if resp.status_code != 200:
             return {"ai_summary": "", "product_code": product_code, "supported": True}
@@ -1688,14 +1732,14 @@ def _toss_detail_api(product_code: str, product_type: str) -> str:
     """
     Toss AI signals 상세 API 호출.
     GET /detail?productCode={}&productType={}
+    Session keep-alive 사용, timeout 4s (기존 6s).
     성공 시 요약 텍스트, 실패 시 "".
     """
     try:
-        resp = requests.get(
+        resp = _toss_session.get(
             _TOSS_AI_DETAIL_URL,
             params={"productCode": product_code, "productType": product_type},
-            headers=_TOSS_API_HEADERS,
-            timeout=6,
+            timeout=4,
         )
         if resp.status_code != 200:
             return ""
@@ -1780,7 +1824,6 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
     """
     import re as _re, json as _json
     ticker_upper = ticker.upper().strip()
-    headers_post = {**_TOSS_API_HEADERS, "Content-Type": "application/json"}
 
     # ── 전략 0: 랭킹 API 캐시에서 name 기준 매칭 ────────────────────────
     # ETF·레버리지 상품(NVDU, BEX, SMCY 등)은 name == ticker라 즉시 매칭됨.
@@ -1830,8 +1873,7 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
             print(f"[Toss US코드] {ticker}: deadline 초과 — GET 전략 조기 종료")
             break
         try:
-            resp = requests.get(url, params=params,
-                                headers=_TOSS_API_HEADERS, timeout=3)
+            resp = _toss_session.get(url, params=params, timeout=3)
             if resp.status_code == 200:
                 code = _parse_toss_candidates(resp.json(), ticker_upper)
                 if code:
@@ -1856,8 +1898,10 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
             print(f"[Toss US코드] {ticker}: deadline 초과 — POST 전략 조기 종료")
             break
         try:
-            resp = requests.post(url, json=body,
-                                 headers=headers_post, timeout=3)
+            resp = _toss_session.post(
+                url, json=body,
+                headers={"Content-Type": "application/json"}, timeout=3,
+            )
             if resp.status_code == 200:
                 code = _parse_toss_candidates(resp.json(), ticker_upper)
                 if code:
@@ -1872,13 +1916,15 @@ def _fetch_toss_us_product_code(ticker: str) -> str:
             f"https://www.tossinvest.com/search?q={ticker_upper}",
             f"https://www.tossinvest.com/search?query={ticker_upper}",
         ]
-        page_headers = {**_TOSS_API_HEADERS,
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
         for surl in scrape_urls:
             if time.monotonic() > _deadline:
                 break
             try:
-                resp = requests.get(surl, headers=page_headers, timeout=6)
+                resp = _toss_session.get(
+                    surl,
+                    headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+                    timeout=6,
+                )
                 if resp.status_code == 200:
                     m = _re.search(
                         r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
@@ -1939,15 +1985,24 @@ def fetch_toss_ai_summary(ticker: str, market: str) -> dict:
     except Exception as _e:
         print(f"[Toss AI] 랭킹 캐시 오류: {_e}")
 
-    # 전략 1: 상세 API에 ticker 자체를 productCode로 직접 시도
-    # (일부 productType에서는 ticker symbol 그대로 수락하는 경우 있음)
-    for pt in ("STOCKS", "FOREIGN_STOCKS", "US_STOCKS",
-               "OVERSEAS_STOCKS", "OVERSEAS", "LISTED_OVERSEAS"):
-        txt = _toss_detail_api(ticker_upper, pt)
-        if txt:
-            return {"ai_summary": txt, "product_code": ticker_upper, "supported": True}
+    # 전략 1: ticker 자체를 productCode로 6가지 productType에 병렬 시도
+    # 직렬 6×4s=24s → 병렬 ~4s. 일부 productType은 ticker 직접 수락 가능.
+    _pt_list = ("STOCKS", "FOREIGN_STOCKS", "US_STOCKS",
+                "OVERSEAS_STOCKS", "OVERSEAS", "LISTED_OVERSEAS")
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(_pt_list)) as _ex:
+            _futs = [_ex.submit(_toss_detail_api, ticker_upper, pt) for pt in _pt_list]
+            for _fut in concurrent.futures.as_completed(_futs, timeout=5):
+                try:
+                    txt = _fut.result()
+                    if txt:
+                        return {"ai_summary": txt, "product_code": ticker_upper, "supported": True}
+                except Exception:
+                    pass
+    except concurrent.futures.TimeoutError:
+        pass
 
-    # 전략 2: 배치 API에 ticker 직접 시도
+    # 전략 2: 배치 API에 ticker 직접 시도 (1회 HTTP 콜)
     result = _toss_batch_api(ticker_upper)
     if result.get("ai_summary"):
         return result
@@ -11193,6 +11248,20 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
 
     handler_self.end_headers()
     handler_self.wfile.write(body)
+
+
+# ── 서버 시작 시 랭킹 캐시 예열 (백그라운드) ────────────────────────────────
+# 첫 해외 주식 검색 시 랭킹 API 병렬 호출 대기(~5s)를 없앤다.
+# 모듈 로드 직후 백그라운드 스레드로 캐시를 미리 채운다.
+def _prewarm_toss_ranking():
+    try:
+        result = _fetch_toss_us_ranking_productcodes()
+        print(f"[Toss Prewarm] 랭킹 캐시 예열 완료: {len(result)}개")
+    except Exception as e:
+        print(f"[Toss Prewarm] 예열 실패 (무시): {e}")
+
+_prewarm_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="toss_prewarm")
+_prewarm_pool.submit(_prewarm_toss_ranking)
 
 
 class handler(BaseHTTPRequestHandler):
