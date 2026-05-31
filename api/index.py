@@ -6334,6 +6334,294 @@ def route(path: str, params: Dict) -> Dict:
     if path == "/api/us/opening-surge":
         return fetch_us_opening_surge()
 
+    # ── HybridTurtle 통합 엔드포인트 ─────────────────────────────────────────
+    # /api/scan             → 7단계 스캔 엔진 실행
+    # /api/dashboard-status → 대시보드 커맨드 센터 상태
+    # /api/portfolio        → 포트폴리오 리스크 평가
+    # /api/market-immune    → 시장 위험 면역 시스템
+
+    if path == "/api/scan":
+        """7단계 스캔 엔진 API.
+
+        파라미터:
+          tickers  — 쉼표 구분 종목 코드 (선택, 없으면 기본 유니버스)
+          market   — KRX / US (기본 KRX)
+          equity   — 포트폴리오 자본 (숫자, 기본 100000000)
+          risk_pct — 거래당 리스크 비율 (기본 1.0)
+          mode     — FULL / CORE_LITE (기본 FULL)
+        """
+        try:
+            import sys as _sys, os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.scan_engine import (
+                StockUniverse, run_full_scan, build_snapshot_from_ohlcv
+            )
+            from market_briefing.quality_filter import get_quality_score_from_info
+            from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
+            from market_briefing.dual_score_v2 import REGIME_BULLISH, REGIME_BEARISH, REGIME_SIDEWAYS, VOL_NORMAL
+
+            market_p = params.get("market", "KRX").upper()
+            equity   = float(params.get("equity", 100_000_000))
+            risk_pct = float(params.get("risk_pct", 1.0))
+            mode_p   = params.get("mode", "FULL").upper()
+            if mode_p not in ("FULL", "CORE_LITE"):
+                mode_p = "FULL"
+
+            # 종목 목록 파싱
+            tickers_raw = params.get("tickers", "")
+            if tickers_raw:
+                raw_list = [t.strip() for t in tickers_raw.split(",") if t.strip()]
+            else:
+                # 기본 유니버스
+                if market_p == "KRX":
+                    raw_list = [
+                        "005930.KS", "000660.KS", "035420.KS", "051910.KS",
+                        "035720.KS", "207940.KS", "006400.KS", "028260.KS",
+                        "105560.KS", "055550.KS",
+                    ]
+                else:
+                    raw_list = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
+                                "META", "TSLA", "AMD", "TSMC", "NFLX"]
+
+            # 벤치마크 데이터 (레짐 감지용)
+            bench_sym = "^KS200" if market_p == "KRX" else "SPY"
+            try:
+                bench_df = yf.download(bench_sym, period="1y", progress=False, auto_adjust=True)
+                bench_closes = bench_df["Close"].dropna().tolist() if not bench_df.empty else []
+            except Exception:
+                bench_closes = []
+
+            # 레짐 감지
+            regime     = REGIME_SIDEWAYS
+            vol_regime = VOL_NORMAL
+            if len(bench_closes) >= 20:
+                adx_d  = _calc_adx(
+                    bench_df["High"].tolist()[-50:],
+                    bench_df["Low"].tolist()[-50:],
+                    bench_closes[-50:]
+                ) if len(bench_closes) >= 50 else None
+                ma200  = _calc_ma(bench_closes, 200) if len(bench_closes) >= 200 else None
+                vix_v  = None
+                try:
+                    vix_df = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
+                    if not vix_df.empty:
+                        vix_v = float(vix_df["Close"].iloc[-1])
+                except Exception:
+                    pass
+                rd = compute_regime(bench_closes[-1], ma200 or bench_closes[-1], adx_d, vix_v)
+                regime = rd["regime"]
+                atr_v  = _calc_atr(
+                    bench_df["High"].tolist()[-20:],
+                    bench_df["Low"].tolist()[-20:],
+                    bench_closes[-20:],
+                )
+                if atr_v and bench_closes[-1] > 0:
+                    vol_regime = detect_vol_regime(atr_v / bench_closes[-1] * 100)
+
+            # OHLCV 수집 + 스냅샷/품질 빌드
+            universe   = []
+            snap_map   = {}
+            quality_map= {}
+
+            for tkr in raw_list[:15]:  # 최대 15종목 (타임아웃 방지)
+                try:
+                    df = yf.download(tkr, period="1y", progress=False, auto_adjust=True)
+                    if df.empty or len(df) < 60:
+                        continue
+                    closes  = df["Close"].dropna().tolist()
+                    highs   = df["High"].dropna().tolist()
+                    lows    = df["Low"].dropna().tolist()
+                    volumes = df["Volume"].dropna().tolist()
+                    opens   = df["Open"].dropna().tolist()
+                    min_len = min(len(closes), len(highs), len(lows), len(volumes))
+                    closes, highs, lows, volumes, opens = (
+                        closes[:min_len], highs[:min_len], lows[:min_len],
+                        volumes[:min_len], opens[:min_len]
+                    )
+                    snap = build_snapshot_from_ohlcv(
+                        ticker=tkr, closes=closes, highs=highs,
+                        lows=lows, volumes=volumes, opens=opens,
+                        bench_closes=bench_closes,
+                    )
+                    snap_map[tkr] = snap
+
+                    sleeve = "ETF" if tkr in ("QQQ","SPY","SOXL","TQQQ","SQQQ") else "CORE"
+                    universe.append(StockUniverse(tkr, tkr, sleeve))
+
+                    try:
+                        info = yf.Ticker(tkr).info
+                        quality_map[tkr] = get_quality_score_from_info(tkr, info)
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+
+            if not snap_map:
+                return {"error": "데이터 수집 실패 — 네트워크 또는 종목 코드를 확인하세요"}
+
+            result = run_full_scan(
+                universe           = [u for u in universe if u.ticker in snap_map],
+                snap_map           = snap_map,
+                quality_map        = quality_map,
+                regime             = regime,
+                vol_regime         = vol_regime,
+                portfolio_equity   = equity,
+                risk_pct_per_trade = risk_pct,
+                scan_mode          = mode_p,
+            )
+
+            from dataclasses import asdict
+            cands = [asdict(c) for c in result.candidates]
+
+            return {
+                "regime":          result.regime,
+                "vol_regime":      result.vol_regime,
+                "total_scanned":   result.total_scanned,
+                "passed_filters":  result.passed_filters,
+                "ready_count":     result.ready_count,
+                "watch_count":     result.watch_count,
+                "far_count":       result.far_count,
+                "candidates":      cands,
+                "generated_at":    result.generated_at,
+            }
+        except Exception as e:
+            return {"error": f"스캔 실행 실패: {e}"}
+
+    if path == "/api/dashboard-status":
+        """대시보드 커맨드 센터 상태."""
+        try:
+            import sys as _sys, os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.dashboard_payload import DashboardPayloadBuilder
+            builder = DashboardPayloadBuilder()
+            return builder.build()
+        except Exception as e:
+            return {"error": f"대시보드 상태 조회 실패: {e}",
+                    "status": "ERROR", "generated_at": dt.now().isoformat()}
+
+    if path == "/api/market-immune":
+        """시장 위험 면역 시스템 — VIX + MA200 이격도 기반.
+
+        파라미터:
+          vix       — VIX 현재값 (선택)
+          ma200_dev — MA200 이격도 % (선택)
+          atr_pct   — 지수 ATR% (선택)
+          index     — 지수 심볼 (선택, 기본 SPY)
+        """
+        try:
+            import sys as _sys, os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.market_immune import MarketImmune
+
+            mi = MarketImmune()
+
+            # 직접 파라미터 입력 우선
+            vix_p     = params.get("vix")
+            ma200_p   = params.get("ma200_dev")
+            atr_pct_p = params.get("atr_pct")
+
+            if vix_p is not None or ma200_p is not None:
+                vix_f    = float(vix_p) if vix_p else None
+                ma200_f  = float(ma200_p) if ma200_p else None
+                atr_f    = float(atr_pct_p) if atr_pct_p else None
+                result   = mi.quick_check(vix_f, ma200_f, atr_f)
+                return {**result, "mode": "quick_check"}
+
+            # 지수 데이터 자동 수집
+            idx_sym  = params.get("index", "SPY")
+            try:
+                idx_df   = yf.download(idx_sym, period="1y", progress=False, auto_adjust=True)
+                vix_v    = None
+                try:
+                    vix_df = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
+                    if not vix_df.empty:
+                        vix_v = float(vix_df["Close"].iloc[-1])
+                except Exception:
+                    pass
+
+                if idx_df.empty:
+                    return {"error": f"지수({idx_sym}) 데이터 없음"}
+
+                ir = mi.assess(
+                    index_closes = idx_df["Close"].dropna().tolist(),
+                    index_highs  = idx_df["High"].dropna().tolist(),
+                    index_lows   = idx_df["Low"].dropna().tolist(),
+                    vix          = vix_v,
+                )
+                return ir.to_dict()
+            except Exception as e2:
+                return {"error": f"지수 데이터 수집 실패: {e2}"}
+        except Exception as e:
+            return {"error": f"면역 시스템 오류: {e}"}
+
+    if path == "/api/portfolio":
+        """포트폴리오 리스크 평가 — 신규 거래 사전 평가.
+
+        파라미터:
+          action      — assess (리스크 평가) / status (상태 조회)
+          ticker      — 종목 코드
+          entry_price — 진입가
+          stop_price  — 손절가
+          equity      — 자본 (기본 100000000)
+          risk_pct    — 거래당 리스크 % (기본 1.0)
+        """
+        try:
+            import sys as _sys, os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.portfolio_manager import PortfolioManager
+
+            action = params.get("action", "status")
+            equity = float(params.get("equity", 100_000_000))
+            rp     = float(params.get("risk_pct", 1.0))
+            mgr    = PortfolioManager(equity=equity, cash_balance=equity, risk_pct_per_trade=rp)
+
+            if action == "assess":
+                tkr    = params.get("ticker", "").strip().upper()
+                entry  = params.get("entry_price")
+                stop   = params.get("stop_price")
+                if not tkr or not entry or not stop:
+                    return {"error": "assess 액션은 ticker, entry_price, stop_price 필요"}
+                assessment = mgr.assess_new_trade(
+                    ticker      = tkr,
+                    entry_price = float(entry),
+                    stop_price  = float(stop),
+                    sector      = params.get("sector", ""),
+                    sleeve      = params.get("sleeve", "CORE"),
+                )
+                return assessment.to_dict()
+            else:
+                return mgr.get_dashboard_payload()
+        except Exception as e:
+            return {"error": f"포트폴리오 조회 실패: {e}"}
+
+    if path == "/api/cross-reference":
+        """스캔 × 분석 교차 참조 — 최종 통합 점수.
+
+        파라미터:
+          ticker      — 종목 코드
+          model_score — analyze_score() 결과 (0~100, 선택)
+        """
+        try:
+            import sys as _sys, os as _os
+            _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            from market_briefing.cross_reference import CrossReferenceEngine
+
+            engine = CrossReferenceEngine()
+            tkr_raw = params.get("ticker", "").strip()
+            if not tkr_raw:
+                return {"formula": CrossReferenceEngine.final_score_formula()}
+
+            ticker_r, market_r, _ = resolve_ticker(tkr_raw)
+            if not ticker_r:
+                return {"error": f"'{tkr_raw}' 종목 미발견"}
+
+            model_score_p = float(params.get("model_score", 50.0))
+            result = engine.merge(None, None, model_score_p)
+            result.ticker = ticker_r
+            return result.to_dict()
+        except Exception as e:
+            return {"error": f"교차 참조 실패: {e}"}
+
     if path == "/api/alert/quote":
         # 알림 모니터용 — 등록된 KRX 종목들의 현재가 + 등락률 일괄 조회
         # ?codes=005930,035720,...  (최대 20종목, 6자리 숫자 코드만)
