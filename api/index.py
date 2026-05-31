@@ -7692,6 +7692,9 @@ function _stopLoadingAnimation() {
 // ── 미국 주식 실시간 가격 폴링 ──────────────────────────────────────────────
 let _pricePoller    = null;
 let _pollTicker     = null;
+// ── 목표가 섹션 동기화용 상태 (Single Source of Truth) ───────────────────────
+let _lastTp         = null;   // 마지막 렌더된 target_price 객체 {min_price, max_price, ...}
+let _lastIsKrx      = false;  // 마지막 분석 시장 구분
 
 function _stopPricePolling() {
   if (_pricePoller) { clearInterval(_pricePoller); _pricePoller = null; }
@@ -7739,10 +7742,33 @@ function _applyPriceUpdate(d) {
       badgeEl.style.display = 'none';
     }
   }
+  // ── 목표가 예측 섹션 현재가 실시간 동기화 ────────────────────────────────
+  _syncTargetPriceSection(d.price);
+}
+
+// ── 목표가 예측 섹션 현재가 동기화 (폴링 업데이트 시 호출) ──────────────────
+// Single Source of Truth: _lastTp에 저장된 목표가 기준으로 재계산
+function _syncTargetPriceSection(newPrice) {
+  if (!_lastTp || !newPrice || isNaN(newPrice)) return;
+  const tpEl = document.getElementById('target-price-section');
+  if (!tpEl) return;
+
+  // 최신 현재가 기준으로 수익률 재계산
+  const minReturn = ((_lastTp.min_price - newPrice) / newPrice * 100).toFixed(1);
+  const maxReturn = ((_lastTp.max_price - newPrice) / newPrice * 100).toFixed(1);
+  const fmtUs = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:4, maximumFractionDigits:4});
+
+  // data 속성으로 타겟 요소만 핀포인트 업데이트 (전체 re-render 없음)
+  const curEl    = tpEl.querySelector('[data-tp-cur]');
+  const returnEl = tpEl.querySelector('[data-tp-return]');
+  if (curEl)    curEl.textContent    = fmtUs(newPrice);
+  if (returnEl) returnEl.textContent = `+${minReturn}% ~ +${maxReturn}%`;
 }
 
 async function analyze() {
   _stopPricePolling();   // 새 검색 시 이전 폴링 중단
+  _lastTp    = null;     // 새 종목 분석 시 동기화 상태 초기화
+  _lastIsKrx = false;
   closeSidebar();   // 모바일에서 분석 시작 시 사이드바 자동 닫기
   const ticker = document.getElementById('ticker-input').value.trim();
   const period = document.getElementById('period-select').value;
@@ -8113,8 +8139,8 @@ function renderPullbackIntoAI(d, isKrx) {
     const ic = c.pass ? '✅' : '❌';
     const tc = c.pass ? C.green : C.red;
     return `<tr>
-      <td style="padding:5px 8px;white-space:nowrap">${ic} <span style="color:#cdd9e5">${c.item}</span></td>
-      <td style="padding:5px 8px;color:${tc};font-size:12px">${c.desc}</td>
+      <td style="padding:5px 8px;white-space:nowrap">${ic} <span style="color:#cdd9e5;font-size:12px">${c.item}</span></td>
+      <td style="padding:5px 8px;color:${tc};font-size:12px;line-height:1.4">${c.desc}</td>
     </tr>`;
   }).join('');
   const checkAccContent = `
@@ -8138,7 +8164,7 @@ function renderPullbackIntoAI(d, isKrx) {
     const tc = s.triggered ? C.red : C.green;
     return `<tr>
       <td style="padding:5px 8px;white-space:nowrap">${ic} <span style="color:#cdd9e5;font-size:12px">${s.cond}</span></td>
-      <td style="padding:5px 8px;color:${tc};font-size:11px">${s.desc}</td>
+      <td style="padding:5px 8px;color:${tc};font-size:12px;line-height:1.4">${s.desc}</td>
     </tr>`;
   }).join('');
   const slAccContent = `
@@ -9200,8 +9226,8 @@ function renderForecast(d, isKrx) {
             <div style="font-size:12px;color:#8b949e;margin-bottom:6px">예상 목표가 범위 (${tp.period})</div>
             <div style="font-size:24px;font-weight:800;color:#3fb950">${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
             <div style="font-size:13px;color:#8b949e;margin-top:4px">
-              현재가${sn} <b style="color:#e6edf3">${fmt(cur, isKrx)}</b> 기준 예상 수익률:
-              <span style="color:#3fb950">+${tp.min_return}% ~ +${tp.max_return}%</span>
+              현재가${sn} <b data-tp-cur style="color:#e6edf3">${fmt(cur, isKrx)}</b> 기준 예상 수익률:
+              <span data-tp-return style="color:#3fb950">+${tp.min_return}% ~ +${tp.max_return}%</span>
             </div>
           </div>
           <div style="text-align:right">
@@ -9216,6 +9242,9 @@ function renderForecast(d, isKrx) {
           <div style="font-size:13px;color:#e6edf3;line-height:1.5;">${tp.reason}</div>
         </div>
       `;
+      // ── Single Source of Truth: 폴링 동기화용 상태 저장 ───────────────
+      _lastTp    = tp;
+      _lastIsKrx = isKrx;
     }
   }
 

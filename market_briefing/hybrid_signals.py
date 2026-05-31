@@ -53,7 +53,7 @@ def _safe(v, default: float = 0.0) -> float:
 
 
 def _calc_atr(highs, lows, closes, period: int = 14) -> float | None:
-    """14-period Wilder's ATR."""
+    """14-period Wilder's ATR. (scan_engine.py에서도 직접 참조 가능)"""
     n = len(closes)
     if n < period + 1:
         return None
