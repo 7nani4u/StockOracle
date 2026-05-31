@@ -34,17 +34,23 @@ UNIVERSE = [
 ]
 
 def fetch_ohlcv(ticker: str, period: str = "1y") -> dict:
-    """yfinance에서 OHLCV 데이터 다운로드."""
+    """yfinance에서 OHLCV 데이터 다운로드 (Ticker.history 사용 — MultiIndex 안전)."""
     try:
-        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
-        if df.empty:
+        hist = yf.Ticker(ticker).history(period=period)
+        if hist.empty:
             return {}
+        cl = hist["Close"].dropna().tolist()
+        hi = hist["High"].dropna().tolist()
+        lo = hist["Low"].dropna().tolist()
+        vo = hist["Volume"].dropna().tolist()
+        op = hist["Open"].dropna().tolist()
+        n  = min(len(cl), len(hi), len(lo), len(vo), len(op))
         return {
-            "closes":  df["Close"].tolist(),
-            "highs":   df["High"].tolist(),
-            "lows":    df["Low"].tolist(),
-            "volumes": df["Volume"].tolist(),
-            "opens":   df["Open"].tolist(),
+            "closes":  cl[:n],
+            "highs":   hi[:n],
+            "lows":    lo[:n],
+            "volumes": vo[:n],
+            "opens":   op[:n],
         }
     except Exception as e:
         print(f"[ERROR] {ticker} 데이터 로드 실패: {e}")

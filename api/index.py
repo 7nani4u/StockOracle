@@ -6383,38 +6383,55 @@ def route(path: str, params: Dict) -> Dict:
                     raw_list = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
                                 "META", "TSLA", "AMD", "TSMC", "NFLX"]
 
-            # 벤치마크 데이터 (레짐 감지용)
+            def _hist_to_lists(hist):
+                """yf.Ticker().history() DataFrame → (closes, highs, lows, volumes, opens)."""
+                if hist is None or hist.empty:
+                    return None
+                cl = hist["Close"].dropna().tolist()
+                hi = hist["High"].dropna().tolist()
+                lo = hist["Low"].dropna().tolist()
+                vo = hist["Volume"].dropna().tolist()
+                op = hist["Open"].dropna().tolist()
+                n  = min(len(cl), len(hi), len(lo), len(vo), len(op))
+                if n < 60:
+                    return None
+                return cl[:n], hi[:n], lo[:n], vo[:n], op[:n]
+
+            # 벤치마크 데이터 (레짐 감지용) — Ticker.history() 사용
             bench_sym = "^KS200" if market_p == "KRX" else "SPY"
+            bench_closes = []
+            bench_highs  = []
+            bench_lows   = []
             try:
-                bench_df = yf.download(bench_sym, period="1y", progress=False, auto_adjust=True)
-                bench_closes = bench_df["Close"].dropna().tolist() if not bench_df.empty else []
+                _bh = yf.Ticker(bench_sym).history(period="1y")
+                if not _bh.empty:
+                    bench_closes = _bh["Close"].dropna().tolist()
+                    bench_highs  = _bh["High"].dropna().tolist()
+                    bench_lows   = _bh["Low"].dropna().tolist()
             except Exception:
-                bench_closes = []
+                pass
 
             # 레짐 감지
             regime     = REGIME_SIDEWAYS
             vol_regime = VOL_NORMAL
             if len(bench_closes) >= 20:
-                adx_d  = _calc_adx(
-                    bench_df["High"].tolist()[-50:],
-                    bench_df["Low"].tolist()[-50:],
-                    bench_closes[-50:]
-                ) if len(bench_closes) >= 50 else None
-                ma200  = _calc_ma(bench_closes, 200) if len(bench_closes) >= 200 else None
-                vix_v  = None
+                _bn = min(len(bench_closes), len(bench_highs), len(bench_lows))
+                adx_d = _calc_adx(
+                    bench_highs[-50:] if _bn >= 50 else bench_highs,
+                    bench_lows[-50:]  if _bn >= 50 else bench_lows,
+                    bench_closes[-50:] if _bn >= 50 else bench_closes,
+                ) if _bn >= 30 else None
+                ma200 = _calc_ma(bench_closes, 200) if len(bench_closes) >= 200 else None
+                vix_v = None
                 try:
-                    vix_df = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
-                    if not vix_df.empty:
-                        vix_v = float(vix_df["Close"].iloc[-1])
+                    _vh = yf.Ticker("^VIX").history(period="5d")
+                    if not _vh.empty:
+                        vix_v = float(_vh["Close"].iloc[-1])
                 except Exception:
                     pass
                 rd = compute_regime(bench_closes[-1], ma200 or bench_closes[-1], adx_d, vix_v)
                 regime = rd["regime"]
-                atr_v  = _calc_atr(
-                    bench_df["High"].tolist()[-20:],
-                    bench_df["Low"].tolist()[-20:],
-                    bench_closes[-20:],
-                )
+                atr_v  = _calc_atr(bench_highs[-20:], bench_lows[-20:], bench_closes[-20:]) if _bn >= 20 else None
                 if atr_v and bench_closes[-1] > 0:
                     vol_regime = detect_vol_regime(atr_v / bench_closes[-1] * 100)
 
@@ -6423,31 +6440,21 @@ def route(path: str, params: Dict) -> Dict:
             snap_map   = {}
             quality_map= {}
 
-            for tkr in raw_list[:15]:  # 최대 15종목 (타임아웃 방지)
+            for tkr in raw_list[:10]:  # 최대 10종목 (타임아웃 방지)
                 try:
-                    df = yf.download(tkr, period="1y", progress=False, auto_adjust=True)
-                    if df.empty or len(df) < 60:
+                    _th   = yf.Ticker(tkr).history(period="1y")
+                    ohlcv = _hist_to_lists(_th)
+                    if ohlcv is None:
                         continue
-                    closes  = df["Close"].dropna().tolist()
-                    highs   = df["High"].dropna().tolist()
-                    lows    = df["Low"].dropna().tolist()
-                    volumes = df["Volume"].dropna().tolist()
-                    opens   = df["Open"].dropna().tolist()
-                    min_len = min(len(closes), len(highs), len(lows), len(volumes))
-                    closes, highs, lows, volumes, opens = (
-                        closes[:min_len], highs[:min_len], lows[:min_len],
-                        volumes[:min_len], opens[:min_len]
-                    )
+                    closes, highs, lows, volumes, opens = ohlcv
                     snap = build_snapshot_from_ohlcv(
                         ticker=tkr, closes=closes, highs=highs,
                         lows=lows, volumes=volumes, opens=opens,
                         bench_closes=bench_closes,
                     )
                     snap_map[tkr] = snap
-
                     sleeve = "ETF" if tkr in ("QQQ","SPY","SOXL","TQQQ","SQQQ") else "CORE"
                     universe.append(StockUniverse(tkr, tkr, sleeve))
-
                     try:
                         info = yf.Ticker(tkr).info
                         quality_map[tkr] = get_quality_score_from_info(tkr, info)
@@ -6457,7 +6464,7 @@ def route(path: str, params: Dict) -> Dict:
                     continue
 
             if not snap_map:
-                return {"error": "데이터 수집 실패 — 네트워크 또는 종목 코드를 확인하세요"}
+                return {"error": "데이터 수집 실패 — 네트워크 연결을 확인하거나 잠시 후 다시 시도하세요"}
 
             result = run_full_scan(
                 universe           = [u for u in universe if u.ticker in snap_map],
@@ -6527,25 +6534,25 @@ def route(path: str, params: Dict) -> Dict:
                 result   = mi.quick_check(vix_f, ma200_f, atr_f)
                 return {**result, "mode": "quick_check"}
 
-            # 지수 데이터 자동 수집
-            idx_sym  = params.get("index", "SPY")
+            # 지수 데이터 자동 수집 — Ticker.history() 사용
+            idx_sym = params.get("index", "SPY")
             try:
-                idx_df   = yf.download(idx_sym, period="1y", progress=False, auto_adjust=True)
-                vix_v    = None
+                _ih   = yf.Ticker(idx_sym).history(period="1y")
+                vix_v = None
                 try:
-                    vix_df = yf.download("^VIX", period="5d", progress=False, auto_adjust=True)
-                    if not vix_df.empty:
-                        vix_v = float(vix_df["Close"].iloc[-1])
+                    _vh = yf.Ticker("^VIX").history(period="5d")
+                    if not _vh.empty:
+                        vix_v = float(_vh["Close"].iloc[-1])
                 except Exception:
                     pass
 
-                if idx_df.empty:
+                if _ih.empty:
                     return {"error": f"지수({idx_sym}) 데이터 없음"}
 
                 ir = mi.assess(
-                    index_closes = idx_df["Close"].dropna().tolist(),
-                    index_highs  = idx_df["High"].dropna().tolist(),
-                    index_lows   = idx_df["Low"].dropna().tolist(),
+                    index_closes = _ih["Close"].dropna().tolist(),
+                    index_highs  = _ih["High"].dropna().tolist(),
+                    index_lows   = _ih["Low"].dropna().tolist(),
                     vix          = vix_v,
                 )
                 return ir.to_dict()
@@ -7880,7 +7887,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px">
       <div>
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🔬 7단계 스캔 엔진</h2>
-        <p style="font-size:12px;color:#8b949e">BQS·FWS·NCS 복합 점수 기반 후보 종목 발굴 (HybridTurtle v6.0)</p>
+        <p style="font-size:12px;color:#8b949e">BQS·FWS·NCS 복합 점수 기반 후보 종목 발굴</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
@@ -7949,7 +7956,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px">
       <div>
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🛡️ 시장 위험 면역 시스템</h2>
-        <p style="font-size:12px;color:#8b949e">VIX · MA200 이격도 · ATR 기반 현재 시장 위험도 평가 (HybridTurtle v6.0)</p>
+        <p style="font-size:12px;color:#8b949e">VIX · MA200 이격도 · ATR 기반 현재 시장 위험도 평가</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <select id="immune-index" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
