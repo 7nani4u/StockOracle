@@ -8087,13 +8087,12 @@ function _pullbackInit(d, isKrx) {
   return { pa, C, fmtP, stageColors, stageLabels };
 }
 
-// ── AI 진단 탭: ① 현재 흐름 단계 | ⑧~⑩ 눌림목 조건 점검 · 세력 흔들림 패턴 점검 · 구조 붕괴 · 손절 기준 점검 ──
-function renderPullbackIntoAI(d, isKrx) {
-  const elTop = document.getElementById('pullback-ai-top-section');
-  const elBot = document.getElementById('pullback-ai-bottom-section');
-  if (!elTop && !elBot) return;
+// ── AI 진단 탭: 눌림목 관련 섹션 HTML 생성 (순수 문자열 반환) ──────────────
+// display:contents + flex 컨테이너에서 innerHTML 동적 삽입이 비신뢰적이므로
+// 순수 HTML 문자열을 반환해 renderDiagnosis 템플릿에 직접 삽입한다.
+function _getPullbackDimsHtml(d, isKrx) {
   const init = _pullbackInit(d, isKrx);
-  if (!init) { if (elTop) elTop.innerHTML = ''; if (elBot) elBot.innerHTML = ''; return; }
+  if (!init) return { topHtml: '', bottomHtml: '' };
   const { pa, C, fmtP, stageColors, stageLabels } = init;
 
   // ── 점수/색상 계산 ────────────────────────────────────────────────
@@ -8197,14 +8196,13 @@ function renderPullbackIntoAI(d, isKrx) {
     </div>`;
   };
 
-  // ① 상단 플레이스홀더: 현재 흐름 단계만 삽입
-  if (elTop) elTop.innerHTML =
+  // HTML 문자열 반환 (DOM 조작 없음)
+  const topHtml =
       pbDimBar('🔄', '현재 흐름 단계', stageVal,
           `${stageLabels[pa.flow_stage] || '단계 불명'} · ${pa.flow_desc ? pa.flow_desc.substring(0,40) + (pa.flow_desc.length > 40 ? '…' : '') : ''}`,
           'pb-flow', flowAccContent);
 
-  // ⑧~⑩ 하단 플레이스홀더: 눌림목 · 세력 · 구조붕괴
-  if (elBot) elBot.innerHTML =
+  const bottomHtml =
       pbDimBar('✅', '눌림목 조건 점검', pbVal,
           `${pa.pullback_grade} · ${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length} 조건 충족 · ${pa.pullback_desc ? pa.pullback_desc.substring(0,35) + (pa.pullback_desc.length > 35 ? '…' : '') : ''}`,
           'pb-check', checkAccContent)
@@ -8214,6 +8212,13 @@ function renderPullbackIntoAI(d, isKrx) {
     + pbDimBar('🛑', '구조 붕괴 · 손절 기준 점검', slVal,
           `${pa.breakdown_verdict} · ${pa.sl_triggered}개 조건 충족`,
           'pb-sl', slAccContent);
+
+  return { topHtml, bottomHtml };
+}
+
+// 하위 호환 래퍼 (renderAI에서 호출하지만 이제 renderDiagnosis 내부에서 처리됨)
+function renderPullbackIntoAI(d, isKrx) {
+  // renderDiagnosis가 이미 _getPullbackDimsHtml()로 렌더링했으므로 no-op
 }
 
 // ── 예측 탭: ③ 핵심 구간  ④ 분할 매수  ⑤ ATR 리스크  ⑥ 손익비 시나리오 ──────
@@ -8716,6 +8721,10 @@ function renderDiagnosis(d, isKrx) {
   const flow   = d.investor_flow;
   const patterns = d.candlestick_patterns || [];
 
+  // ── 눌림목 관련 HTML 미리 생성 (display:contents 우회) ──────────────
+  // flex 컨테이너 내 동적 innerHTML 삽입 대신 템플릿 문자열에 직접 주입
+  const { topHtml: pbTopHtml, bottomHtml: pbBottomHtml } = _getPullbackDimsHtml(d, isKrx);
+
   // ── 1. 기술적 추세 (Technical Trend) ────────────────────────────
   const techScore = Math.min(100, Math.max(0, score));
 
@@ -8933,7 +8942,7 @@ function renderDiagnosis(d, isKrx) {
     </div>
     <div id="flow-rationale" style="display:none"></div>
     <div class="diag-dims">
-      <div id="pullback-ai-top-section" style="display:contents"></div>
+      ${pbTopHtml}
       ${dimBar('📊', '기술적 추세',   techScore,    techDesc,  {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel, {accordionId:'dim-mom',  accordionContent: buildStepHtml(stepMom)})}
       ${dimBar('🌊', '변동성 수준',   volScore,      volDesc,   {accordionId:'dim-vol',  accordionContent: buildStepHtml(stepVol)})}
@@ -8960,7 +8969,7 @@ function renderDiagnosis(d, isKrx) {
       </div>` : ''}
       ${dimBar('🕯️', '캔들·차트 패턴 신호', patScore, patDesc, {accordionId:'dim-pat', accordionContent: buildStepHtml(stepPat)})}
       ${renderHybridSection(d)}
-      <div id="pullback-ai-bottom-section" style="display:contents"></div>
+      ${pbBottomHtml}
     </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
       ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 각 항목을 클릭하면 단계별 상세 분석을 확인할 수 있습니다.
