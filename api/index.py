@@ -6004,12 +6004,53 @@ def route(path: str, params: Dict) -> Dict:
         buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period)
         target_price     = calc_target_price(dd, last, atr_val, period, market)
         pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
-                
+
+        # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) ────────────────────
+        hybrid_score = None
+        try:
+            import sys as _sys, os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from market_briefing.stock_analyzer import enrich_with_hybrid
+            _closes  = [float(c) for c in (dd.get("Close") or []) if c is not None]
+            _highs   = [float(c) for c in (dd.get("High")  or []) if c is not None]
+            _lows    = [float(c) for c in (dd.get("Low")   or []) if c is not None]
+            _vols    = [float(c) for c in (dd.get("Volume") or []) if c is not None]
+            _opens   = [float(c) for c in (dd.get("Open")  or []) if c is not None]
+            if len(_closes) >= 20:
+                hybrid_score = enrich_with_hybrid(
+                    closes      = _closes,
+                    highs       = _highs  if len(_highs) == len(_closes) else None,
+                    lows        = _lows   if len(_lows)  == len(_closes) else None,
+                    volumes     = _vols   if len(_vols)  == len(_closes) else None,
+                    open_prices = _opens  if len(_opens) == len(_closes) else None,
+                )
+                # NCS 기반 score 보정 (NCS가 높으면 최대 +5, 낮으면 최대 -10)
+                if hybrid_score and "ncs" in hybrid_score and "error" not in hybrid_score:
+                    ncs_v = float(hybrid_score["ncs"])
+                    fws_v = float(hybrid_score.get("fws", 50))
+                    if ncs_v >= 70 and fws_v <= 30:
+                        score = min(100, score + 5)
+                        if isinstance(ai_strategy, dict):
+                            ai_strategy["result"] += f" | [NCS {ncs_v:.0f}] 브레이크아웃 품질 우수 — 신뢰도 상향"
+                    elif ncs_v < 40 or fws_v > 65:
+                        score = max(0, score - 10)
+                        if isinstance(ai_strategy, dict):
+                            ai_strategy["result"] += f" | [NCS {ncs_v:.0f}] 기술적 취약 — 주의"
+                    # 레짐 BEARISH 시 score 추가 하향
+                    if hybrid_score.get("regime") == "BEARISH" and score > 40:
+                        score = min(score, 40)
+                        if isinstance(ai_strategy, dict):
+                            ai_strategy["result"] += " | [레짐 BEARISH] 약세장 국면"
+        except Exception as _e:
+            pass   # hybrid 실패 시 기존 점수 유지
+
         return {
             "symbol": sym, "company": company or sym, "market": market,
             "last_close": round(last, 2), "prev_close": round(prev, 2),
             "pct_change": round(pct, 2),
-            "session_name": session_name,   # 현재가 세션 (프리마켓/오버나이트/정규장 등)
+            "session_name": session_name,
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
             "atr": round(atr_val, 2),
@@ -6039,6 +6080,7 @@ def route(path: str, params: Dict) -> Dict:
             "pullback_analysis": pullback_analysis,
             "news": news or [], "naver": naver, "us_enriched": us_enriched,
             "investor_flow": investor_flow,
+            "hybrid_score": hybrid_score,  # HybridTurtle NCS/BQS/FWS
         }
 
     if path == "/api/screener":

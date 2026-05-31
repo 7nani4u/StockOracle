@@ -4,11 +4,14 @@
   예측 로직   → k-ant-daily /daily-report 스킬의 3-신호 매트릭스 재현
   검증 로직   → k-ant-daily/scripts/compute_review.py
   표시 로직   → k-ant-daily/scripts/render.py (_normalize_stocks, _normalize_stock_*)
+  HybridTurtle v6.0 통합 (2026-05):
+    hybrid_signals.py → BQS/FWS/NCS 복합 점수, 레짐 감지, 허스트, BIS, ATR 가드
 
 핵심 함수:
-  analyze_stock()         — 단일 종목 3-신호 평가 → 추천/신뢰도 판정
+  analyze_stock()         — 단일 종목 3-신호 평가 → 추천/신뢰도 판정 (NCS 통합)
   classify_prediction()   — (추천, 실제등락%) → (적중/부분/실패, 노트)
   build_stock_report()    — 종목 스냅샷 리스트 → 전체 정규화 보고서
+  enrich_with_hybrid()    — history dict → hybrid_score 계산 (외부 호출용)
 """
 from __future__ import annotations
 
@@ -21,6 +24,12 @@ from .labels import (
     SENTIMENT_LABEL, OVERNIGHT_LABEL, CONFIDENCE_LABEL,
     DIRECTION_META,
 )
+
+try:
+    from .hybrid_signals import compute_hybrid_score, REGIME_BULLISH, REGIME_BEARISH, REGIME_SIDEWAYS
+    _HYBRID_AVAILABLE = True
+except Exception:
+    _HYBRID_AVAILABLE = False
 
 KST = timezone(timedelta(hours=9))
 
@@ -261,7 +270,134 @@ def analyze_stock(stock: dict) -> dict:
     s["direction_label"] = meta["label"]
     s["direction_cls"]   = meta["cls"]
 
+    # ── HybridTurtle 복합 점수 통합 ─────────────────────────────────────
+    if _HYBRID_AVAILABLE:
+        s = _enrich_hybrid_inline(s)
+
     return s
+
+
+def _enrich_hybrid_inline(s: dict) -> dict:
+    """analyze_stock 내부 호출용 하이브리드 점수 계산.
+
+    history dict의 closes_20d, volume_20d_avg 등을 활용해
+    compute_hybrid_score()를 호출하고 결과를 종목 dict에 병합한다.
+    데이터 부족/예외 시 무결하게 스킵한다.
+    """
+    try:
+        hist    = s.get("history") or {}
+        closes  = [float(c) for c in (hist.get("closes_20d") or []) if c is not None]
+        if len(closes) < 10:
+            return s
+
+        # history에는 종가만 있으므로 highs/lows는 closes로 근사 (분봉 없이도 동작)
+        highs   = closes[:]
+        lows    = closes[:]
+        volumes: list[float] = []
+        avg_vol = hist.get("volume_20d_avg")
+        if avg_vol:
+            volumes = [float(avg_vol)] * len(closes)
+
+        # 거래량 오늘 값 덮어쓰기
+        today_vol = (s.get("quote") or {}).get("volume")
+        if today_vol and volumes:
+            volumes[-1] = float(today_vol)
+
+        hscore = compute_hybrid_score(
+            closes   = closes,
+            highs    = highs,
+            lows     = lows,
+            volumes  = volumes,
+        )
+        s["hybrid_score"] = hscore
+
+        # ── NCS 기반 추천/신뢰도 보정 ─────────────────────────────────
+        ncs    = hscore.get("ncs", 50.0)
+        fws    = hscore.get("fws", 50.0)
+        action = hscore.get("action", "CONDITIONAL")
+        regime = hscore.get("regime", REGIME_SIDEWAYS)
+
+        # AUTO_NO: 신뢰도를 강제로 낮춤
+        if action == "AUTO_NO":
+            s["confidence"]       = "low"
+            s["confidence_label"] = "낮음 (FWS 과도)"
+            s["rationale"]        = (s.get("rationale") or "") + f" | FWS={fws:.0f} 과도 — 진입 지양"
+
+        # AUTO_YES: NCS≥70 + 레짐 BULLISH 시 신뢰도 상향
+        elif action == "AUTO_YES" and regime == REGIME_BULLISH:
+            if s.get("recommendation") in ("buy", "strong_buy"):
+                s["confidence"]       = "high"
+                s["confidence_label"] = "높음 (NCS 고득점)"
+                s["rationale"]        = (s.get("rationale") or "") + f" | NCS={ncs:.0f} 우수"
+
+        # 레짐이 BEARISH이면 매수 신호 약화
+        if regime == REGIME_BEARISH and s.get("recommendation") in ("buy", "strong_buy"):
+            old_rec = s["recommendation"]
+            s["recommendation"]       = "hold"
+            s["recommendation_label"] = RECOMMENDATION_LABEL.get("hold", "관망")
+            s["confidence"]           = "low"
+            s["rationale"]            = (s.get("rationale") or "") + " | 레짐 BEARISH — 매수 신호 약화"
+
+        # NCS 점수 라벨 추가
+        if ncs >= 70:
+            s["ncs_label"] = f"우수 ({ncs:.0f})"
+        elif ncs >= 50:
+            s["ncs_label"] = f"보통 ({ncs:.0f})"
+        else:
+            s["ncs_label"] = f"주의 ({ncs:.0f})"
+
+        s["regime_label"] = {
+            REGIME_BULLISH:  "강세장",
+            REGIME_BEARISH:  "약세장",
+            REGIME_SIDEWAYS: "횡보장",
+        }.get(regime, regime)
+
+    except Exception:
+        pass
+
+    return s
+
+
+def enrich_with_hybrid(
+    closes:       list[float],
+    highs:        list[float] | None = None,
+    lows:         list[float] | None = None,
+    volumes:      list[float] | None = None,
+    open_prices:  list[float] | None = None,
+    bench_closes: list[float] | None = None,
+    bench_ma200:  float | None = None,
+    vix:          float | None = None,
+    earnings_days: int | None = None,
+) -> dict:
+    """외부 호출용 — OHLCV 데이터에서 하이브리드 점수 직접 계산.
+
+    api/index.py 에서 fetch_stock_data()로 가져온 일봉 데이터로 호출 가능.
+
+    Returns:
+        compute_hybrid_score() 반환 dict 또는 {"error": str}
+    """
+    if not _HYBRID_AVAILABLE:
+        return {"error": "hybrid_signals 모듈 로드 실패"}
+    n = len(closes)
+    if n < 10:
+        return {"error": "데이터 부족"}
+    h = highs or closes
+    l = lows  or closes
+    v = volumes or [0.0] * n
+    try:
+        return compute_hybrid_score(
+            closes        = closes,
+            highs         = h,
+            lows          = l,
+            volumes       = v,
+            open_prices   = open_prices,
+            bench_closes  = bench_closes,
+            bench_ma200   = bench_ma200,
+            vix           = vix,
+            earnings_days = earnings_days,
+        )
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ── 공개 API: 예측 사후 검증 ────────────────────────────────────────────────
