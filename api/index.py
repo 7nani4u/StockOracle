@@ -6736,6 +6736,28 @@ input::placeholder{color:#484f58}
 /* Skeleton 로딩 */
 .skel{background:linear-gradient(90deg,#21262d 25%,#2d333b 50%,#21262d 75%);background-size:200% 100%;animation:skel-shine 1.4s infinite}
 @keyframes skel-shine{0%{background-position:200% 0}100%{background-position:-200% 0}}
+/* ── 스캔 테이블 상태 배지 ── */
+.scan-status-ready{background:#0d2d1a;color:#3fb950;border:1px solid #1a4730;border-radius:5px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap}
+.scan-status-watch{background:#2d2200;color:#d29922;border:1px solid #5a4500;border-radius:5px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap}
+.scan-status-far{background:#21262d;color:#484f58;border:1px solid #30363d;border-radius:5px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap}
+.scan-status-block{background:#2d0d0d;color:#f85149;border:1px solid #4d1515;border-radius:5px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap}
+.scan-status-pullback{background:#1a1033;color:#bc8cff;border:1px solid #3a2060;border-radius:5px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap}
+/* 스캔 요약 카드 */
+.scan-sum-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;text-align:center}
+.scan-sum-val{font-size:22px;font-weight:800;margin-bottom:2px}
+.scan-sum-label{font-size:10px;color:#484f58;text-transform:uppercase;letter-spacing:.04em}
+/* 면역 레벨 색상 */
+.immune-clear{background:#0d2d1a!important;border-color:#1a4730!important;color:#3fb950}
+.immune-caution{background:#2d2200!important;border-color:#5a4500!important;color:#d29922}
+.immune-alert{background:#2d1810!important;border-color:#6b3010!important;color:#f97316}
+.immune-immune{background:#2d0d0d!important;border-color:#4d1515!important;color:#f85149}
+/* 면역 지표 카드 */
+.immune-metric{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px;text-align:center}
+.immune-metric-val{font-size:20px;font-weight:800;margin-bottom:3px}
+.immune-metric-label{font-size:10px;color:#484f58;text-transform:uppercase;letter-spacing:.04em}
+/* 위기 유사도 바 */
+.crisis-bar{height:6px;background:#21262d;border-radius:3px;overflow:hidden;margin-top:4px}
+.crisis-bar-fill{height:100%;border-radius:3px;transition:width .6s ease}
 
 /* 카드 */
 .card{background:#161b22;border:1px solid #30363d;border-radius:14px;padding:18px;margin-bottom:14px}
@@ -7440,6 +7462,8 @@ input::placeholder{color:#484f58}
     <div style="display:flex;flex-direction:column;gap:4px">
       <button class="mkt-btn active" style="text-align:left;padding:10px 12px" id="nav-analysis" onclick="showPage('analysis')">🔍 종목 상세 분석</button>
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-screener" onclick="showPage('screener')">📋 주식 골라보기</button>
+      <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-scan" onclick="showPage('scan')">🔬 7단계 스캔 엔진</button>
+      <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-immune" onclick="showPage('immune')">🛡️ 시장 위험 면역</button>
       <!-- ⚡ 개장 급등 추천 아코디언 -->
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-recommendations" onclick="toggleRecoMenu()">
         <span class="nav-reco-parent">
@@ -7525,6 +7549,18 @@ input::placeholder{color:#484f58}
         <div id="sector-flow-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
           업종별 흐름 데이터를 불러오지 못했습니다
           <button onclick="loadSectorFlow()" class="home-section-refresh" style="margin-left:6px">재시도</button>
+        </div>
+      </div>
+
+      <!-- HybridTurtle 시장 면역 배너 -->
+      <div id="immune-banner" style="display:none;margin-bottom:12px">
+        <div id="immune-banner-inner" style="border-radius:12px;padding:12px 16px;border:1px solid;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showPage('immune')">
+          <span id="immune-banner-icon" style="font-size:22px"></span>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:700" id="immune-banner-title"></div>
+            <div style="font-size:11px;margin-top:2px;opacity:.8" id="immune-banner-sub"></div>
+          </div>
+          <span style="font-size:11px;opacity:.6">자세히 →</span>
         </div>
       </div>
 
@@ -7839,6 +7875,110 @@ input::placeholder{color:#484f58}
     </div>
   </div>
 
+  <!-- ── 🔬 7단계 스캔 엔진 페이지 ── -->
+  <div id="page-scan" style="display:none">
+    <div class="screener-header" style="margin-bottom:16px">
+      <div>
+        <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🔬 7단계 스캔 엔진</h2>
+        <p style="font-size:12px;color:#8b949e">BQS·FWS·NCS 복합 점수 기반 후보 종목 발굴 (HybridTurtle v6.0)</p>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
+          <option value="KRX">🇰🇷 KRX (한국)</option>
+          <option value="US">🇺🇸 US (미국)</option>
+        </select>
+        <select id="scan-mode" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
+          <option value="FULL">FULL 스캔</option>
+          <option value="CORE_LITE">CORE_LITE (빠름)</option>
+        </select>
+        <button onclick="runScan()" id="scan-run-btn"
+          style="background:#1f6feb;border:none;border-radius:8px;padding:8px 16px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+          🔍 스캔 실행
+        </button>
+        <button onclick="runScan(true)" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 12px;color:#8b949e;font-size:13px;cursor:pointer;white-space:nowrap">🔄</button>
+      </div>
+    </div>
+    <!-- 스캔 전 안내 -->
+    <div id="scan-intro" class="home-section" style="text-align:center;padding:32px 20px;color:#484f58">
+      <div style="font-size:36px;margin-bottom:12px">🔬</div>
+      <div style="font-size:14px;font-weight:600;color:#8b949e;margin-bottom:8px">7단계 스캔 엔진 준비 완료</div>
+      <div style="font-size:12px;line-height:1.7">종목 유니버스 → 기술필터 → 상태분류 → BQS 랭킹 → 리스크 게이트 → 추격 방지 → 포지션 사이징</div>
+      <div style="font-size:11px;color:#484f58;margin-top:8px">⚠️ 실시간 데이터 수집으로 10~30초 소요될 수 있습니다</div>
+    </div>
+    <!-- 로딩 -->
+    <div id="scan-loading" style="display:none;text-align:center;padding:40px;color:#8b949e">
+      <div class="spinner" style="margin:0 auto 12px"></div>
+      <div id="scan-loading-msg">종목 데이터 수집 및 스캔 중...</div>
+      <div style="font-size:11px;color:#484f58;margin-top:8px">BQS · FWS · NCS 복합 점수 계산 중</div>
+    </div>
+    <!-- 오류 -->
+    <div id="scan-error" style="display:none;text-align:center;padding:32px;color:#f85149;font-size:13px"></div>
+    <!-- 결과 -->
+    <div id="scan-result" style="display:none">
+      <!-- 요약 카드 -->
+      <div id="scan-summary-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px"></div>
+      <!-- 레짐 배지 -->
+      <div id="scan-regime-bar" style="margin-bottom:14px;padding:10px 14px;background:#161b22;border:1px solid #30363d;border-radius:10px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12px"></div>
+      <!-- 후보 테이블 -->
+      <div class="card" style="padding:0;overflow-x:auto">
+        <table class="screener-table" id="scan-table">
+          <thead><tr>
+            <th>#</th>
+            <th>종목</th>
+            <th style="text-align:center">상태</th>
+            <th style="text-align:right">현재가</th>
+            <th style="text-align:right">진입 트리거</th>
+            <th style="text-align:right">손절가</th>
+            <th style="text-align:center">BQS</th>
+            <th style="text-align:center">FWS</th>
+            <th style="text-align:center">NCS</th>
+            <th style="text-align:center">QMJ</th>
+            <th>액션</th>
+          </tr></thead>
+          <tbody id="scan-tbody"></tbody>
+        </table>
+      </div>
+      <div style="font-size:10px;color:#484f58;margin-top:8px;text-align:center">
+        BQS=브레이크아웃 품질(↑좋음) · FWS=치명적 약점(↑위험) · NCS=순복합 점수(↑좋음) · 출처: HybridTurtle v6.0 Dual Score Engine
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 🛡️ 시장 위험 면역 페이지 ── -->
+  <div id="page-immune" style="display:none">
+    <div class="screener-header" style="margin-bottom:16px">
+      <div>
+        <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🛡️ 시장 위험 면역 시스템</h2>
+        <p style="font-size:12px;color:#8b949e">VIX · MA200 이격도 · ATR 기반 현재 시장 위험도 평가 (HybridTurtle v6.0)</p>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="immune-index" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
+          <option value="SPY">S&amp;P 500 (SPY)</option>
+          <option value="^KS200">KOSPI 200</option>
+          <option value="QQQ">NASDAQ 100 (QQQ)</option>
+        </select>
+        <button onclick="loadImmuneFull(true)" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 14px;color:#8b949e;font-size:13px;cursor:pointer">🔄 새로고침</button>
+      </div>
+    </div>
+    <div id="immune-loading" style="text-align:center;padding:40px;color:#8b949e">
+      <div class="spinner" style="margin:0 auto 12px"></div>
+      시장 위험 데이터 수집 중...
+    </div>
+    <div id="immune-error" style="display:none;text-align:center;padding:32px;color:#f85149;font-size:13px"></div>
+    <div id="immune-content" style="display:none">
+      <!-- 메인 면역 레벨 카드 -->
+      <div id="immune-level-card" style="margin-bottom:16px;border-radius:14px;padding:24px;border:2px solid;text-align:center"></div>
+      <!-- 지표 그리드 -->
+      <div id="immune-metrics" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px"></div>
+      <!-- 경고 목록 -->
+      <div id="immune-warnings" style="margin-bottom:16px"></div>
+      <!-- Kill 스위치 권고 -->
+      <div id="immune-killswitch" style="margin-bottom:16px"></div>
+      <!-- 과거 위기 유사도 -->
+      <div id="immune-crisis" style="margin-bottom:16px"></div>
+    </div>
+  </div>
+
   <!-- ── 🇺🇸 미국 개장 급등 추천 페이지 ── -->
   <div id="page-us-surge" style="display:none">
     <div class="screener-header" style="margin-bottom:16px">
@@ -7888,7 +8028,9 @@ var _usLongtermLoaded = false;
 var _usSurgeLoaded   = false;
 
 var _recoSubPages = ['kr-longterm', 'us-longterm', 'us-surge'];
-var _allPages = ['analysis', 'screener', 'kr-longterm', 'us-longterm', 'us-surge'];
+var _allPages = ['analysis', 'screener', 'kr-longterm', 'us-longterm', 'us-surge', 'scan', 'immune'];
+var _scanLoaded  = false;
+var _immuneLoaded = false;
 
 function toggleRecoMenu() {
   _recoMenuOpen = !_recoMenuOpen;
@@ -7927,6 +8069,14 @@ function showPage(page) {
   if (page === 'kr-longterm' && !_krLongtermLoaded) { _krLongtermLoaded = true; loadKrLongterm(); }
   if (page === 'us-longterm' && !_usLongtermLoaded) { _usLongtermLoaded = true; loadUsLongterm(); }
   if (page === 'us-surge'    && !_usSurgeLoaded)    { _usSurgeLoaded    = true; loadUsSurge(); }
+
+  // HybridTurtle 통합 페이지 첫 방문 시 자동 로드
+  if (page === 'scan')   { var scanEl = document.getElementById('nav-scan');   if(scanEl) scanEl.classList.add('active'); loadImmuneBanner(); }
+  if (page === 'immune') { var imEl   = document.getElementById('nav-immune'); if(imEl)   imEl.classList.add('active');   loadImmuneFull(); }
+  ['nav-scan','nav-immune'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.toggle('active', id === 'nav-' + page);
+  });
 
   closeSidebar();   // 모바일: 페이지 전환 시 사이드바 닫기
 }
@@ -11739,6 +11889,316 @@ initAlerts();       // 🔔 알림 시스템 초기화
 
 <!-- 🔔 토스트 컨테이너 -->
 <div id="alert-toast-container"></div>
+
+<script>
+// ══════════════════════════════════════════════════════
+// 🔬 7단계 스캔 엔진 UI
+// ══════════════════════════════════════════════════════
+
+async function runScan(force) {
+  var market = document.getElementById('scan-market').value;
+  var mode   = document.getElementById('scan-mode').value;
+  var introEl  = document.getElementById('scan-intro');
+  var loadEl   = document.getElementById('scan-loading');
+  var errorEl  = document.getElementById('scan-error');
+  var resultEl = document.getElementById('scan-result');
+  var runBtn   = document.getElementById('scan-run-btn');
+
+  if (introEl)  introEl.style.display  = 'none';
+  if (errorEl)  errorEl.style.display  = 'none';
+  if (resultEl) resultEl.style.display = 'none';
+  if (loadEl)   loadEl.style.display   = '';
+  if (runBtn)   runBtn.disabled = true;
+
+  try {
+    var url = '/api/scan?market=' + market + '&mode=' + mode;
+    var r   = await fetch(url);
+    var d   = await r.json();
+
+    if (d.error) {
+      if (errorEl) { errorEl.textContent = '오류: ' + d.error; errorEl.style.display = ''; }
+      return;
+    }
+
+    _scanLoaded = true;
+    renderScanResult(d, market);
+    if (resultEl) resultEl.style.display = '';
+
+  } catch(e) {
+    if (errorEl) { errorEl.textContent = '네트워크 오류: ' + e.message; errorEl.style.display = ''; }
+  } finally {
+    if (loadEl) loadEl.style.display = 'none';
+    if (runBtn) runBtn.disabled = false;
+  }
+}
+
+function renderScanResult(d, market) {
+  var isKrx = market === 'KRX';
+  var fmtP  = function(v) {
+    if (v == null) return '—';
+    return isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  };
+
+  // 요약 카드
+  var sumEl = document.getElementById('scan-summary-cards');
+  if (sumEl) {
+    var cards = [
+      { val: d.total_scanned,  label: '전체 스캔', color: '#8b949e' },
+      { val: d.passed_filters, label: '필터 통과', color: '#58a6ff' },
+      { val: d.ready_count,    label: 'READY',     color: '#3fb950' },
+      { val: d.watch_count,    label: 'WATCH',     color: '#d29922' },
+      { val: d.far_count,      label: 'FAR',       color: '#484f58' },
+    ];
+    sumEl.innerHTML = cards.map(function(c) {
+      return '<div class="scan-sum-card"><div class="scan-sum-val" style="color:' + c.color + '">' + (c.val || 0) + '</div><div class="scan-sum-label">' + c.label + '</div></div>';
+    }).join('');
+  }
+
+  // 레짐 배지
+  var regEl = document.getElementById('scan-regime-bar');
+  if (regEl) {
+    var regColor = d.regime === 'BULLISH' ? '#3fb950' : d.regime === 'BEARISH' ? '#f85149' : '#8b949e';
+    var volColor = d.vol_regime === 'HIGH_VOL' ? '#f97316' : d.vol_regime === 'LOW_VOL' ? '#58a6ff' : '#8b949e';
+    var ts = d.generated_at ? new Date(d.generated_at).toLocaleTimeString('ko-KR') : '';
+    regEl.innerHTML =
+      '<span style="color:#484f58;font-size:11px">시장 레짐</span>' +
+      '<span style="color:' + regColor + ';font-weight:700">' + (d.regime || '—') + '</span>' +
+      '<span style="color:#484f58;font-size:11px;margin-left:16px">변동성 레짐</span>' +
+      '<span style="color:' + volColor + ';font-weight:700">' + (d.vol_regime || '—') + '</span>' +
+      (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
+  }
+
+  // 후보 테이블
+  var tbody = document.getElementById('scan-tbody');
+  if (!tbody) return;
+  var cands = d.candidates || [];
+  if (cands.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:24px;color:#484f58">후보 종목 없음</td></tr>';
+    return;
+  }
+
+  var statusBadge = function(s) {
+    var map = {
+      'READY':       '<span class="scan-status-ready">READY</span>',
+      'WATCH':       '<span class="scan-status-watch">WATCH</span>',
+      'WAIT_PULLBACK':'<span class="scan-status-pullback">눌림목</span>',
+      'FAR':         '<span class="scan-status-far">FAR</span>',
+      'EARNINGS_BLOCK':'<span class="scan-status-block">실적블록</span>',
+      'COOLDOWN':    '<span class="scan-status-block">쿨다운</span>',
+    };
+    return map[s] || '<span class="scan-status-far">' + s + '</span>';
+  };
+
+  var scoreBar = function(v, color) {
+    var pct = Math.min(100, Math.max(0, v));
+    return '<div style="font-weight:700;color:' + color + ';font-size:13px">' + pct.toFixed(1) + '</div>' +
+           '<div style="height:4px;background:#21262d;border-radius:2px;margin-top:3px;overflow:hidden">' +
+           '<div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:2px"></div></div>';
+  };
+
+  var rows = cands.slice(0, 30).map(function(c, i) {
+    var ncsColor = c.ncs >= 70 ? '#3fb950' : c.ncs >= 50 ? '#58a6ff' : c.ncs >= 35 ? '#d29922' : '#f85149';
+    var fwsColor = c.fws <= 30 ? '#3fb950' : c.fws <= 50 ? '#d29922' : c.fws <= 65 ? '#f97316' : '#f85149';
+    var bqsColor = c.bqs >= 65 ? '#3fb950' : c.bqs >= 45 ? '#58a6ff' : '#8b949e';
+    var actionShort = (c.action_note || '').replace('Auto-Yes','✅ Auto-Yes').replace('Auto-No','❌ Auto-No').replace('Conditional','⚠️ 조건부').split('|')[0].trim();
+    var qmjColor = c.quality_tier === 'high' ? '#3fb950' : c.quality_tier === 'medium' ? '#58a6ff' : '#484f58';
+
+    return '<tr onclick="document.getElementById(\'ticker-input\').value=\'' + c.ticker + '\';showPage(\'analysis\');analyze()" style="cursor:pointer">' +
+      '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
+      '<td><div style="font-weight:600;font-size:13px">' + c.ticker + '</div><div style="font-size:10px;color:#484f58">' + (c.name || c.ticker) + '</div></td>' +
+      '<td style="text-align:center">' + statusBadge(c.status) + '</td>' +
+      '<td style="text-align:right;font-size:13px;font-weight:600">' + fmtP(c.price) + '</td>' +
+      '<td style="text-align:right;font-size:12px;color:#58a6ff">' + fmtP(c.entry_trigger) + '</td>' +
+      '<td style="text-align:right;font-size:12px;color:#f85149">' + fmtP(c.stop_price) + '</td>' +
+      '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
+      '<td style="min-width:60px">' + scoreBar(c.fws, fwsColor) + '</td>' +
+      '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
+      '<td style="text-align:center;color:' + qmjColor + ';font-size:11px;font-weight:600">' + (c.quality_tier || '—') + '</td>' +
+      '<td style="font-size:11px;color:#8b949e;max-width:180px">' + actionShort + '</td>' +
+    '</tr>';
+  }).join('');
+
+  tbody.innerHTML = rows;
+}
+
+
+// ══════════════════════════════════════════════════════
+// 🛡️ 시장 위험 면역 UI
+// ══════════════════════════════════════════════════════
+
+async function loadImmuneBanner() {
+  // 홈 화면 배너용 빠른 체크 (SPY 기본)
+  try {
+    var r = await fetch('/api/market-immune?index=SPY');
+    var d = await r.json();
+    if (d.error) return;
+    _renderImmuneBanner(d);
+  } catch(e) { /* 배너는 실패해도 무시 */ }
+}
+
+function _renderImmuneBanner(d) {
+  var bannerEl = document.getElementById('immune-banner');
+  var inner    = document.getElementById('immune-banner-inner');
+  var icon     = document.getElementById('immune-banner-icon');
+  var title    = document.getElementById('immune-banner-title');
+  var sub      = document.getElementById('immune-banner-sub');
+  if (!bannerEl) return;
+
+  var level = d.immune_level || 'CLEAR';
+  var score = d.immune_score || 0;
+
+  var cfg = {
+    'CLEAR':   { cls:'immune-clear',   icon:'🟢', t:'시장 정상 (CLEAR)',      s:'신규 진입 허용 · 정상 운영' },
+    'CAUTION': { cls:'immune-caution', icon:'🟡', t:'주의 단계 (CAUTION)',    s:'포지션 50% 축소 권고' },
+    'ALERT':   { cls:'immune-alert',   icon:'🟠', t:'경보 단계 (ALERT)',      s:'신규 진입 극도 제한 · 수동 확인 필수' },
+    'IMMUNE':  { cls:'immune-immune',  icon:'🔴', t:'면역 발동 (IMMUNE)',     s:'신규 매수 전면 금지 · 현금 비중 확대' },
+  }[level] || { cls:'immune-clear', icon:'⚪', t:level, s:'' };
+
+  if (icon)  icon.textContent   = cfg.icon;
+  if (title) title.textContent  = cfg.t + ' (위험 점수 ' + score + '/100)';
+  if (sub)   sub.textContent    = cfg.s;
+  if (inner) { inner.className  = ''; inner.classList.add(cfg.cls); }
+  if (bannerEl) bannerEl.style.display = '';
+}
+
+async function loadImmuneFull(force) {
+  var idx    = (document.getElementById('immune-index') || {}).value || 'SPY';
+  var loadEl = document.getElementById('immune-loading');
+  var errEl  = document.getElementById('immune-error');
+  var contEl = document.getElementById('immune-content');
+
+  if (loadEl) loadEl.style.display = '';
+  if (errEl)  errEl.style.display  = 'none';
+  if (contEl) contEl.style.display = 'none';
+
+  try {
+    var r = await fetch('/api/market-immune?index=' + idx);
+    var d = await r.json();
+
+    if (d.error) {
+      if (errEl) { errEl.textContent = '오류: ' + d.error; errEl.style.display = ''; }
+      return;
+    }
+
+    _immuneLoaded = true;
+    _renderImmuneFull(d);
+    if (contEl) contEl.style.display = '';
+    // 홈 배너도 갱신
+    _renderImmuneBanner(d);
+
+  } catch(e) {
+    if (errEl) { errEl.textContent = '네트워크 오류: ' + e.message; errEl.style.display = ''; }
+  } finally {
+    if (loadEl) loadEl.style.display = 'none';
+  }
+}
+
+function _renderImmuneFull(d) {
+  var C = { green:'#3fb950', yellow:'#d29922', orange:'#f97316', red:'#f85149', blue:'#58a6ff', gray:'#8b949e' };
+  var level = d.immune_level || 'CLEAR';
+  var score = d.immune_score || 0;
+
+  var levelCfg = {
+    'CLEAR':   { cls:'immune-clear',   label:'🟢 정상 (CLEAR)',   desc:'신규 진입 허용 · 모든 전략 가동 가능' },
+    'CAUTION': { cls:'immune-caution', label:'🟡 주의 (CAUTION)', desc:'포지션 사이즈 50% 축소 권고' },
+    'ALERT':   { cls:'immune-alert',   label:'🟠 경보 (ALERT)',   desc:'신규 진입 극도 제한 · 수동 확인 필수' },
+    'IMMUNE':  { cls:'immune-immune',  label:'🔴 면역 발동 (IMMUNE)', desc:'신규 매수 전면 금지 · 현금 비중 확대' },
+  }[level] || { cls:'immune-clear', label:level, desc:'' };
+
+  // 메인 카드
+  var lvCard = document.getElementById('immune-level-card');
+  if (lvCard) {
+    lvCard.className = levelCfg.cls;
+    lvCard.innerHTML =
+      '<div style="font-size:28px;font-weight:900;margin-bottom:6px">' + levelCfg.label + '</div>' +
+      '<div style="font-size:36px;font-weight:900;margin:8px 0">' + score + '<span style="font-size:16px;font-weight:400;opacity:.7">/100</span></div>' +
+      '<div style="font-size:13px;opacity:.9">' + levelCfg.desc + '</div>' +
+      '<div style="height:8px;background:rgba(0,0,0,.3);border-radius:4px;overflow:hidden;margin-top:14px;width:80%;margin-left:auto;margin-right:auto">' +
+      '<div style="height:100%;width:' + score + '%;background:currentColor;border-radius:4px;transition:width .7s"></div></div>';
+  }
+
+  // 지표 그리드
+  var metEl = document.getElementById('immune-metrics');
+  if (metEl) {
+    var metrics = [
+      { label:'VIX', val: d.vix_level != null ? d.vix_level.toFixed(1) : '—',
+        color: d.vix_level == null ? C.gray : d.vix_level >= 40 ? C.red : d.vix_level >= 30 ? C.orange : d.vix_level >= 20 ? C.yellow : C.green },
+      { label:'MA200 이격도', val: d.ma200_deviation != null ? d.ma200_deviation.toFixed(1) + '%' : '—',
+        color: d.ma200_deviation == null ? C.gray : d.ma200_deviation < -20 ? C.red : d.ma200_deviation < -10 ? C.orange : d.ma200_deviation < 0 ? C.yellow : C.green },
+      { label:'지수 ATR%', val: d.vol_pct != null ? d.vol_pct.toFixed(2) + '%' : '—',
+        color: d.vol_pct == null ? C.gray : d.vol_pct >= 5 ? C.red : d.vol_pct >= 3 ? C.orange : C.green },
+      { label:'위험 점수', val: score + '/100', color: score >= 65 ? C.red : score >= 40 ? C.orange : score >= 20 ? C.yellow : C.green },
+    ];
+    metEl.innerHTML = metrics.map(function(m) {
+      return '<div class="immune-metric"><div class="immune-metric-val" style="color:' + m.color + '">' + m.val + '</div><div class="immune-metric-label">' + m.label + '</div></div>';
+    }).join('');
+  }
+
+  // 경고 목록
+  var warnEl = document.getElementById('immune-warnings');
+  if (warnEl) {
+    var warnings = d.warnings || [];
+    if (warnings.length > 0) {
+      warnEl.innerHTML = '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">⚠️ 감지된 경고</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px">' +
+        warnings.map(function(w) {
+          return '<div style="background:#2d1515;border:1px solid #4d1515;border-radius:8px;padding:8px 12px;font-size:12px;color:#f85149">' + w + '</div>';
+        }).join('') + '</div>';
+    } else {
+      warnEl.innerHTML = '<div style="background:#0d2d1a;border:1px solid #1a4730;border-radius:8px;padding:10px 14px;font-size:12px;color:#3fb950">✓ 감지된 이상 신호 없음</div>';
+    }
+  }
+
+  // Kill 스위치 권고
+  var ksEl = document.getElementById('immune-killswitch');
+  if (ksEl) {
+    var ks = d.kill_switch || {};
+    var items = [
+      { key:'disable_new_entries',        label:'신규 진입 금지',   val: ks.disable_new_entries },
+      { key:'disable_automated_entries',  label:'자동 진입 금지',   val: ks.disable_automated_entries },
+      { key:'reduce_position_size',       label:'포지션 축소 권고', val: ks.reduce_position_size },
+      { key:'require_manual_confirm',     label:'수동 확인 필수',   val: ks.require_manual_confirm },
+    ];
+    ksEl.innerHTML = '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">🔐 Kill 스위치 상태</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">' +
+      items.map(function(item) {
+        var on = item.val === true;
+        var color = on ? '#f85149' : '#3fb950';
+        var bg    = on ? '#2d0d0d' : '#0d2d1a';
+        var border= on ? '#4d1515' : '#1a4730';
+        return '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center">' +
+          '<span style="font-size:12px;color:#cdd9e5">' + item.label + '</span>' +
+          '<span style="font-size:12px;font-weight:700;color:' + color + '">' + (on ? '활성' : '비활성') + '</span></div>';
+      }).join('') + '</div>';
+  }
+
+  // 과거 위기 유사도
+  var crisisEl = document.getElementById('immune-crisis');
+  if (crisisEl) {
+    var matches = d.crisis_matches || [];
+    if (matches.length === 0) { crisisEl.innerHTML = ''; return; }
+    crisisEl.innerHTML = '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">📜 과거 위기 유사도 (상위 3개)</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px">' +
+      matches.slice(0,3).map(function(c) {
+        var sim = c.similarity || 0;
+        var sevColor = c.severity === 'EXTREME' ? C.red : c.severity === 'SEVERE' ? C.orange : c.severity === 'MODERATE' ? C.yellow : C.green;
+        return '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">' +
+          '<div style="display:flex;justify-content:space-between;margin-bottom:6px">' +
+          '<span style="font-size:12px;font-weight:600;color:#cdd9e5">' + c.name + '</span>' +
+          '<span style="font-size:11px;font-weight:700;color:' + sevColor + '">' + c.severity + '</span></div>' +
+          '<div class="crisis-bar"><div class="crisis-bar-fill" style="width:' + sim + '%;background:' + sevColor + '"></div></div>' +
+          '<div style="display:flex;justify-content:space-between;margin-top:4px">' +
+          '<span style="font-size:10px;color:#484f58">유사도 ' + sim.toFixed(1) + '%</span>' +
+          '<span style="font-size:10px;color:#f85149">최대 낙폭 ' + c.drawdown + '%</span></div></div>';
+      }).join('') + '</div>';
+  }
+}
+
+// 홈 화면 진입 시 배너 자동 로드
+document.addEventListener('DOMContentLoaded', function() {
+  setTimeout(function() { loadImmuneBanner(); }, 3000);
+});
+</script>
 
 </body>
 </html>"""
