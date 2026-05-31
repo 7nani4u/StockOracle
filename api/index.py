@@ -6367,6 +6367,52 @@ def route(path: str, params: Dict) -> Dict:
             if mode_p not in ("FULL", "CORE_LITE"):
                 mode_p = "FULL"
 
+            # 종목명 조회 헬퍼 ─────────────────────────────────────────────────
+            # KRX 기본 유니버스 한국어 이름 사전 (오프라인 우선 조회)
+            _KRX_NAME_MAP = {
+                "005930.KS": "삼성전자",        "005930.KQ": "삼성전자",
+                "000660.KS": "SK하이닉스",
+                "035420.KS": "NAVER",
+                "051910.KS": "LG화학",
+                "035720.KS": "카카오",
+                "207940.KS": "삼성바이오로직스",
+                "006400.KS": "삼성SDI",
+                "028260.KS": "삼성물산",
+                "105560.KS": "KB금융",
+                "055550.KS": "신한지주",
+                "000270.KS": "기아",           "005380.KS": "현대차",
+                "068270.KS": "셀트리온",        "003550.KS": "LG",
+                "005490.KS": "POSCO홀딩스",    "034730.KS": "SK",
+                "373220.KS": "LG에너지솔루션", "247540.KS": "에코프로비엠",
+                "086520.KS": "에코프로",        "323410.KS": "카카오뱅크",
+                "352820.KS": "하이브",          "259960.KS": "크래프톤",
+                "034020.KS": "두산에너빌리티", "012330.KS": "현대모비스",
+                "066570.KS": "LG전자",         "003670.KS": "포스코퓨처엠",
+                "028050.KS": "삼성엔지니어링",  "010130.KS": "고려아연",
+            }
+
+            def _get_name(tkr: str, info_dict: dict = None) -> str:
+                """ticker → 한국어/영어 종목명 조회 (우선순위: 사전 → resolve_ticker → info → ticker)."""
+                # 1. 사전 조회 (오프라인, 가장 빠름)
+                if tkr in _KRX_NAME_MAP:
+                    return _KRX_NAME_MAP[tkr]
+                # 2. resolve_ticker() — KR_STOCK_MAP + KRX API 활용
+                try:
+                    code = tkr.replace(".KS", "").replace(".KQ", "").strip()
+                    if code.isdigit() and len(code) == 6:
+                        _, _, cname = resolve_ticker(code)
+                        if cname and cname != code:
+                            return cname
+                except Exception:
+                    pass
+                # 3. yfinance info shortName / longName
+                if info_dict:
+                    name = info_dict.get("shortName") or info_dict.get("longName")
+                    if name:
+                        return name
+                # 4. 최후 fallback: ticker 코드
+                return tkr
+
             # 종목 목록 파싱
             tickers_raw = params.get("tickers", "")
             if tickers_raw:
@@ -6454,12 +6500,15 @@ def route(path: str, params: Dict) -> Dict:
                     )
                     snap_map[tkr] = snap
                     sleeve = "ETF" if tkr in ("QQQ","SPY","SOXL","TQQQ","SQQQ") else "CORE"
-                    universe.append(StockUniverse(tkr, tkr, sleeve))
+                    # info 조회 (QMJ + 종목명 동시 수집)
+                    _info = {}
                     try:
-                        info = yf.Ticker(tkr).info
-                        quality_map[tkr] = get_quality_score_from_info(tkr, info)
+                        _info = yf.Ticker(tkr).info or {}
+                        quality_map[tkr] = get_quality_score_from_info(tkr, _info)
                     except Exception:
                         pass
+                    _name = _get_name(tkr, _info)
+                    universe.append(StockUniverse(tkr, _name, sleeve))
                 except Exception:
                     continue
 
