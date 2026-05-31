@@ -5137,7 +5137,7 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
     이미지 1: 급등 추세 종목의 눌림목 공통 특징 (5단계 흐름 구조)
       - 거래량 감소 / RSI 50~60 재정렬 / 20MA 지지 / OBV 유지 / 급등봉 저가 미이탈
     이미지 2: 실전형 손익비 좋은 자리 (구간(zone) 기반 분할매수)
-      - 핵심 일치가격대(지지/저항 전환) / 세력 혼들림 패턴 감지 / 4단계 분할 진입
+      - 핵심 일치가격대(지지/저항 전환) / 세력 흔들림 패턴 점검 / 4단계 분할 진입
     """
     def _last(k, default=0.0):
         a = dd.get(k, [])
@@ -5423,7 +5423,7 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
     # 트레일링: 고점 대비 ATR×1.5
     trail_stop = round(last_price - atr * 1.5, rnd2)
 
-    # ── B4. 세력 혼들림 패턴 감지 ────────────────────────────────────
+    # ── B4. 세력 흔들림 패턴 점검 ────────────────────────────────────
     manipulation_flags = []
     # 패턴 1: 지지선 이탈 척 (장중 이탈 후 종가 회복)
     if len(closes) >= 3 and len(lows) >= 3:
@@ -5551,7 +5551,7 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
         "trail_stop":      trail_stop,
         "rr_main":         rr_main,
         "rr_scenarios":    rr_scenarios,
-        # ─ 세력 혼들림 패턴 ─
+        # ─ 세력 흔들림 패턴 점검 ─
         "manipulation_flags":  manipulation_flags,
         "bb_squeeze":          bb_squeeze_here,
         # ─ 구조 붕괴 판단 ─
@@ -8061,12 +8061,13 @@ function _pullbackInit(d, isKrx) {
   return { pa, C, fmtP, stageColors, stageLabels };
 }
 
-// ── AI 진단 탭: ① 현재 흐름 단계  ② 눌림목 체크리스트  ⑦ 세력 패턴  ⑧ 구조 붕괴 손절 ──
+// ── AI 진단 탭: ① 현재 흐름 단계 | ⑧~⑩ 눌림목 조건 점검 · 세력 흔들림 패턴 점검 · 구조 붕괴 · 손절 기준 점검 ──
 function renderPullbackIntoAI(d, isKrx) {
-  const el = document.getElementById('pullback-ai-section');
-  if (!el) return;
+  const elTop = document.getElementById('pullback-ai-top-section');
+  const elBot = document.getElementById('pullback-ai-bottom-section');
+  if (!elTop && !elBot) return;
   const init = _pullbackInit(d, isKrx);
-  if (!init) { el.innerHTML = ''; return; }
+  if (!init) { if (elTop) elTop.innerHTML = ''; if (elBot) elBot.innerHTML = ''; return; }
   const { pa, C, fmtP, stageColors, stageLabels } = init;
 
   // ── 점수/색상 계산 ────────────────────────────────────────────────
@@ -8075,18 +8076,18 @@ function renderPullbackIntoAI(d, isKrx) {
   const stageC   = stageColors[pa.flow_stage] || C.gray;
   const stageLbl = stageVal >= 80 ? '급등/재급등' : stageVal >= 60 ? '양호' : stageVal >= 40 ? '보통' : '초기';
 
-  // ② 눌림목 체크리스트: pullback_score_pct 그대로
+  // ⑧ 눌림목 조건 점검: pullback_score_pct 그대로
   const pbVal = pa.pullback_score_pct || 0;
   const pbC   = pbVal >= 65 ? C.green : pbVal >= 40 ? C.orange : C.red;
   const pbLbl = pbVal >= 65 ? '양호' : pbVal >= 40 ? '보통' : '주의';
 
-  // ⑦ 세력 혼들림: 패턴 0개=85, 1개=55, 2개+=25
+  // ⑨ 세력 흔들림 패턴 점검: 패턴 0개=85, 1개=55, 2개+=25
   const mfCount = (pa.manipulation_flags || []).length;
   const mfVal   = mfCount === 0 ? 85 : mfCount === 1 ? 55 : 25;
   const mfC     = mfVal >= 65 ? C.green : mfVal >= 40 ? C.orange : C.red;
   const mfLbl   = mfVal >= 65 ? '패턴 없음' : mfVal >= 40 ? '주의 1건' : '다수 감지';
 
-  // ⑧ 구조 붕괴: sl_triggered 0=85, 1=50, 2+=20
+  // ⑩ 구조 붕괴 · 손절 기준 점검: sl_triggered 0=85, 1=50, 2+=20
   const slVal = pa.sl_triggered === 0 ? 85 : pa.sl_triggered === 1 ? 50 : 20;
   const slC   = slVal >= 65 ? C.green : slVal >= 40 ? C.orange : C.red;
   const slLbl = slVal >= 65 ? '안전' : slVal >= 40 ? '경고' : '위험';
@@ -8107,7 +8108,7 @@ function renderPullbackIntoAI(d, isKrx) {
       <span>바닥</span><span>돌파</span><span>급등</span><span style="color:${C.green};font-weight:700">눌림목</span><span>재급등</span>
     </div>`;
 
-  // ② 눌림목 체크리스트 아코디언
+  // ⑧ 눌림목 조건 점검 아코디언
   const checkRows = (pa.pullback_checks || []).map(c => {
     const ic = c.pass ? '✅' : '❌';
     const tc = c.pass ? C.green : C.red;
@@ -8120,7 +8121,7 @@ function renderPullbackIntoAI(d, isKrx) {
     <table style="width:100%;border-collapse:collapse">${checkRows}</table>
     ${pa.last_surge_low ? `<div style="margin-top:8px;padding:6px 10px;background:#21262d;border-radius:6px;font-size:12px;color:#8b949e">급등봉 ${pa.surge_candles_count}개 감지 | 급등봉 저가 기준선: <b style="color:#e6edf3">${fmtP(pa.last_surge_low)}</b></div>` : ''}`;
 
-  // ⑦ 세력 혼들림 아코디언
+  // ⑨ 세력 흔들림 패턴 점검 아코디언
   const mfItems = pa.manipulation_flags && pa.manipulation_flags.length > 0
     ? pa.manipulation_flags.map(f => `
       <div style="border-left:3px solid ${C[f.color]||C.orange};padding:8px 10px;background:#21262d;border-radius:0 6px 6px 0">
@@ -8128,10 +8129,10 @@ function renderPullbackIntoAI(d, isKrx) {
         <div style="color:#8b949e;font-size:12px;margin-top:3px">${f.desc}</div>
         <div style="color:${C.blue};font-size:12px;margin-top:3px">대응: ${f.action}</div>
       </div>`).join('')
-    : `<div style="color:#8b949e;font-size:13px;padding:4px 0">감지된 세력 혼들림 패턴 없음</div>`;
+    : `<div style="color:#8b949e;font-size:13px;padding:4px 0">감지된 세력 흔들림 패턴 없음</div>`;
   const mfAccContent = mfItems;
 
-  // ⑧ 구조 붕괴 손절 아코디언
+  // ⑩ 구조 붕괴 · 손절 기준 점검 아코디언
   const slRows = (pa.sl_conditions || []).map(s => {
     const ic = s.triggered ? '🔴' : '🟢';
     const tc = s.triggered ? C.red : C.green;
@@ -8170,18 +8171,21 @@ function renderPullbackIntoAI(d, isKrx) {
     </div>`;
   };
 
-  // display:contents로 선언된 플레이스홀더에 직접 diag-dim 행들을 삽입
-  el.innerHTML =
+  // ① 상단 플레이스홀더: 현재 흐름 단계만 삽입
+  if (elTop) elTop.innerHTML =
       pbDimBar('🔄', '현재 흐름 단계', stageVal,
           `${stageLabels[pa.flow_stage] || '단계 불명'} · ${pa.flow_desc ? pa.flow_desc.substring(0,40) + (pa.flow_desc.length > 40 ? '…' : '') : ''}`,
-          'pb-flow', flowAccContent)
-    + pbDimBar('✅', '눌림목 체크리스트', pbVal,
+          'pb-flow', flowAccContent);
+
+  // ⑧~⑩ 하단 플레이스홀더: 눌림목 · 세력 · 구조붕괴
+  if (elBot) elBot.innerHTML =
+      pbDimBar('✅', '눌림목 조건 점검', pbVal,
           `${pa.pullback_grade} · ${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length} 조건 충족 · ${pa.pullback_desc ? pa.pullback_desc.substring(0,35) + (pa.pullback_desc.length > 35 ? '…' : '') : ''}`,
           'pb-check', checkAccContent)
-    + pbDimBar('🎭', `세력 혼들림 패턴${pa.bb_squeeze ? ' · 볼린저 수축' : ''}`, mfVal,
-          mfCount > 0 ? `${mfCount}개 패턴 감지 — 구조 생존 여부 확인 필요` : '세력 혼들림 패턴 미감지 — 구조 유지 중',
+    + pbDimBar('🎭', `세력 흔들림 패턴 점검${pa.bb_squeeze ? ' · 볼린저 수축' : ''}`, mfVal,
+          mfCount > 0 ? `${mfCount}개 패턴 감지 — 속임수 가능성 확인 필요` : '세력 흔들림 패턴 미감지 — 구조 유지 중',
           'pb-manip', mfAccContent)
-    + pbDimBar('🛑', '구조 붕괴 손절 기준', slVal,
+    + pbDimBar('🛑', '구조 붕괴 · 손절 기준 점검', slVal,
           `${pa.breakdown_verdict} · ${pa.sl_triggered}개 조건 충족`,
           'pb-sl', slAccContent);
 }
@@ -8278,7 +8282,7 @@ function renderPullbackAnalysis(d, isKrx) {
   const stageLabels = ['','① 바닥 매집','② 돌파','③ 1차 급등','④ 눌림목','⑤ 재급등'];
   const stageC = stageColors[pa.flow_stage] || C.gray;
 
-  // 눌림목 체크리스트
+  // 눌림목 조건 점검
   const checkRows = (pa.pullback_checks || []).map(c => {
     const ic = c.pass ? '✅' : '❌';
     const tc = c.pass ? C.green : C.red;
@@ -8323,7 +8327,7 @@ function renderPullbackAnalysis(d, isKrx) {
     </tr>`;
   }).join('');
 
-  // 세력 혼들림 패턴
+  // 세력 흔들림 패턴 점검
   const mfHtml = pa.manipulation_flags && pa.manipulation_flags.length > 0
     ? pa.manipulation_flags.map(f => `
       <div style="border-left:3px solid ${C[f.color]||C.orange};padding:8px 10px;background:#1c2128;border-radius:0 6px 6px 0;margin-bottom:6px">
@@ -8331,7 +8335,7 @@ function renderPullbackAnalysis(d, isKrx) {
         <div style="color:#8b949e;font-size:12px;margin-top:3px">${f.desc}</div>
         <div style="color:#58a6ff;font-size:12px;margin-top:3px">대응: ${f.action}</div>
       </div>`).join('')
-    : `<div style="color:#8b949e;font-size:13px;padding:8px 0">감지된 세력 혼들림 패턴 없음</div>`;
+    : `<div style="color:#8b949e;font-size:13px;padding:8px 0">감지된 세력 흔들림 패턴 없음</div>`;
 
   const pbGC = C[pa.pullback_grade_color] || C.blue;
   const bvC  = C[pa.breakdown_color]      || C.gray;
@@ -8358,9 +8362,9 @@ function renderPullbackAnalysis(d, isKrx) {
     </div>
   </div>
 
-  <!-- A2. 눌림목 체크리스트 -->
+  <!-- A2. 눌림목 조건 점검 -->
   <div class="card" style="margin-bottom:12px;border:2px solid ${pbGC}">
-    <div class="card-title">② 눌림목 체크리스트</div>
+    <div class="card-title">② 눌림목 조건 점검</div>
     <div style="display:flex;align-items:center;gap:14px;padding:10px 0 8px;flex-wrap:wrap">
       <div style="text-align:center;min-width:80px">
         <div style="font-size:28px;font-weight:700;color:${pbGC}">${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length}</div>
@@ -8448,15 +8452,15 @@ function renderPullbackAnalysis(d, isKrx) {
     </div>
   </div>
 
-  <!-- B5. 세력 혼들림 패턴 -->
+  <!-- B5. 세력 흔들림 패턴 점검 -->
   <div class="card" style="margin-bottom:12px">
-    <div class="card-title">⑦ 세력 혼들림(착오작전) 패턴 감지${pa.bb_squeeze ? ' — <span style="color:'+C.yellow+'">볼린저 수축 감지</span>' : ''}</div>
+    <div class="card-title">⑦ 세력 흔들림 패턴 점검${pa.bb_squeeze ? ' — <span style="color:'+C.yellow+'">볼린저 수축 감지</span>' : ''}</div>
     <div style="padding:8px 0">${mfHtml}</div>
   </div>
 
-  <!-- B6. 구조 붕괴 손절 기준 -->
+  <!-- B6. 구조 붕괴 · 손절 기준 점검 -->
   <div class="card" style="border:2px solid ${bvC}">
-    <div class="card-title">⑧ 구조 붕괴 손절 기준 (${pa.sl_triggered}개 조건 충족)</div>
+    <div class="card-title">⑧ 구조 붕괴 · 손절 기준 점검 (${pa.sl_triggered}개 조건 충족)</div>
     <div style="display:inline-flex;align-items:center;gap:10px;padding:10px 0 8px">
       <span style="font-size:20px">${pa.sl_triggered >= 2 ? '🔴' : pa.sl_triggered === 1 ? '🟡' : '🟢'}</span>
       <span style="color:${bvC};font-weight:700;font-size:15px">${pa.breakdown_verdict}</span>
@@ -8698,7 +8702,7 @@ function renderDiagnosis(d, isKrx) {
   else                            mScore = Math.min(75, 55 + (30 - rsi) * 1.5); // 과매도 = 반등기회
   const momentumScore = Math.min(100, Math.max(0, Math.round(mScore)));
 
-  // ── 3. 변동성 안정도 (ATR 기반) ──────────────────────────────────
+  // ── 3. 변동성 수준 (ATR 기반) ───────────────────────────────────
   let vScore = 60;
   if (bp) {
     const atrPct = parseFloat(bp.atr_pct) || 0;
@@ -8722,7 +8726,7 @@ function renderDiagnosis(d, isKrx) {
   }
   const supplyScore = Math.min(100, Math.max(0, Math.round(sScore)));
 
-  // ── 5. 패턴 신호 ─────────────────────────────────────────────────
+  // ── 5. 캔들·차트 패턴 신호 ──────────────────────────────────────
   const bullPat = patterns.filter(p => p.direction === '상승').length;
   const bearPat = patterns.filter(p => p.direction === '하락').length;
   let pScore = 50;
@@ -8903,10 +8907,10 @@ function renderDiagnosis(d, isKrx) {
     </div>
     <div id="flow-rationale" style="display:none"></div>
     <div class="diag-dims">
-      <div id="pullback-ai-section" style="display:contents"></div>
+      <div id="pullback-ai-top-section" style="display:contents"></div>
       ${dimBar('📊', '기술적 추세',   techScore,    techDesc,  {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel, {accordionId:'dim-mom',  accordionContent: buildStepHtml(stepMom)})}
-      ${dimBar('🌊', '변동성 안정도', volScore,      volDesc,   {accordionId:'dim-vol',  accordionContent: buildStepHtml(stepVol)})}
+      ${dimBar('🌊', '변동성 수준',   volScore,      volDesc,   {accordionId:'dim-vol',  accordionContent: buildStepHtml(stepVol)})}
       ${isKrx ? dimBar('💰', '수급 흐름', supplyScore, supplyDesc, {clickable: true}) : ''}
       ${isKrx ? `<div id="investor-flow-accordion" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -8928,25 +8932,9 @@ function renderDiagnosis(d, isKrx) {
         </div>
         <div id="investor-flow-content"></div>
       </div>` : ''}
-      ${(() => {
-        if (!stepVolume.length) return '';
-        const vSt   = stepVolume[0];
-        const wPct  = parseFloat(vSt.weight) || 10;
-        const maxSc = wPct / 2;
-        const barVal = Math.max(0, Math.min(100, Math.round(50 + (vSt.score / maxSc) * 30)));
-        const { c: vc, lbl: vlbl } = _dg(barVal);
-        const vdesc = vSt.result.split(' | ').filter(l => l.trim()).join(' · ') || '거래량 분석 완료';
-        return `<div class="diag-dim">
-          <div class="diag-dim-head">
-            <span class="diag-dim-label">📦 거래량 확인</span>
-            <span class="diag-dim-score" style="color:${vc}">${barVal}점 · ${vlbl}</span>
-          </div>
-          <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${barVal}%;background:${vc}"></div></div>
-          <div class="diag-dim-desc">${vdesc}</div>
-        </div>`;
-      })()}
-      ${dimBar('🕯️', '패턴 신호',    patScore,      patDesc,   {accordionId:'dim-pat',  accordionContent: buildStepHtml(stepPat)})}
+      ${dimBar('🕯️', '캔들·차트 패턴 신호', patScore, patDesc, {accordionId:'dim-pat', accordionContent: buildStepHtml(stepPat)})}
       ${renderHybridSection(d)}
+      <div id="pullback-ai-bottom-section" style="display:contents"></div>
     </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
       ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 각 항목을 클릭하면 단계별 상세 분석을 확인할 수 있습니다.
