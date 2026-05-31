@@ -33,7 +33,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     server = ThreadingHTTPServer(("0.0.0.0", port), handler)
-    print(f"🚀 로컬 개발 서버 실행 중: http://localhost:{port}")
+    print(f"[StockOracle] Server running: http://localhost:{port}")
     print(f"   - 메인 페이지 (HTML): http://localhost:{port}/")
     print(f"   - API 예시:")
     print(f"     GET /api/stock?ticker=삼성전자&period=1y")
