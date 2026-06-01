@@ -7965,8 +7965,8 @@ input::placeholder{color:#484f58}
           <option value="US">🇺🇸 US (미국)</option>
         </select>
         <select id="scan-mode" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
-          <option value="FULL">FULL 스캔</option>
-          <option value="CORE_LITE">CORE_LITE (빠름)</option>
+          <option value="FULL">전체 스캔</option>
+          <option value="CORE_LITE">핵심 종목 (빠름)</option>
         </select>
         <button onclick="runScan()" id="scan-run-btn"
           style="background:#1f6feb;border:none;border-radius:8px;padding:8px 16px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
@@ -12015,15 +12015,49 @@ function renderScanResult(d, market) {
     return isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
   };
 
+  // ── 섹터명 한글 변환 ──────────────────────────────────────────────────────
+  var _sectorKo = {
+    'Technology':              '기술',
+    'Healthcare':              '헬스케어',
+    'Communication Services':  '통신 서비스',
+    'Industrials':             '산업재',
+    'Financial Services':      '금융',
+    'Consumer Cyclical':       '경기소비재',
+    'Consumer Defensive':      '필수소비재',
+    'Basic Materials':         '기초소재',
+    'Energy':                  '에너지',
+    'Real Estate':             '부동산',
+    'Utilities':               '유틸리티',
+    'Semiconductor':           '반도체',
+    'Software':                '소프트웨어',
+    'Electronics':             '전자',
+    'Biotechnology':           '바이오',
+    'Pharmaceuticals':         '제약',
+    'Banks':                   '은행',
+    'Insurance':               '보험',
+    'Chemicals':               '화학',
+    'Steel':                   '철강',
+    'Automobile':              '자동차',
+    'Retail':                  '유통',
+    'Media':                   '미디어',
+    'Internet':                '인터넷',
+  };
+  function _toKoSector(s) { return _sectorKo[s] || s || '—'; }
+
+  // ── 레짐 한글 변환 ────────────────────────────────────────────────────────
+  var _regimeKo  = { 'BULLISH': '상승장', 'BEARISH': '하락장', 'SIDEWAYS': '횡보장' };
+  var _volKo     = { 'HIGH_VOL': '고변동성', 'LOW_VOL': '저변동성', 'NORMAL_VOL': '보통' };
+  var _tierKo    = { 'high': '상', 'medium': '중', 'low': '하', 'junk': '불량', 'unknown': '—' };
+
   // 요약 카드
   var sumEl = document.getElementById('scan-summary-cards');
   if (sumEl) {
     var cards = [
-      { val: d.total_scanned,  label: '전체 스캔', color: '#8b949e' },
-      { val: d.passed_filters, label: '필터 통과', color: '#58a6ff' },
-      { val: d.ready_count,    label: 'READY',     color: '#3fb950' },
-      { val: d.watch_count,    label: 'WATCH',     color: '#d29922' },
-      { val: d.far_count,      label: 'FAR',       color: '#484f58' },
+      { val: d.total_scanned,  label: '전체 스캔',  color: '#8b949e' },
+      { val: d.passed_filters, label: '필터 통과',  color: '#58a6ff' },
+      { val: d.ready_count,    label: '진입 준비',  color: '#3fb950' },
+      { val: d.watch_count,    label: '관찰 대기',  color: '#d29922' },
+      { val: d.far_count,      label: '원거리',     color: '#484f58' },
     ];
     sumEl.innerHTML = cards.map(function(c) {
       return '<div class="scan-sum-card"><div class="scan-sum-val" style="color:' + c.color + '">' + (c.val || 0) + '</div><div class="scan-sum-label">' + c.label + '</div></div>';
@@ -12037,10 +12071,10 @@ function renderScanResult(d, market) {
     var volColor = d.vol_regime === 'HIGH_VOL' ? '#f97316' : d.vol_regime === 'LOW_VOL' ? '#58a6ff' : '#8b949e';
     var ts = d.generated_at ? new Date(d.generated_at).toLocaleTimeString('ko-KR') : '';
     regEl.innerHTML =
-      '<span style="color:#484f58;font-size:11px">시장 레짐</span>' +
-      '<span style="color:' + regColor + ';font-weight:700">' + (d.regime || '—') + '</span>' +
-      '<span style="color:#484f58;font-size:11px;margin-left:16px">변동성 레짐</span>' +
-      '<span style="color:' + volColor + ';font-weight:700">' + (d.vol_regime || '—') + '</span>' +
+      '<span style="color:#484f58;font-size:11px">시장 국면</span>' +
+      '<span style="color:' + regColor + ';font-weight:700">' + (_regimeKo[d.regime] || d.regime || '—') + '</span>' +
+      '<span style="color:#484f58;font-size:11px;margin-left:16px">변동성</span>' +
+      '<span style="color:' + volColor + ';font-weight:700">' + (_volKo[d.vol_regime] || d.vol_regime || '—') + '</span>' +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
@@ -12055,11 +12089,11 @@ function renderScanResult(d, market) {
 
   var statusBadge = function(s) {
     var map = {
-      'READY':         '<span class="scan-status-ready">READY</span>',
-      'WATCH':         '<span class="scan-status-watch">WATCH</span>',
+      'READY':         '<span class="scan-status-ready">진입 준비</span>',
+      'WATCH':         '<span class="scan-status-watch">관찰 중</span>',
       'WAIT_PULLBACK': '<span class="scan-status-pullback">눌림목</span>',
-      'FAR':           '<span class="scan-status-far">FAR</span>',
-      'EARNINGS_BLOCK':'<span class="scan-status-block">실적블록</span>',
+      'FAR':           '<span class="scan-status-far">원거리</span>',
+      'EARNINGS_BLOCK':'<span class="scan-status-block">실적 대기</span>',
       'COOLDOWN':      '<span class="scan-status-block">쿨다운</span>',
     };
     return map[s] || '<span class="scan-status-far">' + s + '</span>';
@@ -12076,14 +12110,16 @@ function renderScanResult(d, market) {
     var ncsColor = c.ncs >= 70 ? '#3fb950' : c.ncs >= 50 ? '#58a6ff' : c.ncs >= 35 ? '#d29922' : '#f85149';
     var fwsColor = c.fws <= 30 ? '#3fb950' : c.fws <= 50 ? '#d29922' : c.fws <= 65 ? '#f97316' : '#f85149';
     var bqsColor = c.bqs >= 65 ? '#3fb950' : c.bqs >= 45 ? '#58a6ff' : '#8b949e';
-    var qmjColor = c.quality_tier === 'high' ? '#3fb950' : c.quality_tier === 'medium' ? '#58a6ff' : '#484f58';
+    var tier     = c.quality_tier || 'unknown';
+    var qmjColor = tier === 'high' ? '#3fb950' : tier === 'medium' ? '#58a6ff' : '#484f58';
+    var qmjLabel = _tierKo[tier] || '—';
 
-    var chg = c.change_pct != null ? c.change_pct : 0;
+    var chg    = c.change_pct != null ? c.change_pct : 0;
     var chgUp  = chg >= 0;
     var chgClr = isKrx ? (chgUp ? '#f85149' : '#388bfd') : (chgUp ? '#3fb950' : '#f85149');
     var chgTxt = (chgUp ? '▲' : '▼') + ' ' + Math.abs(chg).toFixed(2) + '%';
 
-    var cat = c.category || c.sector || '—';
+    var cat = _toKoSector(c.category || c.sector || '');
 
     var sig = c.analyst_signal || '중립';
     var sigCls = sig.includes('적극') ? 'sig-buy-strong'
@@ -12091,9 +12127,14 @@ function renderScanResult(d, market) {
                : sig === '중립' || sig === '보유' ? 'sig-neu'
                : 'sig-sell';
 
+    // 종목명 우선 — 이름 크게, 코드 작게
+    var displayName = c.name && c.name !== c.ticker ? c.name : c.ticker;
+    var displayCode = c.name && c.name !== c.ticker ? c.ticker : '';
+
     return '<tr onclick="document.getElementById(\'ticker-input\').value=\'' + c.ticker + '\';showPage(\'analysis\');analyze()" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
-      '<td><div style="font-weight:600;font-size:13px">' + c.ticker + '</div><div style="font-size:10px;color:#484f58">' + (c.name || c.ticker) + '</div></td>' +
+      '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + '</div>' +
+           (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
       '<td style="text-align:center">' + statusBadge(c.status) + '</td>' +
       '<td style="text-align:right;font-size:13px;font-weight:600">' + fmtP(c.price) + '</td>' +
       '<td style="text-align:right;font-weight:700;color:' + chgClr + '">' + chgTxt + '</td>' +
@@ -12104,7 +12145,7 @@ function renderScanResult(d, market) {
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.fws, fwsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
-      '<td style="text-align:center;color:' + qmjColor + ';font-size:11px;font-weight:600">' + (c.quality_tier || '—') + '</td>' +
+      '<td style="text-align:center;color:' + qmjColor + ';font-size:12px;font-weight:700">' + qmjLabel + '</td>' +
     '</tr>';
   }).join('');
 
