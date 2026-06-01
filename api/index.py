@@ -6482,9 +6482,17 @@ def route(path: str, params: Dict) -> Dict:
                     vol_regime = detect_vol_regime(atr_v / bench_closes[-1] * 100)
 
             # OHLCV 수집 + 스냅샷/품질 빌드
-            universe   = []
-            snap_map   = {}
-            quality_map= {}
+            universe    = []
+            snap_map    = {}
+            quality_map = {}
+            change_map  = {}   # ticker → 등락률 %
+            sector_map  = {}   # ticker → 섹터/카테고리
+            signal_map  = {}   # ticker → 애널리스트 신호
+
+            _ANALYST_MAP = {
+                "strong_buy": "적극 매수", "buy": "매수",
+                "hold": "보유", "underperform": "약세", "sell": "매도",
+            }
 
             for tkr in raw_list[:10]:  # 최대 10종목 (타임아웃 방지)
                 try:
@@ -6499,16 +6507,24 @@ def route(path: str, params: Dict) -> Dict:
                         bench_closes=bench_closes,
                     )
                     snap_map[tkr] = snap
+                    # 등락률: 전일 대비 당일 종가 변화율
+                    if len(closes) >= 2 and closes[-2] != 0:
+                        change_map[tkr] = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2)
+                    else:
+                        change_map[tkr] = 0.0
                     sleeve = "ETF" if tkr in ("QQQ","SPY","SOXL","TQQQ","SQQQ") else "CORE"
-                    # info 조회 (QMJ + 종목명 동시 수집)
+                    # info 조회 (QMJ + 종목명 + 섹터 + 신호 동시 수집)
                     _info = {}
                     try:
                         _info = yf.Ticker(tkr).info or {}
                         quality_map[tkr] = get_quality_score_from_info(tkr, _info)
                     except Exception:
                         pass
+                    sector_map[tkr] = _info.get("sector") or _info.get("industry") or ""
+                    rec_key = (_info.get("recommendationKey") or "").lower()
+                    signal_map[tkr] = _ANALYST_MAP.get(rec_key, "중립")
                     _name = _get_name(tkr, _info)
-                    universe.append(StockUniverse(tkr, _name, sleeve))
+                    universe.append(StockUniverse(tkr, _name, sleeve, sector=sector_map[tkr]))
                 except Exception:
                     continue
 
@@ -6527,7 +6543,13 @@ def route(path: str, params: Dict) -> Dict:
             )
 
             from dataclasses import asdict
-            cands = [asdict(c) for c in result.candidates]
+            cands = []
+            for c in result.candidates:
+                d = asdict(c)
+                d["change_pct"]  = change_map.get(c.ticker, 0.0)
+                d["category"]    = sector_map.get(c.ticker, "") or c.sector or ""
+                d["analyst_signal"] = signal_map.get(c.ticker, "중립")
+                cands.append(d)
 
             return {
                 "regime":          result.regime,
@@ -7517,7 +7539,6 @@ input::placeholder{color:#484f58}
     <span class="sb-label">메뉴</span>
     <div style="display:flex;flex-direction:column;gap:4px">
       <button class="mkt-btn active" style="text-align:left;padding:10px 12px" id="nav-analysis" onclick="showPage('analysis')">🔍 종목 상세 분석</button>
-      <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-screener" onclick="showPage('screener')">📋 주식 골라보기</button>
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-scan" onclick="showPage('scan')">🔬 7단계 스캔 엔진</button>
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-immune" onclick="showPage('immune')">🛡️ 시장 위험 면역</button>
       <!-- ⚡ 개장 급등 추천 아코디언 -->
@@ -7965,7 +7986,7 @@ input::placeholder{color:#484f58}
     <div id="scan-loading" style="display:none;text-align:center;padding:40px;color:#8b949e">
       <div class="spinner" style="margin:0 auto 12px"></div>
       <div id="scan-loading-msg">종목 데이터 수집 및 스캔 중...</div>
-      <div style="font-size:11px;color:#484f58;margin-top:8px">BQS · FWS · NCS 복합 점수 계산 중</div>
+      <div style="font-size:11px;color:#484f58;margin-top:8px">복합 점수 계산 중...</div>
     </div>
     <!-- 오류 -->
     <div id="scan-error" style="display:none;text-align:center;padding:32px;color:#f85149;font-size:13px"></div>
@@ -7983,19 +8004,18 @@ input::placeholder{color:#484f58}
             <th>종목</th>
             <th style="text-align:center">상태</th>
             <th style="text-align:right">현재가</th>
+            <th style="text-align:right">등락률</th>
+            <th>카테고리</th>
+            <th style="text-align:center">신호</th>
             <th style="text-align:right">진입 트리거</th>
             <th style="text-align:right">손절가</th>
-            <th style="text-align:center">BQS</th>
-            <th style="text-align:center">FWS</th>
-            <th style="text-align:center">NCS</th>
-            <th style="text-align:center">QMJ</th>
-            <th>액션</th>
+            <th style="text-align:center">브레이크아웃 품질</th>
+            <th style="text-align:center">치명적 약점</th>
+            <th style="text-align:center">순복합 점수</th>
+            <th style="text-align:center">퀀트 모멘텀 점수</th>
           </tr></thead>
           <tbody id="scan-tbody"></tbody>
         </table>
-      </div>
-      <div style="font-size:10px;color:#484f58;margin-top:8px;text-align:center">
-        BQS=브레이크아웃 품질(↑좋음) · FWS=치명적 약점(↑위험) · NCS=순복합 점수(↑좋음) · 출처: HybridTurtle v6.0 Dual Score Engine
       </div>
     </div>
   </div>
@@ -8109,7 +8129,7 @@ function showPage(page) {
 
   // 상단 nav 버튼 active 상태
   document.getElementById('nav-analysis').classList.toggle('active', page === 'analysis');
-  document.getElementById('nav-screener').classList.toggle('active', page === 'screener');
+  document.getElementById('nav-scan').classList.toggle('active', page === 'scan');
 
   var isRecoPage = _recoSubPages.indexOf(page) !== -1;
   // 서브페이지를 선택하면 아코디언 부모도 active, 서브메뉴 열기
@@ -12029,18 +12049,18 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:24px;color:#484f58">후보 종목 없음</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">후보 종목 없음</td></tr>';
     return;
   }
 
   var statusBadge = function(s) {
     var map = {
-      'READY':       '<span class="scan-status-ready">READY</span>',
-      'WATCH':       '<span class="scan-status-watch">WATCH</span>',
-      'WAIT_PULLBACK':'<span class="scan-status-pullback">눌림목</span>',
-      'FAR':         '<span class="scan-status-far">FAR</span>',
+      'READY':         '<span class="scan-status-ready">READY</span>',
+      'WATCH':         '<span class="scan-status-watch">WATCH</span>',
+      'WAIT_PULLBACK': '<span class="scan-status-pullback">눌림목</span>',
+      'FAR':           '<span class="scan-status-far">FAR</span>',
       'EARNINGS_BLOCK':'<span class="scan-status-block">실적블록</span>',
-      'COOLDOWN':    '<span class="scan-status-block">쿨다운</span>',
+      'COOLDOWN':      '<span class="scan-status-block">쿨다운</span>',
     };
     return map[s] || '<span class="scan-status-far">' + s + '</span>';
   };
@@ -12056,21 +12076,35 @@ function renderScanResult(d, market) {
     var ncsColor = c.ncs >= 70 ? '#3fb950' : c.ncs >= 50 ? '#58a6ff' : c.ncs >= 35 ? '#d29922' : '#f85149';
     var fwsColor = c.fws <= 30 ? '#3fb950' : c.fws <= 50 ? '#d29922' : c.fws <= 65 ? '#f97316' : '#f85149';
     var bqsColor = c.bqs >= 65 ? '#3fb950' : c.bqs >= 45 ? '#58a6ff' : '#8b949e';
-    var actionShort = (c.action_note || '').replace('Auto-Yes','✅ Auto-Yes').replace('Auto-No','❌ Auto-No').replace('Conditional','⚠️ 조건부').split('|')[0].trim();
     var qmjColor = c.quality_tier === 'high' ? '#3fb950' : c.quality_tier === 'medium' ? '#58a6ff' : '#484f58';
+
+    var chg = c.change_pct != null ? c.change_pct : 0;
+    var chgUp  = chg >= 0;
+    var chgClr = isKrx ? (chgUp ? '#f85149' : '#388bfd') : (chgUp ? '#3fb950' : '#f85149');
+    var chgTxt = (chgUp ? '▲' : '▼') + ' ' + Math.abs(chg).toFixed(2) + '%';
+
+    var cat = c.category || c.sector || '—';
+
+    var sig = c.analyst_signal || '중립';
+    var sigCls = sig.includes('적극') ? 'sig-buy-strong'
+               : sig === '매수'        ? 'sig-buy'
+               : sig === '중립' || sig === '보유' ? 'sig-neu'
+               : 'sig-sell';
 
     return '<tr onclick="document.getElementById(\'ticker-input\').value=\'' + c.ticker + '\';showPage(\'analysis\');analyze()" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
       '<td><div style="font-weight:600;font-size:13px">' + c.ticker + '</div><div style="font-size:10px;color:#484f58">' + (c.name || c.ticker) + '</div></td>' +
       '<td style="text-align:center">' + statusBadge(c.status) + '</td>' +
       '<td style="text-align:right;font-size:13px;font-weight:600">' + fmtP(c.price) + '</td>' +
+      '<td style="text-align:right;font-weight:700;color:' + chgClr + '">' + chgTxt + '</td>' +
+      '<td><span class="cat-badge">' + cat + '</span></td>' +
+      '<td style="text-align:center"><span class="signal-badge ' + sigCls + '">' + sig + '</span></td>' +
       '<td style="text-align:right;font-size:12px;color:#58a6ff">' + fmtP(c.entry_trigger) + '</td>' +
       '<td style="text-align:right;font-size:12px;color:#f85149">' + fmtP(c.stop_price) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.fws, fwsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
       '<td style="text-align:center;color:' + qmjColor + ';font-size:11px;font-weight:600">' + (c.quality_tier || '—') + '</td>' +
-      '<td style="font-size:11px;color:#8b949e;max-width:180px">' + actionShort + '</td>' +
     '</tr>';
   }).join('');
 
