@@ -4390,11 +4390,37 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
     agg_tp  = _make_tp_from_tgt(agg_tgt_range)
 
     r = lambda v: round(v, rnd)
+    # ── 시나리오별 실패 조건 산출 ─────────────────────────────────────
+    def _fail_conditions(scenario: str) -> list[str]:
+        conds: list[str] = []
+        if vol_trend == "expanding":
+            conds.append("변동성 확대 중 — 손절 이탈 가능성 증가")
+        if rsi > 65:
+            conds.append(f"RSI {rsi:.0f} — 과열권, 조정 압력 상존")
+        if scenario == "conservative":
+            if trend < 2:
+                conds.append("추세 약함 — 단기 반등이 제한적일 수 있음")
+            conds.append("BB 하단 이탈 시 손절 즉시 집행 필요")
+        elif scenario == "balanced":
+            if macd <= sig_line:
+                conds.append("MACD 하락 전환 — 중기 추세 약화 가능성")
+            if ma20 and price < ma20:
+                conds.append("MA20 이탈 상태 — 지지 복귀 실패 시 하락 가속")
+            conds.append("MA20 재이탈 시 포지션 재검토 권장")
+        elif scenario == "aggressive":
+            if trend < 3:
+                conds.append("추세 강도 부족 — 목표가 도달 난이도 높음")
+            conds.append("거래량 감소 시 상승 모멘텀 소멸 위험")
+            conds.append("고변동성 구간 — 목표가 이전 손절 이탈 가능")
+        if not conds:
+            conds.append("현재 기준 주요 실패 요인 없음")
+        return conds
+
     return {
         "conservative": {
             "label": "보수적",
             "icon": "🛡️",
-            "desc": "급등 후 차익실현이 먼저 나오고, 별도 호재가 없을 때의 되돌림 구간",
+            "desc": "단기 반등 목표 — 추세가 약하거나 변동성이 높을 때 적합",
             "target": [r(cons_tgt_range[0]), r(cons_tgt_range[1])],
             "stop":   [r(cons_stp_range[0]), r(cons_stp_range[1])],
             "return": cons_ret,
@@ -4404,11 +4430,12 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
             "atr_mul_stp": cons_stp_mul,
             "interpretation": f"BB 하단 참조 손절 · 단기 반등 목표 (R/R {cons_rr:.1f}:1)",
             "tp_levels": cons_tp,
+            "failure_conditions": _fail_conditions("conservative"),
         },
         "balanced": {
             "label": "중립적",
             "icon": "⚖️",
-            "desc": "현재 가격 중심으로 수급은 균형이지만 변동성 크고 방향성은 부재인 상태",
+            "desc": "스윙 트레이딩 기준 — 추세가 형성되고 있을 때 적합",
             "target": [r(bal_tgt_range[0]), r(bal_tgt_range[1])],
             "stop":   [r(bal_stp_range[0]), r(bal_stp_range[1])],
             "return": bal_ret,
@@ -4418,11 +4445,12 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
             "atr_mul_stp": bal_stp_mul,
             "interpretation": f"MA20 지지 손절 · 중기 추세 목표 (R/R {bal_rr:.1f}:1)",
             "tp_levels": bal_tp,
+            "failure_conditions": _fail_conditions("balanced"),
         },
         "aggressive": {
             "label": "공격적",
             "icon": "🚀",
-            "desc": "추가 뉴스, 거래량 재확대, 단기 모멘텀 유입이 붙을 때 가능한 상단 시나리오",
+            "desc": "추세 추종 최대 수익 — 강한 모멘텀·거래량 뒷받침 시만 적합",
             "target": [r(agg_tgt_range[0]), r(agg_tgt_range[1])],
             "stop":   [r(agg_stp_range[0]), r(agg_stp_range[1])],
             "return": agg_ret,
@@ -4432,6 +4460,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
             "atr_mul_stp": agg_stp_mul,
             "interpretation": f"BB 상단 참조 목표 · 추세 지속 시 최대 수익 (R/R {agg_rr:.1f}:1)",
             "tp_levels": agg_tp,
+            "failure_conditions": _fail_conditions("aggressive"),
         },
         "vol_state": vol_state_txt,
         "vol_trend": vol_trend_txt,
@@ -5092,6 +5121,74 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     elif rsi > 55:  rsi_ctx = "RSI 고점권 — 보수적 접근, 확인 후 진입"
     else:           rsi_ctx = "RSI 중립 — 지지/저항선 돌파 확인 후 진입"
 
+    # ── 종목 상태 기반 동적 전략 판단 ──────────────────────────────────
+    _above_ma20 = ma20_raw and last_price > float(ma20_raw)
+    _above_ma60 = ma60_raw and last_price > float(ma60_raw)
+    _trend_cnt  = sum([bool(_above_ma20), bool(_above_ma60), macd > sig_line, rsi > 50])
+    _adx_strong = adx >= 25
+
+    if rsi > 70 and _trend_cnt >= 3:
+        _ctx = "overbought"
+    elif _trend_cnt >= 3 and rsi <= 70:
+        _ctx = "strong_uptrend" if _trend_cnt == 4 and _adx_strong else "uptrend"
+    elif rsi < 40 and macd > sig_line:
+        _ctx = "recovery"
+    elif _trend_cnt <= 1:
+        _ctx = "downtrend"
+    else:
+        _ctx = "sideways"
+
+    _ctx_map = {
+        "overbought":     ("⏸️ 관망 권장",            "wait",         None,  [],         max(20, 50 - int((rsi-70)*2))),
+        "strong_uptrend": ("⚡ 밴드 A 단기 진입",      "band_a",       "A",   ["A"],      min(88, 62+_trend_cnt*5)),
+        "uptrend":        ("✅ 밴드 A~B 분할 매수",    "split_buy",    "B",   ["A","B"],  60+_trend_cnt*5),
+        "recovery":       ("✅ 밴드 B~C 저점 분할",    "recovery_buy", "C",   ["B","C"],  58+(5 if macd>sig_line else 0)),
+        "downtrend":      ("⚠️ 관망 후 지지선 확인",   "wait_support", "C",   [],         max(15, 40-(_trend_cnt)*8)),
+        "sideways":       ("✅ 밴드 B 분할 매수",       "split_buy",    "B",   ["A","B"],  55+(5 if rsi<50 else 0)),
+    }
+    _action, _akey, _pband, _abands, _conf = _ctx_map.get(_ctx, _ctx_map["sideways"])
+
+    _rationale: list[str] = []
+    if _ctx == "overbought":
+        _rationale = [f"RSI {rsi:.0f} — 과매수 구간, 단기 하락 위험 증가", "현재가가 단기 고점 부근 — 신규 진입 불리", "기존 보유자는 일부 차익 실현 고려"]
+    elif _ctx == "strong_uptrend":
+        _rationale = ["이평선 완전 정배열 + ADX 강세 — 추세 강도 높음", "MA20 근접 단기 눌림목 진입 적기", "MACD 매수 우위 유지"]
+    elif _ctx == "uptrend":
+        _rationale = ["상승 추세 유지 중", f"RSI {rsi:.0f} — 과열 없이 건전한 상승", "분할 매수로 평균 단가 관리 권장"]
+    elif _ctx == "recovery":
+        _rationale = [f"RSI {rsi:.0f} — 과매도 반등 가능성 높음", "MACD 매수 전환 시그널 포착", "단기 급락 후 반등 구간 — 저가 분할 매수 유리"]
+    elif _ctx == "downtrend":
+        _rationale = ["하락 추세 진행 중 — 추가 하락 가능", f"RSI {rsi:.0f} — 아직 바닥 반전 신호 없음", "하락 추세 반전 확인(캔들·거래량) 후 진입 권장"]
+    else:
+        _rationale = ["횡보 구간 — 지지선 근접 시 매수 기회", f"RSI {rsi:.0f} — 중립 구간, 방향성 탐색 중", "밴드 B 진입 후 저항선 도달 시 차익 실현 전략"]
+
+    if vol_trend == "expanding" and _akey not in ("wait", "wait_support"):
+        _rationale.append("⚠️ 변동성 확대 중 — 한 번에 몰지 말고 분산 진입 권장")
+    if _adx_strong and _ctx not in ("overbought", "downtrend"):
+        _rationale.append(f"ADX {adx:.0f} — 추세 강도 양호, 진입 타이밍 유리")
+
+    _chase_pct  = 1.04 if _ctx in ("sideways", "recovery") else 1.03 if _ctx == "uptrend" else 1.015
+    _chase_price = round(last_price * _chase_pct, rnd)
+    _chase_map  = {
+        "overbought":     "현재가 자체가 과열 구간 — 어느 가격에서도 신규 매수 신중",
+        "strong_uptrend": f"현재가 대비 +3% 이상({_chase_price:,.{rnd}f}) 급등 시 추격 주의",
+        "uptrend":        f"현재가 대비 +3% 이상({_chase_price:,.{rnd}f}) 이미 올랐다면 진입 지양",
+        "recovery":       f"반등 초기 — 현재가 대비 +4% 이상({_chase_price:,.{rnd}f}) 급등 시 추격 지양",
+        "downtrend":      f"하락 추세 중 반등은 단기에 그칠 수 있음 — 추격 매수 금지",
+        "sideways":       f"횡보 중 갑작스러운 3% 이상 급등({_chase_price:,.{rnd}f}) 시 추격 지양",
+    }
+
+    strategy_rec = {
+        "action":         _action,
+        "action_key":     _akey,
+        "confidence_pct": int(min(95, max(5, _conf))),
+        "priority_band":  _pband,
+        "active_bands":   _abands,
+        "rationale":      _rationale,
+        "chase_zone":     {"price": _chase_price, "reason": _chase_map.get(_ctx, "")},
+        "context":        _ctx,
+    }
+
     r = lambda v: round(v, rnd)
     return {
         "current": r(last_price),
@@ -5128,6 +5225,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "atr_pct": round(atr_pct, 2),
         "vol_trend": vol_trend,
         "market": _mkt,
+        "strategy_rec": strategy_rec,
     }
 
 def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float, market: str = "KRX", target_price_data: Dict = None) -> Dict:
@@ -5635,15 +5733,79 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
     min_return = (min_target - last_price) / last_price * 100
     max_return = (max_target - last_price) / last_price * 100
 
+    # ── 도달 확률 산출 ────────────────────────────────────────────────
+    # 기준: 추세강도(0~4)를 핵심 드라이버, RSI·ATR·거리를 보정 인자로 활용
+    atr_pct = (atr / last_price * 100) if last_price > 0 else 2.0
+    dist_pct = min_return  # 최소 목표가까지 상승 필요 %
+    _base_prob = 40.0 + trend_strength * 10.0   # 40~80% 기본 범위
+    _rsi_adj   =  8.0 if rsi < 40 else (-8.0 if rsi > 70 else 0.0)
+    _vol_adj   = -6.0 if atr_pct > 4.0 else (4.0 if atr_pct < 1.5 else 0.0)
+    _dist_adj  = max(-20.0, -(dist_pct - 5.0) * 1.5) if dist_pct > 5.0 else 0.0
+    reach_probability = round(min(92.0, max(8.0, _base_prob + _rsi_adj + _vol_adj + _dist_adj)), 1)
+
+    # ── 예상 소요 기간 ─────────────────────────────────────────────────
+    _period_days = {"1d":5, "3d":7, "1wk":10, "2wk":14, "1mo":30, "3mo":65, "6mo":130, "1y":252}.get(period, 20)
+    _speed = max(0.5, min(1.8, 1.0 + (trend_strength - 2) * 0.2 + (0.1 if macd > sig else -0.1)))
+    _min_days = max(3, int(_period_days * 0.4 / _speed))
+    _max_days = max(_min_days + 3, int(_period_days * 0.9 / _speed))
+    expected_trading_days = [_min_days, _max_days]
+
+    # ── 실패 요인 분석 ─────────────────────────────────────────────────
+    failure_factors: list[str] = []
+    # 거래량
+    vols = [float(x) for x in dd.get("Volume", []) if x is not None]
+    if len(vols) >= 10:
+        _vol_recent = float(np.mean(vols[-5:])) if len(vols) >= 5 else vols[-1]
+        _vol_prev   = float(np.mean(vols[-15:-5])) if len(vols) >= 15 else _vol_recent
+        if _vol_prev > 0 and _vol_recent / _vol_prev < 0.75:
+            failure_factors.append("거래량 감소 — 상승 동력 약화 가능성")
+    # 저항선 근접
+    if bb_u > last_price and (bb_u - last_price) / last_price < 0.03:
+        failure_factors.append(f"볼린저 상단({round(bb_u, rnd):,}) 근접 — 단기 저항 가능")
+    if ma60 and last_price > ma60 and (last_price - ma60) / last_price > 0.15:
+        failure_factors.append("중기 이평선 대비 큰 폭 상승 — 되돌림 가능성 주의")
+    # 과열
+    if rsi > 65:
+        failure_factors.append(f"RSI {rsi:.0f} — 단기 과열, 조정 시 목표가 지연 가능")
+    # 추세 약함
+    if trend_strength <= 1:
+        failure_factors.append("추세 지표 대부분 하락 우위 — 목표가 도달 난이도 높음")
+    # MACD 약세
+    if macd < sig:
+        failure_factors.append("MACD 하락 전환 — 단기 상승 모멘텀 약화")
+    if not failure_factors:
+        failure_factors.append("현재 기준 주요 실패 요인 없음 — 추세 유지 확인 권장")
+
+    # ── 리스크 수준 평가 ──────────────────────────────────────────────
+    _fail_cnt = len([f for f in failure_factors if "없음" not in f])
+    if _fail_cnt == 0 and trend_strength >= 3:
+        risk_level = "낮음"
+        risk_reason = f"추세 양호, 실패 요인 미검출 ({pred_period})"
+    elif _fail_cnt >= 3 or trend_strength <= 0:
+        risk_level = "높음"
+        risk_reason = f"다수 실패 요인 감지, 진입 신중 필요"
+    else:
+        risk_level = "중간"
+        _risk_parts = []
+        if trend_strength >= 2: _risk_parts.append("추세 양호")
+        if atr_pct > 2.5: _risk_parts.append("변동성 증가 중")
+        if bb_u > last_price and (bb_u - last_price) / last_price < 0.04: _risk_parts.append("저항선 인접")
+        risk_reason = " · ".join(_risk_parts) if _risk_parts else "지표 혼조 상태"
+
     return {
-        "min_price":      round(min_target, rnd),
-        "max_price":      round(max_target, rnd),
-        "min_return":     round(min_return, 1),
-        "max_return":     round(max_return, 1),
-        "period":         pred_period,
-        "reason":         reason,
-        "trend_strength": trend_strength,
-        "base_price":     round(last_price, rnd),   # 기준 현재가 (디버그용)
+        "min_price":               round(min_target, rnd),
+        "max_price":               round(max_target, rnd),
+        "min_return":              round(min_return, 1),
+        "max_return":              round(max_return, 1),
+        "period":                  pred_period,
+        "reason":                  reason,
+        "trend_strength":          trend_strength,
+        "base_price":              round(last_price, rnd),
+        "reach_probability":       reach_probability,
+        "expected_trading_days":   expected_trading_days,
+        "failure_factors":         failure_factors,
+        "risk_level":              risk_level,
+        "risk_reason":             risk_reason,
     }
 
 def holt_winters_forecast(dd: Dict, days: int = 30):
@@ -9712,18 +9874,23 @@ function renderForecast(d, isKrx) {
   }
 
   // ── 목표가 예측 섹션 ──
-  // cur = d.last_close : 이미 현재가 보정(Pre-Market / Overnight 포함) 완료된 값
   const tpEl = document.getElementById('target-price-section');
   if (tpEl) {
     if (!tp) {
       tpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
     } else {
-      const cur = d.last_close;   // 보정된 실시간 현재가
+      const cur = d.last_close;
       const sn  = (!isKrx && d.session_name && !['정규장','장마감'].includes(d.session_name))
                   ? ` <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:#6e40c933;color:#bc8cff;margin-left:4px">${d.session_name}</span>`
                   : '';
+      const probColor  = (tp.reach_probability || 50) >= 65 ? '#3fb950' : (tp.reach_probability || 50) >= 45 ? '#d29922' : '#f85149';
+      const riskColors = { '낮음':'#3fb950', '중간':'#d29922', '높음':'#f85149' };
+      const riskC      = riskColors[tp.risk_level] || '#d29922';
+      const failHtml   = (tp.failure_factors || [])
+        .map(f => `<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px"><span style="color:#f85149;flex-shrink:0">•</span><span>${f}</span></div>`)
+        .join('');
       tpEl.innerHTML = `
-        <div style="background:#21262d;border-radius:10px;padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+        <div style="background:#21262d;border-radius:10px;padding:16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
           <div>
             <div style="font-size:12px;color:#8b949e;margin-bottom:6px">예상 목표가 범위 (${tp.period})</div>
             <div style="font-size:24px;font-weight:800;color:#3fb950">${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
@@ -9732,123 +9899,125 @@ function renderForecast(d, isKrx) {
               <span data-tp-return style="color:#3fb950">+${tp.min_return}% ~ +${tp.max_return}%</span>
             </div>
           </div>
-          <div style="text-align:right">
-            <div style="font-size:12px;color:#8b949e;margin-bottom:4px">추세 강도 분석</div>
-            <div style="font-size:16px;font-weight:700;color:${tp.trend_strength >= 2 ? '#3fb950' : tp.trend_strength > 0 ? '#d29922' : '#f85149'}">
-              ${tp.trend_strength >= 2 ? '강세 돌파' : tp.trend_strength > 0 ? '완만한 상승' : '조정 / 하락'}
+          <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+            <div style="text-align:center;background:#0d1117;border-radius:10px;padding:8px 14px;border:1px solid ${probColor}44">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:2px">목표가 도달 확률</div>
+              <div style="font-size:20px;font-weight:800;color:${probColor}">${tp.reach_probability || '—'}%</div>
             </div>
+            ${tp.expected_trading_days ? `
+            <div style="text-align:center;background:#0d1117;border-radius:8px;padding:6px 12px">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:1px">예상 소요 기간</div>
+              <div style="font-size:13px;font-weight:700;color:#58a6ff">${tp.expected_trading_days[0]}~${tp.expected_trading_days[1]}거래일</div>
+            </div>` : ''}
           </div>
         </div>
-        <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px">
-          <div style="font-size:11px;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">📋 예측 근거</div>
-          <div style="font-size:13px;color:#e6edf3;line-height:1.5;">${tp.reason}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
+            <div style="font-size:11px;color:#8b949e;margin-bottom:6px">📋 예측 근거</div>
+            <div style="font-size:12px;color:#e6edf3;line-height:1.5">${tp.reason}</div>
+          </div>
+          <div style="background:#161b22;border:1px solid ${riskC}33;border-radius:10px;padding:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <div style="font-size:11px;color:#8b949e">⚠️ 실패 가능성</div>
+              <div style="font-size:11px;font-weight:700;color:${riskC};background:${riskC}22;border-radius:4px;padding:1px 7px">리스크 ${tp.risk_level || '—'}</div>
+            </div>
+            <div style="font-size:11px;color:#8b949e;margin-bottom:6px">${tp.risk_reason || ''}</div>
+            <div style="font-size:11px;color:#cdd9e5;line-height:1.5">${failHtml}</div>
+          </div>
         </div>
       `;
-      // ── Single Source of Truth: 폴링 동기화용 상태 저장 ───────────────
       _lastTp    = tp;
       _lastIsKrx = isKrx;
     }
   }
 
-  // ── 매수 적정가 섹션 ──
-  // bp.current = calc_buy_price 가 반환한 현재가 (보정된 last_price 기준)
+  // ── 매수 전략 섹션 ──
   const bpEl = document.getElementById('buy-price-section');
   if (bpEl) {
     if (!bp) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
     } else {
-      const cur = bp.current;   // 보정된 실시간 현재가 (calc_buy_price 반환)
-      const pct = v => ((v - cur) / cur * 100).toFixed(2);
-      const aggR = bp.aggressive ? bp.aggressive.range : null;
-      const recR = bp.recommended ? bp.recommended.range : null;
-
+      const sr = bp.strategy_rec || {};
+      const cur = bp.current;
       const fmtPct = p => (p >= 0 ? `<span style="color:#3fb950">+${p}%</span>` : `<span style="color:#f85149">${p}%</span>`);
-      const fib = bp.fib || {};
 
-      // 백테스트 기반 A/B/C 세분화 밴드 렌더러
-      const buyBands = (bandsKey, color, label, icon, isAgg) => {
-        const bands = bp[bandsKey];
-        if (!bands || !bands.length) return '';
-        const bandColor = ['#f97316','#d29922','#3fb950'];
-        const bandRows = bands.map((b, i) => {
-          const bc = bandColor[i] || color;
-          const probColor = b.win_prob_pct >= 65 ? '#3fb950' : b.win_prob_pct >= 50 ? '#d29922' : '#f85149';
-          const lossColor = '#f85149';
-          if (isAgg) {
-            // 공격적 매수 밴드 카드
-            return `
-            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-                <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}</span>
-                <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
-                  현재가 대비 ${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}
-                </span>
-              </div>
-              <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">
-                ${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}
-              </div>
-              <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.atr_basis}</div>
-              <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
-            </div>`;
-          } else {
-            // 추천 매수 밴드 카드
-            return `
-            <div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-                <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}</span>
-                <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">
-                  현재가 대비 ${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}
-                </span>
-              </div>
-              <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">
-                ${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}
-              </div>
-              <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
-              <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
-            </div>`;
-          }
-        }).join('');
-        return `
-          <div class="buy-card ${isAgg ? 'aggressive' : 'recommended'}" style="padding:12px 14px">
+      // ── 전략 추천 배너 ──
+      const ctxColorMap = {
+        overbought:     ['#f85149','#2d1515'], strong_uptrend: ['#3fb950','#0d2d1a'],
+        uptrend:        ['#3fb950','#0d2d1a'], recovery:       ['#d29922','#2d2200'],
+        downtrend:      ['#f85149','#2d1515'], sideways:       ['#58a6ff','#0d1b33'],
+      };
+      const [bannerC, bannerBg] = ctxColorMap[sr.context] || ['#d29922','#2d2200'];
+      const confColor = (sr.confidence_pct || 50) >= 70 ? '#3fb950' : (sr.confidence_pct || 50) >= 50 ? '#d29922' : '#f85149';
+      const ratHtml   = (sr.rationale || []).map(r => `<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:3px"><span style="color:${bannerC};flex-shrink:0">•</span><span>${r}</span></div>`).join('');
+      const stratBanner = sr.action ? `
+        <div style="background:${bannerBg};border:1px solid ${bannerC}55;border-radius:10px;padding:14px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+            <div style="font-size:15px;font-weight:800;color:${bannerC}">${sr.action}</div>
+            <div style="text-align:right">
+              <div style="font-size:10px;color:#8b949e">신뢰도</div>
+              <div style="font-size:18px;font-weight:800;color:${confColor}">${sr.confidence_pct}%</div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:#cdd9e5;line-height:1.6">${ratHtml}</div>
+          ${sr.chase_zone && sr.chase_zone.reason ? `
+          <div style="margin-top:10px;padding:8px 10px;background:#2d0d0d;border-left:3px solid #f85149;border-radius:0 6px 6px 0;font-size:11px;color:#f85149">
+            ⛔ 추격 매수 위험: ${sr.chase_zone.reason}
+          </div>` : ''}
+        </div>` : '';
+
+      // ── 추천 밴드 (active_bands 기준으로 필터링) ──
+      const activeBands = sr.active_bands || ['A','B','C'];
+      const bandColor   = ['#f97316','#d29922','#3fb950'];
+
+      const renderBandCard = (b, i, isRec) => {
+        const bc = bandColor[i] || '#58a6ff';
+        const isActive = activeBands.includes(b.band);
+        const isPriority = b.band === sr.priority_band;
+        const dimStyle = isActive ? '' : 'opacity:0.4;';
+        const priTag   = isPriority ? `<span style="font-size:9px;background:${bc}33;color:${bc};border:1px solid ${bc};border-radius:3px;padding:1px 5px;margin-left:4px">권장</span>` : '';
+        if (isRec) {
+          return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+              <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}${priTag}</span>
+              <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}</span>
+            </div>
+            <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
+            <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
+            <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
+          </div>`;
+        } else {
+          return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+              <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}${priTag}</span>
+              <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}</span>
+            </div>
+            <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
+            <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
+            <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
+          </div>`;
+        }
+      };
+
+      const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
+        ? `<div class="buy-card recommended" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">${icon} ${label}</div>
-              <div style="font-size:10px;color:#484f58">
-                ${isAgg ? '※ 백테스트(1년·' + (bp.market||'KRX') + ') 기저확률 + 추세·RSI 보정' : '※ 기술 지표 앵커 기반 · Zone B~C 백테스트 매핑'}
-              </div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 권장 매수 구간</div>
+              <div style="font-size:10px;color:#484f58">※ 지지선·이평선·VWAP 앵커 기반</div>
             </div>
-            <div class="buy-bands-row">${bandRows}</div>
-          </div>`;
-      };
+            <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
+          </div>` : '';
 
-      // 레거시 단일 구간 렌더러 (aggressive_bands 없을 때 fallback)
-      const buyZone = (zone, color, label, icon) => {
-        const z = bp[zone];
-        if (!z) return '';
-        const basisHtml = (z.basis || []).map(b => `<div style="font-size:11px;color:#8b949e;margin-bottom:3px">• ${b}</div>`).join('');
-        return `
-          <div class="buy-card ${zone}" style="display:flex;flex-direction:column;gap:6px">
-            <div class="buy-label">${icon} ${label}</div>
-            <div class="buy-price-val" style="color:${color};font-size:15px;font-weight:800">
-              ${fmt(z.range[0], isKrx)} ~ ${fmt(z.range[1], isKrx)}
+      const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
+        ? `<div class="buy-card aggressive" style="padding:12px 14px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">⚡ 단기 진입 구간 (ATR 기반)</div>
+              <div style="font-size:10px;color:#484f58">※ 백테스트(1년·${bp.market||'KRX'}) 기저확률 + 추세·RSI 보정</div>
             </div>
-            <div style="font-size:12px;color:#8b949e">
-              현재가 대비 ${fmtPct(z.pct[0])} ~ ${fmtPct(z.pct[1])}
-            </div>
-            <div style="background:#0d1117;border-radius:7px;padding:8px;margin-top:2px">
-              ${basisHtml}
-            </div>
-            <div style="font-size:11px;color:#cdd9e5;line-height:1.5;border-top:1px solid #21262d;padding-top:6px;margin-top:2px">
-              💡 ${z.interpretation || ''}
-            </div>
-          </div>`;
-      };
+            <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
+          </div>` : '';
 
-      bpEl.innerHTML = `
-        <div class="buy-price-grid">
-          ${bp.aggressive_bands && bp.aggressive_bands.length
-            ? buyBands('aggressive_bands', '#f97316', '공격적 매수', '⚡', true)
-            : buyZone('aggressive', '#f97316', '공격적 매수', '⚡')}
-        </div>`;
+      bpEl.innerHTML = stratBanner + `<div class="buy-price-grid">${recBandsHtml}${aggBandsHtml}</div>`;
     }
   }
 
@@ -9858,53 +10027,60 @@ function renderForecast(d, isKrx) {
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     rgEl.innerHTML = `
-      ${riskEntries.map(sc => `
-      <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
-        <div class="risk-icon">${sc.icon}</div>
-        <div class="risk-name">${sc.label}</div>
-        <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
-        <div class="risk-row" style="margin-bottom:6px">
-          <span class="risk-lbl">🎯 목표가</span>
-          <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
-        </div>
-        <div class="risk-row" style="margin-bottom:6px">
-          <span class="risk-lbl">🛑 손절가</span>
-          <span class="risk-stp" style="font-size:12px">${fmt(sc.stop[0], isKrx)} ~ ${fmt(sc.stop[1], isKrx)}</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
-          <div>
-            <div style="font-size:10px;color:#8b949e">손절 %</div>
-            <div style="font-size:12px;color:#f85149;font-weight:700">${sc.stop_pct}%</div>
+      ${riskEntries.map(sc => {
+        const failHtml = (sc.failure_conditions || [])
+          .map(f => `<div style="display:flex;align-items:flex-start;gap:5px;margin-bottom:2px"><span style="color:#f97316;flex-shrink:0">•</span><span>${f}</span></div>`)
+          .join('');
+        return `
+        <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
+          <div class="risk-icon">${sc.icon}</div>
+          <div class="risk-name">${sc.label}</div>
+          <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
+          <div class="risk-row" style="margin-bottom:6px">
+            <span class="risk-lbl">🎯 목표가</span>
+            <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
           </div>
-          <div style="text-align:center">
-            <div style="font-size:10px;color:#8b949e">R/R 비율</div>
-            <div style="font-size:14px;font-weight:800;color:${rrColor(sc.rr_ratio)}">${sc.rr_ratio}:1</div>
+          <div class="risk-row" style="margin-bottom:6px">
+            <span class="risk-lbl">🛑 손절가</span>
+            <span class="risk-stp" style="font-size:12px">${fmt(sc.stop[0], isKrx)} ~ ${fmt(sc.stop[1], isKrx)}</span>
           </div>
-          <div style="text-align:right">
-            <div style="font-size:10px;color:#8b949e">목표 수익</div>
-            <div style="font-size:12px;color:#3fb950;font-weight:700">+${sc.return}%</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+            <div>
+              <div style="font-size:10px;color:#8b949e">손절 %</div>
+              <div style="font-size:12px;color:#f85149;font-weight:700">${sc.stop_pct}%</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:10px;color:#8b949e">R/R 비율</div>
+              <div style="font-size:14px;font-weight:800;color:${rrColor(sc.rr_ratio)}">${sc.rr_ratio}:1</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:10px;color:#8b949e">목표 수익</div>
+              <div style="font-size:12px;color:#3fb950;font-weight:700">+${sc.return}%</div>
+            </div>
           </div>
-        </div>
-        <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
-        ${sc.tp_levels && sc.tp_levels.length ? `
-        <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
-          <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📊 목표가 레벨 (백테스트 도달 확률)</div>
-          ${sc.tp_levels.map((tp, i) => {
-            const tpColor = tp.prob_pct >= 65 ? '#3fb950' : tp.prob_pct >= 45 ? '#d29922' : '#f97316';
-            return `<div style="display:flex;justify-content:space-between;align-items:center;background:#0d1117;border-radius:5px;padding:4px 8px;margin-bottom:3px">
-              <span style="font-size:10px;font-weight:700;color:${tpColor}">TP${i+1}</span>
-              <span style="font-size:10px;color:#cdd9e5;font-weight:600">${fmt(tp.price, isKrx)}</span>
-              <span style="font-size:10px;color:#3fb950">+${tp.return_pct}%</span>
-              <span style="font-size:10px;color:${tpColor}">도달 ${tp.prob_pct}%</span>
-              <span style="font-size:10px;color:#8b949e">~${tp.avg_days}일</span>
-              <span style="font-size:10px;color:#f85149">실패손실 ${tp.fail_avg_loss_pct}%</span>
-            </div>`;
-          }).join('')}
-        </div>` : ''}
-        <div style="font-size:10px;color:#484f58;margin-top:4px">ATR배수 — 목표:×${sc.atr_mul_tgt} / 손절:×${sc.atr_mul_stp}</div>
-      </div>`).join('')}`;
+          <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
+          ${sc.tp_levels && sc.tp_levels.length ? `
+          <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📊 목표가 레벨별 도달 확률</div>
+            ${sc.tp_levels.map((lv, i) => {
+              const tpC = lv.prob_pct >= 65 ? '#3fb950' : lv.prob_pct >= 45 ? '#d29922' : '#f97316';
+              return `<div style="display:flex;justify-content:space-between;align-items:center;background:#0d1117;border-radius:5px;padding:4px 8px;margin-bottom:3px">
+                <span style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
+                <span style="font-size:10px;color:#cdd9e5;font-weight:600">${fmt(lv.price, isKrx)}</span>
+                <span style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
+                <span style="font-size:10px;color:${tpC}">도달 ${lv.prob_pct}%</span>
+                <span style="font-size:10px;color:#8b949e">~${lv.avg_days}일</span>
+              </div>`;
+            }).join('')}
+          </div>` : ''}
+          ${failHtml ? `
+          <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+            <div style="font-size:10px;color:#f97316;margin-bottom:4px;font-weight:600">⚠️ 이 시나리오가 실패할 수 있는 조건</div>
+            <div style="font-size:11px;color:#8b949e;line-height:1.5">${failHtml}</div>
+          </div>` : ''}
+        </div>`;
+      }).join('')}`;
   }
-  // 리스크 카드 하단: 눌림목 분석 기반 정밀 가격 설정
   renderPullbackATR(d, isKrx);
 }
 
