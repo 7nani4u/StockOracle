@@ -7715,10 +7715,6 @@ input::placeholder{color:#484f58}
           <div id="indicator-signals-section"></div>
         </div>
         <div class="card">
-          <div class="card-title">📐 피봇 포인트 분석</div>
-          <div id="pivot-points-section"></div>
-        </div>
-        <div class="card">
           <div class="card-title">가격 차트 (캔들 + MA + 볼린저 + 거래량)</div>
           <div id="price-chart" style="height:380px"></div>
         </div>
@@ -7731,6 +7727,10 @@ input::placeholder{color:#484f58}
             <div class="card-title">MACD</div>
             <div id="macd-chart" style="height:150px"></div>
           </div>
+        </div>
+        <div class="card">
+          <div class="card-title">📐 피봇 포인트 (지지·저항 구간)</div>
+          <div id="pivot-points-section"></div>
         </div>
       </div>
 
@@ -10014,18 +10014,11 @@ function renderPivotPoints(d, isKrx) {
     return;
   }
 
-  const pp  = d.pivot_points;
+  const cl  = d.pivot_points.classic || {};
   const cur = d.last_close;
-
-  const methods = [
-    { key: 'classic',    label: '클래식' },
-    { key: 'fibonacci',  label: '피보나치' },
-    { key: 'camarilla',  label: '카마리야' },
-  ];
   const levels = ['S3','S2','S1','Pivot','R1','R2','R3'];
 
-  // 클래식 기준 가장 가까운 지지/저항
-  const cl = pp.classic || {};
+  // 가장 가까운 지지/저항 탐색
   let nearestR = Infinity, nearestS = -Infinity;
   let nearestRKey = null, nearestSKey = null;
   ['R1','R2','R3'].forEach(k => {
@@ -10037,55 +10030,53 @@ function renderPivotPoints(d, isKrx) {
 
   const fmtV = v => (v == null) ? '-' : fmt(v, isKrx);
 
-  let html = `<div style="overflow-x:auto">
+  // 설명 문구
+  let html = `<p style="font-size:12px;color:#8b949e;margin-bottom:12px">전일 고/저/종가를 기준으로 산출한 오늘의 예상 지지·저항 구간입니다. S(지지선)에 근접하면 반등, R(저항선)에 근접하면 차익 실현을 검토하세요.</p>`;
+
+  // 클래식 피봇 테이블 (1가지 방식만 표시)
+  html += `<div style="overflow-x:auto">
     <table class="pivot-table">
       <thead>
         <tr>
-          <th style="text-align:left">방식</th>
           <th class="pv-s">S3</th><th class="pv-s">S2</th><th class="pv-s">S1</th>
           <th class="pv-p">Pivot</th>
           <th class="pv-r">R1</th><th class="pv-r">R2</th><th class="pv-r">R3</th>
         </tr>
       </thead>
-      <tbody>`;
+      <tbody>
+        <tr>
+          ${levels.map(k => {
+            const val = cl[k];
+            const cls = k === 'Pivot' ? 'pv-p' : k.startsWith('R') ? 'pv-r' : 'pv-s';
+            let extra = '';
+            if (k === nearestRKey) extra = 'class="pv-nr"';
+            if (k === nearestSKey) extra = 'class="pv-ns"';
+            return `<td class="${cls}" ${extra}>${fmtV(val)}</td>`;
+          }).join('')}
+        </tr>
+      </tbody>
+    </table>
+  </div>`;
 
-  methods.forEach(m => {
-    const data = pp[m.key];
-    if (!data) return;
-    html += `<tr>
-      <td class="pivot-label-col">${m.label}</td>
-      ${levels.map(k => {
-        const val = data[k];
-        const cls = k === 'Pivot' ? 'pv-p' : k.startsWith('R') ? 'pv-r' : 'pv-s';
-        let bg = '';
-        if (m.key === 'classic' && k === nearestRKey) bg = 'class="pv-nr"';
-        if (m.key === 'classic' && k === nearestSKey) bg = 'class="pv-ns"';
-        return `<td class="${cls}" ${bg}>${fmtV(val)}</td>`;
-      }).join('')}
-    </tr>`;
-  });
-
-  html += `</tbody></table></div>`;
-
-  // 전략 힌트
+  // 가장 가까운 지지/저항 요약 카드
   if (nearestSKey || nearestRKey) {
     html += `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">`;
     if (nearestSKey) {
       const sVal = cl[nearestSKey];
       const sPct = ((sVal - cur) / cur * 100).toFixed(2);
       html += `<div style="background:#0d2d1a;border:1px solid #1a4730;border-radius:8px;padding:10px 14px;flex:1;min-width:220px">
-        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🟢 가장 가까운 지지선 (클래식 ${nearestSKey})</div>
+        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🟢 가장 가까운 지지선 (${nearestSKey})</div>
         <div style="font-size:16px;font-weight:700;color:#3fb950">${fmtV(sVal)} <span style="font-size:11px;font-weight:400">(${sPct}%)</span></div>
-        <div style="font-size:11px;color:#8b949e;margin-top:6px">→ ${nearestSKey} 근접 시 <strong>분할 매수</strong> 고려</div>
+        <div style="font-size:11px;color:#8b949e;margin-top:6px">→ 이 구간 근접 시 <strong>분할 매수</strong> 고려</div>
       </div>`;
     }
     if (nearestRKey) {
       const rVal = cl[nearestRKey];
       const rPct = ((rVal - cur) / cur * 100).toFixed(2);
       html += `<div style="background:#2d0d0d;border:1px solid #4d1515;border-radius:8px;padding:10px 14px;flex:1;min-width:220px">
-        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🔴 가장 가까운 저항선 (클래식 ${nearestRKey})</div>
+        <div style="font-size:11px;color:#8b949e;margin-bottom:4px">🔴 가장 가까운 저항선 (${nearestRKey})</div>
         <div style="font-size:16px;font-weight:700;color:#f85149">${fmtV(rVal)} <span style="font-size:11px;font-weight:400">(+${rPct}%)</span></div>
-        <div style="font-size:11px;color:#8b949e;margin-top:6px">→ ${nearestRKey} 돌파 시 <strong>상승 탄력 확인</strong> 후 추가 매수</div>
+        <div style="font-size:11px;color:#8b949e;margin-top:6px">→ 이 구간 돌파 시 <strong>상승 탄력 확인</strong> 후 추가 매수</div>
       </div>`;
     }
     html += `</div>`;
