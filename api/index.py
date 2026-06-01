@@ -9039,7 +9039,7 @@ function calcSupplyDesc(flow) {
 }
 
 // ── 5-차원 종목 진단 렌더 ────────────────────────────────────────────────────
-// ── HybridTurtle NCS 복합 점수 섹션 렌더러 ──────────────────────────────────
+// ── 복합 기술 신호 점수 섹션 렌더러 (HybridTurtle NCS) ──────────────────────
 function renderHybridSection(d) {
   const hs = d.hybrid_score;
   if (!hs || hs.error) return '';
@@ -9061,23 +9061,23 @@ function renderHybridSection(d) {
   // 색상 팔레트
   const C = { red:'#f85149', orange:'#f97316', yellow:'#d29922', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e', teal:'#39d353' };
 
-  // NCS 색상
+  // 종합 점수 색상 및 등급
   const ncsColor = ncs >= 70 ? C.green : ncs >= 50 ? C.blue : ncs >= 35 ? C.yellow : C.red;
   const ncsLabel = ncs >= 70 ? '우수' : ncs >= 50 ? '양호' : ncs >= 35 ? '보통' : '주의';
 
-  // FWS 색상 (높을수록 위험)
+  // 하락 위험 강도 색상 (높을수록 위험)
   const fwsColor = fws <= 30 ? C.green : fws <= 50 ? C.yellow : fws <= 65 ? C.orange : C.red;
-  const fwsLabel = fws <= 30 ? '안전' : fws <= 50 ? '보통' : fws <= 65 ? '경고' : '위험';
+  const fwsLabel = fws <= 30 ? '낮음' : fws <= 50 ? '보통' : fws <= 65 ? '높음' : '매우 높음';
 
-  // Action 배지
+  // 진입 판단 배지
   const actionMap = {
     'AUTO_YES':    { color: C.green,  bg: '#0d2d1a', text: '✅ 진입 가능' },
     'AUTO_NO':     { color: C.red,    bg: '#2d1515', text: '❌ 진입 지양' },
-    'CONDITIONAL': { color: C.yellow, bg: '#2d2200', text: '⚠️ 조건부' },
+    'CONDITIONAL': { color: C.yellow, bg: '#2d2200', text: '⚠️ 조건 확인 후 진입' },
   };
   const act = actionMap[action] || actionMap['CONDITIONAL'];
 
-  // 레짐 배지
+  // 시장 국면 배지
   const regimeMap = {
     'BULLISH':  { color: C.green,  bg: '#0d2d1a', icon: '🐂', text: '강세장' },
     'BEARISH':  { color: C.red,    bg: '#2d1515', icon: '🐻', text: '약세장' },
@@ -9085,57 +9085,89 @@ function renderHybridSection(d) {
   };
   const reg = regimeMap[regime] || regimeMap['SIDEWAYS'];
 
-  // 허스트 레이블
+  // 추세 지속성 (허스트 지수) 레이블
   const hurstLabel = hurst == null ? '—'
-    : hurst >= 0.65 ? `${hurst.toFixed(2)} 추세 지속`
-    : hurst >= 0.5  ? `${hurst.toFixed(2)} 중립`
-    : `${hurst.toFixed(2)} 평균회귀`;
+    : hurst >= 0.65 ? `${hurst.toFixed(2)} — 추세 지속 가능성 높음`
+    : hurst >= 0.5  ? `${hurst.toFixed(2)} — 방향성 불명확`
+    : `${hurst.toFixed(2)} — 추세 반전 가능성`;
   const hurstColor = hurst == null ? C.gray : hurst >= 0.6 ? C.green : hurst >= 0.5 ? C.blue : C.orange;
 
-  // 추격 방지
+  // 고점 추격 경고
   const chaseText = antiChase.chasing
-    ? `<span style="color:${C.red}">⛔ ${antiChase.reason || '추격 주의'}</span>`
-    : `<span style="color:${C.green}">✓ ${antiChase.reason || '정상 진입 가능'}</span>`;
+    ? `<span style="color:${C.red}">⛔ ${antiChase.reason || '현재가가 단기 급등 구간 — 추격 매수 주의'}</span>`
+    : `<span style="color:${C.green}">✓ ${antiChase.reason || '현재가가 과도하게 올라있지 않습니다'}</span>`;
 
-  // 진입/손절 표시
+  // 권장 진입가 / 손절 기준가
   const entryRow = (entryTrigger && stopPrice) ? `
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
       <div style="flex:1;min-width:120px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">ATR 진입 트리거</div>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">권장 진입가</div>
         <div style="font-size:13px;font-weight:700;color:${C.blue}">${Number(entryTrigger).toLocaleString()}</div>
       </div>
       <div style="flex:1;min-width:120px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">초기 손절가</div>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">손절 기준가 <span style="font-size:9px">(이 가격 이탈 시 손실 제한)</span></div>
         <div style="font-size:13px;font-weight:700;color:${C.red}">${Number(stopPrice).toLocaleString()}</div>
       </div>
     </div>` : '';
 
-  // 세부 지표 그리드
+  // 보조 지표 그리드 (초보자용 레이블)
   const detailItems = [
-    { label:'ADX',        val: adx ? adx.toFixed(1) : '—',              color: adx >= 25 ? C.green : C.yellow },
-    { label:'ATR%',       val: atrPct ? atrPct.toFixed(2)+'%' : '—',    color: atrPct && atrPct <= 4 ? C.green : atrPct && atrPct <= 7 ? C.yellow : C.red },
-    { label:'거래량비',   val: volRatio ? volRatio.toFixed(2)+'x' : '—', color: volRatio && volRatio >= 1.2 ? C.green : C.yellow },
-    { label:'허스트',     val: hurstLabel, color: hurstColor },
-    { label:'BIS',        val: bis+'/15점',   color: bis >= 10 ? C.green : bis >= 5 ? C.yellow : C.gray },
-    { label:'추격방지',   val: antiChase.chasing ? '주의' : '통과', color: antiChase.chasing ? C.red : C.green },
+    {
+      label: '추세 강도',
+      tooltip: '방향성 강도. 25 이상이면 뚜렷한 추세, 미만이면 방향 없이 횡보 중',
+      val: adx ? adx.toFixed(1) : '—',
+      color: adx >= 25 ? C.green : C.yellow,
+    },
+    {
+      label: '일일 변동폭',
+      tooltip: '하루 평균 가격이 얼마나 움직이는지 (%). 낮을수록 안정적',
+      val: atrPct ? atrPct.toFixed(2) + '%' : '—',
+      color: atrPct && atrPct <= 4 ? C.green : atrPct && atrPct <= 7 ? C.yellow : C.red,
+    },
+    {
+      label: '거래량 배율',
+      tooltip: '오늘 거래량이 최근 20일 평균 대비 몇 배인지. 1.2배 이상이면 관심 높음',
+      val: volRatio ? volRatio.toFixed(2) + 'x' : '—',
+      color: volRatio && volRatio >= 1.2 ? C.green : C.yellow,
+    },
+    {
+      label: '추세 지속성',
+      tooltip: '현재 추세가 계속 이어질 가능성. 0.6 이상이면 방향 유지 가능성 높음',
+      val: hurstLabel,
+      color: hurstColor,
+    },
+    {
+      label: '돌파 신뢰도',
+      tooltip: '상승 돌파 신호가 얼마나 믿을 만한지 (0~15점). 10점 이상이면 신뢰도 높음',
+      val: bis + '/15점',
+      color: bis >= 10 ? C.green : bis >= 5 ? C.yellow : C.gray,
+    },
+    {
+      label: '고점 추격',
+      tooltip: '이미 많이 오른 가격에 뒤늦게 사는 위험 여부',
+      val: antiChase.chasing ? '⚠️ 주의' : '✓ 안전',
+      color: antiChase.chasing ? C.red : C.green,
+    },
   ].map(item => `
-    <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px;text-align:center">
+    <div style="background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px;text-align:center" title="${item.tooltip}">
       <div style="font-size:10px;color:#8b949e;margin-bottom:3px">${item.label}</div>
       <div style="font-size:12px;font-weight:600;color:${item.color}">${item.val}</div>
     </div>`).join('');
 
-  // 아코디언 콘텐츠 (세부 내용)
+  // 아코디언 세부 내용
   const accordionContent = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
       <div style="flex:1;min-width:80px">
-        <div style="font-size:10px;color:#8b949e;margin-bottom:4px">BQS (브레이크아웃 품질)</div>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">상승 신호 강도</div>
+        <div style="font-size:10px;color:#484f58;margin-bottom:4px">상승 돌파 신호가 얼마나 강하고 믿을 만한지 (높을수록 좋음)</div>
         <div style="background:#21262d;border-radius:6px;height:8px;overflow:hidden">
           <div style="height:100%;width:${bqs}%;background:${C.blue};border-radius:6px;transition:width .4s"></div>
         </div>
         <div style="font-size:11px;color:${C.blue};margin-top:2px">${bqs.toFixed(1)}점</div>
       </div>
       <div style="flex:1;min-width:80px">
-        <div style="font-size:10px;color:#8b949e;margin-bottom:4px">FWS (위험 강도)</div>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">하락 위험 강도</div>
+        <div style="font-size:10px;color:#484f58;margin-bottom:4px">추세가 꺾이거나 하락할 위험 정도 (낮을수록 안전)</div>
         <div style="background:#21262d;border-radius:6px;height:8px;overflow:hidden">
           <div style="height:100%;width:${fws}%;background:${fwsColor};border-radius:6px;transition:width .4s"></div>
         </div>
@@ -9147,24 +9179,24 @@ function renderHybridSection(d) {
     </div>
     ${entryRow}
     <div style="margin-top:10px;font-size:11px;color:#8b949e">
-      추격방지: ${chaseText}
+      고점 추격 경고: ${chaseText}
     </div>
-    <div style="margin-top:8px;font-size:10px;color:#484f58;line-height:1.5">
-      NCS = BQS − 0.8×FWS + 10 · AUTO_YES(NCS≥70&FWS≤30) / AUTO_NO(FWS>65) / CONDITIONAL<br>
-      출처: HybridTurtle v6.0 Dual Score Engine 이식
+    <div style="margin-top:8px;font-size:10px;color:#484f58;line-height:1.6;border-top:1px solid #21262d;padding-top:8px">
+      이 점수는 상승 신호의 강도에서 하락 위험 강도를 빼고 보정한 종합 기술 점수입니다.<br>
+      점수가 높을수록 기술적으로 진입에 유리한 조건이며, 단독 판단보다 다른 지표와 함께 참고하세요.
     </div>`;
 
   return `
     <div class="diag-dim diag-dim-clickable" onclick="toggleDimAccordion('dim-ncs')">
       <div class="diag-dim-head">
-        <span class="diag-dim-label">🤖 HybridTurtle NCS <span id="arrow-dim-ncs" style="font-size:11px;color:#8b949e;display:inline-block;transition:transform .25s">▼</span></span>
+        <span class="diag-dim-label">🤖 복합 기술 신호 점수 <span id="arrow-dim-ncs" style="font-size:11px;color:#8b949e;display:inline-block;transition:transform .25s">▼</span></span>
         <span class="diag-dim-score" style="color:${ncsColor}">${ncs.toFixed(0)}점 · ${ncsLabel}</span>
       </div>
       <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${ncs}%;background:${ncsColor}"></div></div>
       <div class="diag-dim-desc" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="background:${act.bg};color:${act.color};border:1px solid ${act.color};border-radius:5px;padding:1px 7px;font-size:11px;font-weight:600">${act.text}</span>
         <span style="background:${reg.bg};color:${reg.color};border:1px solid ${reg.color};border-radius:5px;padding:1px 7px;font-size:11px">${reg.icon} ${reg.text}</span>
-        <span style="color:#8b949e;font-size:11px">ADX ${adx ? adx.toFixed(0) : '—'} · BIS ${bis}/15</span>
+        <span style="color:#8b949e;font-size:11px">추세강도 ${adx ? adx.toFixed(0) : '—'} · 돌파신뢰도 ${bis}/15</span>
       </div>
     </div>
     <div id="dim-ncs" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
