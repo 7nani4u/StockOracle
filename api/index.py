@@ -6575,21 +6575,54 @@ def route(path: str, params: Dict) -> Dict:
                 # 4. 최후 fallback: ticker 코드
                 return tkr
 
-            # 종목 목록 파싱
+            # ── 확장 유니버스 (KOSPI200/KOSDAQ150 · S&P500 대표 종목) ──
+            # (ticker, 종목명) — 이름은 오프라인 표기용 (네트워크 조회 불필요)
+            _SCAN_KRX_UNIVERSE = [
+                # KOSPI 대형주
+                ("005930.KS", "삼성전자"),       ("000660.KS", "SK하이닉스"),
+                ("373220.KS", "LG에너지솔루션"), ("207940.KS", "삼성바이오로직스"),
+                ("005380.KS", "현대차"),         ("000270.KS", "기아"),
+                ("068270.KS", "셀트리온"),       ("105560.KS", "KB금융"),
+                ("055550.KS", "신한지주"),       ("005490.KS", "POSCO홀딩스"),
+                ("035420.KS", "NAVER"),          ("035720.KS", "카카오"),
+                ("051910.KS", "LG화학"),         ("006400.KS", "삼성SDI"),
+                ("012330.KS", "현대모비스"),     ("028260.KS", "삼성물산"),
+                ("009150.KS", "삼성전기"),       ("012450.KS", "한화에어로스페이스"),
+                ("034020.KS", "두산에너빌리티"), ("009540.KS", "HD한국조선해양"),
+                ("015760.KS", "한국전력"),       ("033780.KS", "KT&G"),
+                ("086790.KS", "하나금융지주"),   ("003670.KS", "포스코퓨처엠"),
+                ("259960.KS", "크래프톤"),
+                # KOSDAQ 대표주
+                ("247540.KQ", "에코프로비엠"),   ("086520.KQ", "에코프로"),
+                ("196170.KQ", "알테오젠"),       ("028300.KQ", "HLB"),
+                ("058470.KQ", "리노공업"),
+            ]
+            _SCAN_US_UNIVERSE = [
+                ("AAPL", "Apple"),       ("NVDA", "NVIDIA"),      ("MSFT", "Microsoft"),
+                ("GOOGL", "Alphabet"),   ("AMZN", "Amazon"),      ("META", "Meta"),
+                ("TSLA", "Tesla"),       ("AVGO", "Broadcom"),    ("LLY", "Eli Lilly"),
+                ("JPM", "JPMorgan"),     ("V", "Visa"),           ("UNH", "UnitedHealth"),
+                ("XOM", "Exxon Mobil"),  ("MA", "Mastercard"),    ("JNJ", "Johnson & Johnson"),
+                ("PG", "Procter & Gamble"), ("HD", "Home Depot"), ("COST", "Costco"),
+                ("ABBV", "AbbVie"),      ("MRK", "Merck"),        ("ADBE", "Adobe"),
+                ("CVX", "Chevron"),      ("PEP", "PepsiCo"),      ("KO", "Coca-Cola"),
+                ("BAC", "Bank of America"), ("NFLX", "Netflix"),  ("AMD", "AMD"),
+                ("CRM", "Salesforce"),   ("ORCL", "Oracle"),      ("MCD", "McDonald's"),
+            ]
+
+            # 종목 목록 파싱 — tickers 파라미터 우선, 없으면 시장별 확장 유니버스
             tickers_raw = params.get("tickers", "")
+            name_hint: dict = {}
             if tickers_raw:
                 raw_list = [t.strip() for t in tickers_raw.split(",") if t.strip()]
             else:
-                # 기본 유니버스
-                if market_p == "KRX":
-                    raw_list = [
-                        "005930.KS", "000660.KS", "035420.KS", "051910.KS",
-                        "035720.KS", "207940.KS", "006400.KS", "028260.KS",
-                        "105560.KS", "055550.KS",
-                    ]
-                else:
-                    raw_list = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
-                                "META", "TSLA", "AMD", "TSMC", "NFLX"]
+                pairs     = _SCAN_KRX_UNIVERSE if market_p == "KRX" else _SCAN_US_UNIVERSE
+                raw_list  = [t for t, _ in pairs]
+                name_hint = {t: nm for t, nm in pairs}
+
+            # 스캔 모드별 종목 수 — FULL 30 / CORE_LITE 15 (Vercel 60s 타임아웃·속도 균형)
+            _scan_cap = 30 if mode_p == "FULL" else 15
+            raw_list  = raw_list[:_scan_cap]
 
             def _hist_to_lists(hist):
                 """yf.Ticker().history() DataFrame → (closes, highs, lows, volumes, opens)."""
@@ -6656,39 +6689,60 @@ def route(path: str, params: Dict) -> Dict:
                 "hold": "보유", "underperform": "약세", "sell": "매도",
             }
 
-            for tkr in raw_list[:10]:  # 최대 10종목 (타임아웃 방지)
+            _ETF_SET = {"QQQ", "SPY", "SOXL", "TQQQ", "SQQQ", "DIA", "IWM"}
+
+            def _scan_collect_one(tkr: str):
+                """단일 종목 정밀 수집 — OHLCV·스냅샷·품질(QMJ)·섹터·애널리스트 신호·이름.
+
+                병렬 워커로 호출됨. info 조회 실패 시에도 가격/기술 분석은 유지(graceful degrade).
+                """
                 try:
-                    _th   = yf.Ticker(tkr).history(period="1y")
-                    ohlcv = _hist_to_lists(_th)
+                    tk    = yf.Ticker(tkr)
+                    ohlcv = _hist_to_lists(tk.history(period="1y"))
                     if ohlcv is None:
-                        continue
+                        return None
                     closes, highs, lows, volumes, opens = ohlcv
                     snap = build_snapshot_from_ohlcv(
                         ticker=tkr, closes=closes, highs=highs,
                         lows=lows, volumes=volumes, opens=opens,
                         bench_closes=bench_closes,
                     )
-                    snap_map[tkr] = snap
                     # 등락률: 전일 대비 당일 종가 변화율
-                    if len(closes) >= 2 and closes[-2] != 0:
-                        change_map[tkr] = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2)
-                    else:
-                        change_map[tkr] = 0.0
-                    sleeve = "ETF" if tkr in ("QQQ","SPY","SOXL","TQQQ","SQQQ") else "CORE"
-                    # info 조회 (QMJ + 종목명 + 섹터 + 신호 동시 수집)
-                    _info = {}
+                    change = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2) \
+                             if len(closes) >= 2 and closes[-2] != 0 else 0.0
+                    # info: 품질(QMJ)·섹터·애널리스트 신호 (실패 허용)
+                    _info, quality = {}, None
                     try:
-                        _info = yf.Ticker(tkr).info or {}
-                        quality_map[tkr] = get_quality_score_from_info(tkr, _info)
+                        _info   = tk.info or {}
+                        quality = get_quality_score_from_info(tkr, _info)
                     except Exception:
                         pass
-                    sector_map[tkr] = _info.get("sector") or _info.get("industry") or ""
+                    sector  = _info.get("sector") or _info.get("industry") or ""
                     rec_key = (_info.get("recommendationKey") or "").lower()
-                    signal_map[tkr] = _ANALYST_MAP.get(rec_key, "중립")
-                    _name = _get_name(tkr, _info)
-                    universe.append(StockUniverse(tkr, _name, sleeve, sector=sector_map[tkr]))
+                    signal  = _ANALYST_MAP.get(rec_key, "중립")
+                    name    = name_hint.get(tkr) or _get_name(tkr, _info)
+                    sleeve  = "ETF" if tkr in _ETF_SET else "CORE"
+                    return {
+                        "tkr": tkr, "snap": snap, "change": change, "quality": quality,
+                        "sector": sector, "signal": signal, "name": name, "sleeve": sleeve,
+                    }
                 except Exception:
-                    continue
+                    return None
+
+            # 병렬 수집 — 종목 수만큼 워커(최대 12)로 직렬 타임아웃 완화
+            _workers = min(12, max(1, len(raw_list)))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_workers) as _ex:
+                for res in _ex.map(_scan_collect_one, raw_list):
+                    if not res:
+                        continue
+                    t = res["tkr"]
+                    snap_map[t]   = res["snap"]
+                    change_map[t] = res["change"]
+                    if res["quality"] is not None:
+                        quality_map[t] = res["quality"]
+                    sector_map[t] = res["sector"]
+                    signal_map[t] = res["signal"]
+                    universe.append(StockUniverse(t, res["name"], res["sleeve"], sector=res["sector"]))
 
             if not snap_map:
                 return {"error": "데이터 수집 실패 — 네트워크 연결을 확인하거나 잠시 후 다시 시도하세요"}
@@ -6713,6 +6767,29 @@ def route(path: str, params: Dict) -> Dict:
                 d["analyst_signal"] = signal_map.get(c.ticker, "중립")
                 cands.append(d)
 
+            # ── 출력 필터: 상태·신호가 좋은 종목만 (한국/미국 동일 조건) ──
+            #   · 상태(state) 양호 : 기술필터 통과 + 진입 가능권(READY/WATCH/눌림목)
+            #                        — 원거리(FAR)·실적대기·쿨다운 제외
+            #   · 신호(signal) 양호: 애널리스트 '매수/적극 매수' 또는 복합점수 NCS ≥ 55
+            #   두 조건을 모두 충족하는 종목만 NCS 내림차순으로 최대 20개 출력.
+            _GOOD_STATES  = {"READY", "WATCH", "WAIT_PULLBACK"}
+            _GOOD_SIGNALS = {"적극 매수", "매수"}
+            _NCS_GOOD     = 55.0
+            _DISPLAY_CAP  = 20
+
+            def _is_good(cd: dict) -> bool:
+                if not cd.get("passes_tech_filters"):
+                    return False
+                if cd.get("status") not in _GOOD_STATES:
+                    return False
+                sig_ok = cd.get("analyst_signal") in _GOOD_SIGNALS
+                ncs_ok = (cd.get("adjusted_ncs") or cd.get("ncs") or 0) >= _NCS_GOOD
+                return sig_ok or ncs_ok
+
+            good = [cd for cd in cands if _is_good(cd)]
+            good.sort(key=lambda cd: -(cd.get("adjusted_ncs") or cd.get("ncs") or 0))
+            good = good[:_DISPLAY_CAP]
+
             return {
                 "regime":          result.regime,
                 "vol_regime":      result.vol_regime,
@@ -6721,7 +6798,9 @@ def route(path: str, params: Dict) -> Dict:
                 "ready_count":     result.ready_count,
                 "watch_count":     result.watch_count,
                 "far_count":       result.far_count,
-                "candidates":      cands,
+                "good_count":      len(good),
+                "filter_desc":     "상태(진입 가능권) + 신호(애널리스트 매수 또는 NCS≥55) 충족 종목만",
+                "candidates":      good,
                 "generated_at":    result.generated_at,
             }
         except Exception as e:
@@ -12257,7 +12336,7 @@ function renderScanResult(d, market) {
       { val: d.passed_filters, label: '필터 통과',  color: '#58a6ff' },
       { val: d.ready_count,    label: '진입 준비',  color: '#3fb950' },
       { val: d.watch_count,    label: '관찰 대기',  color: '#d29922' },
-      { val: d.far_count,      label: '원거리',     color: '#484f58' },
+      { val: (d.good_count != null ? d.good_count : (d.candidates||[]).length), label: '신호 양호', color: '#3fb950' },
     ];
     sumEl.innerHTML = cards.map(function(c) {
       return '<div class="scan-sum-card"><div class="scan-sum-val" style="color:' + c.color + '">' + (c.val || 0) + '</div><div class="scan-sum-label">' + c.label + '</div></div>';
@@ -12283,7 +12362,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">후보 종목 없음</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">상태·신호 양호 종목 없음 — 현재 진입 가능권에 든 좋은 신호 종목이 없습니다</td></tr>';
     return;
   }
 
