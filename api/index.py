@@ -8132,25 +8132,25 @@ input::placeholder{color:#484f58}
 
   <!-- ── 🔬 7단계 스캔 엔진 페이지 ── -->
   <div id="page-scan" style="display:none">
-    <div class="screener-header" style="margin-bottom:16px">
-      <div>
+    <div class="screener-header" style="margin-bottom:16px;flex-wrap:wrap;gap:18px">
+      <div style="margin-right:auto">
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🔬 7단계 스캔 엔진</h2>
         <p style="font-size:12px;color:#8b949e">BQS·FWS·NCS 복합 점수 기반 후보 종목 발굴</p>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap">
+        <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px;flex:1 1 0;min-width:0">
           <option value="KRX">🇰🇷 KRX (한국)</option>
           <option value="US">🇺🇸 US (미국)</option>
         </select>
-        <select id="scan-mode" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px">
+        <select id="scan-mode" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px;flex:1 1 0;min-width:0">
           <option value="FULL">전체 스캔</option>
           <option value="CORE_LITE">핵심 종목 (빠름)</option>
         </select>
         <button onclick="runScan()" id="scan-run-btn"
-          style="background:#1f6feb;border:none;border-radius:8px;padding:8px 16px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+          style="background:#1f6feb;border:none;border-radius:8px;padding:8px 16px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0">
           🔍 스캔 실행
         </button>
-        <button onclick="runScan(true)" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 12px;color:#8b949e;font-size:13px;cursor:pointer;white-space:nowrap">🔄</button>
+        <button onclick="runScan(true)" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 12px;color:#8b949e;font-size:13px;cursor:pointer;white-space:nowrap;flex-shrink:0">🔄</button>
       </div>
     </div>
     <!-- 스캔 전 안내 -->
