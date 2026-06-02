@@ -122,6 +122,50 @@ def _derive_market_mood(indices: dict, overnight: list[dict]) -> str:
     return "neutral"
 
 
+def _derive_kr_mood(indices: dict) -> str:
+    """국내 지수만으로 한국 시장 무드 추론 (해외 영향 제외).
+
+    반환: "positive" / "neutral" / "negative"
+    """
+    scores: list[float] = []
+    for idx in indices.values():
+        d = idx.get("direction", "flat")
+        scores.append(1.0 if d == "up" else (-1.0 if d == "down" else 0.0))
+    if not scores:
+        return "neutral"
+    avg = sum(scores) / len(scores)
+    if avg > 0.3:
+        return "positive"
+    if avg < -0.3:
+        return "negative"
+    return "neutral"
+
+
+def _derive_us_mood(overnight: list[dict]) -> str:
+    """해외(미국) 지수만으로 미국 시장 무드 추론.
+
+    S&P 500 / 나스닥 / 다우 방향성 평균. VIX는 무드 점수에서 제외.
+    반환: "positive" / "neutral" / "negative"
+    """
+    us_keys = {"S&P 500", "나스닥", "다우", "^GSPC", "^IXIC", "^DJI", "DOW"}
+    scores: list[float] = []
+    for o in overnight:
+        name = (o.get("name", "") or "") + (o.get("symbol", "") or "")
+        if "VIX" in name:
+            continue
+        if any(k in name for k in us_keys):
+            d = o.get("direction", "flat")
+            scores.append(1.0 if d == "up" else (-1.0 if d == "down" else 0.0))
+    if not scores:
+        return "neutral"
+    avg = sum(scores) / len(scores)
+    if avg > 0.3:
+        return "positive"
+    if avg < -0.3:
+        return "negative"
+    return "neutral"
+
+
 def _derive_vix_signal(overnight: list[dict]) -> str | None:
     """VIX 수준으로 공포/안도 신호 반환. None if not found."""
     for o in overnight:
@@ -171,6 +215,8 @@ def build_core_summary(macro_context: dict) -> dict:
     news     = [_normalize_news_item(n) for n in (macro_context.get("news") or [])]
 
     market_mood = _derive_market_mood(indices, overnight)
+    kr_mood     = _derive_kr_mood(indices)
+    us_mood     = _derive_us_mood(overnight)
     vix_signal  = _derive_vix_signal(overnight)
 
     news_counts = {"positive": 0, "negative": 0, "neutral": 0}
@@ -181,6 +227,10 @@ def build_core_summary(macro_context: dict) -> dict:
         "generated_at": macro_context.get("generated_at", datetime.now(KST).isoformat()),
         "market_mood":  market_mood,
         "mood_label":   MOOD_LABEL.get(market_mood, market_mood),
+        "kr_market_mood": kr_mood,
+        "kr_mood_label":  MOOD_LABEL.get(kr_mood, kr_mood),
+        "us_market_mood": us_mood,
+        "us_mood_label":  MOOD_LABEL.get(us_mood, us_mood),
         "vix_signal":   vix_signal,
         "indices":      indices,
         "overnight":    overnight,

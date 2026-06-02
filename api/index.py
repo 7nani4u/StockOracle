@@ -7346,6 +7346,42 @@ input::placeholder{color:#484f58}
 .mood-positive{background:#0d2d1a;color:#3fb950;border:1px solid #1a4730}
 .mood-neutral{background:#21262d;color:#8b949e;border:1px solid #30363d}
 .mood-negative{background:#2d0d0d;color:#f85149;border:1px solid #4d1515}
+/* 클릭 가능한 시장 상태 배지 (버튼) */
+.market-mood-btn{cursor:pointer;font-family:inherit;line-height:1.2;transition:filter .15s,transform .1s,box-shadow .15s}
+.market-mood-btn:hover{filter:brightness(1.18);box-shadow:0 0 0 1px currentColor inset}
+.market-mood-btn:active{transform:scale(.96)}
+.market-mood-btn::after{content:'›';margin-left:4px;font-weight:700;opacity:.6}
+
+/* ── 🛡️ 시장 위험 면역 슬라이드 드로어 ── */
+#market-drawer-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1200;
+  opacity:0;visibility:hidden;transition:opacity .25s ease,visibility .25s ease
+}
+#market-drawer-overlay.open{opacity:1;visibility:visible}
+#market-drawer{
+  position:fixed;top:0;right:0;height:100%;width:420px;max-width:92vw;z-index:1201;
+  background:#0d1117;border-left:1px solid #30363d;box-shadow:-8px 0 30px rgba(0,0,0,.5);
+  transform:translateX(100%);transition:transform .28s cubic-bezier(.4,0,.2,1);
+  display:flex;flex-direction:column
+}
+#market-drawer.open{transform:translateX(0)}
+.drawer-header{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:16px 18px;border-bottom:1px solid #21262d;flex-shrink:0
+}
+.drawer-title{font-size:16px;font-weight:700;color:#e6edf3;display:flex;align-items:center;gap:8px}
+.drawer-sub{font-size:11px;color:#8b949e;margin-top:2px}
+.drawer-close{
+  background:none;border:1px solid #30363d;border-radius:8px;width:32px;height:32px;
+  color:#8b949e;font-size:18px;cursor:pointer;flex-shrink:0;line-height:1;
+  transition:border-color .15s,color .15s
+}
+.drawer-close:hover{border-color:#f85149;color:#f85149}
+.drawer-body{padding:16px 18px;overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
+@media(max-width:520px){
+  #market-drawer{width:100%;max-width:100vw}
+  #market-drawer.open{transform:translateX(0)}
+}
 .core-indices{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:0}
 .core-index-card{
   background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px;
@@ -7691,7 +7727,6 @@ input::placeholder{color:#484f58}
     <div style="display:flex;flex-direction:column;gap:4px">
       <button class="mkt-btn active" style="text-align:left;padding:10px 12px" id="nav-analysis" onclick="showPage('analysis')">🔍 종목 상세 분석</button>
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-scan" onclick="showPage('scan')">🔬 7단계 스캔 엔진</button>
-      <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-immune" onclick="showPage('immune')">🛡️ 시장 위험 면역</button>
       <!-- ⚡ 개장 급등 추천 아코디언 -->
       <button class="mkt-btn" style="text-align:left;padding:10px 12px" id="nav-recommendations" onclick="toggleRecoMenu()">
         <span class="nav-reco-parent">
@@ -7745,7 +7780,8 @@ input::placeholder{color:#484f58}
           <div class="core-header">
             <div class="core-header-left">
               <span class="core-title">📊 시장 현황</span>
-              <span id="core-mood-badge" class="mood-badge mood-neutral">—</span>
+              <button type="button" id="core-mood-badge-kr" class="mood-badge mood-neutral market-mood-btn" onclick="openMarketDrawer('KR')" aria-label="한국 시장 위험 면역 상세 보기" title="클릭 — 한국 시장 위험 면역 시스템">🇰🇷 한국 —</button>
+              <button type="button" id="core-mood-badge-us" class="mood-badge mood-neutral market-mood-btn" onclick="openMarketDrawer('US')" aria-label="미국 시장 위험 면역 상세 보기" title="클릭 — 미국 시장 위험 면역 시스템">🇺🇸 미국 —</button>
               <span id="core-vix-badge" style="display:none;font-size:10px;padding:2px 7px;border-radius:10px;background:#2d0d0d;color:#f85149;border:1px solid #4d1515"></span>
             </div>
             <button class="header-alert-btn" onclick="openAlertsSheet()" aria-label="알림 관리">
@@ -7777,18 +7813,6 @@ input::placeholder{color:#484f58}
         <div id="sector-flow-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
           업종별 흐름 데이터를 불러오지 못했습니다
           <button onclick="loadSectorFlow()" class="home-section-refresh" style="margin-left:6px">재시도</button>
-        </div>
-      </div>
-
-      <!-- HybridTurtle 시장 면역 배너 -->
-      <div id="immune-banner" style="display:none;margin-bottom:12px">
-        <div id="immune-banner-inner" style="border-radius:12px;padding:12px 16px;border:1px solid;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="showPage('immune')">
-          <span id="immune-banner-icon" style="font-size:22px"></span>
-          <div style="flex:1">
-            <div style="font-size:13px;font-weight:700" id="immune-banner-title"></div>
-            <div style="font-size:11px;margin-top:2px;opacity:.8" id="immune-banner-sub"></div>
-          </div>
-          <span style="font-size:11px;opacity:.6">자세히 →</span>
         </div>
       </div>
 
@@ -8239,6 +8263,24 @@ input::placeholder{color:#484f58}
     </div>
   </div>
 </div>
+
+<!-- ── 🛡️ 시장 위험 면역 슬라이드 드로어 (한국/미국 공용) ── -->
+<div id="market-drawer-overlay" onclick="closeMarketDrawer()"></div>
+<aside id="market-drawer" role="dialog" aria-modal="true" aria-labelledby="market-drawer-title">
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-title" id="market-drawer-title">🛡️ 시장 위험 면역</div>
+      <div class="drawer-sub" id="market-drawer-sub"></div>
+    </div>
+    <button type="button" class="drawer-close" onclick="closeMarketDrawer()" aria-label="닫기">✕</button>
+  </div>
+  <div class="drawer-body" id="market-drawer-body">
+    <div style="text-align:center;padding:40px;color:#8b949e">
+      <div class="spinner" style="margin:0 auto 12px"></div>
+      시장 위험 데이터 수집 중...
+    </div>
+  </div>
+</aside>
 
 <script>
 // ── 전역 상태 ──
@@ -10601,16 +10643,28 @@ async function loadMarketCore() {
 }
 
 function renderMarketCore(d) {
-  // 시장 무드 배지
+  // 시장 무드 배지 — 한국/미국 개별 표시
   const moodMap = {
-    positive: ['mood-positive', '🟢 우호적'],
-    neutral:  ['mood-neutral',  '🟡 혼조'],
-    negative: ['mood-negative', '🔴 부담적'],
+    positive: ['mood-positive', '우호적'],
+    neutral:  ['mood-neutral',  '혼조'],
+    negative: ['mood-negative', '부담적'],
   };
-  const [moodCls, moodTxt] = moodMap[d.market_mood] || moodMap.neutral;
-  const badge = document.getElementById('core-mood-badge');
-  badge.className = 'mood-badge ' + moodCls;
-  badge.textContent = moodTxt;
+  // 한국 배지 (kr_market_mood 우선, 없으면 기존 market_mood 폴백)
+  const krMood = d.kr_market_mood || d.market_mood || 'neutral';
+  const [krCls, krTxt] = moodMap[krMood] || moodMap.neutral;
+  const krBadge = document.getElementById('core-mood-badge-kr');
+  if (krBadge) {
+    krBadge.className = 'mood-badge market-mood-btn ' + krCls;
+    krBadge.textContent = '🇰🇷 한국 ' + krTxt;
+  }
+  // 미국 배지 (us_market_mood)
+  const usMood = d.us_market_mood || 'neutral';
+  const [usCls, usTxt] = moodMap[usMood] || moodMap.neutral;
+  const usBadge = document.getElementById('core-mood-badge-us');
+  if (usBadge) {
+    usBadge.className = 'mood-badge market-mood-btn ' + usCls;
+    usBadge.textContent = '🇺🇸 미국 ' + usTxt;
+  }
 
   // VIX 신호
   const vixBadge = document.getElementById('core-vix-badge');
@@ -12471,10 +12525,170 @@ function _renderImmuneFull(d) {
   }
 }
 
-// 홈 화면 진입 시 배너 자동 로드
-document.addEventListener('DOMContentLoaded', function() {
-  setTimeout(function() { loadImmuneBanner(); }, 3000);
+// ══════════════════════════════════════════════════════
+// 🛡️ 시장 위험 면역 슬라이드 드로어 (한국 / 미국 공용 컴포넌트)
+// ══════════════════════════════════════════════════════
+
+// 시장별 설정 — 한국은 KOSPI 200(^KS200), 미국은 S&P 500(SPY) 기준 데이터
+var MARKET_DRAWER_CFG = {
+  KR: { flag:'🇰🇷', name:'한국 시장',  index:'^KS200', indexLabel:'KOSPI 200 기준' },
+  US: { flag:'🇺🇸', name:'미국 시장',  index:'SPY',    indexLabel:'S&P 500 기준' },
+};
+
+function openMarketDrawer(market) {
+  var cfg = MARKET_DRAWER_CFG[market] || MARKET_DRAWER_CFG.KR;
+  var overlay = document.getElementById('market-drawer-overlay');
+  var drawer  = document.getElementById('market-drawer');
+  var titleEl = document.getElementById('market-drawer-title');
+  var subEl   = document.getElementById('market-drawer-sub');
+  var bodyEl  = document.getElementById('market-drawer-body');
+  if (!drawer) return;
+
+  // 상단에 현재 선택된 시장 명확히 표시
+  if (titleEl) titleEl.textContent = cfg.flag + ' ' + cfg.name;
+  if (subEl)   subEl.textContent   = '🛡️ 시장 위험 면역 시스템 · ' + cfg.indexLabel;
+
+  // 로딩 표시
+  if (bodyEl) bodyEl.innerHTML =
+    '<div style="text-align:center;padding:40px;color:#8b949e">' +
+    '<div class="spinner" style="margin:0 auto 12px"></div>시장 위험 데이터 수집 중...</div>';
+
+  // 패널 열기
+  if (overlay) overlay.classList.add('open');
+  drawer.classList.add('open');
+  document.body.style.overflow = 'hidden';   // 배경 스크롤 잠금
+
+  // 시장별 독립 데이터 fetch (한국/미국 서로 다른 index 파라미터)
+  fetch('/api/market-immune?index=' + encodeURIComponent(cfg.index))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!bodyEl) return;
+      if (d.error) {
+        bodyEl.innerHTML = '<div style="text-align:center;padding:32px;color:#f85149;font-size:13px">오류: ' + d.error + '</div>';
+        return;
+      }
+      bodyEl.innerHTML = _buildImmuneHtml(d, cfg);
+    })
+    .catch(function(e){
+      if (bodyEl) bodyEl.innerHTML = '<div style="text-align:center;padding:32px;color:#f85149;font-size:13px">네트워크 오류: ' + e.message + '</div>';
+    });
+}
+
+function closeMarketDrawer() {
+  var overlay = document.getElementById('market-drawer-overlay');
+  var drawer  = document.getElementById('market-drawer');
+  if (overlay) overlay.classList.remove('open');
+  if (drawer)  drawer.classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// ESC 키로 드로어 닫기
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var drawer = document.getElementById('market-drawer');
+    if (drawer && drawer.classList.contains('open')) closeMarketDrawer();
+  }
 });
+
+// 면역 데이터 → HTML 문자열 빌더 (드로어 전용, 면역 페이지 렌더와 동일 구성 재사용)
+function _buildImmuneHtml(d, cfg) {
+  var C = { green:'#3fb950', yellow:'#d29922', orange:'#f97316', red:'#f85149', gray:'#8b949e' };
+  var level = d.immune_level || 'CLEAR';
+  var score = d.immune_score || 0;
+
+  var levelCfg = {
+    'CLEAR':   { cls:'immune-clear',   label:'🟢 정상 (CLEAR)',       desc:'신규 진입 허용 · 모든 전략 가동 가능' },
+    'CAUTION': { cls:'immune-caution', label:'🟡 주의 (CAUTION)',     desc:'포지션 사이즈 50% 축소 권고' },
+    'ALERT':   { cls:'immune-alert',   label:'🟠 경보 (ALERT)',       desc:'신규 진입 극도 제한 · 수동 확인 필수' },
+    'IMMUNE':  { cls:'immune-immune',  label:'🔴 면역 발동 (IMMUNE)', desc:'신규 매수 전면 금지 · 현금 비중 확대' },
+  }[level] || { cls:'immune-clear', label:level, desc:'' };
+
+  var html = '';
+
+  // 선택된 시장 헤더 (드로어 본문 상단에도 명확히 표기)
+  if (cfg) {
+    html += '<div style="font-size:13px;font-weight:700;color:#e6edf3;margin-bottom:12px">' +
+            cfg.flag + ' ' + cfg.name +
+            '<span style="font-size:11px;font-weight:400;color:#8b949e;margin-left:6px">(' + cfg.indexLabel + ')</span></div>';
+  }
+
+  // 메인 면역 레벨 카드
+  html += '<div class="' + levelCfg.cls + '" style="border-radius:14px;padding:20px;border:2px solid;text-align:center;margin-bottom:16px">' +
+    '<div style="font-size:24px;font-weight:900;margin-bottom:6px">' + levelCfg.label + '</div>' +
+    '<div style="font-size:34px;font-weight:900;margin:8px 0">' + score + '<span style="font-size:15px;font-weight:400;opacity:.7">/100</span></div>' +
+    '<div style="font-size:12px;opacity:.9">' + levelCfg.desc + '</div>' +
+    '<div style="height:8px;background:rgba(0,0,0,.3);border-radius:4px;overflow:hidden;margin-top:14px;width:80%;margin-left:auto;margin-right:auto">' +
+    '<div style="height:100%;width:' + score + '%;background:currentColor;border-radius:4px;transition:width .7s"></div></div></div>';
+
+  // 지표 그리드
+  var metrics = [
+    { label:'VIX', val: d.vix_level != null ? d.vix_level.toFixed(1) : '—',
+      color: d.vix_level == null ? C.gray : d.vix_level >= 40 ? C.red : d.vix_level >= 30 ? C.orange : d.vix_level >= 20 ? C.yellow : C.green },
+    { label:'MA200 이격도', val: d.ma200_deviation != null ? d.ma200_deviation.toFixed(1) + '%' : '—',
+      color: d.ma200_deviation == null ? C.gray : d.ma200_deviation < -20 ? C.red : d.ma200_deviation < -10 ? C.orange : d.ma200_deviation < 0 ? C.yellow : C.green },
+    { label:'지수 ATR%', val: d.vol_pct != null ? d.vol_pct.toFixed(2) + '%' : '—',
+      color: d.vol_pct == null ? C.gray : d.vol_pct >= 5 ? C.red : d.vol_pct >= 3 ? C.orange : C.green },
+    { label:'위험 점수', val: score + '/100', color: score >= 65 ? C.red : score >= 40 ? C.orange : score >= 20 ? C.yellow : C.green },
+  ];
+  html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px">' +
+    metrics.map(function(m) {
+      return '<div class="immune-metric"><div class="immune-metric-val" style="color:' + m.color + '">' + m.val + '</div><div class="immune-metric-label">' + m.label + '</div></div>';
+    }).join('') + '</div>';
+
+  // 경고 목록
+  var warnings = d.warnings || [];
+  if (warnings.length > 0) {
+    html += '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">⚠️ 감지된 경고</div>' +
+      '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
+      warnings.map(function(w) {
+        return '<div style="background:#2d1515;border:1px solid #4d1515;border-radius:8px;padding:8px 12px;font-size:12px;color:#f85149">' + w + '</div>';
+      }).join('') + '</div>';
+  } else {
+    html += '<div style="background:#0d2d1a;border:1px solid #1a4730;border-radius:8px;padding:10px 14px;font-size:12px;color:#3fb950;margin-bottom:16px">✓ 감지된 이상 신호 없음</div>';
+  }
+
+  // Kill 스위치 권고
+  var ks = d.kill_switch || {};
+  var ksItems = [
+    { label:'신규 진입 금지',   val: ks.disable_new_entries },
+    { label:'자동 진입 금지',   val: ks.disable_automated_entries },
+    { label:'포지션 축소 권고', val: ks.reduce_position_size },
+    { label:'수동 확인 필수',   val: ks.require_manual_confirm },
+  ];
+  html += '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">🔐 Kill 스위치 상태</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
+    ksItems.map(function(item) {
+      var on = item.val === true;
+      var color = on ? '#f85149' : '#3fb950';
+      var bg    = on ? '#2d0d0d' : '#0d2d1a';
+      var border= on ? '#4d1515' : '#1a4730';
+      return '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;gap:6px">' +
+        '<span style="font-size:11px;color:#cdd9e5">' + item.label + '</span>' +
+        '<span style="font-size:11px;font-weight:700;color:' + color + '">' + (on ? '활성' : '비활성') + '</span></div>';
+    }).join('') + '</div>';
+
+  // 과거 위기 유사도 (상위 3개)
+  var matches = d.crisis_matches || [];
+  if (matches.length > 0) {
+    html += '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">📜 과거 위기 유사도 (상위 3개)</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px">' +
+      matches.slice(0,3).map(function(c) {
+        var sim = c.similarity || 0;
+        var sevColor = c.severity === 'EXTREME' ? C.red : c.severity === 'SEVERE' ? C.orange : c.severity === 'MODERATE' ? C.yellow : C.green;
+        return '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">' +
+          '<div style="display:flex;justify-content:space-between;margin-bottom:6px">' +
+          '<span style="font-size:12px;font-weight:600;color:#cdd9e5">' + c.name + '</span>' +
+          '<span style="font-size:11px;font-weight:700;color:' + sevColor + '">' + c.severity + '</span></div>' +
+          '<div class="crisis-bar"><div class="crisis-bar-fill" style="width:' + sim + '%;background:' + sevColor + '"></div></div>' +
+          '<div style="display:flex;justify-content:space-between;margin-top:4px">' +
+          '<span style="font-size:10px;color:#484f58">유사도 ' + sim.toFixed(1) + '%</span>' +
+          '<span style="font-size:10px;color:#f85149">최대 낙폭 ' + c.drawdown + '%</span></div></div>';
+      }).join('') + '</div>';
+  }
+
+  return html;
+}
+
 </script>
 
 </body>
