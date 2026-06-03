@@ -199,9 +199,9 @@ def ttl_cache(ttl: int):
 # 단일 종목 수집 비용 = yf history(1y) + tk.info 1회씩 (info 호출이 가장 느림).
 # 12 워커 병렬 수집이라도 수집 대상 수가 곧 타임아웃 위험이므로,
 # "수집 상한"과 "출력 개수"를 상수화하고 양 시장에 동일 적용한다.
-SCAN_COLLECT_CAP_FULL = 48   # FULL 수집 상한 — 대형+중형+중소형 풀 커버(다양성 확보)
+SCAN_COLLECT_CAP_FULL = 48   # FULL 수집 상한 — 대형+중형+중소형 풀 커버(다양성+15개 확보)
 SCAN_COLLECT_CAP_LITE = 24   # CORE_LITE 수집 상한
-SCAN_DISPLAY_CAP      = 24   # 최종 출력 종목 수 (양 시장 공통)
+SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 (양 시장 공통, 목표=정확히 15)
 
 # 병렬 수집 — 워커 수 / 월클럭 예산 (Vercel 60s 내 안전 마진)
 SCAN_COLLECT_WORKERS  = 16
@@ -306,42 +306,48 @@ def _scan_sector_key(cd: dict) -> str:
     return (cd.get("category") or cd.get("sector") or "").strip()
 
 
-def scan_diversified_select(cands: list, target: int) -> list:
-    """MMR 방식 다양성 선정 — 종합점수 우선 + 섹터·시총티어 분산.
+def scan_diversified_fill(
+    pool: list, need: int,
+    sector_count: Dict[str, int], tier_count: Dict[str, int],
+) -> list:
+    """pool에서 need개를 MMR 방식으로 분산 선정해 반환.
 
     매 단계 '유효점수(종합점수 − 섹터페널티 − 티어페널티)'가 가장 높은 후보를
     선택한다. 같은 섹터/티어가 누적될수록 페널티가 커져, 고득점 대형주가
     독점하지 않고 우수한 타 섹터·중소형주가 자연스럽게 진입한다.
 
-    하드 쿼터/랜덤이 아니라 점수 기반 분산이므로 전략 품질을 유지한다.
+    sector_count / tier_count는 호출자 소유 누적 카운터로 in-place 갱신되어,
+    여러 품질 등급(tier)을 순차 보강할 때도 분산이 이어진다.
     """
-    pool: list = list(cands)
-    selected: list = []
-    sector_count: Dict[str, int] = {}
-    tier_count:   Dict[str, int] = {}
-
-    while pool and len(selected) < target:
+    candidates: list = list(pool)
+    picked: list = []
+    while candidates and len(picked) < need:
         best, best_eff = None, None
-        for c in pool:
+        for c in candidates:
             sec  = _scan_sector_key(c)
-            tier = c.get("cap_tier") or "MID"
+            cap  = c.get("cap_tier") or "MID"
             sec_pen = (
                 SCAN_SECTOR_PENALTY * max(0, sector_count.get(sec, 0) - SCAN_SECTOR_SOFT_CAP)
                 if sec else 0.0
             )
-            tier_pen = SCAN_CAP_TIER_PENALTY * max(0, tier_count.get(tier, 0) - SCAN_CAP_TIER_SOFT)
-            eff = _scan_num(c.get("composite_score")) - sec_pen - tier_pen
+            cap_pen = SCAN_CAP_TIER_PENALTY * max(0, tier_count.get(cap, 0) - SCAN_CAP_TIER_SOFT)
+            eff = _scan_num(c.get("composite_score")) - sec_pen - cap_pen
             if best_eff is None or eff > best_eff:
                 best_eff, best = eff, c
-        selected.append(best)
-        pool.remove(best)
-        sec  = _scan_sector_key(best)
-        tier = best.get("cap_tier") or "MID"
+        picked.append(best)
+        candidates.remove(best)
+        sec = _scan_sector_key(best)
+        cap = best.get("cap_tier") or "MID"
         if sec:
             sector_count[sec] = sector_count.get(sec, 0) + 1
-        tier_count[tier] = tier_count.get(tier, 0) + 1
+        tier_count[cap] = tier_count.get(cap, 0) + 1
         best["div_effective_score"] = round(best_eff, 2)
-    return selected
+    return picked
+
+
+def scan_diversified_select(cands: list, target: int) -> list:
+    """단일 풀 분산 선정 (하위호환 래퍼) — 빈 누적 카운터로 fill 호출."""
+    return scan_diversified_fill(list(cands), target, {}, {})
 
 
 # 스캔 응답 캐시 — warm 인스턴스 재사용 시 yfinance 재호출/재계산 방지
@@ -7002,27 +7008,52 @@ def route(path: str, params: Dict) -> Dict:
                 d["market_cap"]     = mcap_map.get(c.ticker, 0.0)
                 cands.append(d)
 
-            # ── 출력 선정: 상태·순복합점수·퀀트모멘텀 종합 + 시총/섹터 분산 (한국/미국 동일) ──
-            #   게이트(상태): 기술필터 통과 + 진입 가능권(READY/WATCH/눌림목)만 노출
-            #   1차 랭킹: scan_composite_score() = 상태 35% + 순복합점수 40% + 퀀트모멘텀 25%
-            #   2차 분산: scan_diversified_select() — 동일 섹터·시총티어 누적 시 점수 페널티
-            #            → 고득점이라도 한 섹터/대형주가 독점하지 않고, 우수 중소형주가 진입
-            #   양 시장 모두 동일 상수(SCAN_*)·동일 스코어러·동일 분산 로직 사용.
-            def _scan_passes(cd: dict) -> bool:
-                if not cd.get("passes_tech_filters"):
-                    return False
-                return cd.get("status") in SCAN_GOOD_STATES
-
-            pool = [cd for cd in cands if _scan_passes(cd)]
-            # 종합 점수·퀀트모멘텀 점수 부여 (방어적)
-            for cd in pool:
+            # ── 출력 선정: 정확히 15개 보장 + 품질 우선 단계적 보강 (한국/미국 동일) ──
+            #   모든 후보에 종합점수 부여 후, '품질 등급(tier)'을 순서대로 채운다.
+            #     · 등급1(최우선): 기술필터 통과 + 진입 가능권(READY/WATCH/눌림목)
+            #     · 등급2(보강) : 기술필터 통과 + 그 외(주로 FAR — 추세 양호, 진입가만 먼 종목)
+            #     · 등급3(최후) : 기술필터 미통과 (종합점수 상위로만 최소 보강)
+            #   각 등급 내부는 종합점수 순 + 시총티어·섹터 분산(MMR)으로 선정하며,
+            #   15개에 도달할 때까지만 다음 등급으로 내려간다(품질 우선). 실적대기 제외.
+            for cd in cands:
                 cd["quant_momentum_score"] = scan_quant_momentum_score(cd)
                 cd["composite_score"]      = scan_composite_score(cd)
 
-            # 1차 정렬(종합점수 내림차순) — 동점 시 결정적 순서 보장
-            pool.sort(key=lambda cd: (-cd["composite_score"], -scan_ncs_score(cd)))
-            # 2차 다양성 선정(MMR) — 시총티어·섹터 균형
-            selected = scan_diversified_select(pool, SCAN_DISPLAY_CAP)
+            def _is_tier1(cd: dict) -> bool:
+                return bool(cd.get("passes_tech_filters")) and cd.get("status") in SCAN_GOOD_STATES
+
+            def _is_tier2(cd: dict) -> bool:
+                return (bool(cd.get("passes_tech_filters"))
+                        and not _is_tier1(cd)
+                        and cd.get("status") != "EARNINGS_BLOCK")
+
+            def _is_tier3(cd: dict) -> bool:
+                return (not bool(cd.get("passes_tech_filters"))
+                        and cd.get("status") != "EARNINGS_BLOCK")
+
+            def _by_score(lst):
+                return sorted(lst, key=lambda cd: (-cd["composite_score"], -scan_ncs_score(cd)))
+
+            tier1 = _by_score([cd for cd in cands if _is_tier1(cd)])
+            tier2 = _by_score([cd for cd in cands if _is_tier2(cd)])
+            tier3 = _by_score([cd for cd in cands if _is_tier3(cd)])
+
+            # 등급 순차 보강 — 분산 카운터를 공유해 등급을 넘어 다양성 유지
+            _sector_cnt: dict = {}
+            _cap_cnt:    dict = {}
+            selected: list = []
+            _tier_used = {1: 0, 2: 0, 3: 0}
+            for _lvl, _tpool in ((1, tier1), (2, tier2), (3, tier3)):
+                if len(selected) >= SCAN_DISPLAY_CAP:
+                    break
+                _need = SCAN_DISPLAY_CAP - len(selected)
+                _got  = scan_diversified_fill(_tpool, _need, _sector_cnt, _cap_cnt)
+                for _c in _got:
+                    _c["selection_tier"] = _lvl
+                _tier_used[_lvl] = len(_got)
+                selected += _got
+
+            _relaxed = (_tier_used[2] > 0 or _tier_used[3] > 0)
 
             # 분포 집계 (투명성·UI 표기용)
             _tier_dist = {"LARGE": 0, "MID": 0, "SMALL": 0}
@@ -7041,10 +7072,13 @@ def route(path: str, params: Dict) -> Dict:
                 "watch_count":     result.watch_count,
                 "far_count":       result.far_count,
                 "good_count":      len(selected),
+                "premium_count":   _tier_used[1],          # 진입 가능권(최우선) 충족 수
+                "relaxed":         _relaxed,               # 보강 로직 사용 여부
+                "tier_used":       _tier_used,             # 등급별 선정 수
                 "display_cap":     SCAN_DISPLAY_CAP,
                 "tier_distribution":   _tier_dist,
                 "sector_distribution": _sector_dist,
-                "filter_desc":     "상태·순복합점수·퀀트모멘텀 종합 + 시총티어·섹터 분산(MMR) 선정",
+                "filter_desc":     "진입 가능권 우선 + 품질 등급 단계 보강(정확히 15개) + 시총·섹터 분산(MMR)",
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
@@ -12614,6 +12648,11 @@ function renderScanResult(d, market) {
           '<span style="font-weight:700;color:#58a6ff">중 ' + (td.MID||0) + '</span>' +
           '<span style="font-weight:700;color:#3fb950">소 ' + (td.SMALL||0) + '</span>';
       })() +
+      (d.premium_count != null
+        ? '<span style="color:#484f58;font-size:11px;margin-left:16px">진입 가능권</span>' +
+          '<span style="font-weight:700;color:#3fb950">' + d.premium_count + '</span>' +
+          (d.relaxed ? '<span style="font-size:10px;color:#d29922;border:1px solid #d2992255;border-radius:3px;padding:0 5px;margin-left:6px">관찰 후보 보강</span>' : '')
+        : '') +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
@@ -12645,7 +12684,7 @@ function renderScanResult(d, market) {
            '<div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:2px"></div></div>';
   };
 
-  var rows = cands.slice(0, d.display_cap || 24).map(function(c, i) {
+  var rows = cands.slice(0, d.display_cap || 15).map(function(c, i) {
     var ncsColor = c.ncs >= 70 ? '#3fb950' : c.ncs >= 50 ? '#58a6ff' : c.ncs >= 35 ? '#d29922' : '#f85149';
     var fwsColor = c.fws <= 30 ? '#3fb950' : c.fws <= 50 ? '#d29922' : c.fws <= 65 ? '#f97316' : '#f85149';
     var bqsColor = c.bqs >= 65 ? '#3fb950' : c.bqs >= 45 ? '#58a6ff' : '#8b949e';
