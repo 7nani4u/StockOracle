@@ -10382,7 +10382,7 @@ function renderForecast(d, isKrx) {
             ${tp.expected_trading_days ? `
             <div style="text-align:center;background:#0d1117;border-radius:8px;padding:6px 12px">
               <div style="font-size:10px;color:#8b949e;margin-bottom:1px">예상 소요 기간</div>
-              <div style="font-size:13px;font-weight:700;color:#58a6ff">${tp.expected_trading_days[0]}~${tp.expected_trading_days[1]}거래일</div>
+              <div style="font-size:13px;font-weight:700;color:#58a6ff">거래일 기준 ${tp.expected_trading_days[0]}~${tp.expected_trading_days[1]}일</div>
             </div>` : ''}
           </div>
         </div>
@@ -10445,32 +10445,8 @@ function renderForecast(d, isKrx) {
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
 
-      // ── "🔗 연계 밴드"(피보나치 되돌림 연동) 표시는 폐지됨 ──────────────────────
-      //   ATR 밴드 가격과 피보나치 레벨 가격이 독립 계산되어 서로 일치하지 않아,
-      //   라벨(Band A~D)·가격·밴드 범위를 동시에 정합시키기 어려움 → 출력 제거.
-
-      // ── 밴드 가격대 ↔ 핵심 구간/분할 매수 단계 자동 매칭 ───────────────────────
-      //   폐지된 "📍 핵심 가격 구간"·"📊 분할 매수 전략"의 설명을, 각 밴드의 가격대(range)가
-      //   포함되는 구간/단계에 한해 해당 밴드 카드 안에 출력한다. (구체 가격 숫자는 미표시)
-      const _paZS = d.pullback_analysis || null;
-      const _zoneDefs = (_paZS && _paZS.zones) ? [
-        { label: '저항대 (목표)', color: '#f85149', lo: _paZS.zones.resistance && _paZS.zones.resistance.low, hi: _paZS.zones.resistance && _paZS.zones.resistance.high },
-      ].filter(z => z.lo != null && z.hi != null) : [];
-      // 분할 매수 단계(1~4차) 설명은 매수 구간 카드에서 모두 미표시.
-      // 두 가격 범위가 겹치는지(= 밴드 가격대가 해당 구간에 포함되는지)
-      const _overlap = (alo, ahi, blo, bhi) =>
-        Math.min(alo, ahi) <= Math.max(blo, bhi) && Math.min(blo, bhi) <= Math.max(alo, ahi);
-      // 밴드 → 매칭된 핵심 구간(저항대) 설명 HTML
-      const zoneStageHtml = (b) => {
-        if (!b || !b.range || b.range[0] == null) return '';
-        const lo = b.range[0], hi = b.range[1];
-        const zoneRows = _zoneDefs
-          .filter(z => _overlap(lo, hi, z.lo, z.hi))
-          .map(z => `<div style="font-size:11px;font-weight:700;color:${z.color}">${z.label}</div>`)
-          .join('');
-        if (!zoneRows) return '';
-        return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">${zoneRows}</div>`;
-      };
+      // ── "🔗 연계 밴드"(피보나치 연동) · 핵심 구간(저항대/방어) · 분할 매수 단계(1~4차)
+      //    설명은 모두 매수 구간 카드에서 폐지됨 → 카드에는 밴드 가격대/근거만 표시한다.
 
       const renderBandCard = (b, i, isRec) => {
         const bc = bandColor[i] || '#58a6ff';
@@ -10487,7 +10463,6 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
             <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
-            ${zoneStageHtml(b)}
           </div>`;
         } else {
           return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
@@ -10498,7 +10473,6 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
-            ${zoneStageHtml(b)}
           </div>`;
         }
       };
