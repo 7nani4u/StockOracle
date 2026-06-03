@@ -6389,6 +6389,38 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as _e:
             pass   # hybrid 실패 시 기존 점수 유지
 
+        # ── Step 6: 신호 신뢰도 종합 엔진 (거시·섹터·실적·불일치·뉴스감정·신뢰구간) ──
+        #   confidence_engine에서 4개 소스 점수를 받아 단일 confidence + 신뢰구간 산출.
+        #   외부 호출(yfinance/HF) 실패 시 부분 결과로 degrade — 전체 분석 비중단(additive).
+        signal_confidence = None
+        try:
+            from market_briefing.confidence_engine import build_signal_confidence
+            # 4개 소스 점수 (0~100) 매핑
+            _tech_sc = float(score)
+            _ai_sc = None
+            if hybrid_score and "ncs" in hybrid_score and "error" not in hybrid_score:
+                _ai_sc = float(hybrid_score["ncs"])           # NCS → AI 점수 대용
+            _mkt_sc = {"BULL": 70.0, "NEUTRAL": 50.0, "BEAR": 30.0}.get(regime, 50.0)
+            # 종목 5일 변화율 (섹터 상대 비교용)
+            _cl5 = [float(c) for c in (dd.get("Close") or []) if c is not None]
+            _pct5 = ((_cl5[-1] - _cl5[-6]) / _cl5[-6] * 100.0) if len(_cl5) >= 6 and _cl5[-6] else None
+            # 뉴스 → 감정 분석 입력 (title + published 날짜)
+            _news_in = [{"title": n.get("title"), "source": n.get("publisher"),
+                         "published": n.get("published")} for n in (news or []) if n.get("title")]
+            signal_confidence = build_signal_confidence(
+                technical_score = _tech_sc,
+                ai_score        = _ai_sc,
+                market_score    = _mkt_sc,
+                symbol          = sym,
+                market          = market,
+                stock_pct5d     = _pct5,
+                news_items      = _news_in or None,
+                # 거시/섹터/실적은 미국 종목에서 의미가 크나, KRX도 거시·실적은 적용.
+                include_sector  = (market == "US"),   # 섹터 ETF는 US 한정
+            )
+        except Exception:
+            signal_confidence = None   # 엔진 실패 시 기존 응답 유지
+
         return {
             "symbol": sym, "company": company or sym, "market": market,
             "last_close": round(last, 2), "prev_close": round(prev, 2),
@@ -6424,6 +6456,7 @@ def route(path: str, params: Dict) -> Dict:
             "news": news or [], "naver": naver, "us_enriched": us_enriched,
             "investor_flow": investor_flow,
             "hybrid_score": hybrid_score,  # HybridTurtle NCS/BQS/FWS
+            "signal_confidence": signal_confidence,  # 신뢰도 종합(거시·섹터·실적·불일치·뉴스감정·신뢰구간)
         }
 
     if path == "/api/screener":
@@ -8237,6 +8270,7 @@ input::placeholder{color:#484f58}
           <div class="toss-ai-time" id="r-toss-time"></div>
         </div>
       </div>
+      <div id="signal-confidence-card" style="display:none" class="card"></div>
       <div id="r-naver-fund" style="display:none" class="card">
         <div class="card-title">🏢 기업 펀더멘털 (네이버 금융)</div>
         <div class="fund-grid">
@@ -8909,6 +8943,7 @@ async function analyze() {
       _tickerInputEl.value = d.company;
     }
     renderResult(d);
+    renderSignalConfidence(d);
     setState('result');
     // 미국 주식: 5초마다 현재가 자동 갱신
     if (d.market === 'US' && d.symbol) {
@@ -8977,6 +9012,88 @@ function fmtSymbol(sym, isKrx) {
 }
 // 하위호환 — 기존 fmt() 호출부는 모두 fmtPrice로 위임
 function fmt(v, isKrx) { return fmtPrice(v, isKrx); }
+
+// ── 🧭 신호 신뢰도 종합 카드 (confidence_engine 결과) ──────────────────────
+function renderSignalConfidence(d) {
+  const el = document.getElementById('signal-confidence-card');
+  if (!el) return;
+  const sc = d && d.signal_confidence;
+  if (!sc || sc.confidence == null) { el.style.display = 'none'; return; }
+  el.style.display = '';
+
+  const conf = sc.confidence;
+  const ci   = sc.confidence_interval || {};
+  const confColor = conf >= 70 ? '#3fb950' : conf >= 55 ? '#58a6ff' : conf >= 45 ? '#d29922' : '#f85149';
+
+  // 거시 체제 배지
+  const regimeKoMap = { 'Risk-On':'위험선호', 'Risk-Off':'위험회피', 'Neutral':'중립', 'Transition':'전환' };
+  const reg = (sc.macro_regime && sc.macro_regime.regime) || 'Neutral';
+  const regColor = reg === 'Risk-On' ? '#3fb950' : reg === 'Risk-Off' ? '#f85149' : reg === 'Transition' ? '#d29922' : '#8b949e';
+  const regChip = '<span style="font-size:11px;font-weight:700;color:' + regColor +
+    ';border:1px solid ' + regColor + '55;border-radius:4px;padding:2px 8px">거시 ' + (regimeKoMap[reg]||reg) + '</span>';
+
+  // 섹터 상대
+  let sectorChip = '';
+  const sr = sc.sector_relative;
+  if (sr && sr.sector && sr.sector.pct5d != null) {
+    const aligned = sr.aligned;
+    const sColor = aligned === true ? '#3fb950' : aligned === false ? '#f85149' : '#8b949e';
+    sectorChip = '<span style="font-size:11px;color:' + sColor +
+      ';border:1px solid ' + sColor + '55;border-radius:4px;padding:2px 8px">섹터 ' +
+      (sr.sector.name||sr.sector.etf) + ' ' + (sr.sector.pct5d>=0?'+':'') + sr.sector.pct5d + '%' +
+      (aligned === true ? ' ▲정렬' : aligned === false ? ' ⚠불일치' : '') + '</span>';
+  }
+
+  // 실적 임박 경고
+  let earnChip = '';
+  if (sc.earnings_risk && sc.days_to_earnings != null) {
+    earnChip = '<span style="font-size:11px;font-weight:700;color:#f97316;border:1px solid #f9731655;border-radius:4px;padding:2px 8px">⚠️ 실적 D-' + sc.days_to_earnings + '</span>';
+  }
+
+  // 뉴스 감정 (FinBERT/키워드)
+  let sentChip = '';
+  const se = sc.sentiment;
+  if (se && se.sentiment_score != null) {
+    const sentColor = se.overall === 'positive' ? '#3fb950' : se.overall === 'negative' ? '#f85149' : '#8b949e';
+    const srcLbl = se.sentiment_source === 'finbert' ? 'FinBERT' : se.sentiment_source === 'keyword' ? '키워드' : '없음';
+    sentChip = '<span style="font-size:11px;color:' + sentColor +
+      ';border:1px solid ' + sentColor + '55;border-radius:4px;padding:2px 8px">뉴스감정 ' +
+      se.sentiment_score + ' (' + srcLbl + ')</span>';
+  }
+
+  // 신뢰 구간 막대 (lower ~ upper)
+  const lo = ci.lower != null ? ci.lower : conf;
+  const hi = ci.upper != null ? ci.upper : conf;
+  const spread = ci.spread != null ? ci.spread : 0;
+  const spreadWarn = spread >= 20;   // 의미 있는 분산이면 강조
+
+  // 캡/불일치 사유
+  const reasons = [];
+  (sc.cap_reasons || []).forEach(r => reasons.push(r));
+  if (ci.reason) ci.reason.forEach(r => { if (!reasons.includes(r)) reasons.push(r); });
+  const reasonHtml = reasons.length
+    ? '<div style="margin-top:8px;font-size:11px;color:#8b949e">' +
+      reasons.map(r => '<div style="display:flex;gap:5px"><span style="color:#f97316">•</span><span>' + r + '</span></div>').join('') + '</div>'
+    : '';
+
+  el.innerHTML =
+    '<div class="card-title">🧭 신호 신뢰도 종합' +
+      (spreadWarn ? ' <span style="font-size:10px;color:#d29922">· 불확실성 높음(±' + Math.round(spread/2) + ')</span>' : '') +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">' +
+      '<div style="flex-shrink:0">' +
+        '<div style="font-size:30px;font-weight:800;color:' + confColor + ';line-height:1">' + conf + '<span style="font-size:14px;color:#8b949e">%</span></div>' +
+        '<div style="font-size:11px;color:#8b949e;margin-top:2px">신뢰 구간 ' + lo + '~' + hi + ' (폭 ' + spread + ')</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:160px">' +
+        '<div style="position:relative;height:8px;background:#21262d;border-radius:4px;overflow:hidden">' +
+          '<div style="position:absolute;left:' + lo + '%;width:' + Math.max(2,(hi-lo)) + '%;height:100%;background:' + confColor + '55"></div>' +
+          '<div style="position:absolute;left:' + Math.min(99,conf) + '%;width:2px;height:100%;background:' + confColor + '"></div>' +
+        '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">' + regChip + sectorChip + earnChip + sentChip + '</div>' +
+      '</div>' +
+    '</div>' + reasonHtml;
+}
 
 function renderResult(d) {
   const isKrx = d.market === 'KRX';

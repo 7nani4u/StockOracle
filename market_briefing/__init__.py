@@ -69,6 +69,16 @@ try:
 except Exception:
     _DASHBOARD_AVAILABLE = False
 
+try:
+    from .confidence_engine import (
+        build_signal_confidence, get_macro_regime, get_sector_relative,
+        get_earnings_proximity, earnings_cap, disagreement_penalty,
+        confidence_interval, analyze_news_sentiment,
+    )
+    _CONFIDENCE_ENGINE_AVAILABLE = True
+except Exception:
+    _CONFIDENCE_ENGINE_AVAILABLE = False
+
 __all__ = [
     # 기존
     "build_core_summary",
@@ -98,7 +108,11 @@ __all__ = [
     "CrossReferenceEngine", "CrossReferenceResult",
     # dashboard_payload
     "DashboardPayloadBuilder",
+    # confidence_engine
+    "build_signal_confidence", "get_macro_regime", "get_sector_relative",
+    "get_earnings_proximity", "earnings_cap", "disagreement_penalty",
+    "confidence_interval", "analyze_news_sentiment",
     # 가용성 플래그
     "_PORTFOLIO_AVAILABLE", "_IMMUNE_AVAILABLE",
-    "_CROSS_REF_AVAILABLE", "_DASHBOARD_AVAILABLE",
+    "_CROSS_REF_AVAILABLE", "_DASHBOARD_AVAILABLE", "_CONFIDENCE_ENGINE_AVAILABLE",
 ]
