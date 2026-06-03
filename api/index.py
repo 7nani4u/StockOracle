@@ -10376,6 +10376,9 @@ function toggleDimAccordion(id) {
 }
 
 // ── 리스크 관리 카드 하단: 눌림목 기반 ATR 정밀 가격 설정 ────────────────────
+// [DEPRECATED] "📌 눌림목 분석 기반 정밀 가격 설정" 섹션 렌더러.
+//   정밀 가격(손절선·1·2차 목표·트레일링 스탑)은 renderForecast의 리스크 시나리오
+//   카드(보수적/중립적/공격적)에 통합되어 더 이상 호출되지 않는다. (참고용 보존)
 function renderPullbackATR(d, isKrx) {
   const el = document.getElementById('pullback-atr-section');
   if (!el) return;
@@ -10610,11 +10613,40 @@ function renderForecast(d, isKrx) {
   if (rgEl && risk) {
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
+    // 📌 눌림목 분석 기반 정밀 가격 — 시나리오 카드에 통합 (별도 섹션 폐지)
+    const pa = d.pullback_analysis || null;
     rgEl.innerHTML = `
       ${riskEntries.map(sc => {
         const failHtml = (sc.failure_conditions || [])
           .map(f => `<div style="display:flex;align-items:flex-start;gap:5px;margin-bottom:2px"><span style="color:#f97316;flex-shrink:0">•</span><span>${f}</span></div>`)
           .join('');
+        // ── 눌림목 정밀 가격 블록 (카드 성격별 배치, 값 없으면 미표시) ──
+        const pbHtml = (() => {
+          if (!pa) return '';
+          const box = (border, inner) => `<div style="margin-top:8px;padding:8px 10px;background:#0d1117;border:1px solid ${border};border-radius:6px">${inner}</div>`;
+          const lbl = t => `<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">📌 ${t}</div>`;
+          if (sc.label === '보수적' && pa.stop_loss != null) {
+            return box('#f8514955', lbl('눌림목 정밀 손절선') +
+              `<span style="font-size:14px;font-weight:800;color:#f85149">${fmt(pa.stop_loss, isKrx)}</span>` +
+              (pa.stop_loss_pct != null ? `<span style="font-size:10px;color:#d29922;margin-left:6px">${pa.stop_loss_pct}% · 이탈 시 정리</span>` : ''));
+          }
+          if (sc.label === '중립적' && pa.target_main != null) {
+            return box('#3fb95055', lbl('눌림목 1차 정밀 목표가') +
+              `<span style="font-size:14px;font-weight:800;color:#3fb950">${fmt(pa.target_main, isKrx)}</span>` +
+              (pa.rr_main != null ? `<span style="font-size:10px;color:#d29922;margin-left:6px">R/R ${pa.rr_main}:1</span>` : '') +
+              (pa.target_source ? `<div style="font-size:9px;color:#58a6ff;margin-top:2px">${pa.target_source}</div>` : ''));
+          }
+          if (sc.label === '공격적') {
+            let inner = '';
+            if (pa.target_ext != null) inner += lbl('눌림목 2차 목표 (돌파 후)') +
+              `<span style="font-size:14px;font-weight:800;color:#58a6ff">${fmt(pa.target_ext, isKrx)}</span>`;
+            if (pa.trail_stop != null) inner += `<div style="margin-top:6px">` + lbl('트레일링 스탑') +
+              `<span style="font-size:13px;font-weight:800;color:#bc8cff">${fmt(pa.trail_stop, isKrx)}</span>` +
+              `<span style="font-size:9px;color:#8b949e;margin-left:6px">ATR×1.5 · 수익 보전</span></div>`;
+            return inner ? box('#30363d', inner) : '';
+          }
+          return '';
+        })();
         return `
         <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
           <div class="risk-icon">${sc.icon}</div>
@@ -10642,6 +10674,7 @@ function renderForecast(d, isKrx) {
               <div style="font-size:12px;color:#3fb950;font-weight:700">+${sc.return}%</div>
             </div>
           </div>
+          ${pbHtml}
           <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
           ${sc.tp_levels && sc.tp_levels.length ? `
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
@@ -10665,7 +10698,11 @@ function renderForecast(d, isKrx) {
         </div>`;
       }).join('')}`;
   }
-  renderPullbackATR(d, isKrx);
+  // 📌 "눌림목 분석 기반 정밀 가격 설정" 섹션은 위 시나리오 카드(보수적/중립적/공격적)에
+  //    정밀 가격으로 통합됨 → 별도 섹션 비표시 (잔존 콘텐츠 방지 위해 컨테이너 클리어).
+  const _pbSec = document.getElementById('pullback-atr-section');
+  if (_pbSec) _pbSec.innerHTML = '';
+  // renderPullbackATR(d, isKrx);  // (통합으로 사용 중단 — 함수는 보존하되 호출 안 함)
 }
 
 function renderTechnicalSignals(d) {
