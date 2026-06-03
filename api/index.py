@@ -10622,7 +10622,57 @@ function renderForecast(d, isKrx) {
         const failHtml = (sc.failure_conditions || [])
           .map(f => `<div style="display:flex;align-items:flex-start;gap:5px;margin-bottom:2px"><span style="color:#f97316;flex-shrink:0">•</span><span>${f}</span></div>`)
           .join('');
-        const pbHtml = '';
+        // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
+        const pbHtml = (() => {
+          const pa = d.pullback_analysis || null;
+          if (!pa) return '';
+          const TOL = 0.0025;
+          const tpPrices = (sc.tp_levels || []).map(t => t && t.price).filter(v => v != null);
+          const tpRel = price => {
+            if (price == null || !tpPrices.length) return { type: 'none' };
+            for (let i = 0; i < tpPrices.length; i++) {
+              if (tpPrices[i] && Math.abs(price - tpPrices[i]) / tpPrices[i] <= TOL) return { type: 'eq', n: i + 1 };
+            }
+            const lo = Math.min(...tpPrices), hi = Math.max(...tpPrices);
+            if (price > lo && price < hi) {
+              const s = tpPrices.map((p, i) => ({ p, n: i + 1 })).sort((a, b) => a.p - b.p);
+              for (let i = 0; i < s.length - 1; i++) {
+                if (price >= s[i].p && price <= s[i + 1].p) return { type: 'between', a: s[i].n, b: s[i + 1].n };
+              }
+            }
+            return { type: 'out' };
+          };
+          const targetItem = (price, baseLabel, color, sub) => {
+            const r = tpRel(price);
+            if (r.type === 'eq')      return { label: baseLabel, rel: `TP${r.n} 연계` };
+            if (r.type === 'between') return { label: baseLabel, rel: `TP${r.a}~TP${r.b} 구간` };
+            return { label: baseLabel, value: price, color, sub };
+          };
+          let items = [];
+          if (sc.label === '중립적' && pa.target_main != null) {
+            const sub = [pa.rr_main != null ? `R/R ${pa.rr_main}:1` : '', pa.target_source || ''].filter(Boolean).join(' · ');
+            items.push(targetItem(pa.target_main, '1차 정밀 목표가', '#3fb950', sub));
+          } else if (sc.label === '공격적' && pa.target_ext != null) {
+            items.push(targetItem(pa.target_ext, '2차 목표 (돌파 후)', '#58a6ff', '1차 돌파 확인 후 홀딩 기준'));
+          }
+          if (!items.length) return '';
+          const rows = items.map(it => {
+            if (it.rel) {
+              return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:5px">
+                <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
+                <span style="font-size:11px;font-weight:700;color:#58a6ff;background:#58a6ff1a;border-radius:4px;padding:1px 7px">${it.rel}</span>
+              </div>`;
+            }
+            return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+                <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
+                <span style="font-size:13px;font-weight:700;color:${it.color}">${fmt(it.value, isKrx)}</span>
+              </div>${it.sub ? `<div style="font-size:10px;color:#8b949e;margin-top:1px;margin-bottom:5px">${it.sub}</div>` : '<div style="margin-bottom:4px"></div>'}`;
+          }).join('');
+          return `<div style="margin-top:8px;padding-top:8px;${DIVIDER}">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📌 눌림목 정밀가</div>
+            ${rows}
+          </div>`;
+        })();
         return `
         <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
           <div class="risk-icon">${sc.icon}</div>
