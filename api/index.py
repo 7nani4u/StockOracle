@@ -10480,15 +10480,25 @@ function renderForecast(d, isKrx) {
         }
       })();
 
+      // 밴드 레벨별 의미 — 투자자가 매수 위치를 즉시 이해하도록 설명 강화
+      const fibMeaning = {
+        '0.236': '얕은 되돌림 · 강한 추세 유지 구간',
+        '0.382': '1차 지지 되돌림 · 눌림목 매수 후보',
+        '0.5':   '중간 되돌림 · 지지/저항 분기점',
+        '0.618': '깊은 되돌림 · 핵심 지지(되돌림 한계)',
+      };
       // 매수 구간 카드에 삽입할 "연계 밴드" 블록 생성
       const fibLinkHtml = (b) => {
         const m = fibMatch.get(b);
         if (!m) return '';
+        // 현재가 대비 할인율(매수가가 현재가보다 낮음)/괴리율(높음) 표기
         const discTxt = (m.disc == null) ? ''
           : ` · 현재가 대비 ${m.disc > 0 ? '+' : ''}${m.disc}%${m.disc < 0 ? ' (할인)' : m.disc > 0 ? ' (괴리)' : ''}`;
+        const meaning = fibMeaning[m.lvl] || '';
         return `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed #30363d">
           <div style="font-size:10px;color:#8b949e;margin-bottom:2px">🔗 연계 밴드</div>
           <div style="font-size:11px;font-weight:700;color:#bc8cff">Band ${m.band} (${m.lvl})</div>
+          ${meaning ? `<div style="font-size:10px;color:#8b949e;margin-top:1px">${meaning}</div>` : ''}
           <div style="font-size:10px;color:#cdd9e5;margin-top:2px">피보나치 기준 분할 매수 가격 <b style="color:#cdd9e5">${fmt(m.price, isKrx)}</b>${discTxt}</div>
         </div>`;
       };
