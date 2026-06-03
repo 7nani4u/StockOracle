@@ -8901,6 +8901,13 @@ async function analyze() {
       currentMarket = d.market;
       document.getElementById('ticker-input').placeholder = d.market === 'KRX' ? '예: 삼성전자, 005930' : '예: 애플, TSLA, NVDA';
     }
+    // 입력창("종목명/코드")에 해석된 종목명 반영 — 스캔 클릭/코드 검색 시에도
+    // 티커(041510.KQ)가 아닌 한글/영문 종목명(에스엠, Apple)이 표시되도록 통일.
+    // 조회는 이미 티커로 끝났으므로, 표시값만 종목명으로 교체한다.
+    const _tickerInputEl = document.getElementById('ticker-input');
+    if (_tickerInputEl && d.company && d.company !== d.symbol) {
+      _tickerInputEl.value = d.company;
+    }
     renderResult(d);
     setState('result');
     // 미국 주식: 5초마다 현재가 자동 갱신
