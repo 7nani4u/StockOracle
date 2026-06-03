@@ -10454,26 +10454,13 @@ function renderForecast(d, isKrx) {
       //   포함되는 구간/단계에 한해 해당 밴드 카드 안에 출력한다. (구체 가격 숫자는 미표시)
       const _paZS = d.pullback_analysis || null;
       const _zoneDefs = (_paZS && _paZS.zones) ? [
-        { label: '저항대 (목표)',         color: '#f85149', lo: _paZS.zones.resistance && _paZS.zones.resistance.low, hi: _paZS.zones.resistance && _paZS.zones.resistance.high },
-        { label: '방어 구간 (추세선+MA)', color: '#58a6ff', lo: _paZS.zones.defense && _paZS.zones.defense.low,       hi: _paZS.zones.defense && _paZS.zones.defense.high },
+        { label: '저항대 (목표)', color: '#f85149', lo: _paZS.zones.resistance && _paZS.zones.resistance.low, hi: _paZS.zones.resistance && _paZS.zones.resistance.high },
       ].filter(z => z.lo != null && z.hi != null) : [];
-      // 단계 설명 — 가격 숫자 없는 정적 문구(백엔드 4차 desc의 저항선 가격 제거 목적)
-      const _stageDescMap = {
-        '1차': '일치가격대 상단 최초 도달 — 반응 확인 소액 진입',
-        '2차': '지지대 재테스트 구간 — 거래량 감소 + 지지 확인',
-        '3차': '반등 후 지지 유지 확인 — 단기 고점 돌파 시',
-        '4차': '저항선 돌파 시 — 거래량 동반 확인 필수',
-      };
-      const _stageDefs = (_paZS && _paZS.entry_zones) ? _paZS.entry_zones.map(z => ({
-        stage: z.stage,
-        desc:  _stageDescMap[(z.stage || '').slice(0, 2)] || z.desc,
-        color: z.color,
-        lo: z.range && z.range[0], hi: z.range && z.range[1],
-      })).filter(z => z.lo != null && z.hi != null) : [];
-      // 두 가격 범위가 겹치는지(= 밴드 가격대가 해당 구간/단계에 포함되는지)
+      // 분할 매수 단계(1~4차) 설명은 매수 구간 카드에서 모두 미표시.
+      // 두 가격 범위가 겹치는지(= 밴드 가격대가 해당 구간에 포함되는지)
       const _overlap = (alo, ahi, blo, bhi) =>
         Math.min(alo, ahi) <= Math.max(blo, bhi) && Math.min(blo, bhi) <= Math.max(alo, ahi);
-      // 밴드 → 매칭된 핵심 구간 + 분할 매수 단계 설명 HTML
+      // 밴드 → 매칭된 핵심 구간(저항대) 설명 HTML
       const zoneStageHtml = (b) => {
         if (!b || !b.range || b.range[0] == null) return '';
         const lo = b.range[0], hi = b.range[1];
@@ -10481,15 +10468,8 @@ function renderForecast(d, isKrx) {
           .filter(z => _overlap(lo, hi, z.lo, z.hi))
           .map(z => `<div style="font-size:11px;font-weight:700;color:${z.color}">${z.label}</div>`)
           .join('');
-        const stageRows = _stageDefs
-          .filter(z => _overlap(lo, hi, z.lo, z.hi))
-          .map(z => `<div style="margin-top:4px">
-              <div style="font-size:11px;font-weight:700;color:${z.color || '#cdd9e5'}">${z.stage}</div>
-              <div style="font-size:10px;color:#8b949e;line-height:1.5">${z.desc}</div>
-            </div>`)
-          .join('');
-        if (!zoneRows && !stageRows) return '';
-        return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">${zoneRows}${stageRows}</div>`;
+        if (!zoneRows) return '';
+        return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">${zoneRows}</div>`;
       };
 
       const renderBandCard = (b, i, isRec) => {
