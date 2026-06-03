@@ -10617,6 +10617,22 @@ function renderForecast(d, isKrx) {
     // 고대비 구분선 — 카드 배경(녹/적 틴트·다크·라이트)에 무관하게 항상 보이도록
     //   진한 검정 선 + 안쪽 미세 하이라이트(engraved)로 대비 확보. 4개 영역 공통 사용.
     const DIVIDER = 'border-top:2px solid rgba(0,0,0,0.85);box-shadow:inset 0 2px 0 rgba(255,255,255,0.06)';
+    // 📌 공통 손절선 — 카드별 반복 출력 폐지, 3개 시나리오 카드 하단에 1회만 출력.
+    //    카드 영역 전체 폭으로 표시 (grid-column:1/-1). 정밀 손절선(pullback) 우선, 없으면 중립 시나리오 stop.
+    const _stopPa  = d.pullback_analysis || null;
+    const _stopBal = risk.balanced || risk.conservative || riskEntries[0] || null;
+    let _stopVal = null, _stopPct = null;
+    if (_stopPa && _stopPa.stop_loss != null) {
+      _stopVal = _stopPa.stop_loss; _stopPct = _stopPa.stop_loss_pct;
+    } else if (_stopBal && _stopBal.stop) {
+      _stopVal = _stopBal.stop[0]; _stopPct = _stopBal.stop_pct;
+    }
+    const commonStopHtml = (_stopVal == null) ? '' : `
+      <div style="grid-column:1 / -1;background:#0d1117;border-radius:8px;padding:11px 14px;border:1px solid #f85149">
+        <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">손절선</div>
+        <div style="font-size:17px;font-weight:800;color:#f85149">${fmt(_stopVal, isKrx)}</div>
+        <div style="font-size:11px;color:#d29922;margin-top:4px">${_stopPct != null ? _stopPct + '% 손실 — ' : ''}이탈 시 미련 없이 정리</div>
+      </div>`;
     rgEl.innerHTML = `
       ${riskEntries.map(sc => {
         const failHtml = (sc.failure_conditions || [])
@@ -10682,10 +10698,6 @@ function renderForecast(d, isKrx) {
             <span class="risk-lbl">🎯 목표가</span>
             <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
           </div>
-          <div class="risk-row" style="margin-bottom:6px">
-            <span class="risk-lbl">🛑 손절가</span>
-            <span class="risk-stp" style="font-size:12px">${fmt(sc.stop[0], isKrx)} ~ ${fmt(sc.stop[1], isKrx)}</span>
-          </div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;${DIVIDER}">
             <div>
               <div style="font-size:10px;color:#8b949e">손절 %</div>
@@ -10722,7 +10734,8 @@ function renderForecast(d, isKrx) {
             <div style="font-size:11px;color:#8b949e;line-height:1.5">${failHtml}</div>
           </div>` : ''}
         </div>`;
-      }).join('')}`;
+      }).join('')}
+      ${commonStopHtml}`;
   }
   // 📌 "눌림목 분석 기반 정밀 가격 설정" 섹션은 위 시나리오 카드(보수적/중립적/공격적)에
   //    정밀 가격으로 통합됨 → 별도 섹션 비표시 (잔존 콘텐츠 방지 위해 컨테이너 클리어).
