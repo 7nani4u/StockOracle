@@ -9163,8 +9163,8 @@ function renderResult(d) {
     atrPctEl.style.display = 'none';
   }
 
-  // 📐 피보나치 되돌림 기준 카드는 폐지됨 — 분할 매수 기준 가격은 "🎯 현재가 기준 매수 전략"의
-  //    각 매수 구간(1차/2차)에 연계 밴드(Band A~D)로 자동 통합되어 표시된다. (renderForecast 참조)
+  // 📐 피보나치 되돌림 기준 카드 및 "🔗 연계 밴드" 연동 표시는 모두 폐지됨.
+  //    (ATR 밴드 가격과 피보나치 레벨 가격이 독립 계산되어 정합이 어려움 — renderForecast 참조)
 
   // 펀더멘털
   if (isKrx && d.naver) {
@@ -10445,72 +10445,17 @@ function renderForecast(d, isKrx) {
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
 
-      // ── 📐 피보나치 되돌림 ↔ 매수 구간 자동 매칭 ───────────────────────────
-      //   별도 "피보나치 되돌림 기준" 카드를 폐지하고, 각 매수 구간(1차/2차)에
-      //   가장 근접한 피보나치 레벨을 "연계 밴드(Band A~D)"로 통합 표시한다.
-      //   · Band A=0.236 · Band B=0.382 · Band C=0.5 · Band D=0.618
-      //   · 우선순위: 1차(ATR) 구간부터 매칭 → 동일 밴드 중복 배정 방지
-      const fibMatch = new Map();   // 매수 밴드 객체 → {band, lvl, price, disc}
-      (() => {
-        const _fb = bp.fib || {};
-        const levels = [
-          { band: 'A', lvl: '0.236', price: _fb.f236 },
-          { band: 'B', lvl: '0.382', price: _fb.f382 },
-          { band: 'C', lvl: '0.5',   price: _fb.f500 },
-          { band: 'D', lvl: '0.618', price: _fb.f618 },
-        ].filter(f => f.price != null);
-        if (!levels.length) return;
-        const used = new Set();
-        // 1차(ATR) → 2차 순서로 매칭: 현재가에 가까운 얕은 되돌림(Band A)부터 우선 배정
-        const ordered = [...(bp.aggressive_bands || []), ...(bp.recommended_bands || [])];
-        for (const b of ordered) {
-          if (!b || !b.range) continue;
-          const mid = (b.range[0] + b.range[1]) / 2;
-          let best = null, bestD = Infinity;
-          for (const f of levels) {
-            if (used.has(f.band)) continue;
-            const dist = Math.abs(f.price - mid);
-            if (dist < bestD) { bestD = dist; best = f; }
-          }
-          if (best) {
-            used.add(best.band);
-            const disc = cur ? Math.round((best.price - cur) / cur * 1000) / 10 : null;
-            fibMatch.set(b, { band: best.band, lvl: best.lvl, price: best.price, disc });
-          }
-        }
-      })();
-
-      // 밴드 레벨별 의미 — 투자자가 매수 위치를 즉시 이해하도록 설명 강화
-      const fibMeaning = {
-        '0.236': '얕은 되돌림 · 강한 추세 유지 구간',
-        '0.382': '1차 지지 되돌림 · 눌림목 매수 후보',
-        '0.5':   '중간 되돌림 · 지지/저항 분기점',
-        '0.618': '깊은 되돌림 · 핵심 지지(되돌림 한계)',
-      };
-      // 매수 구간 카드에 삽입할 "연계 밴드" 블록 생성
-      const fibLinkHtml = (b) => {
-        const m = fibMatch.get(b);
-        if (!m) return '';
-        // 현재가 대비 할인율(매수가가 현재가보다 낮음)/괴리율(높음) 표기
-        const discTxt = (m.disc == null) ? ''
-          : ` · 현재가 대비 ${m.disc > 0 ? '+' : ''}${m.disc}%${m.disc < 0 ? ' (할인)' : m.disc > 0 ? ' (괴리)' : ''}`;
-        const meaning = fibMeaning[m.lvl] || '';
-        return `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed #30363d">
-          <div style="font-size:10px;color:#8b949e;margin-bottom:2px">🔗 연계 밴드</div>
-          <div style="font-size:11px;font-weight:700;color:#bc8cff">Band ${m.band} (${m.lvl})</div>
-          ${meaning ? `<div style="font-size:10px;color:#8b949e;margin-top:1px">${meaning}</div>` : ''}
-          <div style="font-size:10px;color:#cdd9e5;margin-top:2px">피보나치 기준 분할 매수 가격 <b style="color:#cdd9e5">${fmt(m.price, isKrx)}</b>${discTxt}</div>
-        </div>`;
-      };
+      // ── "🔗 연계 밴드"(피보나치 되돌림 연동) 표시는 폐지됨 ──────────────────────
+      //   ATR 밴드 가격과 피보나치 레벨 가격이 독립 계산되어 서로 일치하지 않아,
+      //   라벨(Band A~D)·가격·밴드 범위를 동시에 정합시키기 어려움 → 출력 제거.
 
       // ── 밴드 가격대 ↔ 핵심 구간/분할 매수 단계 자동 매칭 ───────────────────────
       //   폐지된 "📍 핵심 가격 구간"·"📊 분할 매수 전략"의 설명을, 각 밴드의 가격대(range)가
       //   포함되는 구간/단계에 한해 해당 밴드 카드 안에 출력한다. (구체 가격 숫자는 미표시)
       const _paZS = d.pullback_analysis || null;
       const _zoneDefs = (_paZS && _paZS.zones) ? [
-        { label: '저항대 (목표)',           color: '#f85149', lo: _paZS.zones.resistance && _paZS.zones.resistance.low, hi: _paZS.zones.resistance && _paZS.zones.resistance.high },
-        { label: '핵심 가격대 (지지↔저항)', color: '#3fb950', lo: _paZS.zones.core && _paZS.zones.core.low,             hi: _paZS.zones.core && _paZS.zones.core.high },
-        { label: '방어 구간 (추세선+MA)',   color: '#58a6ff', lo: _paZS.zones.defense && _paZS.zones.defense.low,       hi: _paZS.zones.defense && _paZS.zones.defense.high },
+        { label: '저항대 (목표)',         color: '#f85149', lo: _paZS.zones.resistance && _paZS.zones.resistance.low, hi: _paZS.zones.resistance && _paZS.zones.resistance.high },
+        { label: '방어 구간 (추세선+MA)', color: '#58a6ff', lo: _paZS.zones.defense && _paZS.zones.defense.low,       hi: _paZS.zones.defense && _paZS.zones.defense.high },
       ].filter(z => z.lo != null && z.hi != null) : [];
       // 단계 설명 — 가격 숫자 없는 정적 문구(백엔드 4차 desc의 저항선 가격 제거 목적)
       const _stageDescMap = {
@@ -10562,7 +10507,6 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
             <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
-            ${fibLinkHtml(b)}
             ${zoneStageHtml(b)}
           </div>`;
         } else {
@@ -10574,7 +10518,6 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
-            ${fibLinkHtml(b)}
             ${zoneStageHtml(b)}
           </div>`;
         }
