@@ -9076,13 +9076,28 @@ function renderSignalConfidence(d) {
 
   // 뉴스 감정 (FinBERT/키워드)
   let sentChip = '';
+  let sentInfo = '';
   const se = sc.sentiment;
   if (se && se.sentiment_score != null) {
     const sentColor = se.overall === 'positive' ? '#3fb950' : se.overall === 'negative' ? '#f85149' : '#8b949e';
-    const srcLbl = se.sentiment_source === 'finbert' ? 'FinBERT' : se.sentiment_source === 'kr-finbert' ? 'KR-FinBERT' : se.sentiment_source === 'keyword' ? '키워드' : '없음';
+    const srcLbl = se.sentiment_source === 'finbert' ? 'FinBERT' : se.sentiment_source === 'kr-finbert' ? 'KR-FinBERT' : se.sentiment_source === 'keyword' ? '금융사전' : '없음';
     sentChip = '<span style="font-size:11px;color:' + sentColor +
       ';border:1px solid ' + sentColor + '55;border-radius:4px;padding:2px 8px">뉴스감정 ' +
       se.sentiment_score + ' (' + srcLbl + ')</span>';
+
+    // 📰 뉴스감정 상세 — 출처 구성 · 품질 · 신뢰도 가중 여부 (보강 내용 가시화)
+    const _parts = [];
+    if (se.source_breakdown) {
+      const _lbl = { dart:'DART', disclosure:'공시', naver:'네이버', google_news:'포털뉴스', news:'뉴스', x:'X' };
+      const _segs = Object.keys(se.source_breakdown)
+        .map(k => (_lbl[k] || k) + ' ' + se.source_breakdown[k]);
+      if (_segs.length) _parts.push('출처 ' + _segs.join(' · '));
+    }
+    if (se.quality != null) _parts.push('품질 ' + se.quality + (se.effective_n != null ? ' (유효표본 ' + se.effective_n + ')' : ''));
+    if (se.credibility_weighted) _parts.push('출처 신뢰도 가중 적용');
+    if (_parts.length) {
+      sentInfo = '<div style="margin-top:8px;font-size:10px;color:#8b949e">📰 뉴스감정 — ' + _parts.join(' · ') + '</div>';
+    }
   }
 
   // 신뢰 구간 막대 (lower ~ upper)
@@ -9091,10 +9106,11 @@ function renderSignalConfidence(d) {
   const spread = ci.spread != null ? ci.spread : 0;
   const spreadWarn = spread >= 20;   // 의미 있는 분산이면 강조
 
-  // 캡/불일치 사유
+  // 캡/불일치 사유 + 뉴스감정 사유(한글)
   const reasons = [];
   (sc.cap_reasons || []).forEach(r => reasons.push(r));
   if (ci.reason) ci.reason.forEach(r => { if (!reasons.includes(r)) reasons.push(r); });
+  if (se && se.reasons) se.reasons.forEach(r => { if (!reasons.includes(r)) reasons.push(r); });
   const reasonHtml = reasons.length
     ? '<div style="margin-top:8px;font-size:11px;color:#8b949e">' +
       reasons.map(r => '<div style="display:flex;gap:5px"><span style="color:#f97316">•</span><span>' + r + '</span></div>').join('') + '</div>'
@@ -9116,7 +9132,7 @@ function renderSignalConfidence(d) {
         '</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">' + regChip + sectorChip + earnChip + sentChip + '</div>' +
       '</div>' +
-    '</div>' + reasonHtml;
+    '</div>' + sentInfo + reasonHtml;
 }
 
 function renderResult(d) {
