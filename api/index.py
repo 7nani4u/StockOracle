@@ -8797,7 +8797,7 @@ function _applyPriceUpdate(d) {
   const priceEl  = document.getElementById('r-price');
   const pctEl    = document.getElementById('r-pct');
   const badgeEl  = document.getElementById('r-session-badge');
-  if (priceEl) priceEl.textContent = '$' + Number(d.price).toLocaleString('en-US', {minimumFractionDigits:4, maximumFractionDigits:4});
+  if (priceEl) priceEl.textContent = fmtPrice(d.price, false);
   if (pctEl)   pctEl.innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
   if (badgeEl) {
     const hiddenSessions = new Set(['정규장', '장마감', '']);
@@ -8832,7 +8832,7 @@ function _syncTargetPriceSection(newPrice) {
   // 최신 현재가 기준으로 수익률 재계산
   const minReturn = ((_lastTp.min_price - newPrice) / newPrice * 100).toFixed(1);
   const maxReturn = ((_lastTp.max_price - newPrice) / newPrice * 100).toFixed(1);
-  const fmtUs = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:4, maximumFractionDigits:4});
+  const fmtUs = v => fmtPrice(v, false);
 
   // data 속성으로 타겟 요소만 핀포인트 업데이트 (전체 re-render 없음)
   const curEl    = tpEl.querySelector('[data-tp-cur]');
@@ -8914,11 +8914,32 @@ function setState(s) {
 }
 
 // ── 렌더링 ──
-function fmt(v, isKrx) {
+// ════════════════════════════════════════════════════════════════════════
+// 공통 가격/종목코드 포맷터 (Single Source of Truth)
+//   · KRX: 정수(소수점 제거) + '원'
+//   · US : '$' + 불필요한 trailing zero 제거 (200.00→200, 200.35→200.35)
+//   · 종목코드: KRX는 시장 접미사(.KS/.KQ) 제거, US는 티커 유지
+// ════════════════════════════════════════════════════════════════════════
+function _fmtKrNum(v) { return Number(v).toLocaleString('ko-KR', {maximumFractionDigits:0}); }
+function _fmtUsNum(v) { return Number(v).toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:2}); }
+
+// 통화기호 포함 가격 (현재가·목표가·매수전략·ATR 리스크 등)
+function fmtPrice(v, isKrx) {
   if (v == null || isNaN(v)) return '-';
-  return isKrx ? Number(v).toLocaleString('ko-KR',{maximumFractionDigits:0}) + '원'
-               : '$' + Number(v).toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4});
+  return isKrx ? _fmtKrNum(v) + '원' : '$' + _fmtUsNum(v);
 }
+// 통화기호 없는 숫자 (진입가·손절가·표·배지 등)
+function fmtNum(v, isKrx) {
+  if (v == null || isNaN(v)) return '-';
+  return isKrx ? _fmtKrNum(v) : _fmtUsNum(v);
+}
+// 종목코드 표시 — KRX: 시장 접미사 제거 / US: 티커 유지
+function fmtSymbol(sym, isKrx) {
+  if (!sym) return '';
+  return isKrx ? String(sym).replace(/\.(KS|KQ|KX)$/i, '') : String(sym);
+}
+// 하위호환 — 기존 fmt() 호출부는 모두 fmtPrice로 위임
+function fmt(v, isKrx) { return fmtPrice(v, isKrx); }
 
 function renderResult(d) {
   const isKrx = d.market === 'KRX';
@@ -8935,7 +8956,7 @@ function renderResult(d) {
   }
 
   document.getElementById('r-title').innerHTML =
-    `${d.company || d.symbol} <span class="ticker-badge">${d.symbol}</span>`;
+    `${d.company || fmtSymbol(d.symbol, isKrx)} <span class="ticker-badge">${fmtSymbol(d.symbol, isKrx)}</span>`;
   document.getElementById('r-subtitle').textContent =
     `기준일: ${new Date().toLocaleDateString('ko-KR')} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'}`;
   document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
@@ -9112,7 +9133,7 @@ function _pullbackInit(d, isKrx) {
   const pa = d.pullback_analysis;
   if (!pa) return null;
   const C = { red:'#f85149', orange:'#d29922', yellow:'#e3b341', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e' };
-  const fmtP = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  const fmtP = v => fmtPrice(v, isKrx);
   const stageColors = ['','#484f58','#d29922','#f85149','#3fb950','#58a6ff'];
   const stageLabels = ['','바닥 매집','돌파','1차 급등','눌림목','재급등'];
   return { pa, C, fmtP, stageColors, stageLabels };
@@ -9336,7 +9357,7 @@ function renderPullbackAnalysis(d, isKrx) {
   if (!pa) { el.innerHTML = '<div style="padding:20px;color:#8b949e;text-align:center">분석 데이터 없음</div>'; return; }
 
   const C = { red:'#f85149', orange:'#d29922', yellow:'#e3b341', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e' };
-  const fmtP = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  const fmtP = v => fmtPrice(v, isKrx);
   const fmtN = v => Number(v).toLocaleString('ko-KR');
 
   // 단계 배지 색상
@@ -9613,6 +9634,7 @@ function calcSupplyDesc(flow) {
 function renderHybridSection(d) {
   const hs = d.hybrid_score;
   if (!hs || hs.error) return '';
+  const isKrx = d.market === 'KRX';   // 시장 구분 — 진입가·손절가 포맷에 사용
 
   const ncs = hs.ncs ?? 0;
   const bqs = hs.bqs ?? 0;
@@ -9672,11 +9694,11 @@ function renderHybridSection(d) {
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
       <div style="flex:1;min-width:120px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px 10px">
         <div style="font-size:10px;color:#8b949e;margin-bottom:2px">권장 진입가</div>
-        <div style="font-size:13px;font-weight:700;color:${C.blue}">${Number(entryTrigger).toLocaleString()}</div>
+        <div style="font-size:13px;font-weight:700;color:${C.blue}">${fmtNum(entryTrigger, isKrx)}</div>
       </div>
       <div style="flex:1;min-width:120px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px 10px">
         <div style="font-size:10px;color:#8b949e;margin-bottom:2px">손절 기준가 <span style="font-size:9px">(이 가격 이탈 시 손실 제한)</span></div>
-        <div style="font-size:13px;font-weight:700;color:${C.red}">${Number(stopPrice).toLocaleString()}</div>
+        <div style="font-size:13px;font-weight:700;color:${C.red}">${fmtNum(stopPrice, isKrx)}</div>
       </div>
     </div>` : '';
 
@@ -10207,7 +10229,7 @@ function renderPullbackATR(d, isKrx) {
   if (!pa || !pa.stop_loss) { el.innerHTML = ''; return; }
 
   const C = { red:'#f85149', orange:'#d29922', green:'#3fb950', blue:'#58a6ff', purple:'#bc8cff', gray:'#8b949e' };
-  const fmtP = v => isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+  const fmtP = v => fmtPrice(v, isKrx);
 
   // R/R 색상
   const rrC = pa.rr_main >= 2.3 ? C.green : pa.rr_main >= 1.5 ? C.orange : C.red;
@@ -12578,7 +12600,7 @@ function renderScanResult(d, market) {
   var isKrx = market === 'KRX';
   var fmtP  = function(v) {
     if (v == null) return '—';
-    return isKrx ? Number(v).toLocaleString('ko-KR') + '원' : '$' + Number(v).toFixed(2);
+    return fmtPrice(v, isKrx);
   };
 
   // ── 섹터명 한글 변환 ──────────────────────────────────────────────────────
@@ -12709,9 +12731,9 @@ function renderScanResult(d, market) {
                : sig === '중립' || sig === '보유' ? 'sig-neu'
                : 'sig-sell';
 
-    // 종목명 우선 — 이름 크게, 코드 작게
-    var displayName = c.name && c.name !== c.ticker ? c.name : c.ticker;
-    var displayCode = c.name && c.name !== c.ticker ? c.ticker : '';
+    // 종목명 우선 — 이름 크게, 코드 작게 (KRX는 시장 접미사 제거)
+    var displayName = c.name && c.name !== c.ticker ? c.name : fmtSymbol(c.ticker, isKrx);
+    var displayCode = c.name && c.name !== c.ticker ? fmtSymbol(c.ticker, isKrx) : '';
 
     // 시총 티어 배지 (대형/중형/중소형)
     var capTier  = c.cap_tier || 'MID';
