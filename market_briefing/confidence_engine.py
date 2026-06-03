@@ -392,21 +392,44 @@ def disagreement_penalty(scores: List[float]) -> Dict[str, Any]:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# 6. 뉴스 감정 분석 (FinBERT → 키워드 fallback + 최근성 감쇠)
+# 6. 뉴스 감정 분석 (언어 인식 FinBERT → 키워드 fallback + 최근성 감쇠)
+#    · 영어 헤드라인 → ProsusAI/finbert (영문 금융 BERT)
+#    · 한국어 헤드라인 → snunlp/KR-FinBert-SC (한국어 금융 BERT)  ← 신규
+#    두 모델 모두 실패/키없음 시 언어별 키워드 분석으로 자동 fallback.
 # ════════════════════════════════════════════════════════════════════════════
-_HF_URL = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+_HF_URL_EN = "https://api-inference.huggingface.co/models/ProsusAI/finbert"
+_HF_URL_KR = "https://api-inference.huggingface.co/models/snunlp/KR-FinBert-SC"
 _RECENCY_HALF_LIFE_H = 48.0
 
+# 영어 키워드 — 토큰 단위(공백 분리) 정확 일치
 _BULLISH = {"surge", "surges", "rally", "soar", "jump", "gain", "gains", "rise", "rises",
             "high", "record", "boom", "bull", "bullish", "breakout", "upgrade", "beat",
             "beats", "strong", "growth", "profit", "buy", "outperform", "optimistic",
-            "boost", "recover", "recovery", "momentum", "upside", "milestone", "approval",
-            "급등", "강세", "상승", "호재", "신고가", "돌파", "최대", "흑자", "성장"}
+            "boost", "recover", "recovery", "momentum", "upside", "milestone", "approval"}
 _BEARISH = {"crash", "plunge", "drop", "drops", "fall", "falls", "decline", "low", "sell",
             "bear", "bearish", "loss", "losses", "miss", "misses", "weak", "warning",
             "fear", "risk", "cut", "cuts", "downgrade", "layoff", "bankruptcy", "debt",
-            "recession", "crisis", "lawsuit", "fraud", "hack", "worst", "collapse", "tank",
-            "급락", "약세", "하락", "악재", "신저가", "적자", "감소", "경고", "리스크"}
+            "recession", "crisis", "lawsuit", "fraud", "hack", "worst", "collapse", "tank"}
+
+# 한국어 키워드 — 교착어 특성상 부분 문자열(substring) 포함 여부로 매칭
+_KR_BULLISH = ["급등", "상승", "강세", "호재", "신고가", "돌파", "최대", "흑자전환", "흑자",
+               "성장", "개선", "호실적", "순익", "수익", "반등", "기대", "상향", "수혜",
+               "견조", "역대", "사상 최대", "훈풍", "강세장", "낙관", "회복", "수주", "신기록"]
+_KR_BEARISH = ["급락", "하락", "약세", "악재", "신저가", "적자전환", "적자", "감소", "경고",
+               "리스크", "우려", "부진", "손실", "하향", "쇼크", "폭락", "위기", "축소",
+               "둔화", "리콜", "제재", "조사", "소송", "횡령", "분식", "경색", "충격", "불안"]
+
+
+def _has_hangul(text: str) -> bool:
+    return any("가" <= ch <= "힣" or "㄰" <= ch <= "㆏" for ch in (text or ""))
+
+
+def _dominant_lang(titles: List[str]) -> str:
+    """헤드라인 묶음의 주 언어. 한글 포함 비율 ≥ 40% → 'ko', 아니면 'en'."""
+    if not titles:
+        return "en"
+    ko = sum(1 for t in titles if _has_hangul(t))
+    return "ko" if ko / len(titles) >= 0.4 else "en"
 
 
 def _hf_token() -> Optional[str]:
@@ -414,52 +437,75 @@ def _hf_token() -> Optional[str]:
             or os.environ.get("HUGGINGFACEHUB_API_TOKEN"))
 
 
-def _finbert(texts: List[str]) -> Optional[List[Dict]]:
-    """HuggingFace FinBERT 추론. 실패/키없음/쿨다운 시 None."""
+def _finbert(texts: List[str], model_url: str) -> Optional[List[Dict]]:
+    """HuggingFace 추론(모델 URL 지정). 실패/키없음/쿨다운 시 None.
+
+    쿨다운은 모델별로 분리 — 한 모델 실패가 다른 모델을 막지 않음.
+    """
     if requests is None or not texts:
         return None
-    if _cache_get("hf_cooldown"):        # 직전 실패 → 10분 쿨다운
+    ck = f"hf_cooldown|{model_url}"
+    if _cache_get(ck):                   # 직전 실패 → 10분 쿨다운
         return None
     headers = {"Content-Type": "application/json"}
     tok = _hf_token()
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
     try:
-        res = requests.post(_HF_URL, headers=headers,
+        res = requests.post(model_url, headers=headers,
                             json={"inputs": texts}, timeout=15)
         if res.status_code != 200:
             if res.status_code in (401, 403, 429, 503):
-                _cache_set("hf_cooldown", True, 600)
+                _cache_set(ck, True, 600)
             return None
         return res.json()
     except Exception:
-        _cache_set("hf_cooldown", True, 600)
+        _cache_set(ck, True, 600)
         return None
 
 
-def _parse_finbert(item) -> Dict[str, float]:
-    """FinBERT 단일 결과 → {score, label}. score = positive - negative (-1~1)."""
+# 모델별 라벨 → 감정 매핑 (영문 FinBERT, 한국어 KR-FinBert-SC 모두 호환)
+_POS_LABELS = {"positive", "pos", "긍정", "label_0"}     # KR-FinBert-SC: LABEL_0=긍정
+_NEG_LABELS = {"negative", "neg", "부정", "label_1"}     # LABEL_1=부정
+_NEU_LABELS = {"neutral", "neu", "중립", "label_2"}      # LABEL_2=중립
+
+
+def _parse_finbert(item) -> Optional[Dict[str, float]]:
+    """HF 결과 → {score, label}. 인식 불가 라벨이면 None(→ 키워드 fallback)."""
     pos = neg = 0.0
+    recognized = False
     seq = item if isinstance(item, list) else [item]
     for r in seq:
         if not isinstance(r, dict):
             continue
-        lab = (r.get("label") or "").lower()
+        lab = (r.get("label") or "").strip().lower()
         sc = _num(r.get("score"))
-        if lab == "positive":
-            pos = sc
-        elif lab == "negative":
-            neg = sc
+        if lab in _POS_LABELS:
+            pos = sc; recognized = True
+        elif lab in _NEG_LABELS:
+            neg = sc; recognized = True
+        elif lab in _NEU_LABELS:
+            recognized = True
+    if not recognized:
+        return None                      # 알 수 없는 라벨 스킴 → 키워드로 폴백
     score = pos - neg
     label = "positive" if score > 0.3 else "negative" if score < -0.3 else "neutral"
     return {"score": score, "label": label}
 
 
 def _keyword_sentiment(text: str) -> Dict[str, float]:
-    low = (text or "").lower()
-    words = set(__import__("re").split(r"\W+", low))
-    bull = len(words & _BULLISH)
-    bear = len(words & _BEARISH)
+    """언어 인식 키워드 감정 — 한국어는 substring, 영어는 토큰 단위."""
+    raw = text or ""
+    bull = bear = 0
+    if _has_hangul(raw):
+        # 한국어: 부분 문자열 포함 여부 (교착어 대응)
+        bull += sum(1 for w in _KR_BULLISH if w in raw)
+        bear += sum(1 for w in _KR_BEARISH if w in raw)
+    # 영어 토큰도 병행 검사 (혼용 헤드라인 대응)
+    low = raw.lower()
+    tokens = set(__import__("re").split(r"\W+", low))
+    bull += len(tokens & _BULLISH)
+    bear += len(tokens & _BEARISH)
     score = _clamp((bull - bear) / 3.0, -1.0, 1.0)
     label = "positive" if score > 0.2 else "negative" if score < -0.2 else "neutral"
     return {"score": score, "label": label}
@@ -492,21 +538,28 @@ def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
     items = news_items[:8]
     titles = [str(n.get("title") or "") for n in items]
 
-    finbert_raw = _finbert(titles)
-    source = "finbert" if finbert_raw else "keyword"
-    fallback_used = finbert_raw is None
+    # 언어 감지 → 모델 선택 (한국어 헤드라인 → KR-FinBert-SC, 영어 → FinBERT)
+    lang = _dominant_lang(titles)
+    model_url = _HF_URL_KR if lang == "ko" else _HF_URL_EN
+    finbert_raw = _finbert(titles, model_url)
+    model_ok = finbert_raw is not None and isinstance(finbert_raw, list)
+    source = ("kr-finbert" if lang == "ko" else "finbert") if model_ok else "keyword"
 
     weighted_sum = 0.0
     total_w = 0.0
     pos = neg = 0
     analyzed = []
     decay_applied = False
+    model_hits = 0          # HF 모델이 실제로 라벨을 인식한 항목 수
 
     for i, item in enumerate(items):
-        if source == "finbert":
-            sent = _parse_finbert(finbert_raw[i]) if i < len(finbert_raw) else _keyword_sentiment(titles[i])
-        else:
+        sent = None
+        if model_ok and i < len(finbert_raw):
+            sent = _parse_finbert(finbert_raw[i])   # 인식 불가 시 None
+        if sent is None:                            # 항목별 키워드 폴백
             sent = _keyword_sentiment(titles[i])
+        else:
+            model_hits += 1
 
         age_h = _news_age_hours(item)
         w = _recency_weight(age_h)
@@ -523,10 +576,15 @@ def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
                          "recency_weight": round(w, 2),
                          "source": item.get("source")})
 
+    # 모델이 단 하나도 인식 못했으면 사실상 키워드 분석
+    if model_hits == 0:
+        source = "keyword"
+    fallback_used = (source == "keyword")
+
     avg = weighted_sum / total_w if total_w > 0 else 0.0
     score100 = int(round((avg + 1) * 50))    # -1~1 → 0~100
     overall = "positive" if avg > 0.2 else "negative" if avg < -0.2 else "neutral"
-    eng = "FinBERT" if source == "finbert" else "keyword"
+    eng = {"finbert": "FinBERT", "kr-finbert": "KR-FinBERT", "keyword": "keyword"}.get(source, source)
     if overall == "positive":
         reasons = [f"{pos}/{len(items)} headlines bullish, recency-weighted ({eng})"]
     elif overall == "negative":
@@ -535,7 +593,8 @@ def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
         reasons = [f"Mixed sentiment: {pos}+ {neg}- (recency-weighted {eng})"]
 
     return {"sentiment_score": score100, "overall": overall,
-            "sentiment_source": source, "sentiment_decay_applied": decay_applied,
+            "sentiment_source": source, "sentiment_lang": lang,
+            "sentiment_decay_applied": decay_applied,
             "fallback_used": fallback_used, "positive_count": pos, "negative_count": neg,
             "neutral_count": len(items) - pos - neg, "reasons": reasons, "items": analyzed}
 

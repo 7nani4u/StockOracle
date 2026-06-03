@@ -54,15 +54,27 @@ def test_earnings_cap():
     check("10일 → 무제한", ce.earnings_cap(10)["cap"] == 100)
 
 
+def _disable_hf():
+    """모든 HF 모델을 쿨다운 처리 → 키워드 경로 강제 (네트워크 차단)."""
+    for url in (ce._HF_URL_EN, ce._HF_URL_KR):
+        ce._CACHE[f"hf_cooldown|{url}"] = (True, 9e18)
+
+
+def _enable_hf():
+    for url in (ce._HF_URL_EN, ce._HF_URL_KR):
+        ce._CACHE.pop(f"hf_cooldown|{url}", None)
+
+
 def test_keyword_sentiment():
-    print("[4] analyze_news_sentiment (키워드 fallback)")
-    ce._CACHE["hf_cooldown"] = (True, 9e18)   # FinBERT 강제 비활성 → 키워드 경로
+    print("[4] analyze_news_sentiment — 영어 키워드 fallback")
+    _disable_hf()
     bull = ce.analyze_news_sentiment([
         {"title": "Stock surges to record high on strong profit beat", "age_hours": 1},
         {"title": "Analysts upgrade with bullish growth outlook", "age_hours": 5},
     ])
     check("호재 → positive", bull["overall"] == "positive")
     check("source=keyword", bull["sentiment_source"] == "keyword")
+    check("lang=en", bull["sentiment_lang"] == "en")
     check("fallback_used=True", bull["fallback_used"] is True)
     check("점수>50", bull["sentiment_score"] > 50)
     bear = ce.analyze_news_sentiment([
@@ -72,7 +84,31 @@ def test_keyword_sentiment():
     check("decay 적용 표기", bear["sentiment_decay_applied"] is True)
     empty = ce.analyze_news_sentiment([])
     check("뉴스 없음 → 중립 50", empty["sentiment_score"] == 50 and empty["overall"] == "neutral")
-    ce._CACHE.pop("hf_cooldown", None)
+    _enable_hf()
+
+
+def test_korean_sentiment():
+    print("[4-KR] analyze_news_sentiment — 한국어 substring 키워드")
+    _disable_hf()
+    # 교착어: '급등세'·'돌파했다'처럼 어미가 붙어도 substring으로 매칭돼야 함
+    bull = ce.analyze_news_sentiment([
+        {"title": "삼성전자 급등세 지속…신고가 돌파했다", "age_hours": 1},
+        {"title": "SK하이닉스 호실적에 강세 전환, 목표가 상향", "age_hours": 4},
+    ])
+    check("한국어 감지 lang=ko", bull["sentiment_lang"] == "ko")
+    check("호재 → positive", bull["overall"] == "positive")
+    check("source=keyword(모델 차단 시)", bull["sentiment_source"] == "keyword")
+    check("점수>50", bull["sentiment_score"] > 50)
+    bear = ce.analyze_news_sentiment([
+        {"title": "코스닥 급락…실적 쇼크에 약세 지속, 손실 우려 확대", "age_hours": 2},
+        {"title": "OO전자 적자전환 충격, 목표가 하향", "age_hours": 6},
+    ])
+    check("악재 → negative", bear["overall"] == "negative")
+    check("점수<50", bear["sentiment_score"] < 50)
+    # 단어 경계 없는 한국어에서도 매칭되는지 직접 검증
+    s = ce._keyword_sentiment("급등세 신고가 돌파")
+    check("substring 매칭(급등/신고가/돌파)", s["label"] == "positive")
+    _enable_hf()
 
 
 def test_orchestrator():
@@ -119,7 +155,7 @@ if __name__ == "__main__":
     print("  confidence_engine 검증")
     print("=" * 60)
     for t in (test_disagreement, test_interval, test_earnings_cap,
-              test_keyword_sentiment, test_orchestrator, test_resilience):
+              test_keyword_sentiment, test_korean_sentiment, test_orchestrator, test_resilience):
         t()
     print("=" * 60)
     print("  결과:", "✅ 전체 통과" if _fail == 0 else f"❌ {_fail}건 실패")

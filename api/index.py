@@ -9055,7 +9055,7 @@ function renderSignalConfidence(d) {
   const se = sc.sentiment;
   if (se && se.sentiment_score != null) {
     const sentColor = se.overall === 'positive' ? '#3fb950' : se.overall === 'negative' ? '#f85149' : '#8b949e';
-    const srcLbl = se.sentiment_source === 'finbert' ? 'FinBERT' : se.sentiment_source === 'keyword' ? '키워드' : '없음';
+    const srcLbl = se.sentiment_source === 'finbert' ? 'FinBERT' : se.sentiment_source === 'kr-finbert' ? 'KR-FinBERT' : se.sentiment_source === 'keyword' ? '키워드' : '없음';
     sentChip = '<span style="font-size:11px;color:' + sentColor +
       ';border:1px solid ' + sentColor + '55;border-radius:4px;padding:2px 8px">뉴스감정 ' +
       se.sentiment_score + ' (' + srcLbl + ')</span>';
