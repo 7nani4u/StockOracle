@@ -368,27 +368,31 @@ def earnings_cap(days_to_earnings: Optional[int]) -> Dict[str, Any]:
 # 5. 불일치 페널티 (소스 점수 분산)
 # ════════════════════════════════════════════════════════════════════════════
 def disagreement_penalty(scores: List[float]) -> Dict[str, Any]:
-    """AI·기술·심리·시장 점수 간 최대 차이 → confidence 상한.
+    """AI·기술·심리·시장 점수 간 최대 차이 → confidence 차감 + 상한.
+
+    두 사양을 함께 적용한다(가장 보수적):
+      · 차감(penalty): spread > 25/35/50 → 3/7/12점 차감 (Market-Analysis 원본)
+      · 상한(cap)    : spread > 25/35/50 → 75/65/55 상한 (이전 통합 사양)
 
     Returns:
-        {disagreement_penalty, source_score_spread, confidence_cap, reason}
+        {disagreement_penalty, source_score_spread, penalty, confidence_cap, reason}
     """
     vals = [_num(s) for s in scores if s is not None]
     if len(vals) < 2:
         return {"disagreement_penalty": False, "source_score_spread": 0,
-                "confidence_cap": 100, "reason": None}
+                "penalty": 0, "confidence_cap": 100, "reason": None}
     spread = max(vals) - min(vals)
-    cap, triggered = 100, False
+    penalty, cap, triggered = 0, 100, False
     if spread > 50:
-        cap, triggered = 55, True
+        penalty, cap, triggered = 12, 55, True
     elif spread > 35:
-        cap, triggered = 65, True
+        penalty, cap, triggered = 7, 65, True
     elif spread > 25:
-        cap, triggered = 75, True
+        penalty, cap, triggered = 3, 75, True
     reason = (f"High disagreement between AI, technical, sentiment, and market "
-              f"scores (spread {spread:.0f})") if triggered else None
+              f"scores (spread {spread:.0f} → −{penalty}pt, cap {cap})") if triggered else None
     return {"disagreement_penalty": triggered, "source_score_spread": round(spread, 1),
-            "confidence_cap": cap, "reason": reason}
+            "penalty": penalty, "confidence_cap": cap, "reason": reason}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -727,11 +731,12 @@ def build_signal_confidence(
     caps: List[int] = []
     cap_reasons: List[str] = []
 
-    # ── 2) 불일치 페널티 ──────────────────────────────────────────────────
+    # ── 2) 불일치 페널티 (차감 + 상한 병행) ───────────────────────────────
     src_scores = [tech, sentiment, market_sc] + ([ai] if ai_available else [])
     disagreement = disagreement_penalty(src_scores)
     if disagreement["disagreement_penalty"]:
-        caps.append(disagreement["confidence_cap"])
+        confidence -= _num(disagreement["penalty"], 0)   # 3/7/12점 차감
+        caps.append(disagreement["confidence_cap"])      # 75/65/55 상한
         cap_reasons.append(disagreement["reason"])
 
     # ── 3) 거시 체제 ──────────────────────────────────────────────────────

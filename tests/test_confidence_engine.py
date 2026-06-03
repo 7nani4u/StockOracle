@@ -25,13 +25,16 @@ def check(name, cond):
 
 
 def test_disagreement():
-    print("[1] disagreement_penalty")
-    check("정렬된 점수 → 페널티 없음", ce.disagreement_penalty([60, 62, 58, 61])["confidence_cap"] == 100)
-    check("spread>25 → cap 75", ce.disagreement_penalty([40, 66])["confidence_cap"] == 75)
-    check("spread>35 → cap 65", ce.disagreement_penalty([30, 66])["confidence_cap"] == 65)
-    check("spread>50 → cap 55", ce.disagreement_penalty([20, 75])["confidence_cap"] == 55)
-    r = ce.disagreement_penalty([20, 75])
-    check("페널티 사유 명시", r["disagreement_penalty"] and r["reason"])
+    print("[1] disagreement_penalty (차감 3/7/12 + 상한 75/65/55)")
+    base = ce.disagreement_penalty([60, 62, 58, 61])
+    check("정렬된 점수 → 무페널티", base["confidence_cap"] == 100 and base["penalty"] == 0)
+    r25 = ce.disagreement_penalty([40, 66])     # spread 26
+    check("spread>25 → cap 75 · 차감 3", r25["confidence_cap"] == 75 and r25["penalty"] == 3)
+    r35 = ce.disagreement_penalty([30, 66])     # spread 36
+    check("spread>35 → cap 65 · 차감 7", r35["confidence_cap"] == 65 and r35["penalty"] == 7)
+    r50 = ce.disagreement_penalty([20, 75])     # spread 55
+    check("spread>50 → cap 55 · 차감 12", r50["confidence_cap"] == 55 and r50["penalty"] == 12)
+    check("페널티 사유 명시", r50["disagreement_penalty"] and r50["reason"])
 
 
 def test_interval():
