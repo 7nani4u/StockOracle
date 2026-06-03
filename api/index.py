@@ -8989,7 +8989,13 @@ function setState(s) {
 //   · 종목코드: KRX는 시장 접미사(.KS/.KQ) 제거, US는 티커 유지
 // ════════════════════════════════════════════════════════════════════════
 function _fmtKrNum(v) { return Number(v).toLocaleString('ko-KR', {maximumFractionDigits:0}); }
-function _fmtUsNum(v) { return Number(v).toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:2}); }
+// US: $1 미만(서브달러) 종목은 소수 4자리까지 표시(시장 관행 — 백엔드도 4자리로 산출),
+//     $1 이상은 기존대로 2자리. trailing zero는 자동 제거(200.00→200, 0.5→0.5).
+function _fmtUsNum(v) {
+  const n = Number(v);
+  const maxFD = (n !== 0 && Math.abs(n) < 1) ? 4 : 2;
+  return n.toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:maxFD});
+}
 
 // 통화기호 포함 가격 (현재가·목표가·매수전략·ATR 리스크 등)
 function fmtPrice(v, isKrx) {
