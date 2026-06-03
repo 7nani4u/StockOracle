@@ -473,6 +473,24 @@ def resolve_ticker(q: str):
         _, c2n = get_krx_code_map()
         return f"{q}.KS", "KRX", c2n.get(q, q)
 
+    # ── 3.5. 한국 시장 접미사(.KS/.KQ) 부착 코드 → KRX 직접 처리 ──────
+    #   "041510.KQ" / "000660.KS" 처럼 접미사가 붙은 완전한 KR 티커가
+    #   규칙 4(전체 ASCII → US)로 US 종목으로 오분류되는 것을 방지한다.
+    #   (🔬 스캔 엔진 결과 클릭 시 전달되는 형식 — 직접 검색과 동일 동작 보장)
+    qu = q.upper()
+    if qu.endswith((".KS", ".KQ")):
+        code = qu[:-3]
+        if code.isdigit() and len(code) == 6:
+            # 표시용 한글 종목명: KR_STOCK_MAP 역조회 → KRX API 폴백 (없으면 코드)
+            for nm, tkr in KR_STOCK_MAP.items():
+                if tkr.upper() == qu or tkr.startswith(code + "."):
+                    return qu, "KRX", nm
+            try:
+                _, c2n = get_krx_code_map()
+            except Exception:
+                c2n = {}
+            return qu, "KRX", c2n.get(code, code)
+
     # ── 4. 전체 ASCII → US ticker 직접 입력 ──────────────────────────
     if all(ord(c) < 128 for c in q):
         return q.upper(), "US", q.upper()
@@ -8739,6 +8757,18 @@ function quickSearch(name) {
   analyze();
 }
 
+// ── 공통 상세분석 진입점 ──────────────────────────────────────────────
+// 직접 검색(quickSearch)과 🔬 스캔 결과 클릭이 동일한 분석 로직을 타도록 통합.
+// market을 전달받아 currentMarket을 동기화하므로, KRX 종목이 US로 처리되는
+// 문제를 방지한다. (티커 해석 자체는 백엔드 resolve_ticker가 최종 판정)
+function openStockDetail(ticker, market) {
+  if (market) currentMarket = market;
+  const inp = document.getElementById('ticker-input');
+  if (inp) inp.value = ticker;
+  showPage('analysis');   // 내부에서 closeSidebar() 호출됨
+  analyze();
+}
+
 // ── 분석 ──
 // 로딩 메시지 단계별 표시
 const _LOADING_MSGS = [
@@ -12742,7 +12772,7 @@ function renderScanResult(d, market) {
     var capBadge = '<span style="font-size:9px;font-weight:700;color:' + capClr +
                    ';border:1px solid ' + capClr + '55;border-radius:3px;padding:0 4px;margin-left:5px">' + capKo + '</span>';
 
-    return '<tr onclick="document.getElementById(\'ticker-input\').value=\'' + c.ticker + '\';showPage(\'analysis\');analyze()" style="cursor:pointer">' +
+    return '<tr onclick="openStockDetail(\'' + c.ticker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
       '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
            (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
