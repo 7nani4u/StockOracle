@@ -192,6 +192,82 @@ def ttl_cache(ttl: int):
         return wrapper
     return deco
 
+# =============================================================================
+# 🔬 7단계 스캔 엔진 — 출력/선정 공통 설정 (한국·미국 동일 적용)
+# =============================================================================
+# Vercel maxDuration=60s / 1024MB 환경 기준.
+# 단일 종목 수집 비용 = yf history(1y) + tk.info 1회씩 (info 호출이 가장 느림).
+# 12 워커 병렬 수집이라도 수집 대상 수가 곧 타임아웃 위험이므로,
+# "수집 상한"과 "출력 개수"를 상수화하고 양 시장에 동일 적용한다.
+SCAN_COLLECT_CAP_FULL = 24   # FULL 모드 수집 대상 상한 (기존 30 → 24, 타임아웃 여유 확보)
+SCAN_COLLECT_CAP_LITE = 12   # CORE_LITE 모드 수집 대상 상한 (기존 15 → 12)
+SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 (양 시장 공통, 기존 20 → 15)
+
+# 출력 선정 게이트 — 진입 가능권(상태)만 노출 (신호 조건 제거)
+SCAN_GOOD_STATES = ("READY", "WATCH", "WAIT_PULLBACK")
+
+# 상태 → 점수 (0~100): 진입이 임박할수록 높음
+SCAN_STATE_SCORE = {
+    "READY": 100.0, "WATCH": 70.0, "WAIT_PULLBACK": 60.0,
+    "COOLDOWN": 20.0, "EARNINGS_BLOCK": 10.0, "FAR": 0.0,
+}
+
+# 퀀트 모멘텀(QMJ 품질 티어) → 점수 (0~100)
+SCAN_MOMENTUM_TIER_SCORE = {
+    "high": 100.0, "medium": 70.0, "unknown": 50.0, "low": 20.0, "junk": 0.0,
+}
+
+# 종합 점수 가중치 — 상태·순복합점수·퀀트모멘텀 (합 = 1.0)
+SCAN_W_STATE    = 0.35
+SCAN_W_NCS      = 0.40
+SCAN_W_MOMENTUM = 0.25
+
+
+def _scan_num(v, default: float = 0.0) -> float:
+    """방어적 숫자 변환 — None/빈값/문자열 등은 default로 (런타임·타입 오류 방지)."""
+    try:
+        if v is None:
+            return default
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def scan_quant_momentum_score(cd: dict) -> float:
+    """퀀트 모멘텀 점수 (0~100) — QMJ 품질 티어 + 모멘텀 배수 종합.
+
+    한국·미국 동일 기준. 누락 필드는 'unknown'(50) 기본값으로 방어한다.
+    """
+    tier    = cd.get("quality_tier") or "unknown"
+    tier_sc = SCAN_MOMENTUM_TIER_SCORE.get(tier, 50.0)
+    mult    = max(0.0, min(1.0, _scan_num(cd.get("quality_multiplier"), 0.5)))
+    return round(tier_sc * 0.7 + mult * 100.0 * 0.3, 2)
+
+
+def scan_ncs_score(cd: dict) -> float:
+    """순복합 점수 (0~100) — adjusted_ncs 우선, 없으면 ncs (0.0도 유효값으로 처리)."""
+    adj = cd.get("adjusted_ncs")
+    return _scan_num(adj if adj is not None else cd.get("ncs"), 0.0)
+
+
+def scan_composite_score(cd: dict) -> float:
+    """상태·순복합점수·퀀트모멘텀 3축 종합 점수 (0~100) — 양 시장 공통 스코어러.
+
+    세 기준을 가중 평균하여 우수 종목이 상위에 오도록 한다.
+    """
+    state_sc = SCAN_STATE_SCORE.get(cd.get("status"), 0.0)
+    ncs_sc   = scan_ncs_score(cd)
+    mom_sc   = scan_quant_momentum_score(cd)
+    return round(
+        state_sc * SCAN_W_STATE + ncs_sc * SCAN_W_NCS + mom_sc * SCAN_W_MOMENTUM, 2
+    )
+
+
+# 스캔 응답 캐시 — warm 인스턴스 재사용 시 yfinance 재호출/재계산 방지
+_SCAN_RESULT_CACHE: Dict[str, Tuple[Any, float]] = {}
+_SCAN_RESULT_TTL: float = 300.0   # 5분
+
+
 @ttl_cache(60)  # 1분 캐시
 def get_usd_krw() -> float:
     """USD/KRW 환율 조회 (1분 캐시) — 중복 호출 방지용 단일 함수"""
@@ -6620,9 +6696,20 @@ def route(path: str, params: Dict) -> Dict:
                 raw_list  = [t for t, _ in pairs]
                 name_hint = {t: nm for t, nm in pairs}
 
-            # 스캔 모드별 종목 수 — FULL 30 / CORE_LITE 15 (Vercel 60s 타임아웃·속도 균형)
-            _scan_cap = 30 if mode_p == "FULL" else 15
+            # 스캔 모드별 수집 상한 — 한국/미국 동일 적용 (Vercel 60s 타임아웃 방지)
+            #   상수: SCAN_COLLECT_CAP_FULL(24) / SCAN_COLLECT_CAP_LITE(12)
+            _scan_cap = SCAN_COLLECT_CAP_FULL if mode_p == "FULL" else SCAN_COLLECT_CAP_LITE
             raw_list  = raw_list[:_scan_cap]
+
+            # ── 응답 캐시 조회 (warm 인스턴스 재사용) ──────────────────────────
+            #   동일 (시장·모드·자본·리스크·종목집합) 요청은 5분간 재사용.
+            #   refresh=1 파라미터로 강제 갱신 가능.
+            _refresh   = str(params.get("refresh", "")).lower() in ("1", "true", "yes")
+            _cache_key = f"scan|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
+            if not _refresh:
+                _hit = _SCAN_RESULT_CACHE.get(_cache_key)
+                if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
+                    return _hit[0]
 
             def _hist_to_lists(hist):
                 """yf.Ticker().history() DataFrame → (closes, highs, lows, volumes, opens)."""
@@ -6767,30 +6854,32 @@ def route(path: str, params: Dict) -> Dict:
                 d["analyst_signal"] = signal_map.get(c.ticker, "중립")
                 cands.append(d)
 
-            # ── 출력 필터: 상태·신호가 좋은 종목만 (한국/미국 동일 조건) ──
-            #   · 상태(state) 양호 : 기술필터 통과 + 진입 가능권(READY/WATCH/눌림목)
-            #                        — 원거리(FAR)·실적대기·쿨다운 제외
-            #   · 신호(signal) 양호: 애널리스트 '매수/적극 매수' 또는 복합점수 NCS ≥ 55
-            #   두 조건을 모두 충족하는 종목만 NCS 내림차순으로 최대 20개 출력.
-            _GOOD_STATES  = {"READY", "WATCH", "WAIT_PULLBACK"}
-            _GOOD_SIGNALS = {"적극 매수", "매수"}
-            _NCS_GOOD     = 55.0
-            _DISPLAY_CAP  = 20
-
-            def _is_good(cd: dict) -> bool:
+            # ── 출력 선정/정렬: 상태·순복합점수·퀀트모멘텀 3축 종합 (한국/미국 동일) ──
+            #   게이트(상태): 기술필터 통과 + 진입 가능권(READY/WATCH/눌림목)만 노출
+            #                 — 원거리(FAR)·실적대기·쿨다운 제외
+            #   랭킹: scan_composite_score() = 상태 35% + 순복합점수(NCS) 40% + 퀀트모멘텀 25%
+            #         → 세 기준을 종합 평가해 우수 종목이 상위에 오도록 정렬 (신호 기준 제거)
+            #   양 시장 모두 동일 상수(SCAN_*)·동일 스코어러 사용.
+            def _scan_passes(cd: dict) -> bool:
                 if not cd.get("passes_tech_filters"):
                     return False
-                if cd.get("status") not in _GOOD_STATES:
-                    return False
-                sig_ok = cd.get("analyst_signal") in _GOOD_SIGNALS
-                ncs_ok = (cd.get("adjusted_ncs") or cd.get("ncs") or 0) >= _NCS_GOOD
-                return sig_ok or ncs_ok
+                return cd.get("status") in SCAN_GOOD_STATES
 
-            good = [cd for cd in cands if _is_good(cd)]
-            good.sort(key=lambda cd: -(cd.get("adjusted_ncs") or cd.get("ncs") or 0))
-            good = good[:_DISPLAY_CAP]
+            selected = [cd for cd in cands if _scan_passes(cd)]
+            # 종합 점수·퀀트모멘텀 점수를 후보에 부여 (UI·디버깅용, 방어적)
+            for cd in selected:
+                cd["quant_momentum_score"] = scan_quant_momentum_score(cd)
+                cd["composite_score"]      = scan_composite_score(cd)
 
-            return {
+            # 1순위 상태 점수 → 2순위 종합 점수 → 3순위 순복합점수 (모두 내림차순)
+            selected.sort(key=lambda cd: (
+                -SCAN_STATE_SCORE.get(cd.get("status"), 0.0),
+                -cd["composite_score"],
+                -scan_ncs_score(cd),
+            ))
+            selected = selected[:SCAN_DISPLAY_CAP]
+
+            _resp = {
                 "regime":          result.regime,
                 "vol_regime":      result.vol_regime,
                 "total_scanned":   result.total_scanned,
@@ -6798,11 +6887,20 @@ def route(path: str, params: Dict) -> Dict:
                 "ready_count":     result.ready_count,
                 "watch_count":     result.watch_count,
                 "far_count":       result.far_count,
-                "good_count":      len(good),
-                "filter_desc":     "상태(진입 가능권) + 신호(애널리스트 매수 또는 NCS≥55) 충족 종목만",
-                "candidates":      good,
+                "good_count":      len(selected),
+                "display_cap":     SCAN_DISPLAY_CAP,
+                "filter_desc":     "상태(진입 가능권) 게이트 + 상태·순복합점수·퀀트모멘텀 종합 점수 순 정렬",
+                "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
+            # 응답 캐시 저장 (만료 키 정리 포함)
+            _now = time.time()
+            _SCAN_RESULT_CACHE[_cache_key] = (_resp, _now)
+            if len(_SCAN_RESULT_CACHE) > 50:
+                for _k in [k for k, (_, t) in list(_SCAN_RESULT_CACHE.items())
+                           if _now - t > _SCAN_RESULT_TTL]:
+                    _SCAN_RESULT_CACHE.pop(_k, None)
+            return _resp
         except Exception as e:
             return {"error": f"스캔 실행 실패: {e}"}
 
@@ -12266,7 +12364,7 @@ async function runScan(force) {
   if (runBtn)   runBtn.disabled = true;
 
   try {
-    var url = '/api/scan?market=' + market + '&mode=' + mode;
+    var url = '/api/scan?market=' + market + '&mode=' + mode + (force ? '&refresh=1' : '');
     var r   = await fetch(url);
     var d   = await r.json();
 
@@ -12336,7 +12434,7 @@ function renderScanResult(d, market) {
       { val: d.passed_filters, label: '필터 통과',  color: '#58a6ff' },
       { val: d.ready_count,    label: '진입 준비',  color: '#3fb950' },
       { val: d.watch_count,    label: '관찰 대기',  color: '#d29922' },
-      { val: (d.good_count != null ? d.good_count : (d.candidates||[]).length), label: '신호 양호', color: '#3fb950' },
+      { val: (d.good_count != null ? d.good_count : (d.candidates||[]).length), label: '선정 종목', color: '#3fb950' },
     ];
     sumEl.innerHTML = cards.map(function(c) {
       return '<div class="scan-sum-card"><div class="scan-sum-val" style="color:' + c.color + '">' + (c.val || 0) + '</div><div class="scan-sum-label">' + c.label + '</div></div>';
@@ -12362,7 +12460,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">상태·신호 양호 종목 없음 — 현재 진입 가능권에 든 좋은 신호 종목이 없습니다</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
     return;
   }
 
@@ -12392,6 +12490,10 @@ function renderScanResult(d, market) {
     var tier     = c.quality_tier || 'unknown';
     var qmjColor = tier === 'high' ? '#3fb950' : tier === 'medium' ? '#58a6ff' : '#484f58';
     var qmjLabel = _tierKo[tier] || '—';
+    // 퀀트 모멘텀 점수 (0~100) — 백엔드 제공값 우선, 없으면 티어로 폴백
+    var qmScore  = c.quant_momentum_score != null ? Number(c.quant_momentum_score)
+                 : (tier === 'high' ? 100 : tier === 'medium' ? 70 : tier === 'low' ? 20 : tier === 'junk' ? 0 : 50);
+    var qmColor  = qmScore >= 70 ? '#3fb950' : qmScore >= 50 ? '#58a6ff' : qmScore >= 30 ? '#d29922' : '#f85149';
 
     var chg    = c.change_pct != null ? c.change_pct : 0;
     var chgUp  = chg >= 0;
@@ -12424,7 +12526,8 @@ function renderScanResult(d, market) {
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.fws, fwsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
-      '<td style="text-align:center;color:' + qmjColor + ';font-size:12px;font-weight:700">' + qmjLabel + '</td>' +
+      '<td style="min-width:60px">' + scoreBar(qmScore, qmColor) +
+           '<div style="font-size:9px;color:' + qmjColor + ';text-align:center;margin-top:2px">품질 ' + qmjLabel + '</div></td>' +
     '</tr>';
   }).join('');
 
