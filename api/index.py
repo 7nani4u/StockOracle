@@ -199,12 +199,33 @@ def ttl_cache(ttl: int):
 # 단일 종목 수집 비용 = yf history(1y) + tk.info 1회씩 (info 호출이 가장 느림).
 # 12 워커 병렬 수집이라도 수집 대상 수가 곧 타임아웃 위험이므로,
 # "수집 상한"과 "출력 개수"를 상수화하고 양 시장에 동일 적용한다.
-SCAN_COLLECT_CAP_FULL = 24   # FULL 모드 수집 대상 상한 (기존 30 → 24, 타임아웃 여유 확보)
-SCAN_COLLECT_CAP_LITE = 12   # CORE_LITE 모드 수집 대상 상한 (기존 15 → 12)
-SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 (양 시장 공통, 기존 20 → 15)
+SCAN_COLLECT_CAP_FULL = 48   # FULL 수집 상한 — 대형+중형+중소형 풀 커버(다양성 확보)
+SCAN_COLLECT_CAP_LITE = 24   # CORE_LITE 수집 상한
+SCAN_DISPLAY_CAP      = 24   # 최종 출력 종목 수 (양 시장 공통)
+
+# 병렬 수집 — 워커 수 / 월클럭 예산 (Vercel 60s 내 안전 마진)
+SCAN_COLLECT_WORKERS  = 16
+SCAN_COLLECT_BUDGET_S = 42.0   # 이 시간 내 도착한 종목만으로 진행 (타임아웃 하드가드)
 
 # 출력 선정 게이트 — 진입 가능권(상태)만 노출 (신호 조건 제거)
 SCAN_GOOD_STATES = ("READY", "WATCH", "WAIT_PULLBACK")
+
+# ── 시가총액 티어 임계값 (시장별) — info.marketCap 우선, 없으면 정적 태그 ──
+#   KRX: ≥10조=대형 / 1~10조=중형 / <1조=중소형 (KRW)
+#   US : ≥$10B=대형 / $2~10B=중형 / <$2B=중소형 (USD)
+SCAN_CAP_TIER_THRESHOLDS = {
+    "KRX": {"LARGE": 10e12, "MID": 1e12},
+    "US":  {"LARGE": 10e9,  "MID": 2e9},
+}
+SCAN_CAP_TIER_KO = {"LARGE": "대형", "MID": "중형", "SMALL": "중소형"}
+
+# ── 다양성 선정(MMR) — 동일 섹터/시총티어 누적 시 점수 페널티 ──
+#   고득점이라도 같은 섹터·티어가 쌓이면 유효점수가 낮아져
+#   우수한 타 섹터·중소형주가 자연스럽게 상위로 진입한다. (하드 제한 아님)
+SCAN_SECTOR_PENALTY   = 8.0    # 섹터 소프트캡 초과 1종목당 -8점
+SCAN_SECTOR_SOFT_CAP  = 2      # 섹터당 2종목까지는 페널티 면제
+SCAN_CAP_TIER_PENALTY = 6.0    # 티어 소프트캡 초과 1종목당 -6점
+SCAN_CAP_TIER_SOFT    = 2      # 티어당 2종목까지는 페널티 면제 (대형주 독점 억제)
 
 # 상태 → 점수 (0~100): 진입이 임박할수록 높음
 SCAN_STATE_SCORE = {
@@ -261,6 +282,66 @@ def scan_composite_score(cd: dict) -> float:
     return round(
         state_sc * SCAN_W_STATE + ncs_sc * SCAN_W_NCS + mom_sc * SCAN_W_MOMENTUM, 2
     )
+
+
+def scan_cap_tier(market: str, market_cap, static_tier: str = "") -> str:
+    """시가총액 → 티어(LARGE/MID/SMALL). info.marketCap 우선, 없으면 정적 태그.
+
+    marketCap이 없거나 0이면 정적 태그(static_tier)로 폴백, 그것도 없으면 MID.
+    """
+    th = SCAN_CAP_TIER_THRESHOLDS.get("KRX" if market == "KRX" else "US")
+    mc = _scan_num(market_cap, 0.0)
+    if mc > 0 and th:
+        if mc >= th["LARGE"]:
+            return "LARGE"
+        if mc >= th["MID"]:
+            return "MID"
+        return "SMALL"
+    st = (static_tier or "").upper()
+    return st if st in ("LARGE", "MID", "SMALL") else "MID"
+
+
+def _scan_sector_key(cd: dict) -> str:
+    """후보의 섹터 키 (빈 값은 분산 페널티 제외 대상)."""
+    return (cd.get("category") or cd.get("sector") or "").strip()
+
+
+def scan_diversified_select(cands: list, target: int) -> list:
+    """MMR 방식 다양성 선정 — 종합점수 우선 + 섹터·시총티어 분산.
+
+    매 단계 '유효점수(종합점수 − 섹터페널티 − 티어페널티)'가 가장 높은 후보를
+    선택한다. 같은 섹터/티어가 누적될수록 페널티가 커져, 고득점 대형주가
+    독점하지 않고 우수한 타 섹터·중소형주가 자연스럽게 진입한다.
+
+    하드 쿼터/랜덤이 아니라 점수 기반 분산이므로 전략 품질을 유지한다.
+    """
+    pool: list = list(cands)
+    selected: list = []
+    sector_count: Dict[str, int] = {}
+    tier_count:   Dict[str, int] = {}
+
+    while pool and len(selected) < target:
+        best, best_eff = None, None
+        for c in pool:
+            sec  = _scan_sector_key(c)
+            tier = c.get("cap_tier") or "MID"
+            sec_pen = (
+                SCAN_SECTOR_PENALTY * max(0, sector_count.get(sec, 0) - SCAN_SECTOR_SOFT_CAP)
+                if sec else 0.0
+            )
+            tier_pen = SCAN_CAP_TIER_PENALTY * max(0, tier_count.get(tier, 0) - SCAN_CAP_TIER_SOFT)
+            eff = _scan_num(c.get("composite_score")) - sec_pen - tier_pen
+            if best_eff is None or eff > best_eff:
+                best_eff, best = eff, c
+        selected.append(best)
+        pool.remove(best)
+        sec  = _scan_sector_key(best)
+        tier = best.get("cap_tier") or "MID"
+        if sec:
+            sector_count[sec] = sector_count.get(sec, 0) + 1
+        tier_count[tier] = tier_count.get(tier, 0) + 1
+        best["div_effective_score"] = round(best_eff, 2)
+    return selected
 
 
 # 스캔 응답 캐시 — warm 인스턴스 재사용 시 yfinance 재호출/재계산 방지
@@ -6651,53 +6732,90 @@ def route(path: str, params: Dict) -> Dict:
                 # 4. 최후 fallback: ticker 코드
                 return tkr
 
-            # ── 확장 유니버스 (KOSPI200/KOSDAQ150 · S&P500 대표 종목) ──
-            # (ticker, 종목명) — 이름은 오프라인 표기용 (네트워크 조회 불필요)
+            # ── 확장 유니버스 (KOSPI/KOSDAQ · S&P500/중소형) ──
+            # (ticker, 종목명, 시총티어) — 티어는 정적 힌트(실측 marketCap이 우선 보정).
+            #   대형주뿐 아니라 중형·중소형까지 풀에 포함해야 균형 선정이 가능하다.
             _SCAN_KRX_UNIVERSE = [
-                # KOSPI 대형주
-                ("005930.KS", "삼성전자"),       ("000660.KS", "SK하이닉스"),
-                ("373220.KS", "LG에너지솔루션"), ("207940.KS", "삼성바이오로직스"),
-                ("005380.KS", "현대차"),         ("000270.KS", "기아"),
-                ("068270.KS", "셀트리온"),       ("105560.KS", "KB금융"),
-                ("055550.KS", "신한지주"),       ("005490.KS", "POSCO홀딩스"),
-                ("035420.KS", "NAVER"),          ("035720.KS", "카카오"),
-                ("051910.KS", "LG화학"),         ("006400.KS", "삼성SDI"),
-                ("012330.KS", "현대모비스"),     ("028260.KS", "삼성물산"),
-                ("009150.KS", "삼성전기"),       ("012450.KS", "한화에어로스페이스"),
-                ("034020.KS", "두산에너빌리티"), ("009540.KS", "HD한국조선해양"),
-                ("015760.KS", "한국전력"),       ("033780.KS", "KT&G"),
-                ("086790.KS", "하나금융지주"),   ("003670.KS", "포스코퓨처엠"),
-                ("259960.KS", "크래프톤"),
-                # KOSDAQ 대표주
-                ("247540.KQ", "에코프로비엠"),   ("086520.KQ", "에코프로"),
-                ("196170.KQ", "알테오젠"),       ("028300.KQ", "HLB"),
-                ("058470.KQ", "리노공업"),
+                # ── 대형주 (LARGE) ──
+                ("005930.KS", "삼성전자", "LARGE"),       ("000660.KS", "SK하이닉스", "LARGE"),
+                ("373220.KS", "LG에너지솔루션", "LARGE"), ("207940.KS", "삼성바이오로직스", "LARGE"),
+                ("005380.KS", "현대차", "LARGE"),         ("000270.KS", "기아", "LARGE"),
+                ("068270.KS", "셀트리온", "LARGE"),       ("105560.KS", "KB금융", "LARGE"),
+                ("055550.KS", "신한지주", "LARGE"),       ("005490.KS", "POSCO홀딩스", "LARGE"),
+                ("035420.KS", "NAVER", "LARGE"),          ("035720.KS", "카카오", "LARGE"),
+                ("051910.KS", "LG화학", "LARGE"),         ("006400.KS", "삼성SDI", "LARGE"),
+                ("012330.KS", "현대모비스", "LARGE"),     ("028260.KS", "삼성물산", "LARGE"),
+                ("012450.KS", "한화에어로스페이스", "LARGE"), ("034020.KS", "두산에너빌리티", "LARGE"),
+                ("247540.KQ", "에코프로비엠", "LARGE"),   ("196170.KQ", "알테오젠", "LARGE"),
+                # ── 중형주 (MID) ──
+                ("009150.KS", "삼성전기", "MID"),         ("009540.KS", "HD한국조선해양", "MID"),
+                ("015760.KS", "한국전력", "MID"),         ("033780.KS", "KT&G", "MID"),
+                ("086790.KS", "하나금융지주", "MID"),     ("003670.KS", "포스코퓨처엠", "MID"),
+                ("259960.KS", "크래프톤", "MID"),         ("086520.KQ", "에코프로", "MID"),
+                ("028300.KQ", "HLB", "MID"),              ("145020.KQ", "휴젤", "MID"),
+                ("263750.KQ", "펄어비스", "MID"),         ("293490.KQ", "카카오게임즈", "MID"),
+                ("112040.KQ", "위메이드", "MID"),         ("041510.KQ", "에스엠", "MID"),
+                ("011200.KS", "HMM", "MID"),              ("010140.KS", "삼성중공업", "MID"),
+                # ── 중소형주 (SMALL) ──
+                ("058470.KQ", "리노공업", "SMALL"),       ("035900.KQ", "JYP Ent.", "SMALL"),
+                ("214150.KQ", "클래시스", "SMALL"),       ("357780.KQ", "솔브레인", "SMALL"),
+                ("095340.KQ", "ISC", "SMALL"),            ("140860.KQ", "파크시스템스", "SMALL"),
+                ("098460.KQ", "고영", "SMALL"),           ("222800.KQ", "심텍", "SMALL"),
+                ("240810.KQ", "원익IPS", "SMALL"),        ("178320.KQ", "서진시스템", "SMALL"),
             ]
             _SCAN_US_UNIVERSE = [
-                ("AAPL", "Apple"),       ("NVDA", "NVIDIA"),      ("MSFT", "Microsoft"),
-                ("GOOGL", "Alphabet"),   ("AMZN", "Amazon"),      ("META", "Meta"),
-                ("TSLA", "Tesla"),       ("AVGO", "Broadcom"),    ("LLY", "Eli Lilly"),
-                ("JPM", "JPMorgan"),     ("V", "Visa"),           ("UNH", "UnitedHealth"),
-                ("XOM", "Exxon Mobil"),  ("MA", "Mastercard"),    ("JNJ", "Johnson & Johnson"),
-                ("PG", "Procter & Gamble"), ("HD", "Home Depot"), ("COST", "Costco"),
-                ("ABBV", "AbbVie"),      ("MRK", "Merck"),        ("ADBE", "Adobe"),
-                ("CVX", "Chevron"),      ("PEP", "PepsiCo"),      ("KO", "Coca-Cola"),
-                ("BAC", "Bank of America"), ("NFLX", "Netflix"),  ("AMD", "AMD"),
-                ("CRM", "Salesforce"),   ("ORCL", "Oracle"),      ("MCD", "McDonald's"),
+                # ── 대형주 (LARGE) ──
+                ("AAPL", "Apple", "LARGE"),       ("NVDA", "NVIDIA", "LARGE"),
+                ("MSFT", "Microsoft", "LARGE"),   ("GOOGL", "Alphabet", "LARGE"),
+                ("AMZN", "Amazon", "LARGE"),      ("META", "Meta", "LARGE"),
+                ("TSLA", "Tesla", "LARGE"),       ("AVGO", "Broadcom", "LARGE"),
+                ("LLY", "Eli Lilly", "LARGE"),    ("JPM", "JPMorgan", "LARGE"),
+                ("V", "Visa", "LARGE"),           ("UNH", "UnitedHealth", "LARGE"),
+                ("XOM", "Exxon Mobil", "LARGE"),  ("MA", "Mastercard", "LARGE"),
+                ("JNJ", "Johnson & Johnson", "LARGE"), ("COST", "Costco", "LARGE"),
+                ("NFLX", "Netflix", "LARGE"),     ("AMD", "AMD", "LARGE"),
+                ("ORCL", "Oracle", "LARGE"),      ("CRM", "Salesforce", "LARGE"),
+                # ── 중형주 (MID) ──
+                ("ABBV", "AbbVie", "MID"),        ("MRK", "Merck", "MID"),
+                ("ADBE", "Adobe", "MID"),         ("CVX", "Chevron", "MID"),
+                ("PEP", "PepsiCo", "MID"),        ("KO", "Coca-Cola", "MID"),
+                ("BAC", "Bank of America", "MID"),("HD", "Home Depot", "MID"),
+                ("PG", "Procter & Gamble", "MID"),("MCD", "McDonald's", "MID"),
+                ("RBLX", "Roblox", "MID"),        ("DKNG", "DraftKings", "MID"),
+                ("HOOD", "Robinhood", "MID"),     ("NET", "Cloudflare", "MID"),
+                ("DDOG", "Datadog", "MID"),       ("ROKU", "Roku", "MID"),
+                # ── 중소형주 (SMALL) ──
+                ("RIVN", "Rivian", "SMALL"),      ("AFRM", "Affirm", "SMALL"),
+                ("U", "Unity", "SMALL"),          ("PINS", "Pinterest", "SMALL"),
+                ("IONQ", "IonQ", "SMALL"),        ("RKLB", "Rocket Lab", "SMALL"),
+                ("SOFI", "SoFi", "SMALL"),        ("LMND", "Lemonade", "SMALL"),
+                ("CHPT", "ChargePoint", "SMALL"), ("FUBO", "fuboTV", "SMALL"),
             ]
 
             # 종목 목록 파싱 — tickers 파라미터 우선, 없으면 시장별 확장 유니버스
             tickers_raw = params.get("tickers", "")
             name_hint: dict = {}
+            cap_hint:  dict = {}   # ticker → 정적 시총티어 힌트
             if tickers_raw:
                 raw_list = [t.strip() for t in tickers_raw.split(",") if t.strip()]
             else:
-                pairs     = _SCAN_KRX_UNIVERSE if market_p == "KRX" else _SCAN_US_UNIVERSE
-                raw_list  = [t for t, _ in pairs]
-                name_hint = {t: nm for t, nm in pairs}
+                triples   = _SCAN_KRX_UNIVERSE if market_p == "KRX" else _SCAN_US_UNIVERSE
+                name_hint = {t: nm for t, nm, _ in triples}
+                cap_hint  = {t: (tier or "MID").upper() for t, _, tier in triples}
+                # 티어 라운드로빈 인터리브(LARGE→MID→SMALL→…) — 수집 상한 truncation
+                # 시에도 대형/중형/중소형이 고르게 수집되도록 한다.
+                _by_tier = {"LARGE": [], "MID": [], "SMALL": []}
+                for t, _, tier in triples:
+                    _by_tier.setdefault((tier or "MID").upper(), _by_tier["MID"]).append(t)
+                from itertools import zip_longest as _zl
+                raw_list = [
+                    t for grp in _zl(_by_tier["LARGE"], _by_tier["MID"], _by_tier["SMALL"])
+                    for t in grp if t
+                ]
 
             # 스캔 모드별 수집 상한 — 한국/미국 동일 적용 (Vercel 60s 타임아웃 방지)
-            #   상수: SCAN_COLLECT_CAP_FULL(24) / SCAN_COLLECT_CAP_LITE(12)
+            #   상수: SCAN_COLLECT_CAP_FULL(48) / SCAN_COLLECT_CAP_LITE(24)
+            #   인터리브된 raw_list이므로 truncation 후에도 티어가 고르게 남는다.
             _scan_cap = SCAN_COLLECT_CAP_FULL if mode_p == "FULL" else SCAN_COLLECT_CAP_LITE
             raw_list  = raw_list[:_scan_cap]
 
@@ -6770,6 +6888,8 @@ def route(path: str, params: Dict) -> Dict:
             change_map  = {}   # ticker → 등락률 %
             sector_map  = {}   # ticker → 섹터/카테고리
             signal_map  = {}   # ticker → 애널리스트 신호
+            cap_map     = {}   # ticker → 시총티어 (LARGE/MID/SMALL)
+            mcap_map    = {}   # ticker → 시가총액 (원/달러)
 
             _ANALYST_MAP = {
                 "strong_buy": "적극 매수", "buy": "매수",
@@ -6809,27 +6929,52 @@ def route(path: str, params: Dict) -> Dict:
                     signal  = _ANALYST_MAP.get(rec_key, "중립")
                     name    = name_hint.get(tkr) or _get_name(tkr, _info)
                     sleeve  = "ETF" if tkr in _ETF_SET else "CORE"
+                    # 시가총액 → 티어 (실측 marketCap 우선, 없으면 정적 힌트)
+                    mcap     = _scan_num(_info.get("marketCap"), 0.0)
+                    cap_tier = scan_cap_tier(market_p, mcap, cap_hint.get(tkr, ""))
                     return {
                         "tkr": tkr, "snap": snap, "change": change, "quality": quality,
                         "sector": sector, "signal": signal, "name": name, "sleeve": sleeve,
+                        "cap_tier": cap_tier, "market_cap": mcap,
                     }
                 except Exception:
                     return None
 
-            # 병렬 수집 — 종목 수만큼 워커(최대 12)로 직렬 타임아웃 완화
-            _workers = min(12, max(1, len(raw_list)))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_workers) as _ex:
-                for res in _ex.map(_scan_collect_one, raw_list):
-                    if not res:
-                        continue
-                    t = res["tkr"]
-                    snap_map[t]   = res["snap"]
-                    change_map[t] = res["change"]
-                    if res["quality"] is not None:
-                        quality_map[t] = res["quality"]
-                    sector_map[t] = res["sector"]
-                    signal_map[t] = res["signal"]
-                    universe.append(StockUniverse(t, res["name"], res["sleeve"], sector=res["sector"]))
+            # 병렬 수집 — 시간 예산(SCAN_COLLECT_BUDGET_S) 내 도착분만으로 진행.
+            #   대형 유니버스(최대 48)라도 느린 종목이 전체를 막지 않도록 하드가드.
+            def _ingest(res):
+                if not res:
+                    return
+                t = res["tkr"]
+                snap_map[t]   = res["snap"]
+                change_map[t] = res["change"]
+                if res["quality"] is not None:
+                    quality_map[t] = res["quality"]
+                sector_map[t] = res["sector"]
+                signal_map[t] = res["signal"]
+                cap_map[t]    = res.get("cap_tier", "MID")
+                mcap_map[t]   = res.get("market_cap", 0.0)
+                universe.append(StockUniverse(t, res["name"], res["sleeve"], sector=res["sector"]))
+
+            _workers = min(SCAN_COLLECT_WORKERS, max(1, len(raw_list)))
+            _ex = concurrent.futures.ThreadPoolExecutor(max_workers=_workers)
+            try:
+                _futs = [_ex.submit(_scan_collect_one, t) for t in raw_list]
+                try:
+                    for _fut in concurrent.futures.as_completed(_futs, timeout=SCAN_COLLECT_BUDGET_S):
+                        try:
+                            _ingest(_fut.result())
+                        except Exception:
+                            continue
+                except concurrent.futures.TimeoutError:
+                    # 예산 초과 — 이미 수집된 종목만으로 진행 (부분 결과 허용)
+                    pass
+            finally:
+                # 미착수 작업 취소, 진행 중 작업은 대기하지 않고 즉시 반환
+                try:
+                    _ex.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    _ex.shutdown(wait=False)   # py<3.9 호환
 
             if not snap_map:
                 return {"error": "데이터 수집 실패 — 네트워크 연결을 확인하거나 잠시 후 다시 시도하세요"}
@@ -6849,35 +6994,43 @@ def route(path: str, params: Dict) -> Dict:
             cands = []
             for c in result.candidates:
                 d = asdict(c)
-                d["change_pct"]  = change_map.get(c.ticker, 0.0)
-                d["category"]    = sector_map.get(c.ticker, "") or c.sector or ""
+                d["change_pct"]     = change_map.get(c.ticker, 0.0)
+                d["category"]       = sector_map.get(c.ticker, "") or c.sector or ""
                 d["analyst_signal"] = signal_map.get(c.ticker, "중립")
+                d["cap_tier"]       = cap_map.get(c.ticker, "MID")
+                d["cap_tier_ko"]    = SCAN_CAP_TIER_KO.get(d["cap_tier"], "중형")
+                d["market_cap"]     = mcap_map.get(c.ticker, 0.0)
                 cands.append(d)
 
-            # ── 출력 선정/정렬: 상태·순복합점수·퀀트모멘텀 3축 종합 (한국/미국 동일) ──
+            # ── 출력 선정: 상태·순복합점수·퀀트모멘텀 종합 + 시총/섹터 분산 (한국/미국 동일) ──
             #   게이트(상태): 기술필터 통과 + 진입 가능권(READY/WATCH/눌림목)만 노출
-            #                 — 원거리(FAR)·실적대기·쿨다운 제외
-            #   랭킹: scan_composite_score() = 상태 35% + 순복합점수(NCS) 40% + 퀀트모멘텀 25%
-            #         → 세 기준을 종합 평가해 우수 종목이 상위에 오도록 정렬 (신호 기준 제거)
-            #   양 시장 모두 동일 상수(SCAN_*)·동일 스코어러 사용.
+            #   1차 랭킹: scan_composite_score() = 상태 35% + 순복합점수 40% + 퀀트모멘텀 25%
+            #   2차 분산: scan_diversified_select() — 동일 섹터·시총티어 누적 시 점수 페널티
+            #            → 고득점이라도 한 섹터/대형주가 독점하지 않고, 우수 중소형주가 진입
+            #   양 시장 모두 동일 상수(SCAN_*)·동일 스코어러·동일 분산 로직 사용.
             def _scan_passes(cd: dict) -> bool:
                 if not cd.get("passes_tech_filters"):
                     return False
                 return cd.get("status") in SCAN_GOOD_STATES
 
-            selected = [cd for cd in cands if _scan_passes(cd)]
-            # 종합 점수·퀀트모멘텀 점수를 후보에 부여 (UI·디버깅용, 방어적)
-            for cd in selected:
+            pool = [cd for cd in cands if _scan_passes(cd)]
+            # 종합 점수·퀀트모멘텀 점수 부여 (방어적)
+            for cd in pool:
                 cd["quant_momentum_score"] = scan_quant_momentum_score(cd)
                 cd["composite_score"]      = scan_composite_score(cd)
 
-            # 1순위 상태 점수 → 2순위 종합 점수 → 3순위 순복합점수 (모두 내림차순)
-            selected.sort(key=lambda cd: (
-                -SCAN_STATE_SCORE.get(cd.get("status"), 0.0),
-                -cd["composite_score"],
-                -scan_ncs_score(cd),
-            ))
-            selected = selected[:SCAN_DISPLAY_CAP]
+            # 1차 정렬(종합점수 내림차순) — 동점 시 결정적 순서 보장
+            pool.sort(key=lambda cd: (-cd["composite_score"], -scan_ncs_score(cd)))
+            # 2차 다양성 선정(MMR) — 시총티어·섹터 균형
+            selected = scan_diversified_select(pool, SCAN_DISPLAY_CAP)
+
+            # 분포 집계 (투명성·UI 표기용)
+            _tier_dist = {"LARGE": 0, "MID": 0, "SMALL": 0}
+            _sector_dist: dict = {}
+            for cd in selected:
+                _tier_dist[cd.get("cap_tier", "MID")] = _tier_dist.get(cd.get("cap_tier", "MID"), 0) + 1
+                _sec = _scan_sector_key(cd) or "기타"
+                _sector_dist[_sec] = _sector_dist.get(_sec, 0) + 1
 
             _resp = {
                 "regime":          result.regime,
@@ -6889,7 +7042,9 @@ def route(path: str, params: Dict) -> Dict:
                 "far_count":       result.far_count,
                 "good_count":      len(selected),
                 "display_cap":     SCAN_DISPLAY_CAP,
-                "filter_desc":     "상태(진입 가능권) 게이트 + 상태·순복합점수·퀀트모멘텀 종합 점수 순 정렬",
+                "tier_distribution":   _tier_dist,
+                "sector_distribution": _sector_dist,
+                "filter_desc":     "상태·순복합점수·퀀트모멘텀 종합 + 시총티어·섹터 분산(MMR) 선정",
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
@@ -12452,6 +12607,13 @@ function renderScanResult(d, market) {
       '<span style="color:' + regColor + ';font-weight:700">' + (_regimeKo[d.regime] || d.regime || '—') + '</span>' +
       '<span style="color:#484f58;font-size:11px;margin-left:16px">변동성</span>' +
       '<span style="color:' + volColor + ';font-weight:700">' + (_volKo[d.vol_regime] || d.vol_regime || '—') + '</span>' +
+      (function() {
+        var td = d.tier_distribution; if (!td) return '';
+        return '<span style="color:#484f58;font-size:11px;margin-left:16px">시총 분포</span>' +
+          '<span style="font-weight:700;color:#8b949e">대 ' + (td.LARGE||0) + '</span>' +
+          '<span style="font-weight:700;color:#58a6ff">중 ' + (td.MID||0) + '</span>' +
+          '<span style="font-weight:700;color:#3fb950">소 ' + (td.SMALL||0) + '</span>';
+      })() +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
@@ -12483,7 +12645,7 @@ function renderScanResult(d, market) {
            '<div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:2px"></div></div>';
   };
 
-  var rows = cands.slice(0, 30).map(function(c, i) {
+  var rows = cands.slice(0, d.display_cap || 24).map(function(c, i) {
     var ncsColor = c.ncs >= 70 ? '#3fb950' : c.ncs >= 50 ? '#58a6ff' : c.ncs >= 35 ? '#d29922' : '#f85149';
     var fwsColor = c.fws <= 30 ? '#3fb950' : c.fws <= 50 ? '#d29922' : c.fws <= 65 ? '#f97316' : '#f85149';
     var bqsColor = c.bqs >= 65 ? '#3fb950' : c.bqs >= 45 ? '#58a6ff' : '#8b949e';
@@ -12512,9 +12674,16 @@ function renderScanResult(d, market) {
     var displayName = c.name && c.name !== c.ticker ? c.name : c.ticker;
     var displayCode = c.name && c.name !== c.ticker ? c.ticker : '';
 
+    // 시총 티어 배지 (대형/중형/중소형)
+    var capTier  = c.cap_tier || 'MID';
+    var capKo    = c.cap_tier_ko || ({LARGE:'대형', MID:'중형', SMALL:'중소형'}[capTier] || '중형');
+    var capClr   = capTier === 'LARGE' ? '#8b949e' : capTier === 'MID' ? '#58a6ff' : '#3fb950';
+    var capBadge = '<span style="font-size:9px;font-weight:700;color:' + capClr +
+                   ';border:1px solid ' + capClr + '55;border-radius:3px;padding:0 4px;margin-left:5px">' + capKo + '</span>';
+
     return '<tr onclick="document.getElementById(\'ticker-input\').value=\'' + c.ticker + '\';showPage(\'analysis\');analyze()" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
-      '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + '</div>' +
+      '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
            (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
       '<td style="text-align:center">' + statusBadge(c.status) + '</td>' +
       '<td style="text-align:right;font-size:13px;font-weight:600">' + fmtP(c.price) + '</td>' +
