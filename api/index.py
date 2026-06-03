@@ -6404,9 +6404,31 @@ def route(path: str, params: Dict) -> Dict:
             # 종목 5일 변화율 (섹터 상대 비교용)
             _cl5 = [float(c) for c in (dd.get("Close") or []) if c is not None]
             _pct5 = ((_cl5[-1] - _cl5[-6]) / _cl5[-6] * 100.0) if len(_cl5) >= 6 and _cl5[-6] else None
-            # 뉴스 → 감정 분석 입력 (title + published 날짜)
+            # 뉴스 → 감정 분석 입력 (title + published + 출처유형)
             _news_in = [{"title": n.get("title"), "source": n.get("publisher"),
+                         "source_type": "google_news",
                          "published": n.get("published")} for n in (news or []) if n.get("title")]
+            # KRX: 네이버 종목뉴스 + 공시 + DART(키 설정 시)를 감정 입력에 병합.
+            #   출처유형(source_type)을 부여 → confidence_engine이 신뢰도 가중을 적용
+            #   (DART/공시 > 네이버 뉴스 > 포털 RSS). 한국어 헤드라인은 KR-FinBERT로 자동 분석.
+            if market == "KRX" and naver:
+                for _n in (naver.get("news") or []):
+                    if _n.get("title"):
+                        _news_in.append({"title": _n["title"], "source": "naver",
+                                         "source_type": "naver", "published": _n.get("date")})
+                for _d in (naver.get("disclosures") or []):
+                    if _d.get("title"):
+                        _news_in.append({"title": _d["title"], "source": "공시",
+                                         "source_type": "disclosure", "published": _d.get("date")})
+                try:
+                    from market_briefing.data_fetcher import fetch_dart_disclosures
+                    _code = sym.replace(".KS", "").replace(".KQ", "")
+                    for _d in (fetch_dart_disclosures(_code) or []):
+                        if _d.get("title"):
+                            _news_in.append({"title": _d["title"], "source": "DART",
+                                             "source_type": "dart", "published": _d.get("date")})
+                except Exception:
+                    pass
             signal_confidence = build_signal_confidence(
                 technical_score = _tech_sc,
                 ai_score        = _ai_sc,

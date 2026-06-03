@@ -441,6 +441,68 @@ def fetch_stock_disclosures(code: str, limit: int = 5) -> list[dict]:
     return items
 
 
+def fetch_dart_disclosures(code: str, limit: int = 5,
+                           api_key: str | None = None,
+                           corp_code: str | None = None) -> list[dict]:
+    """DART 전자공시 OpenAPI 최근 공시 목록.
+
+    공식 전자공시(DART) 원천. 키/corp_code가 설정된 경우에만 동작하며,
+    미설정 시 []를 반환(이 경우 네이버 공시 미러가 대체 제공).
+
+    설정:
+      · 환경변수 DART_API_KEY            — OpenDART 인증키
+      · corp_code(8자리 DART 고유번호)   — 인자 또는 환경변수
+        DART_CORP_CODE_MAP(JSON, 예: '{"005930":"00126380"}') 로 매핑
+
+    반환: [{title, link, date, source_type:"dart"}]
+    """
+    import os
+    import json as _json
+
+    key = api_key or os.environ.get("DART_API_KEY")
+    if not key:
+        return []
+    cc = corp_code
+    if not cc:
+        raw = os.environ.get("DART_CORP_CODE_MAP")
+        if raw:
+            try:
+                cc = (_json.loads(raw) or {}).get(str(code))
+            except Exception:
+                cc = None
+    if not cc:
+        return []   # corp_code 매핑 없음 → DART 조회 불가(네이버 공시로 대체)
+
+    try:
+        bgn = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
+        resp = requests.get(
+            "https://opendart.fss.or.kr/api/list.json",
+            params={"crtfc_key": key, "corp_code": cc,
+                    "bgn_de": bgn, "page_count": min(limit, 100)},
+            headers={"User-Agent": _UA}, timeout=7,
+        )
+        data = resp.json()
+        if data.get("status") != "000":
+            return []
+        out: list[dict] = []
+        for d in (data.get("list") or [])[:limit]:
+            nm = d.get("report_nm")
+            if not nm:
+                continue
+            rno = d.get("rcept_no", "")
+            dt = str(d.get("rcept_dt", ""))
+            date = f"{dt[:4]}.{dt[4:6]}.{dt[6:8]}" if len(dt) == 8 else dt
+            out.append({
+                "title": nm,
+                "link": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rno}" if rno else "",
+                "date": date,
+                "source_type": "dart",
+            })
+        return out
+    except Exception:
+        return []
+
+
 def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     """yfinance로 20일 종가 시계열 + 52주 고저 + 20일 평균 거래량.
 

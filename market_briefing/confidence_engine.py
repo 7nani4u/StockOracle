@@ -523,6 +523,35 @@ def _recency_weight(age_hours: Optional[float]) -> float:
     return math.exp(-age_hours / _RECENCY_HALF_LIFE_H)
 
 
+# ── 출처 신뢰도 가중 ──────────────────────────────────────────────────────────
+#   공식 공시(DART) > 공시(네이버 미러)/통신사 > 네이버 금융뉴스 > 포털 RSS > 커뮤니티/블로그.
+#   item에 source_type이 있으면 그대로, 없으면 source/publisher 문자열로 추정.
+_SRC_CRED = {
+    "dart": 1.00, "disclosure": 0.95, "filing": 0.95, "공시": 0.95,
+    "wire": 0.90, "naver": 0.85, "news": 0.80,
+    "google_news": 0.60, "google": 0.60, "rss": 0.60,
+    "community": 0.35, "blog": 0.30,
+}
+_DEFAULT_SRC_CRED = 0.65
+
+
+def _source_credibility(item: Dict) -> float:
+    """뉴스 항목의 출처 신뢰도(0..1). source_type 우선, 없으면 source/publisher로 추정."""
+    st = str(item.get("source_type") or "").strip().lower()
+    if st in _SRC_CRED:
+        return _SRC_CRED[st]
+    s = str(item.get("source") or item.get("publisher") or "").lower()
+    if any(k in s for k in ("dart", "공시", "전자공시", "filing")):
+        return _SRC_CRED["disclosure"]
+    if "naver" in s or "네이버" in s:
+        return _SRC_CRED["naver"]
+    if "google" in s:
+        return _SRC_CRED["google_news"]
+    if any(k in s for k in ("blog", "블로그", "카페", "community", "커뮤니티")):
+        return _SRC_CRED["community"]
+    return _DEFAULT_SRC_CRED
+
+
 def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
     """뉴스 헤드라인 감정 분석 — FinBERT 우선, 실패 시 키워드, 최근성 감쇠 가중.
 
@@ -537,9 +566,10 @@ def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
         return {"sentiment_score": 50, "overall": "neutral",
                 "sentiment_source": "none", "sentiment_decay_applied": False,
                 "fallback_used": False, "positive_count": 0, "negative_count": 0,
-                "neutral_count": 0, "reasons": ["No recent news available"], "items": []}
+                "neutral_count": 0, "reasons": ["최근 뉴스 없음"], "items": []}
 
-    items = news_items[:8]
+    # 신뢰도 높은 출처(공시·DART·주요뉴스)가 상한 절단에 살아남도록 우선 정렬 후 상위 12건.
+    items = sorted(news_items, key=_source_credibility, reverse=True)[:12]
     titles = [str(n.get("title") or "") for n in items]
 
     # 언어 감지 → 모델 선택 (한국어 헤드라인 → KR-FinBert-SC, 영어 → FinBERT)
@@ -551,8 +581,11 @@ def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
 
     weighted_sum = 0.0
     total_w = 0.0
+    w2_sum = 0.0              # Σw² — 유효표본수(eff_n) 계산용
     pos = neg = 0
     analyzed = []
+    scored = []              # (score, weight) — 가중분산(일치도) 계산용
+    src_counts: Dict[str, int] = {}
     decay_applied = False
     model_hits = 0          # HF 모델이 실제로 라벨을 인식한 항목 수
 
@@ -566,19 +599,28 @@ def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
             model_hits += 1
 
         age_h = _news_age_hours(item)
-        w = _recency_weight(age_h)
+        # 가중치 = 최신성 × 출처 신뢰도 (고신뢰 공시/뉴스가 포털 RSS·커뮤니티보다 큰 영향)
+        cred = _source_credibility(item)
+        w = _recency_weight(age_h) * cred
         if age_h is not None and age_h > 1:
             decay_applied = True
         weighted_sum += sent["score"] * w
         total_w += w
+        w2_sum += w * w
+        scored.append((sent["score"], w))
         if sent["label"] == "positive":
             pos += 1
         elif sent["label"] == "negative":
             neg += 1
+        _stype = str(item.get("source_type") or item.get("source") or "etc")
+        src_counts[_stype] = src_counts.get(_stype, 0) + 1
         analyzed.append({"title": titles[i], "label": sent["label"],
                          "score": round(sent["score"], 3),
-                         "recency_weight": round(w, 2),
-                         "source": item.get("source")})
+                         "recency_weight": round(_recency_weight(age_h), 2),
+                         "credibility": round(cred, 2),
+                         "weight": round(w, 3),
+                         "source": item.get("source"),
+                         "source_type": item.get("source_type")})
 
     # 모델이 단 하나도 인식 못했으면 사실상 키워드 분석
     if model_hits == 0:
@@ -588,17 +630,32 @@ def analyze_news_sentiment(news_items: List[Dict]) -> Dict[str, Any]:
     avg = weighted_sum / total_w if total_w > 0 else 0.0
     score100 = int(round((avg + 1) * 50))    # -1~1 → 0~100
     overall = "positive" if avg > 0.2 else "negative" if avg < -0.2 else "neutral"
-    eng = {"finbert": "FinBERT", "kr-finbert": "KR-FinBERT", "keyword": "keyword"}.get(source, source)
-    if overall == "positive":
-        reasons = [f"{pos}/{len(items)} headlines bullish, recency-weighted ({eng})"]
-    elif overall == "negative":
-        reasons = [f"{neg}/{len(items)} headlines bearish, recency-weighted ({eng})"]
+
+    # ── 데이터 품질(quality 0..1) — 유효표본수 + 헤드라인 간 일치도 ──────────────
+    eff_n = (total_w * total_w / w2_sum) if w2_sum > 0 else 0.0
+    if total_w > 0:
+        wvar = sum(wi * (si - avg) ** 2 for si, wi in scored) / total_w   # 가중분산 0..1
+        agree = 1.0 - min(1.0, wvar)
     else:
-        reasons = [f"Mixed sentiment: {pos}+ {neg}- (recency-weighted {eng})"]
+        agree = 0.5
+    quality = round(max(0.0, min(1.0, (1.0 - math.exp(-eff_n / 4.0)) * (0.6 + 0.4 * agree))), 3)
+
+    eng = {"finbert": "FinBERT", "kr-finbert": "KR-FinBERT", "keyword": "키워드"}.get(source, source)
+    if overall == "positive":
+        reasons = [f"최근 헤드라인 {pos}/{len(items)}건이 긍정적 (최신성·출처신뢰도 가중, {eng})"]
+    elif overall == "negative":
+        reasons = [f"최근 헤드라인 {neg}/{len(items)}건이 부정적 (최신성·출처신뢰도 가중, {eng})"]
+    else:
+        reasons = [f"혼조 — 긍정 {pos}건 · 부정 {neg}건 (최신성·출처신뢰도 가중, {eng})"]
+    if eff_n < 2.0:
+        reasons.append("표본/출처 신뢰도 부족 → 감정 신뢰도 낮음")
 
     return {"sentiment_score": score100, "overall": overall,
             "sentiment_source": source, "sentiment_lang": lang,
             "sentiment_decay_applied": decay_applied,
+            "credibility_weighted": True,
+            "quality": quality, "effective_n": round(eff_n, 2),
+            "source_breakdown": src_counts,
             "fallback_used": fallback_used, "positive_count": pos, "negative_count": neg,
             "neutral_count": len(items) - pos - neg, "reasons": reasons, "items": analyzed}
 
@@ -616,14 +673,24 @@ def _news_age_hours(item: Dict) -> Optional[float]:
     # RSS/ISO 날짜 문자열 (예: "Mon, 02 Jun 2026 09:00:00 GMT")
     date_str = item.get("published") or item.get("date") or item.get("pubDate")
     if date_str and isinstance(date_str, str):
+        s = date_str.strip()
         try:
             from email.utils import parsedate_to_datetime
-            dtv = parsedate_to_datetime(date_str)
+            dtv = parsedate_to_datetime(s)
             if dtv is not None:
-                epoch = dtv.timestamp()
-                return max(0.0, (time.time() - epoch) / 3600.0)
+                return max(0.0, (time.time() - dtv.timestamp()) / 3600.0)
         except Exception:
             pass
+        # 네이버 금융 날짜 형식 (예: "2026.06.02 09:00", "2026.06.02", "06.02 09:00")
+        from datetime import datetime as _dt
+        for fmt in ("%Y.%m.%d %H:%M", "%Y.%m.%d", "%m.%d %H:%M"):
+            try:
+                dtv = _dt.strptime(s, fmt)
+                if dtv.year == 1900:                       # 연도 없는 형식 → 올해로 보정
+                    dtv = dtv.replace(year=_dt.now().year)
+                return max(0.0, (time.time() - dtv.timestamp()) / 3600.0)
+            except ValueError:
+                continue
     return None
 
 
