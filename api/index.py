@@ -10620,32 +10620,32 @@ function renderForecast(d, isKrx) {
         const failHtml = (sc.failure_conditions || [])
           .map(f => `<div style="display:flex;align-items:flex-start;gap:5px;margin-bottom:2px"><span style="color:#f97316;flex-shrink:0">•</span><span>${f}</span></div>`)
           .join('');
-        // ── 눌림목 정밀 가격 블록 (카드 성격별 배치, 값 없으면 미표시) ──
+        // ── 눌림목 정밀가 (카드 성격별 1~2개 항목) — 카드 기본 구분선/헤더 톤 재사용 ──
+        //    라벨(좌)·값(우) 정렬 + 보조문구 별도 줄로 가독성 확보, 값 없으면 미표시.
         const pbHtml = (() => {
           if (!pa) return '';
-          const box = (border, inner) => `<div style="margin-top:8px;padding:8px 10px;background:#0d1117;border:1px solid ${border};border-radius:6px">${inner}</div>`;
-          const lbl = t => `<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px">📌 ${t}</div>`;
+          let items = [];
           if (sc.label === '보수적' && pa.stop_loss != null) {
-            return box('#f8514955', lbl('눌림목 정밀 손절선') +
-              `<span style="font-size:14px;font-weight:800;color:#f85149">${fmt(pa.stop_loss, isKrx)}</span>` +
-              (pa.stop_loss_pct != null ? `<span style="font-size:10px;color:#d29922;margin-left:6px">${pa.stop_loss_pct}% · 이탈 시 정리</span>` : ''));
+            items.push({ label: '정밀 손절선', value: pa.stop_loss, color: '#f85149',
+              sub: (pa.stop_loss_pct != null ? `${pa.stop_loss_pct}% · ` : '') + '이탈 시 정리' });
+          } else if (sc.label === '중립적' && pa.target_main != null) {
+            items.push({ label: '1차 정밀 목표가', value: pa.target_main, color: '#3fb950',
+              sub: [pa.rr_main != null ? `R/R ${pa.rr_main}:1` : '', pa.target_source || ''].filter(Boolean).join(' · ') });
+          } else if (sc.label === '공격적') {
+            if (pa.target_ext != null) items.push({ label: '2차 목표 (돌파 후)', value: pa.target_ext, color: '#58a6ff', sub: '1차 돌파 확인 후 홀딩 기준' });
+            if (pa.trail_stop != null) items.push({ label: '트레일링 스탑', value: pa.trail_stop, color: '#bc8cff', sub: 'ATR×1.5 · 수익 보전' });
           }
-          if (sc.label === '중립적' && pa.target_main != null) {
-            return box('#3fb95055', lbl('눌림목 1차 정밀 목표가') +
-              `<span style="font-size:14px;font-weight:800;color:#3fb950">${fmt(pa.target_main, isKrx)}</span>` +
-              (pa.rr_main != null ? `<span style="font-size:10px;color:#d29922;margin-left:6px">R/R ${pa.rr_main}:1</span>` : '') +
-              (pa.target_source ? `<div style="font-size:9px;color:#58a6ff;margin-top:2px">${pa.target_source}</div>` : ''));
-          }
-          if (sc.label === '공격적') {
-            let inner = '';
-            if (pa.target_ext != null) inner += lbl('눌림목 2차 목표 (돌파 후)') +
-              `<span style="font-size:14px;font-weight:800;color:#58a6ff">${fmt(pa.target_ext, isKrx)}</span>`;
-            if (pa.trail_stop != null) inner += `<div style="margin-top:6px">` + lbl('트레일링 스탑') +
-              `<span style="font-size:13px;font-weight:800;color:#bc8cff">${fmt(pa.trail_stop, isKrx)}</span>` +
-              `<span style="font-size:9px;color:#8b949e;margin-left:6px">ATR×1.5 · 수익 보전</span></div>`;
-            return inner ? box('#30363d', inner) : '';
-          }
-          return '';
+          if (!items.length) return '';
+          const rows = items.map(it => `
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+              <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
+              <span style="font-size:13px;font-weight:700;color:${it.color}">${fmt(it.value, isKrx)}</span>
+            </div>${it.sub ? `<div style="font-size:10px;color:#8b949e;margin-top:1px;margin-bottom:5px">${it.sub}</div>` : '<div style="margin-bottom:5px"></div>'}`).join('');
+          return `
+          <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📌 눌림목 정밀가</div>
+            ${rows}
+          </div>`;
         })();
         return `
         <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
