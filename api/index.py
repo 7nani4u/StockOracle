@@ -10615,34 +10615,72 @@ function renderForecast(d, isKrx) {
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     // 📌 눌림목 분석 기반 정밀 가격 — 시나리오 카드에 통합 (별도 섹션 폐지)
     const pa = d.pullback_analysis || null;
+    // 고대비 구분선 — 카드 배경(녹/적 틴트·다크·라이트)에 무관하게 항상 보이도록
+    //   진한 검정 선 + 안쪽 미세 하이라이트(engraved)로 대비 확보. 4개 영역 공통 사용.
+    const DIVIDER = 'border-top:2px solid rgba(0,0,0,0.85);box-shadow:inset 0 2px 0 rgba(255,255,255,0.06)';
     rgEl.innerHTML = `
       ${riskEntries.map(sc => {
         const failHtml = (sc.failure_conditions || [])
           .map(f => `<div style="display:flex;align-items:flex-start;gap:5px;margin-bottom:2px"><span style="color:#f97316;flex-shrink:0">•</span><span>${f}</span></div>`)
           .join('');
-        // ── 눌림목 정밀가 (카드 성격별 1~2개 항목) — 카드 기본 구분선/헤더 톤 재사용 ──
-        //    라벨(좌)·값(우) 정렬 + 보조문구 별도 줄로 가독성 확보, 값 없으면 미표시.
+        // ── 눌림목 정밀가 — TP(목표가 레벨)와의 관계로 중복 제거 후 출력 ──
+        //   목표형 가격(1·2차)은 TP1~TP3와 비교:
+        //     ① TP와 일치(±0.25%)        → "TPn 연계" 뱃지 (별도 목표가 미생성)
+        //     ② TP 구간 내부 포함          → "TPi~TPj 구간" 뱃지 (중복 생성 안 함)
+        //     ③ 어느 구간에도 미포함        → 독립 가격 레벨로 출력
+        //   손절선·트레일링 스탑은 목표가가 아니므로 항상 단일가로 표시.
         const pbHtml = (() => {
           if (!pa) return '';
+          const TOL = 0.0025;   // TP 일치 허용오차 (0.25%)
+          const tpPrices = (sc.tp_levels || []).map(t => t && t.price).filter(v => v != null);
+          const tpRel = (price) => {
+            if (price == null || !tpPrices.length) return { type: 'none' };
+            for (let i = 0; i < tpPrices.length; i++) {
+              if (tpPrices[i] && Math.abs(price - tpPrices[i]) / tpPrices[i] <= TOL) return { type: 'eq', n: i + 1 };
+            }
+            const lo = Math.min(...tpPrices), hi = Math.max(...tpPrices);
+            if (price > lo && price < hi) {
+              const s = tpPrices.map((p, i) => ({ p, n: i + 1 })).sort((a, b) => a.p - b.p);
+              for (let i = 0; i < s.length - 1; i++) {
+                if (price >= s[i].p && price <= s[i + 1].p) return { type: 'between', a: s[i].n, b: s[i + 1].n };
+              }
+            }
+            return { type: 'out' };
+          };
+          // 목표형 항목 빌더: TP 관계에 따라 뱃지/독립가 분기
+          const targetItem = (price, baseLabel, color, sub) => {
+            const r = tpRel(price);
+            if (r.type === 'eq')      return { label: baseLabel, rel: `TP${r.n} 연계` };
+            if (r.type === 'between') return { label: baseLabel, rel: `TP${r.a}~TP${r.b} 구간` };
+            return { label: baseLabel + ' (독립 레벨)', value: price, color, sub };  // out/none
+          };
+
           let items = [];
           if (sc.label === '보수적' && pa.stop_loss != null) {
             items.push({ label: '정밀 손절선', value: pa.stop_loss, color: '#f85149',
               sub: (pa.stop_loss_pct != null ? `${pa.stop_loss_pct}% · ` : '') + '이탈 시 정리' });
           } else if (sc.label === '중립적' && pa.target_main != null) {
-            items.push({ label: '1차 정밀 목표가', value: pa.target_main, color: '#3fb950',
-              sub: [pa.rr_main != null ? `R/R ${pa.rr_main}:1` : '', pa.target_source || ''].filter(Boolean).join(' · ') });
+            const sub = [pa.rr_main != null ? `R/R ${pa.rr_main}:1` : '', pa.target_source || ''].filter(Boolean).join(' · ');
+            items.push(targetItem(pa.target_main, '1차 진입 보강 구간', '#3fb950', sub));
           } else if (sc.label === '공격적') {
-            if (pa.target_ext != null) items.push({ label: '2차 목표 (돌파 후)', value: pa.target_ext, color: '#58a6ff', sub: '1차 돌파 확인 후 홀딩 기준' });
+            if (pa.target_ext != null) items.push(targetItem(pa.target_ext, '2차 돌파 확인 구간', '#58a6ff', '1차 돌파 확인 후 홀딩 기준'));
             if (pa.trail_stop != null) items.push({ label: '트레일링 스탑', value: pa.trail_stop, color: '#bc8cff', sub: 'ATR×1.5 · 수익 보전' });
           }
           if (!items.length) return '';
-          const rows = items.map(it => `
-            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
-              <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
-              <span style="font-size:13px;font-weight:700;color:${it.color}">${fmt(it.value, isKrx)}</span>
-            </div>${it.sub ? `<div style="font-size:10px;color:#8b949e;margin-top:1px;margin-bottom:5px">${it.sub}</div>` : '<div style="margin-bottom:5px"></div>'}`).join('');
+          const rows = items.map(it => {
+            if (it.rel) {   // TP 연계/구간 — 뱃지로만 표시(가격 중복 없음)
+              return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:5px">
+                <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
+                <span style="font-size:11px;font-weight:700;color:#58a6ff;background:#58a6ff1a;border-radius:4px;padding:1px 7px">${it.rel}</span>
+              </div>`;
+            }
+            return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+                <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
+                <span style="font-size:13px;font-weight:700;color:${it.color}">${fmt(it.value, isKrx)}</span>
+              </div>${it.sub ? `<div style="font-size:10px;color:#8b949e;margin-top:1px;margin-bottom:5px">${it.sub}</div>` : '<div style="margin-bottom:5px"></div>'}`;
+          }).join('');
           return `
-          <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+          <div style="margin-top:8px;padding-top:8px;${DIVIDER}">
             <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📌 눌림목 정밀가</div>
             ${rows}
           </div>`;
@@ -10660,7 +10698,7 @@ function renderForecast(d, isKrx) {
             <span class="risk-lbl">🛑 손절가</span>
             <span class="risk-stp" style="font-size:12px">${fmt(sc.stop[0], isKrx)} ~ ${fmt(sc.stop[1], isKrx)}</span>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;${DIVIDER}">
             <div>
               <div style="font-size:10px;color:#8b949e">손절 %</div>
               <div style="font-size:12px;color:#f85149;font-weight:700">${sc.stop_pct}%</div>
@@ -10677,7 +10715,7 @@ function renderForecast(d, isKrx) {
           ${pbHtml}
           <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
           ${sc.tp_levels && sc.tp_levels.length ? `
-          <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+          <div style="margin-top:8px;padding-top:8px;${DIVIDER}">
             <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📊 목표가 레벨별 도달 확률</div>
             ${sc.tp_levels.map((lv, i) => {
               const tpC = lv.prob_pct >= 65 ? '#3fb950' : lv.prob_pct >= 45 ? '#d29922' : '#f97316';
@@ -10691,7 +10729,7 @@ function renderForecast(d, isKrx) {
             }).join('')}
           </div>` : ''}
           ${failHtml ? `
-          <div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">
+          <div style="margin-top:8px;padding-top:8px;${DIVIDER}">
             <div style="font-size:10px;color:#f97316;margin-bottom:4px;font-weight:600">⚠️ 이 시나리오가 실패할 수 있는 조건</div>
             <div style="font-size:11px;color:#8b949e;line-height:1.5">${failHtml}</div>
           </div>` : ''}
