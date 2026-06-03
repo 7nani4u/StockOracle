@@ -10493,6 +10493,50 @@ function renderForecast(d, isKrx) {
         </div>`;
       };
 
+      // ── 밴드 가격대 ↔ 핵심 구간/분할 매수 단계 자동 매칭 ───────────────────────
+      //   폐지된 "📍 핵심 가격 구간"·"📊 분할 매수 전략"의 설명을, 각 밴드의 가격대(range)가
+      //   포함되는 구간/단계에 한해 해당 밴드 카드 안에 출력한다. (구체 가격 숫자는 미표시)
+      const _paZS = d.pullback_analysis || null;
+      const _zoneDefs = (_paZS && _paZS.zones) ? [
+        { label: '저항대 (목표)',           color: '#f85149', lo: _paZS.zones.resistance && _paZS.zones.resistance.low, hi: _paZS.zones.resistance && _paZS.zones.resistance.high },
+        { label: '핵심 가격대 (지지↔저항)', color: '#3fb950', lo: _paZS.zones.core && _paZS.zones.core.low,             hi: _paZS.zones.core && _paZS.zones.core.high },
+        { label: '방어 구간 (추세선+MA)',   color: '#58a6ff', lo: _paZS.zones.defense && _paZS.zones.defense.low,       hi: _paZS.zones.defense && _paZS.zones.defense.high },
+      ].filter(z => z.lo != null && z.hi != null) : [];
+      // 단계 설명 — 가격 숫자 없는 정적 문구(백엔드 4차 desc의 저항선 가격 제거 목적)
+      const _stageDescMap = {
+        '1차': '일치가격대 상단 최초 도달 — 반응 확인 소액 진입',
+        '2차': '지지대 재테스트 구간 — 거래량 감소 + 지지 확인',
+        '3차': '반등 후 지지 유지 확인 — 단기 고점 돌파 시',
+        '4차': '저항선 돌파 시 — 거래량 동반 확인 필수',
+      };
+      const _stageDefs = (_paZS && _paZS.entry_zones) ? _paZS.entry_zones.map(z => ({
+        stage: z.stage,
+        desc:  _stageDescMap[(z.stage || '').slice(0, 2)] || z.desc,
+        color: z.color,
+        lo: z.range && z.range[0], hi: z.range && z.range[1],
+      })).filter(z => z.lo != null && z.hi != null) : [];
+      // 두 가격 범위가 겹치는지(= 밴드 가격대가 해당 구간/단계에 포함되는지)
+      const _overlap = (alo, ahi, blo, bhi) =>
+        Math.min(alo, ahi) <= Math.max(blo, bhi) && Math.min(blo, bhi) <= Math.max(alo, ahi);
+      // 밴드 → 매칭된 핵심 구간 + 분할 매수 단계 설명 HTML
+      const zoneStageHtml = (b) => {
+        if (!b || !b.range || b.range[0] == null) return '';
+        const lo = b.range[0], hi = b.range[1];
+        const zoneRows = _zoneDefs
+          .filter(z => _overlap(lo, hi, z.lo, z.hi))
+          .map(z => `<div style="font-size:11px;font-weight:700;color:${z.color}">${z.label}</div>`)
+          .join('');
+        const stageRows = _stageDefs
+          .filter(z => _overlap(lo, hi, z.lo, z.hi))
+          .map(z => `<div style="margin-top:4px">
+              <div style="font-size:11px;font-weight:700;color:${z.color || '#cdd9e5'}">${z.stage}</div>
+              <div style="font-size:10px;color:#8b949e;line-height:1.5">${z.desc}</div>
+            </div>`)
+          .join('');
+        if (!zoneRows && !stageRows) return '';
+        return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d">${zoneRows}${stageRows}</div>`;
+      };
+
       const renderBandCard = (b, i, isRec) => {
         const bc = bandColor[i] || '#58a6ff';
         const isActive = activeBands.includes(b.band);
@@ -10509,6 +10553,7 @@ function renderForecast(d, isKrx) {
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
             <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
             ${fibLinkHtml(b)}
+            ${zoneStageHtml(b)}
           </div>`;
         } else {
           return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
@@ -10520,31 +10565,10 @@ function renderForecast(d, isKrx) {
             <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
             ${fibLinkHtml(b)}
+            ${zoneStageHtml(b)}
           </div>`;
         }
       };
-
-      // ── 폐지된 "📍 핵심 가격 구간" · "📊 분할 매수 전략" 섹션의 전략 설명을 통합 ──
-      //   구체적 가격 숫자는 표시하지 않고, 진입 위치 판단 기준과 단계별 매수 원칙만 안내한다.
-      const splitBuyNote = `
-        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #21262d">
-          <div style="font-size:11px;font-weight:700;color:#8b949e;margin-bottom:6px">📊 분할 매수 전략 <span style="font-size:10px;font-weight:400;color:#484f58">— 한 번에 투입 금지, 단계별 확인 진입</span></div>
-          <div style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:#8b949e;line-height:1.5">
-            <div><b style="color:#58a6ff">1차 (탐색 매수)</b> · 일치가격대 상단 최초 도달 시, 반응을 확인하며 소액 진입</div>
-            <div><b style="color:#3fb950">2차 (눌림목 매수)</b> · 지지대 재테스트 구간에서 거래량 감소와 지지 확인 후 진입</div>
-            <div><b style="color:#d29922">3차 (재확인 매수)</b> · 반등 후 지지 유지가 확인되고 단기 고점 돌파 시 진입</div>
-            <div><b style="color:#f78166">4차 (돌파 추격)</b> · 저항선 돌파 시 진입하되, 거래량 동반 확인 필수</div>
-          </div>
-        </div>`;
-      const coreZoneNote = `
-        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #21262d">
-          <div style="font-size:11px;font-weight:700;color:#8b949e;margin-bottom:6px">📍 핵심 가격 구간 <span style="font-size:10px;font-weight:400;color:#484f58">— 진입 위치 판단 기준</span></div>
-          <div style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:#8b949e;line-height:1.5">
-            <div><b style="color:#f85149">저항대 (목표)</b> · 단기 고점·매물대가 몰린 상단 — 차익 실현·돌파 확인 구간</div>
-            <div><b style="color:#3fb950">핵심 가격대 (지지↔저항)</b> · 지지와 저항이 전환되는 중심 구간 — 눌림목 매수의 핵심 자리</div>
-            <div><b style="color:#58a6ff">방어 구간 (추세선+MA)</b> · 추세선과 이동평균이 밀집한 하단 방어선 — 이탈 시 보수적 대응</div>
-          </div>
-        </div>`;
 
       const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
         ? `<div class="buy-card recommended" style="padding:12px 14px">
@@ -10553,7 +10577,6 @@ function renderForecast(d, isKrx) {
               <div style="font-size:10px;color:#484f58">※ 지지선·이평선·VWAP 앵커 기반</div>
             </div>
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
-            ${coreZoneNote}
           </div>` : '';
 
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
@@ -10563,7 +10586,6 @@ function renderForecast(d, isKrx) {
               <div style="font-size:10px;color:#484f58">※ 백테스트(1년·${bp.market||'KRX'}) 기저확률 + 추세·RSI 보정</div>
             </div>
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
-            ${splitBuyNote}
           </div>` : '';
 
       bpEl.innerHTML = stratBanner + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
