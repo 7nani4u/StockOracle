@@ -9374,76 +9374,10 @@ function renderPullbackIntoAI(d, isKrx) {
 function renderPullbackIntoForecast(d, isKrx) {
   const el = document.getElementById('pullback-forecast-section');
   if (!el) return;
-  const init = _pullbackInit(d, isKrx);
-  if (!init) { el.innerHTML = ''; return; }
-  const { pa, C, fmtP } = init;
-
-  const entryRows = (pa.entry_zones || []).map(z => `
-    <div style="border-left:3px solid ${z.color};padding:8px 10px;margin-bottom:8px;background:#1c2128;border-radius:0 6px 6px 0">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
-        <span style="color:${z.color};font-weight:700;font-size:13px">${z.stage}</span>
-        <span style="color:#e6edf3;font-size:13px;font-weight:600">${fmtP(z.range[0])} ~ ${fmtP(z.range[1])}</span>
-        <span style="background:#30363d;border-radius:4px;padding:2px 8px;color:#8b949e;font-size:11px">${z.ratio}</span>
-      </div>
-      <div style="color:#8b949e;font-size:12px;margin-top:4px">${z.desc}</div>
-    </div>`).join('');
-
-  const rrRows = (pa.rr_scenarios || []).map(s => {
-    const rrC = s.rr >= 2.3 ? C.green : s.rr >= 2.0 ? C.yellow : C.red;
-    return `<div style="background:#1c2128;border-radius:6px;padding:10px;border:1px solid ${s.viable ? C.green : '#30363d'}">
-      <div style="color:#cdd9e5;font-size:12px;font-weight:600;margin-bottom:6px">${s.label}</div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px">
-        <span>진입 <b style="color:#e6edf3">${fmtP(s.entry)}</b></span>
-        <span>목표 <b style="color:${C.green}">${fmtP(s.target)}</b></span>
-        <span>손절 <b style="color:${C.red}">${fmtP(s.stop)}</b></span>
-        <span style="color:${rrC};font-weight:700">R/R ${s.rr}:1</span>
-      </div>
-    </div>`;
-  }).join('');
-
-  // 현재가 위치와 핵심 구간의 관계 해석
-  const curPrice = d ? (d.last_close || 0) : 0;
-  const zones = pa.zones || {};
-  const inCoreZone = zones.core && curPrice >= zones.core.low && curPrice <= zones.core.high;
-  const aboveResist = zones.resistance && curPrice > zones.resistance.high;
-  const zoneDesc = aboveResist
-    ? '현재가가 저항대 위에 위치합니다. 돌파 지속 여부를 확인하세요.'
-    : inCoreZone
-    ? '현재가가 핵심 지지/저항 전환 구간에 위치합니다. 반응을 주시하세요.'
-    : zones.defense && curPrice < zones.defense.low
-    ? '현재가가 방어 구간 아래입니다. 추가 하락 방어선을 확인하세요.'
-    : '현재가 위치를 핵심 구간과 비교하여 진입 타이밍을 판단하세요.';
-
-  el.innerHTML = `
-  <!-- 핵심 가격 구간 -->
-  <div style="margin-top:16px;border-top:1px solid #21262d;padding-top:16px">
-    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📍 핵심 가격 구간</div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:10px">${zoneDesc}</div>
-    <div style="display:flex;flex-direction:column;gap:6px">
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#161b22;border-left:3px solid ${C.red};border-radius:0 6px 6px 0">
-        <span style="color:#cdd9e5;font-size:12px;font-weight:600">저항대 (목표)</span>
-        <span style="color:${C.red};font-size:13px;font-weight:700">${fmtP(pa.zones.resistance.low)} ~ ${fmtP(pa.zones.resistance.high)}</span>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#161b22;border-left:3px solid ${C.green};border-radius:0 6px 6px 0">
-        <span style="color:#cdd9e5;font-size:12px;font-weight:600">핵심 가격대 (지지↔저항)</span>
-        <span style="color:${C.green};font-size:13px;font-weight:700">${fmtP(pa.zones.core.low)} ~ ${fmtP(pa.zones.core.high)}</span>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#161b22;border-left:3px solid ${C.blue};border-radius:0 6px 6px 0">
-        <span style="color:#cdd9e5;font-size:12px;font-weight:600">방어 구간 (추세선+MA)</span>
-        <span style="color:${C.blue};font-size:13px;font-weight:700">${fmtP(pa.zones.defense.low)} ~ ${fmtP(pa.zones.defense.high)}</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- 분할 매수 전략 -->
-  <div style="margin-top:16px;border-top:1px solid #21262d;padding-top:16px">
-    <div style="font-size:11px;font-weight:700;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📊 분할 매수 전략</div>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:10px">
-      물량을 한 번에 투입하지 않고 구간별로 나눠 평균 단가를 낮추는 전략입니다.
-    </div>
-    ${entryRows}
-  </div>
-  `;
+  // 📍 핵심 가격 구간 · 📊 분할 매수 전략 섹션은 폐지됨.
+  //   두 섹션의 전략 설명(가격 숫자 제외)은 "🎯 현재가 기준 매수 전략"의
+  //   ⚡ 1차 매수 구간(ATR 기반) / 📍 2차 매수 구간 카드에 통합되었다. (renderForecast 참조)
+  el.innerHTML = '';
 }
 
 // ── (하위 호환) 눌림목/손익비 분석 렌더 — 더 이상 사용하지 않음 ───────────────
@@ -9787,15 +9721,26 @@ function renderHybridSection(d) {
     : `<span style="color:${C.green}">✓ ${antiChase.reason || '현재가가 과도하게 올라있지 않습니다'}</span>`;
 
   // 권장 진입가 / 손절 기준가
-  const entryRow = (entryTrigger && stopPrice) ? `
+  //   · entryTrigger : 20일 고점 위 적응형 돌파 트리거 (HybridTurtle Module 11b).
+  //                    "돌파 매수" 진입 판단 로직과 일치하므로 현재가가 아닌 돌파가를 표시한다.
+  //   · stopPrice    : 진입가 − 1.5×ATR. 백엔드 값이 누락/역전(진입가 이상)된 경우
+  //                    ATR(절대값) 기준으로 재계산해 "항상 진입가보다 낮은" 손절선을 보장한다.
+  const _atrAbs = (typeof hs.atr === 'number' && hs.atr > 0) ? hs.atr : null;
+  const _entry  = (typeof entryTrigger === 'number' && entryTrigger > 0) ? entryTrigger : null;
+  let   _stop   = (typeof stopPrice === 'number' && stopPrice > 0) ? stopPrice : null;
+  if (_entry && _atrAbs && (!_stop || _stop >= _entry)) {
+    _stop = _entry - 1.5 * _atrAbs;   // 논리 보정: 손절가는 반드시 진입가 아래
+  }
+  const _riskPct = (_entry && _stop) ? ((_stop - _entry) / _entry * 100) : null;
+  const entryRow = (_entry && _stop && _stop > 0) ? `
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
       <div style="flex:1;min-width:120px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px 10px">
-        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">권장 진입가</div>
-        <div style="font-size:13px;font-weight:700;color:${C.blue}">${fmtNum(entryTrigger, isKrx)}</div>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:2px">권장 진입가 <span style="font-size:9px">(20일 고점 돌파 시)</span></div>
+        <div style="font-size:13px;font-weight:700;color:${C.blue}">${fmtPrice(_entry, isKrx)}</div>
       </div>
       <div style="flex:1;min-width:120px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px 10px">
         <div style="font-size:10px;color:#8b949e;margin-bottom:2px">손절 기준가 <span style="font-size:9px">(이 가격 이탈 시 손실 제한)</span></div>
-        <div style="font-size:13px;font-weight:700;color:${C.red}">${fmtNum(stopPrice, isKrx)}</div>
+        <div style="font-size:13px;font-weight:700;color:${C.red}">${fmtPrice(_stop, isKrx)}${_riskPct != null ? ` <span style="font-size:10px;color:#8b949e;font-weight:400">진입가 대비 ${_riskPct.toFixed(1)}%</span>` : ''}</div>
       </div>
     </div>` : '';
 
@@ -10579,6 +10524,28 @@ function renderForecast(d, isKrx) {
         }
       };
 
+      // ── 폐지된 "📍 핵심 가격 구간" · "📊 분할 매수 전략" 섹션의 전략 설명을 통합 ──
+      //   구체적 가격 숫자는 표시하지 않고, 진입 위치 판단 기준과 단계별 매수 원칙만 안내한다.
+      const splitBuyNote = `
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #21262d">
+          <div style="font-size:11px;font-weight:700;color:#8b949e;margin-bottom:6px">📊 분할 매수 전략 <span style="font-size:10px;font-weight:400;color:#484f58">— 한 번에 투입 금지, 단계별 확인 진입</span></div>
+          <div style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:#8b949e;line-height:1.5">
+            <div><b style="color:#58a6ff">1차 (탐색 매수)</b> · 일치가격대 상단 최초 도달 시, 반응을 확인하며 소액 진입</div>
+            <div><b style="color:#3fb950">2차 (눌림목 매수)</b> · 지지대 재테스트 구간에서 거래량 감소와 지지 확인 후 진입</div>
+            <div><b style="color:#d29922">3차 (재확인 매수)</b> · 반등 후 지지 유지가 확인되고 단기 고점 돌파 시 진입</div>
+            <div><b style="color:#f78166">4차 (돌파 추격)</b> · 저항선 돌파 시 진입하되, 거래량 동반 확인 필수</div>
+          </div>
+        </div>`;
+      const coreZoneNote = `
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #21262d">
+          <div style="font-size:11px;font-weight:700;color:#8b949e;margin-bottom:6px">📍 핵심 가격 구간 <span style="font-size:10px;font-weight:400;color:#484f58">— 진입 위치 판단 기준</span></div>
+          <div style="display:flex;flex-direction:column;gap:5px;font-size:11px;color:#8b949e;line-height:1.5">
+            <div><b style="color:#f85149">저항대 (목표)</b> · 단기 고점·매물대가 몰린 상단 — 차익 실현·돌파 확인 구간</div>
+            <div><b style="color:#3fb950">핵심 가격대 (지지↔저항)</b> · 지지와 저항이 전환되는 중심 구간 — 눌림목 매수의 핵심 자리</div>
+            <div><b style="color:#58a6ff">방어 구간 (추세선+MA)</b> · 추세선과 이동평균이 밀집한 하단 방어선 — 이탈 시 보수적 대응</div>
+          </div>
+        </div>`;
+
       const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
         ? `<div class="buy-card recommended" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
@@ -10586,6 +10553,7 @@ function renderForecast(d, isKrx) {
               <div style="font-size:10px;color:#484f58">※ 지지선·이평선·VWAP 앵커 기반</div>
             </div>
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
+            ${coreZoneNote}
           </div>` : '';
 
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
@@ -10595,6 +10563,7 @@ function renderForecast(d, isKrx) {
               <div style="font-size:10px;color:#484f58">※ 백테스트(1년·${bp.market||'KRX'}) 기저확률 + 추세·RSI 보정</div>
             </div>
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
+            ${splitBuyNote}
           </div>` : '';
 
       bpEl.innerHTML = stratBanner + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
