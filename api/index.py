@@ -10123,7 +10123,7 @@ function renderForecast(d, isKrx) {
       const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
         ? `<div class="buy-card recommended" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 권장 매수 구간</div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 2차 매수 구간</div>
               <div style="font-size:10px;color:#484f58">※ 지지선·이평선·VWAP 앵커 기반</div>
             </div>
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
@@ -10132,13 +10132,13 @@ function renderForecast(d, isKrx) {
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
         ? `<div class="buy-card aggressive" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">⚡ 단기 진입 구간 (ATR 기반)</div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">⚡ 1차 매수 구간 (ATR 기반)</div>
               <div style="font-size:10px;color:#484f58">※ 백테스트(1년·${bp.market||'KRX'}) 기저확률 + 추세·RSI 보정</div>
             </div>
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + `<div class="buy-price-grid">${recBandsHtml}${aggBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
     }
   }
 
