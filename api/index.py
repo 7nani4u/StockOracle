@@ -8356,10 +8356,6 @@ input::placeholder{color:#484f58}
           <div class="card-title">💡 AI 종합 진단 및 트레이딩 전략</div>
           <div id="ai-strategy-section"></div>
         </div>
-        <div class="card" id="r-fib-card" style="display:none">
-          <div class="card-title" id="r-fib-label">📐 피보나치 되돌림 기준</div>
-          <div id="r-fib-content" style="margin-top:8px;font-size:12px"></div>
-        </div>
         <div class="card">
           <div class="card-title">📈 향후 주가 상승 가능 범위 (목표가 예측)</div>
           <div id="target-price-section"></div>
@@ -9167,61 +9163,8 @@ function renderResult(d) {
     atrPctEl.style.display = 'none';
   }
 
-  // 피보나치 되돌림 카드 → 예측 탭 (분할 매수 전략 이전 위치)
-  const fibCard    = document.getElementById('r-fib-card');
-  const fibContent = document.getElementById('r-fib-content');
-  const fibLabel   = document.getElementById('r-fib-label');
-  const _fib = (d.buy_price && d.buy_price.fib) || {};
-  if (fibCard && fibContent && _fib.f382) {
-    const _pl  = _fib.period_label || '분석 기간';
-    if (fibLabel) fibLabel.textContent = `📐 피보나치 되돌림 기준 (${_pl})`;
-    const cur  = d.last_close || 0;
-
-    // 현재가 구간 판단
-    const _zone = (() => {
-      if (cur >= _fib.h60)  return { lbl:'▲ 고점 상단 — 아직 조정 없음',              bg:'#0d2d1a', txt:'#3fb950' };
-      if (cur >= _fib.f382) return { lbl:'얕은 조정 구간 (38.2% 미만) — 추세 유지',    bg:'#0d1b33', txt:'#58a6ff' };
-      if (cur >= _fib.f500) return { lbl:'📌 1차 매수 검토 구간 (38.2 ~ 50%)',         bg:'#2d1500', txt:'#f97316' };
-      if (cur >= _fib.f618) return { lbl:'📌 2차 매수 검토 구간 (50 ~ 61.8%)',         bg:'#2d2200', txt:'#d29922' };
-      if (cur >  _fib.l60)  return { lbl:'⚠️ 61.8% 이탈 — 추가 하락 주의, 관망 검토', bg:'#2d1515', txt:'#f85149' };
-      return                        { lbl:'🛑 스윙 저점 이탈 — 신규 매수 중단',         bg:'#2d1515', txt:'#f85149' };
-    })();
-
-    // 핵심 3단계 레벨 행 (✅ = 현재가가 해당 가격 이하로 내려온 상태)
-    const _lvRow = (num, label, val, clr, desc) => `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:6px;background:#1c2128;border-left:3px solid ${clr};border-radius:0 8px 8px 0">
-        <span style="color:${clr};font-weight:700;font-size:12px;min-width:20px">${num}</span>
-        <div style="flex:1">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="color:#cdd9e5;font-size:12px;font-weight:600">${label}</span>
-            <span style="color:${clr};font-size:13px;font-weight:700">${fmt(val, isKrx)}
-              ${cur <= val ? '<span style="font-size:10px;color:#3fb950;margin-left:6px">✅ 도달</span>' : ''}
-            </span>
-          </div>
-          <div style="color:#8b949e;font-size:11px;margin-top:2px">${desc}</div>
-        </div>
-      </div>`;
-
-    fibContent.innerHTML = `
-      <p style="font-size:12px;color:#8b949e;margin-bottom:10px">
-        최근 스윙 고점(${fmt(_fib.h60, isKrx)})에서 저점(${fmt(_fib.l60, isKrx)})까지의 하락 폭을 기준으로,
-        현재 가격이 얼마나 되돌아왔는지 보여줍니다. 수치가 클수록 더 많이 빠진 상태입니다.
-      </p>
-      <div style="background:${_zone.bg};color:${_zone.txt};padding:7px 14px;border-radius:8px;font-size:12px;font-weight:700;margin-bottom:14px;border:1px solid ${_zone.txt}44">
-        현재 구간: ${_zone.lbl}
-      </div>
-      <div style="font-size:11px;color:#8b949e;margin-bottom:8px;font-weight:600">분할 매수 기준 가격</div>
-      ${_lvRow('①', '38.2% 되돌림', _fib.f382, '#f97316', '추세가 살아있고 거래량이 줄지 않았다면 1차 매수 검토 (비중 25~30%)')}
-      ${_lvRow('②', '50% 되돌림',   _fib.f500, '#d29922', 'RSI가 과매도 구간에 근접했다면 2차 매수 검토 (비중 30%)')}
-      ${_lvRow('③', '61.8% 되돌림', _fib.f618, '#388bfd', '지지 캔들·거래량·이평선 확인 후 3차 핵심 구간 진입 (비중 30~40%)')}
-      <div style="font-size:11px;color:#484f58;margin-top:10px;line-height:1.7;border-top:1px solid #21262d;padding-top:8px">
-        ⚠️ 61.8% 이탈 시 신규 매수 중단, 관망 전환 검토 · 스윙 저점 이탈 시 손절 고려<br>
-        피보나치 수치만으로 매수를 확정하지 마세요 — RSI·거래량·캔들 패턴을 함께 확인하세요.
-      </div>`;
-    fibCard.style.display = 'block';
-  } else if (fibCard) {
-    fibCard.style.display = 'none';
-  }
+  // 📐 피보나치 되돌림 기준 카드는 폐지됨 — 분할 매수 기준 가격은 "🎯 현재가 기준 매수 전략"의
+  //    각 매수 구간(1차/2차)에 연계 밴드(Band A~D)로 자동 통합되어 표시된다. (renderForecast 참조)
 
   // 펀더멘털
   if (isKrx && d.naver) {
@@ -10557,6 +10500,54 @@ function renderForecast(d, isKrx) {
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
 
+      // ── 📐 피보나치 되돌림 ↔ 매수 구간 자동 매칭 ───────────────────────────
+      //   별도 "피보나치 되돌림 기준" 카드를 폐지하고, 각 매수 구간(1차/2차)에
+      //   가장 근접한 피보나치 레벨을 "연계 밴드(Band A~D)"로 통합 표시한다.
+      //   · Band A=0.236 · Band B=0.382 · Band C=0.5 · Band D=0.618
+      //   · 우선순위: 1차(ATR) 구간부터 매칭 → 동일 밴드 중복 배정 방지
+      const fibMatch = new Map();   // 매수 밴드 객체 → {band, lvl, price, disc}
+      (() => {
+        const _fb = bp.fib || {};
+        const levels = [
+          { band: 'A', lvl: '0.236', price: _fb.f236 },
+          { band: 'B', lvl: '0.382', price: _fb.f382 },
+          { band: 'C', lvl: '0.5',   price: _fb.f500 },
+          { band: 'D', lvl: '0.618', price: _fb.f618 },
+        ].filter(f => f.price != null);
+        if (!levels.length) return;
+        const used = new Set();
+        // 1차(ATR) → 2차 순서로 매칭: 현재가에 가까운 얕은 되돌림(Band A)부터 우선 배정
+        const ordered = [...(bp.aggressive_bands || []), ...(bp.recommended_bands || [])];
+        for (const b of ordered) {
+          if (!b || !b.range) continue;
+          const mid = (b.range[0] + b.range[1]) / 2;
+          let best = null, bestD = Infinity;
+          for (const f of levels) {
+            if (used.has(f.band)) continue;
+            const dist = Math.abs(f.price - mid);
+            if (dist < bestD) { bestD = dist; best = f; }
+          }
+          if (best) {
+            used.add(best.band);
+            const disc = cur ? Math.round((best.price - cur) / cur * 1000) / 10 : null;
+            fibMatch.set(b, { band: best.band, lvl: best.lvl, price: best.price, disc });
+          }
+        }
+      })();
+
+      // 매수 구간 카드에 삽입할 "연계 밴드" 블록 생성
+      const fibLinkHtml = (b) => {
+        const m = fibMatch.get(b);
+        if (!m) return '';
+        const discTxt = (m.disc == null) ? ''
+          : ` · 현재가 대비 ${m.disc > 0 ? '+' : ''}${m.disc}%${m.disc < 0 ? ' (할인)' : m.disc > 0 ? ' (괴리)' : ''}`;
+        return `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed #30363d">
+          <div style="font-size:10px;color:#8b949e;margin-bottom:2px">🔗 연계 밴드</div>
+          <div style="font-size:11px;font-weight:700;color:#bc8cff">Band ${m.band} (${m.lvl})</div>
+          <div style="font-size:10px;color:#cdd9e5;margin-top:2px">피보나치 기준 분할 매수 가격 <b style="color:#cdd9e5">${fmt(m.price, isKrx)}</b>${discTxt}</div>
+        </div>`;
+      };
+
       const renderBandCard = (b, i, isRec) => {
         const bc = bandColor[i] || '#58a6ff';
         const isActive = activeBands.includes(b.band);
@@ -10572,6 +10563,7 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
             <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
+            ${fibLinkHtml(b)}
           </div>`;
         } else {
           return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
@@ -10582,6 +10574,7 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
+            ${fibLinkHtml(b)}
           </div>`;
         }
       };

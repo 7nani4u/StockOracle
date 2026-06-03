@@ -42,8 +42,8 @@ def test_interval():
     i = ce.confidence_interval(68, [60, 80, 55, 76], macro_regime="Transition", days_to_earnings=3)
     check("lower < confidence < upper", i["lower"] < 68 < i["upper"])
     check("spread 양수", i["spread"] > 0)
-    check("Transition 사유 포함", "Macro regime uncertainty" in i["reason"])
-    check("실적 사유 포함", "Upcoming earnings" in i["reason"])
+    check("Transition 사유 포함", any("거시경제 체제" in r for r in i["reason"]))
+    check("실적 사유 포함", any("실적 발표 임박" in r for r in i["reason"]))
     tight = ce.confidence_interval(70, [70, 71, 69], macro_regime="Neutral")
     check("정렬 시 spread 더 좁음", tight["spread"] < i["spread"])
 

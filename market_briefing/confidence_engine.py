@@ -358,9 +358,9 @@ def earnings_cap(days_to_earnings: Optional[int]) -> Dict[str, Any]:
     if d is None or d < 0:
         return {"cap": 100, "reason": None}
     if d <= 1:
-        return {"cap": 60, "reason": "Earnings within 1 trading day — binary event risk"}
+        return {"cap": 60, "reason": "실적 발표 1거래일 이내 — 발표 결과에 따라 주가가 급변동할 위험"}
     if d <= 5:
-        return {"cap": 70, "reason": f"Earnings within 5 trading days ({d}d) — reduced predictiveness"}
+        return {"cap": 70, "reason": f"실적 발표 {d}거래일 이내 — 발표 전까지 예측 신뢰도 저하"}
     return {"cap": 100, "reason": None}
 
 
@@ -389,8 +389,8 @@ def disagreement_penalty(scores: List[float]) -> Dict[str, Any]:
         penalty, cap, triggered = 7, 65, True
     elif spread > 25:
         penalty, cap, triggered = 3, 75, True
-    reason = (f"High disagreement between AI, technical, sentiment, and market "
-              f"scores (spread {spread:.0f} → −{penalty}pt, cap {cap})") if triggered else None
+    reason = (f"AI·기술적 분석·투자심리·시장 점수 간 편차가 크게 나타남 "
+              f"(점수 차이 {spread:.0f} → 신뢰도 -{penalty}pt, 최대 감점 {cap} 적용)") if triggered else None
     return {"disagreement_penalty": triggered, "source_score_spread": round(spread, 1),
             "penalty": penalty, "confidence_cap": cap, "reason": reason}
 
@@ -648,25 +648,25 @@ def confidence_interval(confidence: float, source_scores: List[float],
         disp_spread = _clamp(std * 1.2, 0, 30)
         spread += disp_spread
         if disp_spread >= 10:
-            reasons.append("High source dispersion")
+            reasons.append("분석 지표 간 일관성이 낮아 신호 분산도가 높음")
 
     # (b) 거시 체제 불확실성
     macro_add = {"Transition": 8, "Risk-Off": 6, "Risk-On": 2, "Neutral": 2}.get(macro_regime, 4)
     spread += macro_add
     if macro_regime in ("Transition", "Risk-Off"):
-        reasons.append("Macro regime uncertainty")
+        reasons.append("거시경제 체제 불확실성 확대로 변동성 위험 증가")
 
     # (c) 실적 근접성
     if days_to_earnings is not None and 0 <= days_to_earnings <= 5:
         spread += 6
-        reasons.append("Upcoming earnings")
+        reasons.append("실적 발표 임박으로 예측 불확실성 증가")
 
     spread = round(_clamp(spread, 4, 45), 0)
     half = spread / 2.0
     lower = int(round(_clamp(confidence - half, 0, 100)))
     upper = int(round(_clamp(confidence + half, 0, 100)))
     if not reasons:
-        reasons.append("Sources broadly aligned")
+        reasons.append("분석 지표 간 신호가 대체로 일치함")
     return {"lower": lower, "upper": upper, "spread": int(spread), "reason": reasons}
 
 
