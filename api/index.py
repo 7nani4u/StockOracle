@@ -8890,7 +8890,8 @@ function shareToTelegram() {
   if (resTxt) techLines.push('• 저항 구간: ' + resTxt);
 
   // ── 강세/전략 근거 · 리스크 (실제 산출 배열) ────────────────────
-  const rationale = (bp.strategy_rec && bp.strategy_rec.rationale) || [];
+  const rationale = ((bp.strategy_rec && bp.strategy_rec.rationale) || [])
+    .filter(r => r !== '밴드 B 진입 후 저항선 도달 시 차익 실현 전략');
   const risks = (tpd.failure_factors || []).filter(f => f && f.indexOf('없음') === -1);
 
   // ── 펀더멘털 (KRX 네이버) ───────────────────────────────────────
