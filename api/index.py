@@ -898,6 +898,41 @@ def fetch_naver(code: str):
                         # Use the latest available value (Estimate or Actual)
                         r[key] = vals[-1]
 
+            # ── 순이익 증감률(YoY): 당기순이익 연간 실적 기준 ──────────────
+            # 기업실적분석 테이블은 [연간 N개][분기 M개] 순으로 컬럼이 배치되며
+            # 연간 블록의 마지막 컬럼은 추정치(E)다. 연간 '실적' 2개로 YoY 산출.
+            try:
+                period_labels = [th.get_text(strip=True)
+                                 for th in section.select("thead th")
+                                 if re.match(r"^\d{4}\.\d{2}", th.get_text(strip=True))]
+                ni_vals = []
+                for tr in section.select("table tbody tr"):
+                    th = tr.select_one("th")
+                    if th and "당기순이익" in th.get_text(strip=True):
+                        for td in tr.select("td"):
+                            t = td.get_text(strip=True).replace(",", "")
+                            try:
+                                ni_vals.append(float(t))
+                            except Exception:
+                                ni_vals.append(None)
+                        break
+                # 연간 블록 = 연도가 감소하기 직전까지의 선두 컬럼
+                annual, prev_year = [], None
+                for i, lab in enumerate(period_labels):
+                    if i >= len(ni_vals):
+                        break
+                    yr = int(lab[:4])
+                    if prev_year is not None and yr < prev_year:
+                        break   # 분기 블록 시작 지점
+                    annual.append((lab, ni_vals[i]))
+                    prev_year = yr
+                actual = [(l, v) for (l, v) in annual if "(E)" not in l and v is not None]
+                if len(actual) >= 2 and actual[-2][1]:
+                    prev_v, last_v = actual[-2][1], actual[-1][1]
+                    r["net_profit_growth"] = round((last_v - prev_v) / abs(prev_v) * 100, 1)
+            except Exception:
+                pass
+
     except Exception as e:
         print(f"Naver Fetch Error: {e}")
         pass
@@ -8843,18 +8878,34 @@ function shareToTelegram() {
   const pctTxt = (typeof d.pct_change === 'number')
                    ? ` (${d.pct_change >= 0 ? '+' : ''}${d.pct_change}%)` : '';
 
-  // ── 매매 전략 (실데이터 경로 사용) ──────────────────────────────
+  // ── 매수 구간: ⚡ 1차 매수 구간(ATR 기반) = bp.aggressive_bands ──
+  //   KRX  → 밴드 A 고정
+  //   해외 → strategy_rec.priority_band("권장" 표시) 밴드를 동적 선택 (없으면 A)
   let buyBand = null;
-  const bands = (bp.recommended_bands && bp.recommended_bands.length)
-                  ? bp.recommended_bands : (bp.aggressive_bands || []);
-  if (bands.length && bands[0].range && bands[0].range.length === 2) {
-    buyBand = nf(bands[0].range[0]) + ' ~ ' + nf(bands[0].range[1]) + unit;
-  } else if (bp.recommended && bp.recommended.range) {
-    buyBand = nf(bp.recommended.range[0]) + ' ~ ' + nf(bp.recommended.range[1]) + unit;
+  const aggBands = bp.aggressive_bands || [];
+  if (aggBands.length) {
+    const targetBand = isKrx ? 'A'
+                             : ((bp.strategy_rec && bp.strategy_rec.priority_band) || 'A');
+    let picked = aggBands.find(b => b && b.band === targetBand)
+              || aggBands.find(b => b && b.band === 'A')
+              || aggBands[0];
+    if (picked && picked.range && picked.range.length === 2) {
+      buyBand = nf(picked.range[0]) + ' ~ ' + nf(picked.range[1]) + unit;
+    }
   }
   const stopLoss = fmtP(pa.stop_loss);
-  const tp1 = fmtP(pa.target_main) || fmtP(tpd.min_price);
-  const tp2 = fmtP(pa.target_ext)  || fmtP(tpd.max_price);
+
+  // ── 목표가: 🛡️ 리스크 관리(ATR 기반) 시나리오 TP에서 참조 (KRX·해외 공통) ──
+  //   1차 목표가 = 보수적 TP3 / 2차 목표가 = 중립적 TP1
+  const risk = d.risk_scenarios || {};
+  const tpAt = (scen, idx) => {
+    const s = risk[scen];
+    return (s && Array.isArray(s.tp_levels) && s.tp_levels[idx]
+            && typeof s.tp_levels[idx].price === 'number')
+              ? s.tp_levels[idx].price : null;
+  };
+  const tp1 = fmtP(tpAt('conservative', 2));   // 보수적 TP3
+  const tp2 = fmtP(tpAt('balanced', 0));        // 중립적 TP1
 
   // ── 기술적 분석 (실데이터 있을 때만 라인 생성) ──────────────────
   const rsi   = (typeof d.rsi === 'number') ? d.rsi : null;
@@ -8894,7 +8945,7 @@ function shareToTelegram() {
     .filter(r => r !== '밴드 B 진입 후 저항선 도달 시 차익 실현 전략');
   const risks = (tpd.failure_factors || []).filter(f => f && f.indexOf('없음') === -1);
 
-  // ── 펀더멘털 (KRX 네이버) ───────────────────────────────────────
+  // ── 기업실적분석 (KRX 네이버 + 거래량 비율) ─────────────────────
   const fund = [];
   if (isKrx && d.naver) {
     const n = d.naver;
@@ -8902,9 +8953,21 @@ function shareToTelegram() {
     if (n.market_cap && n.market_cap !== '-') fund.push('✓ 시가총액: ' + clean(n.market_cap) + '억원');
     if (n.eps != null)        fund.push('✓ EPS 성장률: ' + n.eps + '%');
     if (n.op_margin != null)  fund.push('✓ 영업이익률: ' + n.op_margin + '%');
+    if (n.net_profit_growth != null)
+      fund.push('✓ 순이익 증감률: ' + (n.net_profit_growth >= 0 ? '+' : '') + n.net_profit_growth + '%');
     if (n.roe != null)        fund.push('✓ ROE: ' + n.roe + '%');
     if (n.debt != null)       fund.push('✓ 부채비율: ' + n.debt + '%');
     if (n.per && n.per !== '-')   fund.push('✓ PER: ' + clean(n.per) + '배');
+  }
+  // 거래량 비율 (직전 20거래일 평균 대비) — KRX·US 공통
+  const volArr = (cd.volume || []).filter(v => typeof v === 'number' && v > 0);
+  if (volArr.length >= 6) {
+    const lastVol = volArr[volArr.length - 1];
+    const base = volArr.slice(-21, -1);   // 오늘 제외 직전 20거래일
+    if (base.length >= 5) {
+      const avg = base.reduce((a, b) => a + b, 0) / base.length;
+      if (avg > 0) fund.push('✓ 거래량 비율: 20일 평균 대비 ' + Math.round(lastVol / avg * 100) + '%');
+    }
   }
 
   // ── 종합 의견 (실데이터 종합) ───────────────────────────────────
@@ -8955,7 +9018,7 @@ function shareToTelegram() {
     L.push('');
   }
   if (fund.length) {
-    L.push('💎 펀더멘털');
+    L.push('💎 기업실적분석');
     fund.forEach(f => L.push(f));
     L.push('');
   }
