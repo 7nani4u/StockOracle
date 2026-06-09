@@ -8278,7 +8278,13 @@ input::placeholder{color:#484f58}
       <div class="page-header">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:4px">
           <h2 id="r-title"></h2>
-          <button id="result-alert-btn" class="alert-result-btn" onclick="openAlertModal(_currentAlertSymbol, _currentAlertPrice)">🔔 알림 설정</button>
+          <div style="display:flex;gap:8px;">
+            <button id="result-tg-btn" class="alert-result-btn" style="background:rgba(36,129,204,0.15);border-color:rgba(36,129,204,0.5);color:#58a6ff;display:flex;align-items:center;gap:4px;" onclick="shareToTelegram()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.446 1.394c-.14.18-.357.295-.6.295-.002 0-.003 0-.005 0l.213-3.054 5.56-5.022c.24-.213-.054-.334-.373-.121l-6.869 4.326-2.96-.924c-.64-.203-.658-.64.135-.954l11.566-4.458c.538-.196 1.006.128.832.94z"/></svg>
+              텔레그램 전송
+            </button>
+            <button id="result-alert-btn" class="alert-result-btn" onclick="openAlertModal(_currentAlertSymbol, _currentAlertPrice)">🔔 알림 설정</button>
+          </div>
         </div>
         <p id="r-subtitle"></p>
       </div>
@@ -8803,6 +8809,115 @@ function closeSidebar() {
   document.getElementById('mob-overlay').classList.remove('on');
   document.body.style.overflow = '';
 }
+
+function shareToTelegram() {
+  if (!currentData) return;
+  const d = currentData;
+  
+  const company = d.company || d.symbol;
+  const ticker = d.symbol;
+  const isKrx = d.market === 'KRX';
+  const price = d.last_close ? d.last_close.toLocaleString() + (isKrx ? '원' : '달러') : '-';
+  
+  let buyBand = '-';
+  if (d.buy_pressure && d.buy_pressure.strategy_rec) {
+    const rec = d.buy_pressure.strategy_rec.recommended_bands || [];
+    const agg = d.buy_pressure.strategy_rec.aggressive_bands || [];
+    if (rec.length > 0) buyBand = rec.join(', ');
+    else if (agg.length > 0) buyBand = agg.join(', ');
+  }
+  
+  let stopLoss = '-';
+  if (d.pullback_analysis && d.pullback_analysis.stop_loss) {
+    stopLoss = d.pullback_analysis.stop_loss.toLocaleString() + (isKrx ? '원' : '달러');
+  }
+  
+  let tp1 = '-', tp2 = '-';
+  if (d.take_profit && d.take_profit.levels) {
+    const tps = d.take_profit.levels.filter(t => t && t.price != null);
+    if (tps.length > 0) tp1 = tps[0].price.toLocaleString() + (isKrx ? '원' : '달러');
+    if (tps.length > 1) tp2 = tps[1].price.toLocaleString() + (isKrx ? '원' : '달러');
+  }
+  
+  const trendState = d.trend_direction || d.trend_status || '중립';
+  let techReason = '-';
+  if (d.overall_signal && d.overall_signal.reasons && d.overall_signal.reasons.length > 0) {
+    techReason = d.overall_signal.reasons[0];
+  }
+  
+  let mcap = '-', eps = '-', opm = '-', roe = '-', debt = '-', npm = '-', roic = '-', currentRatio = '-', salesGrowth = '-';
+  let industry = '해당 산업';
+  if (d.naver) {
+    if (d.naver.market_cap) mcap = d.naver.market_cap + '억원';
+    if (d.naver.eps) eps = d.naver.eps + '%';
+    if (d.naver.op_margin) opm = d.naver.op_margin + '%';
+    if (d.naver.roe) roe = d.naver.roe + '%';
+    if (d.naver.debt) debt = d.naver.debt + '%';
+    if (d.naver.industry) industry = d.naver.industry;
+  }
+  
+  const text = `📊 종목 분석 | ${company} (${ticker})
+
+💰 현재가
+• ${price}
+
+🎯 매매 전략
+
+✓ 매수 구간: ${buyBand}
+
+✓ 손절가: ${stopLoss}
+
+✓ 1차 목표가: ${tp1}
+
+✓ 2차 목표가: ${tp2}
+
+📈 기술적 분석
+
+• 현재 주가 흐름 및 추세: 기술적으로 ${trendState} 흐름
+• 이동평균선 배열 상태: 이평선 및 보조지표 기반 분석
+• 거래량 특징: 최근 거래량 동향 모니터링 필요
+• 지지선 및 저항선 분석: 주요 지지/저항 라인 테스트
+• StockOracle 분석 근거 요약: ${techReason}
+
+🔥 강세 요인
+
+✓ 주요 지지선 방어 및 반등 기대
+✓ 긍정적 모멘텀 지표 유지
+
+🏢 기업 개요
+
+• 기업의 핵심 사업: ${industry} 관련 주요 사업 영위
+• 시장 내 위치: 안정적인 포지션 확보 및 경쟁력 유지
+• 경쟁 우위 요소: 핵심 기술력 및 네트워크 보유
+
+💎 펀더멘털 강점
+
+${mcap !== '-' ? `✓ 시가총액: ${mcap}\n\n` : ''}${eps !== '-' ? `✓ EPS 성장률: ${eps}\n\n` : ''}${opm !== '-' ? `✓ 영업이익률: ${opm}\n\n` : ''}${roe !== '-' ? `✓ ROE: ${roe}\n\n` : ''}${debt !== '-' ? `✓ 부채비율: ${debt}\n\n` : ''}🚀 성장 포인트
+
+✓ 향후 성장을 기대할 수 있는 모멘텀 보유
+✓ 산업 성장 수혜 가능성
+✓ 신규 사업 및 투자 확대 기대
+
+⚠️ 리스크 요인
+
+✓ 거시경제 및 업황 변동 위험
+✓ 시장 경쟁 심화 우려
+✓ 실적 변동 위험
+
+📝 종합 의견
+
+${company}은(는) 현재 기술적으로 ${trendState} 흐름을 보이고 있으며, StockOracle 기준 매수 구간은 ${buyBand}으로 분석된다.
+
+기업의 핵심 성장 동력은 ${industry} 산업 내 경쟁력이며, 재무 안정성과 수익성은 지속 모니터링이 필요하다.
+
+다만 시장 변동성 리스크에 대한 모니터링은 필요하다.
+
+종합적으로 현재는 매매 전략에 맞춘 대응이 필요한 시점으로 판단된다.`;
+
+  const encodedText = encodeURIComponent(text);
+  window.open('https://t.me/share/url?url=' + encodeURIComponent(' ') + '&text=' + encodedText, '_blank');
+}
+
 function quickSearch(name) {
   document.getElementById('ticker-input').value = name;
   showPage('analysis');  // 내부에서 closeSidebar() 호출됨
