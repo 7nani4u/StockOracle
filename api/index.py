@@ -13622,8 +13622,9 @@ _prewarm_pool.submit(_prewarm_toss_ranking)
 # 서버가 봇 토큰으로 sendMessage를 호출해 즉시 전송한다(평문, 재분석 없음).
 def send_telegram_message(text: str) -> Dict[str, Any]:
     token   = (os.getenv("TELEGRAM_BOT_TOKEN", "8951186273:AAFTtSxV-hvcz8ezsdEjnieywAyqoTSMfSg") or "").strip()
-    # 그룹/슈퍼그룹 chat_id는 음수(-)가 정상값. 양수로 넣으면 "chat not found" 발생.
-    chat_id = (os.getenv("TELEGRAM_CHAT_ID",   "-5221758570") or "").strip()
+    # 전송 대상: "K애널리스트 주식" 채널 (@KjusikBot이 관리자로 게시).
+    # 채널/그룹 chat_id는 음수(채널은 -100… 형식)가 정상값.
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID",   "-1003625567216") or "").strip()
     if not token or not chat_id:
         return {"ok": False, "error": "서버에 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다."}
     if not text or not text.strip():
