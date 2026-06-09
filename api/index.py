@@ -13621,8 +13621,8 @@ _prewarm_pool.submit(_prewarm_toss_ranking)
 # 프론트의 텔레그램 버튼이 /api/telegram/send 로 현재 분석 메시지를 POST하면,
 # 서버가 봇 토큰으로 sendMessage를 호출해 즉시 전송한다(평문, 재분석 없음).
 def send_telegram_message(text: str) -> Dict[str, Any]:
-    token   = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat_id = (os.getenv("TELEGRAM_CHAT_ID")   or "").strip()
+    token   = (os.getenv("TELEGRAM_BOT_TOKEN", "8951186273:AAFTtSxV-hvcz8ezsdEjnieywAyqoTSMfSg") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID",   "5221758570") or "").strip()
     if not token or not chat_id:
         return {"ok": False, "error": "서버에 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다."}
     if not text or not text.strip():
