@@ -840,7 +840,9 @@ def fetch_naver(code: str):
         # 주요 지표
         for k, s in [("market_cap","#_market_sum"),("per","#_per"),("pbr","#_pbr")]:
             e = soup.select_one(s)
-            r[k] = e.text.strip() if e else "-"
+            # 네이버 시가총액(#_market_sum)은 '1,882조\n\n5,017'처럼 내부 개행/공백을
+            # 포함한다 → 단일 공백으로 정규화해 줄바꿈 깨짐 방지.
+            r[k] = re.sub(r"\s+", " ", e.text).strip() if e else "-"
             
         # 뉴스 섹션
         for item in soup.select(".news_section ul li")[:5]:
@@ -8813,131 +8815,200 @@ function closeSidebar() {
 function shareToTelegram() {
   if (!currentData) return;
   const d = currentData;
-  
+
+  const isKrx   = d.market === 'KRX';
+  const unit    = isKrx ? '원' : '달러';
   const company = d.company || d.symbol;
-  const ticker = d.symbol;
-  const isKrx = d.market === 'KRX';
-  const price = d.last_close ? d.last_close.toLocaleString() + (isKrx ? '원' : '달러') : '-';
-  
-  let buyBand = '-';
-  if (d.buy_pressure && d.buy_pressure.strategy_rec) {
-    const rec = d.buy_pressure.strategy_rec.recommended_bands || [];
-    const agg = d.buy_pressure.strategy_rec.aggressive_bands || [];
-    if (rec.length > 0) buyBand = rec.join(', ');
-    else if (agg.length > 0) buyBand = agg.join(', ');
+  const ticker  = d.symbol;
+  const NA      = '분석 데이터 부족';
+
+  // ── 공통 포맷 헬퍼 (KRX 정수 / US 소수 2자리) ───────────────────
+  const dec    = isKrx ? 0 : 2;
+  const nf     = (v) => Number(v).toLocaleString(undefined,
+                          { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  const fmtP   = (v) => (typeof v === 'number' && isFinite(v) && v > 0)
+                         ? nf(v) + unit : null;
+  const lastOf = (a) => (Array.isArray(a) && a.length) ? a[a.length - 1] : null;
+  const rng    = (z) => (z && isFinite(z.low) && isFinite(z.high) && z.low > 0)
+                         ? nf(z.low) + ' ~ ' + nf(z.high) + unit : null;
+
+  const bp  = d.buy_price         || {};
+  const pa  = d.pullback_analysis || {};
+  const tpd = d.target_price      || {};
+  const sig = (d.indicator_signals && d.indicator_signals.summary) || {};
+  const cd  = d.chart_data        || {};
+
+  // ── 현재가 ──────────────────────────────────────────────────────
+  const price  = fmtP(d.last_close) || NA;
+  const pctTxt = (typeof d.pct_change === 'number')
+                   ? ` (${d.pct_change >= 0 ? '+' : ''}${d.pct_change}%)` : '';
+
+  // ── 매매 전략 (실데이터 경로 사용) ──────────────────────────────
+  let buyBand = null;
+  const bands = (bp.recommended_bands && bp.recommended_bands.length)
+                  ? bp.recommended_bands : (bp.aggressive_bands || []);
+  if (bands.length && bands[0].range && bands[0].range.length === 2) {
+    buyBand = nf(bands[0].range[0]) + ' ~ ' + nf(bands[0].range[1]) + unit;
+  } else if (bp.recommended && bp.recommended.range) {
+    buyBand = nf(bp.recommended.range[0]) + ' ~ ' + nf(bp.recommended.range[1]) + unit;
   }
-  
-  let stopLoss = '-';
-  if (d.pullback_analysis && d.pullback_analysis.stop_loss) {
-    stopLoss = d.pullback_analysis.stop_loss.toLocaleString() + (isKrx ? '원' : '달러');
+  const stopLoss = fmtP(pa.stop_loss);
+  const tp1 = fmtP(pa.target_main) || fmtP(tpd.min_price);
+  const tp2 = fmtP(pa.target_ext)  || fmtP(tpd.max_price);
+
+  // ── 기술적 분석 (실데이터 있을 때만 라인 생성) ──────────────────
+  const rsi   = (typeof d.rsi === 'number') ? d.rsi : null;
+  const close = d.last_close;
+  const ma20  = lastOf(cd.ma20), ma60 = lastOf(cd.ma60);
+  const techLines = [];
+  if (sig.overall_label || sig.market_state) {
+    techLines.push('• 추세 판단: '
+      + [sig.overall_label, sig.market_state].filter(Boolean).join(' · '));
   }
-  
-  let tp1 = '-', tp2 = '-';
-  if (d.take_profit && d.take_profit.levels) {
-    const tps = d.take_profit.levels.filter(t => t && t.price != null);
-    if (tps.length > 0) tp1 = tps[0].price.toLocaleString() + (isKrx ? '원' : '달러');
-    if (tps.length > 1) tp2 = tps[1].price.toLocaleString() + (isKrx ? '원' : '달러');
+  if (ma20 && ma60 && close) {
+    let maTxt;
+    if (close > ma20 && ma20 > ma60)      maTxt = '정배열(현재가>20일선>60일선) — 상승 구조';
+    else if (close < ma20 && ma20 < ma60) maTxt = '역배열(현재가<20일선<60일선) — 하락 구조';
+    else                                  maTxt = '혼조 배열 — 방향성 탐색';
+    techLines.push('• 이동평균선: 20일선 ' + nf(ma20)
+      + ' / 60일선 ' + nf(ma60) + ' → ' + maTxt);
   }
-  
-  const trendState = d.trend_direction || d.trend_status || '중립';
-  let techReason = '-';
-  if (d.overall_signal && d.overall_signal.reasons && d.overall_signal.reasons.length > 0) {
-    techReason = d.overall_signal.reasons[0];
+  if (rsi != null) {
+    const z = rsi >= 70 ? '과매수 구간' : rsi <= 30 ? '과매도 구간'
+            : rsi >= 55 ? '중립~강세' : rsi <= 45 ? '중립~약세' : '중립 구간';
+    techLines.push('• RSI ' + rsi + ' → ' + z);
   }
-  
-  let mcap = '-', eps = '-', opm = '-', roe = '-', debt = '-', npm = '-', roic = '-', currentRatio = '-', salesGrowth = '-';
-  let industry = '해당 산업';
-  if (d.naver) {
-    if (d.naver.market_cap) mcap = d.naver.market_cap + '억원';
-    if (d.naver.eps) eps = d.naver.eps + '%';
-    if (d.naver.op_margin) opm = d.naver.op_margin + '%';
-    if (d.naver.roe) roe = d.naver.roe + '%';
-    if (d.naver.debt) debt = d.naver.debt + '%';
-    if (d.naver.industry) industry = d.naver.industry;
+  if (bp.vol_trend) {
+    const vt = bp.vol_trend === 'expanding'   ? '거래량 확대 — 변동성/관심 증가'
+             : bp.vol_trend === 'contracting' ? '거래량 감소 — 에너지 응축 구간'
+             : '거래량 보통 수준';
+    techLines.push('• 거래량: ' + vt);
   }
-  
-  const text = `📊 종목 분석 | ${company} (${ticker})
+  const resTxt = rng(pa.zones && pa.zones.resistance);
+  const supTxt = rng(pa.zones && pa.zones.defense);
+  if (supTxt) techLines.push('• 지지 구간: ' + supTxt);
+  if (resTxt) techLines.push('• 저항 구간: ' + resTxt);
 
-💰 현재가
-• ${price}
+  // ── 강세/전략 근거 · 리스크 (실제 산출 배열) ────────────────────
+  const rationale = (bp.strategy_rec && bp.strategy_rec.rationale) || [];
+  const risks = (tpd.failure_factors || []).filter(f => f && f.indexOf('없음') === -1);
 
-🎯 매매 전략
-
-✓ 매수 구간: ${buyBand}
-
-✓ 손절가: ${stopLoss}
-
-✓ 1차 목표가: ${tp1}
-
-✓ 2차 목표가: ${tp2}
-
-📈 기술적 분석
-
-• 현재 주가 흐름 및 추세: 기술적으로 ${trendState} 흐름
-• 이동평균선 배열 상태: 이평선 및 보조지표 기반 분석
-• 거래량 특징: 최근 거래량 동향 모니터링 필요
-• 지지선 및 저항선 분석: 주요 지지/저항 라인 테스트
-• StockOracle 분석 근거 요약: ${techReason}
-
-🔥 강세 요인
-
-✓ 주요 지지선 방어 및 반등 기대
-✓ 긍정적 모멘텀 지표 유지
-
-🏢 기업 개요
-
-• 기업의 핵심 사업: ${industry} 관련 주요 사업 영위
-• 시장 내 위치: 안정적인 포지션 확보 및 경쟁력 유지
-• 경쟁 우위 요소: 핵심 기술력 및 네트워크 보유
-
-💎 펀더멘털 강점
-
-${mcap !== '-' ? `✓ 시가총액: ${mcap}\n\n` : ''}${eps !== '-' ? `✓ EPS 성장률: ${eps}\n\n` : ''}${opm !== '-' ? `✓ 영업이익률: ${opm}\n\n` : ''}${roe !== '-' ? `✓ ROE: ${roe}\n\n` : ''}${debt !== '-' ? `✓ 부채비율: ${debt}\n\n` : ''}🚀 성장 포인트
-
-✓ 향후 성장을 기대할 수 있는 모멘텀 보유
-✓ 산업 성장 수혜 가능성
-✓ 신규 사업 및 투자 확대 기대
-
-⚠️ 리스크 요인
-
-✓ 거시경제 및 업황 변동 위험
-✓ 시장 경쟁 심화 우려
-✓ 실적 변동 위험
-
-📝 종합 의견
-
-${company}은(는) 현재 기술적으로 ${trendState} 흐름을 보이고 있으며, StockOracle 기준 매수 구간은 ${buyBand}으로 분석된다.
-
-기업의 핵심 성장 동력은 ${industry} 산업 내 경쟁력이며, 재무 안정성과 수익성은 지속 모니터링이 필요하다.
-
-다만 시장 변동성 리스크에 대한 모니터링은 필요하다.
-
-종합적으로 현재는 매매 전략에 맞춘 대응이 필요한 시점으로 판단된다.`;
-
-  // 특정 텔레그램 그룹/채널 링크로 이동 (텍스트는 클립보드에 자동 복사)
-  if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => {
-      alert("리포트가 클립보드에 복사되었습니다.\\n텔레그램 채팅방이 열리면 입력창에 붙여넣기(Ctrl+V) 해주세요.");
-      window.open('https://t.me/+CpyxH2zQ3KdiMjY1', '_blank');
-    }).catch((err) => {
-      console.error('클립보드 복사 실패:', err);
-      window.open('https://t.me/+CpyxH2zQ3KdiMjY1', '_blank');
-    });
-  } else {
-    // HTTPS 환경이 아니거나 클립보드 API 미지원 시 Fallback
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    document.body.appendChild(textArea);
-    textArea.select();
-    try {
-      document.execCommand('copy');
-      alert("리포트가 클립보드에 복사되었습니다.\\n텔레그램 채팅방이 열리면 입력창에 붙여넣기(Ctrl+V) 해주세요.");
-    } catch (err) {
-      console.error('Fallback 클립보드 복사 실패:', err);
-    }
-    document.body.removeChild(textArea);
-    window.open('https://t.me/+CpyxH2zQ3KdiMjY1', '_blank');
+  // ── 펀더멘털 (KRX 네이버) ───────────────────────────────────────
+  const fund = [];
+  if (isKrx && d.naver) {
+    const n = d.naver;
+    const clean = (v) => String(v).replace(/\s+/g, ' ').trim();
+    if (n.market_cap && n.market_cap !== '-') fund.push('✓ 시가총액: ' + clean(n.market_cap) + '억원');
+    if (n.eps != null)        fund.push('✓ EPS 성장률: ' + n.eps + '%');
+    if (n.op_margin != null)  fund.push('✓ 영업이익률: ' + n.op_margin + '%');
+    if (n.roe != null)        fund.push('✓ ROE: ' + n.roe + '%');
+    if (n.debt != null)       fund.push('✓ 부채비율: ' + n.debt + '%');
+    if (n.per && n.per !== '-')   fund.push('✓ PER: ' + clean(n.per) + '배');
   }
+
+  // ── 종합 의견 (실데이터 종합) ───────────────────────────────────
+  const opinion = [];
+  if (sig.overall_label) {
+    opinion.push('현재 종합 신호는 "' + sig.overall_label + '"'
+      + (sig.weighted_score != null ? ` (가중 점수 ${sig.weighted_score})` : '') + '로 판단된다.');
+  }
+  if (supTxt || stopLoss) {
+    let s = '';
+    if (supTxt)   s += supTxt + ' 구간이 단기 지지선으로 작용하고 있으며, ';
+    if (stopLoss) s += stopLoss + ' 이탈 시 손절 관점이 필요하다.';
+    if (s) opinion.push(s.trim());
+  }
+  if (resTxt || tp1) {
+    let s = '';
+    if (resTxt) s += resTxt + ' 저항 돌파 시 ';
+    s += tp1 ? ('1차 목표가 ' + tp1 + '까지 추가 상승 여력을 고려할 수 있다.')
+             : '거래량 증가 동반 여부를 확인할 필요가 있다.';
+    opinion.push(s.trim());
+  }
+  if (rsi != null) {
+    if (rsi >= 70)      opinion.push('다만 RSI ' + rsi + ' 과매수 구간으로 단기 조정 가능성에 유의해야 한다.');
+    else if (rsi <= 30) opinion.push('RSI ' + rsi + ' 과매도 구간으로 기술적 반등 가능성을 염두에 둘 수 있다.');
+  }
+
+  // ── 메시지 조립 (빈 섹션은 자동 생략) ──────────────────────────
+  const L = [];
+  L.push('📊 종목 분석 | ' + company + ' (' + ticker + ')');
+  L.push('');
+  L.push('💰 현재가');
+  L.push('• ' + price + pctTxt);
+  L.push('');
+  L.push('🎯 매매 전략');
+  L.push('✓ 매수 구간: ' + (buyBand || '현재 산출 불가'));
+  L.push('✓ 손절가: '   + (stopLoss || '현재 산출 불가'));
+  L.push('✓ 1차 목표가: ' + (tp1 || NA));
+  L.push('✓ 2차 목표가: ' + (tp2 || NA));
+  L.push('');
+  if (techLines.length) {
+    L.push('📈 기술적 분석');
+    techLines.forEach(t => L.push(t));
+    L.push('');
+  }
+  if (rationale.length) {
+    L.push('🔥 강세/전략 근거');
+    rationale.slice(0, 4).forEach(r => L.push('✓ ' + r));
+    L.push('');
+  }
+  if (fund.length) {
+    L.push('💎 펀더멘털');
+    fund.forEach(f => L.push(f));
+    L.push('');
+  }
+  if (risks.length) {
+    L.push('⚠️ 리스크 요인');
+    risks.slice(0, 4).forEach(r => L.push('✓ ' + r));
+    L.push('');
+  }
+  L.push('📝 종합 의견');
+  if (opinion.length) opinion.forEach(o => L.push(o));
+  else L.push('현재 분석 데이터가 부족하여 구체적 종합 의견 산출이 어렵다.');
+  L.push('');
+  L.push('────────────');
+  L.push('⚠️ 본 정보는 투자 참고용이며, 투자 판단과 책임은 본인에게 있습니다.');
+
+  const text = L.join('\n');
+
+  // ── 텔레그램 Bot API 즉시 전송 (백엔드 /api/telegram/send 경유) ──
+  //   서버가 환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID로 sendMessage 호출.
+  //   재분석 없이 현재 화면(currentData) 기준 메시지를 그대로 전송한다.
+  const btn = document.getElementById('result-tg-btn');
+  if (btn && btn.dataset.sending === '1') return;   // 중복 클릭 방지
+  const _origHtml = btn ? btn.innerHTML : '';
+  const _restore = () => {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.dataset.sending = '0';
+    btn.style.opacity = '';
+    btn.innerHTML = _origHtml;
+  };
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.sending = '1';
+    btn.style.opacity = '0.6';
+    btn.innerHTML = '⏳ 전송 중…';
+  }
+
+  fetch('/api/telegram/send', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ text: text })
+  })
+    .then(r => r.json().catch(() => ({ ok: false, error: '서버 응답을 해석할 수 없습니다.' })))
+    .then(res => {
+      if (res && res.ok) {
+        alert('텔레그램으로 분석 결과를 전송했습니다.');
+      } else {
+        alert('텔레그램 전송 실패: ' + ((res && res.error) || '알 수 없는 오류'));
+      }
+    })
+    .catch(err => {
+      alert('텔레그램 전송 실패: ' + (err && err.message ? err.message : err));
+    })
+    .finally(_restore);
 }
 
 function quickSearch(name) {
@@ -13454,7 +13525,7 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
     
     # CORS Policy
     handler_self.send_header("Access-Control-Allow-Origin", "*")
-    handler_self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+    handler_self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
     handler_self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     # Cache Policy (Vercel/CDN Integration)
@@ -13545,12 +13616,63 @@ _prewarm_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name
 _prewarm_pool.submit(_prewarm_toss_ranking)
 
 
+# ── 텔레그램 Bot API 전송 ────────────────────────────────────────────────
+# 설정: 환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (기존 env 설정 방식 유지).
+# 프론트의 텔레그램 버튼이 /api/telegram/send 로 현재 분석 메시지를 POST하면,
+# 서버가 봇 토큰으로 sendMessage를 호출해 즉시 전송한다(평문, 재분석 없음).
+def send_telegram_message(text: str) -> Dict[str, Any]:
+    token   = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID")   or "").strip()
+    if not token or not chat_id:
+        return {"ok": False, "error": "서버에 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다."}
+    if not text or not text.strip():
+        return {"ok": False, "error": "전송할 분석 결과가 없습니다."}
+    # 텔레그램 단일 메시지 한도(4096자) 방어적 절단
+    if len(text) > 4096:
+        text = text[:4093] + "..."
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+            timeout=10,
+        )
+        try:
+            jd = resp.json()
+        except Exception:
+            jd = {}
+        if resp.status_code == 200 and jd.get("ok"):
+            return {"ok": True}
+        return {"ok": False, "error": jd.get("description") or f"텔레그램 API 오류 (HTTP {resp.status_code})"}
+    except Exception as e:
+        return {"ok": False, "error": f"텔레그램 전송 중 네트워크 오류: {e}"}
+
+
 class handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[StockOracle] {fmt % args}")
 
     def do_OPTIONS(self):
         _send(self, {})
+
+    def do_POST(self):
+        try:
+            parsed = urlparse(self.path)
+            path   = parsed.path.rstrip("/") or "/"
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw    = self.rfile.read(length) if length > 0 else b""
+            try:
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                payload = {}
+
+            if path == "/api/telegram/send":
+                result = send_telegram_message(payload.get("text", ""))
+                return _send(self, result, status=200 if result.get("ok") else 502)
+
+            return _send(self, {"ok": False, "error": "Not Found"}, status=404)
+        except Exception as e:
+            traceback.print_exc()
+            return _send(self, {"ok": False, "error": str(e)}, status=500)
 
     def do_GET(self):
         try:
