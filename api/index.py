@@ -8929,7 +8929,13 @@ function shareToTelegram() {
             : rsi >= 55 ? '중립~강세' : rsi <= 45 ? '중립~약세' : '중립 구간';
     techLines.push('• RSI ' + rsi + ' → ' + z);
   }
-  if (bp.vol_trend) {
+  // 거래량: 화면 상단(r-vol)과 동일하게 실제 거래량 수치 출력 + 추세 보조표기
+  const volNum = (typeof d.volume === 'number' && d.volume > 0) ? d.volume : null;
+  if (volNum != null) {
+    const vtTag = bp.vol_trend === 'expanding'   ? ' (확대)'
+                : bp.vol_trend === 'contracting' ? ' (감소)' : '';
+    techLines.push('• 거래량: ' + volNum.toLocaleString() + '주' + vtTag);
+  } else if (bp.vol_trend) {
     const vt = bp.vol_trend === 'expanding'   ? '거래량 확대 — 변동성/관심 증가'
              : bp.vol_trend === 'contracting' ? '거래량 감소 — 에너지 응축 구간'
              : '거래량 보통 수준';
@@ -8994,19 +9000,31 @@ function shareToTelegram() {
     else if (rsi <= 30) opinion.push('RSI ' + rsi + ' 과매도 구간으로 기술적 반등 가능성을 염두에 둘 수 있다.');
   }
 
+  // 토스증권 AI 요약 — 비동기 로드되어 _tossAiSummary 에 보관된 성공 결과만 사용
+  const tossSummary = (typeof _tossAiSummary === 'string') ? _tossAiSummary.trim() : '';
+
   // ── 메시지 조립 (빈 섹션은 자동 생략) ──────────────────────────
+  //   문맥 흐름: 종목 → 현재가 → 기업 개요(AI·실적) → 분석(기술·강세·리스크)
+  //              → 실행 전략(매매) → 결론(종합 의견)
   const L = [];
   L.push('📊 종목 분석 | ' + company + ' (' + ticker + ')');
   L.push('');
   L.push('💰 현재가');
   L.push('• ' + price + pctTxt);
+  if (typeof d.prob_up === 'number' && typeof d.prob_down === 'number') {
+    L.push('▲ 상승 가능성 ' + d.prob_up.toFixed(1) + '%   ▼ 하락 가능성 ' + d.prob_down.toFixed(1) + '%');
+  }
   L.push('');
-  L.push('🎯 매매 전략');
-  L.push('✓ 매수 구간: ' + (buyBand || '현재 산출 불가'));
-  L.push('✓ 손절가: '   + (stopLoss || '현재 산출 불가'));
-  L.push('✓ 1차 목표가: ' + (tp1 || NA));
-  L.push('✓ 2차 목표가: ' + (tp2 || NA));
-  L.push('');
+  if (tossSummary) {
+    L.push('🤖 토스증권 AI 요약');
+    L.push(tossSummary);
+    L.push('');
+  }
+  if (fund.length) {
+    L.push('💎 기업실적분석');
+    fund.forEach(f => L.push(f));
+    L.push('');
+  }
   if (techLines.length) {
     L.push('📈 기술적 분석');
     techLines.forEach(t => L.push(t));
@@ -9017,16 +9035,17 @@ function shareToTelegram() {
     rationale.slice(0, 4).forEach(r => L.push('✓ ' + r));
     L.push('');
   }
-  if (fund.length) {
-    L.push('💎 기업실적분석');
-    fund.forEach(f => L.push(f));
-    L.push('');
-  }
   if (risks.length) {
     L.push('⚠️ 리스크 요인');
     risks.slice(0, 4).forEach(r => L.push('✓ ' + r));
     L.push('');
   }
+  L.push('🎯 매매 전략');
+  L.push('✓ 매수 구간: ' + (buyBand || '현재 산출 불가'));
+  L.push('✓ 손절가: '   + (stopLoss || '현재 산출 불가'));
+  L.push('✓ 1차 목표가: ' + (tp1 || NA));
+  L.push('✓ 2차 목표가: ' + (tp2 || NA));
+  L.push('');
   L.push('📝 종합 의견');
   if (opinion.length) opinion.forEach(o => L.push(o));
   else L.push('현재 분석 데이터가 부족하여 구체적 종합 의견 산출이 어렵다.');
@@ -12682,11 +12701,17 @@ function renderUsSurgeCards(items, note) {
 // 연속 검색 시 이전 응답이 현재 카드를 덮어쓰는 race condition을 방지한다.
 var _tossAiController = null;
 
+// 마지막으로 성공 로드된 토스증권 AI 요약 텍스트 (텔레그램 전송 시 참조).
+// 신규 분석/로딩/실패 시 ''로 리셋 → 플레이스홀더가 메시지에 섞이지 않는다.
+var _tossAiSummary = '';
+
 function fetchTossAiSummary(ticker, market) {
   var cardEl    = document.getElementById('r-toss-card');
   var summaryEl = document.getElementById('r-toss-summary');
   var timeEl    = document.getElementById('r-toss-time');
   if (!cardEl || !summaryEl) return;
+
+  _tossAiSummary = '';   // 신규 조회 시작 → 이전 종목 요약 무효화
 
   // ── 이전 진행 중 요청 즉시 취소 (race condition 방지) ────────────────
   if (_tossAiController) {
@@ -12759,6 +12784,7 @@ function fetchTossAiSummary(ticker, market) {
         summaryEl.style.fontSize   = '13px';
         summaryEl.style.fontWeight = '600';
         summaryEl.textContent = txt;
+        _tossAiSummary = txt;   // 텔레그램 전송용 보관
       }
 
       // 기준 시간 표시
