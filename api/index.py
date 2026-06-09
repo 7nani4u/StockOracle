@@ -9008,15 +9008,14 @@ function shareToTelegram() {
   //              → 실행 전략(매매) → 결론(종합 의견)
   const L = [];
   L.push('📊 종목 분석 | ' + company + ' (' + ticker + ')');
-  L.push('');
-  L.push('💰 현재가');
-  L.push('• ' + price + pctTxt);
   if (typeof d.prob_up === 'number' && typeof d.prob_down === 'number') {
     L.push('▲ 상승 가능성 ' + d.prob_up.toFixed(1) + '%   ▼ 하락 가능성 ' + d.prob_down.toFixed(1) + '%');
   }
   L.push('');
+  L.push('💰 현재가 ' + price + pctTxt);
+  L.push('');
   if (tossSummary) {
-    L.push('🤖 토스증권 AI 요약');
+    L.push('🤖 AI 뉴스 요약');
     L.push(tossSummary);
     L.push('');
   }
