@@ -30,6 +30,7 @@ import time
 import datetime
 from datetime import datetime as dt, timedelta
 import concurrent.futures
+import threading
 import math
 import traceback
 import warnings
@@ -916,20 +917,43 @@ def fetch_naver(code: str):
                             except Exception:
                                 ni_vals.append(None)
                         break
-                # 연간 블록 = 연도가 감소하기 직전까지의 선두 컬럼
-                annual, prev_year = [], None
-                for i, lab in enumerate(period_labels):
-                    if i >= len(ni_vals):
+                # 연간 컬럼 수: thead의 "최근 연간 실적" th가 가진 colspan에서 직접 읽음.
+                # (연도 감소 휴리스틱은 분기 블록 첫 연도가 연간 마지막 연도와 같으면
+                #  분기 값이 연간으로 섞이므로 colspan을 우선 사용)
+                annual_cnt = 0
+                for th in section.select("thead th"):
+                    if "연간" in th.get_text(strip=True):
+                        try:
+                            annual_cnt = int(th.get("colspan") or 0)
+                        except Exception:
+                            annual_cnt = 0
                         break
-                    yr = int(lab[:4])
-                    if prev_year is not None and yr < prev_year:
-                        break   # 분기 블록 시작 지점
-                    annual.append((lab, ni_vals[i]))
-                    prev_year = yr
+                if annual_cnt > 0:
+                    n = min(annual_cnt, len(period_labels), len(ni_vals))
+                    annual = list(zip(period_labels[:n], ni_vals[:n]))
+                else:
+                    # fallback: 연도가 감소하기 직전까지의 선두 컬럼 = 연간 블록
+                    annual, prev_year = [], None
+                    for i, lab in enumerate(period_labels):
+                        if i >= len(ni_vals):
+                            break
+                        yr = int(lab[:4])
+                        if prev_year is not None and yr < prev_year:
+                            break   # 분기 블록 시작 지점
+                        annual.append((lab, ni_vals[i]))
+                        prev_year = yr
                 actual = [(l, v) for (l, v) in annual if "(E)" not in l and v is not None]
                 if len(actual) >= 2 and actual[-2][1]:
                     prev_v, last_v = actual[-2][1], actual[-1][1]
-                    r["net_profit_growth"] = round((last_v - prev_v) / abs(prev_v) * 100, 1)
+                    # 부호가 바뀌면 %는 직관과 어긋남 → 관례대로 전환 여부로 표기
+                    if prev_v < 0 <= last_v:
+                        r["net_profit_growth_label"] = "흑자전환"
+                    elif prev_v >= 0 > last_v:
+                        r["net_profit_growth_label"] = "적자전환"
+                    elif prev_v < 0 and last_v < 0:
+                        r["net_profit_growth_label"] = "적자 지속"
+                    else:
+                        r["net_profit_growth"] = round((last_v - prev_v) / abs(prev_v) * 100, 1)
             except Exception:
                 pass
 
@@ -8847,6 +8871,9 @@ function closeSidebar() {
   document.body.style.overflow = '';
 }
 
+// 텔레그램 전송 진행 플래그 — 버튼 DOM이 없어도 중복 전송을 막는다.
+var _tgSending = false;
+
 function shareToTelegram() {
   if (!currentData) return;
   const d = currentData;
@@ -8876,7 +8903,7 @@ function shareToTelegram() {
   // ── 현재가 ──────────────────────────────────────────────────────
   const price  = fmtP(d.last_close) || NA;
   const pctTxt = (typeof d.pct_change === 'number')
-                   ? ` (${d.pct_change >= 0 ? '+' : ''}${d.pct_change}%)` : '';
+                   ? ` (${d.pct_change >= 0 ? '+' : ''}${d.pct_change.toFixed(2)}%)` : '';
 
   // ── 매수 구간: ⚡ 1차 매수 구간(ATR 기반) = bp.aggressive_bands ──
   //   KRX  → 밴드 A 고정
@@ -8959,7 +8986,9 @@ function shareToTelegram() {
     if (n.market_cap && n.market_cap !== '-') fund.push('✓ 시가총액: ' + clean(n.market_cap) + '억원');
     if (n.eps != null)        fund.push('✓ EPS 성장률: ' + n.eps + '%');
     if (n.op_margin != null)  fund.push('✓ 영업이익률: ' + n.op_margin + '%');
-    if (n.net_profit_growth != null)
+    if (n.net_profit_growth_label)
+      fund.push('✓ 순이익 증감률: ' + n.net_profit_growth_label);
+    else if (n.net_profit_growth != null)
       fund.push('✓ 순이익 증감률: ' + (n.net_profit_growth >= 0 ? '+' : '') + n.net_profit_growth + '%');
     if (n.roe != null)        fund.push('✓ ROE: ' + n.roe + '%');
     if (n.debt != null)       fund.push('✓ 부채비율: ' + n.debt + '%');
@@ -9057,19 +9086,19 @@ function shareToTelegram() {
   // ── 텔레그램 Bot API 즉시 전송 (백엔드 /api/telegram/send 경유) ──
   //   서버가 환경변수 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID로 sendMessage 호출.
   //   재분석 없이 현재 화면(currentData) 기준 메시지를 그대로 전송한다.
+  if (_tgSending) return;   // 중복 클릭 방지 (버튼 부재 시에도 동작)
+  _tgSending = true;
   const btn = document.getElementById('result-tg-btn');
-  if (btn && btn.dataset.sending === '1') return;   // 중복 클릭 방지
   const _origHtml = btn ? btn.innerHTML : '';
   const _restore = () => {
+    _tgSending = false;
     if (!btn) return;
     btn.disabled = false;
-    btn.dataset.sending = '0';
     btn.style.opacity = '';
     btn.innerHTML = _origHtml;
   };
   if (btn) {
     btn.disabled = true;
-    btn.dataset.sending = '1';
     btn.style.opacity = '0.6';
     btn.innerHTML = '⏳ 전송 중…';
   }
@@ -13614,7 +13643,9 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
     
     # CORS Policy
     handler_self.send_header("Access-Control-Allow-Origin", "*")
-    handler_self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    # POST는 동일 출처 전용(/api/telegram/send) → CORS로 교차 출처에 개방하지 않는다.
+    # 동일 출처 요청은 CORS 절차를 타지 않으므로 자체 프론트 동작에는 영향 없음.
+    handler_self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
     handler_self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     # Cache Policy (Vercel/CDN Integration)
@@ -13732,10 +13763,44 @@ def send_telegram_message(text: str) -> Dict[str, Any]:
         except Exception:
             jd = {}
         if resp.status_code == 200 and jd.get("ok"):
+            print(f"[Telegram] 전송 성공 ({len(text)}자)")
             return {"ok": True}
-        return {"ok": False, "error": jd.get("description") or f"텔레그램 API 오류 (HTTP {resp.status_code})"}
+        # API 원문 에러(chat_id 등 내부 정보 포함 가능)는 서버 로그에만 남긴다
+        print(f"[Telegram] 전송 실패: HTTP {resp.status_code} / {jd.get('description')}")
+        return {"ok": False, "error": "텔레그램 전송에 실패했습니다. 잠시 후 다시 시도해주세요."}
     except Exception as e:
-        return {"ok": False, "error": f"텔레그램 전송 중 네트워크 오류: {e}"}
+        print(f"[Telegram] 네트워크 오류: {e}")
+        return {"ok": False, "error": "텔레그램 전송 중 네트워크 오류가 발생했습니다."}
+
+
+# ── /api/telegram/send 남용 방지 ─────────────────────────────────────────
+# 무인증 엔드포인트이므로 (1) 동일 출처(Origin/Referer) 검증 + (2) IP별
+# 레이트리밋으로 외부 사이트/스크립트의 채널 스팸 게시를 차단한다.
+_TG_RATE_LOCK = threading.Lock()
+_TG_RATE_HITS: Dict[str, list] = {}
+_TG_RATE_MAX, _TG_RATE_WINDOW = 5, 60   # IP당 60초에 5회
+
+def _tg_rate_limited(ip: str) -> bool:
+    now = time.time()
+    with _TG_RATE_LOCK:
+        hits = [t for t in _TG_RATE_HITS.get(ip, []) if now - t < _TG_RATE_WINDOW]
+        if len(hits) >= _TG_RATE_MAX:
+            _TG_RATE_HITS[ip] = hits
+            return True
+        hits.append(now)
+        _TG_RATE_HITS[ip] = hits
+        return False
+
+def _tg_same_origin(handler_self) -> bool:
+    host = (handler_self.headers.get("Host") or "").strip().lower()
+    src  = (handler_self.headers.get("Origin")
+            or handler_self.headers.get("Referer") or "").strip().lower()
+    if not host or not src:
+        return False
+    try:
+        return urlparse(src).netloc == host
+    except Exception:
+        return False
 
 
 class handler(BaseHTTPRequestHandler):
@@ -13757,7 +13822,18 @@ class handler(BaseHTTPRequestHandler):
                 payload = {}
 
             if path == "/api/telegram/send":
-                result = send_telegram_message(payload.get("text", ""))
+                if not _tg_same_origin(self):
+                    return _send(self, {"ok": False, "error": "허용되지 않은 출처의 요청입니다."}, status=403)
+                # 프록시(Vercel 등) 뒤에서는 실제 클라이언트 IP가 X-Forwarded-For에 담긴다
+                ip = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip() \
+                     or (self.client_address[0] if self.client_address else "?")
+                if _tg_rate_limited(ip):
+                    return _send(self, {"ok": False, "error": "요청이 너무 잦습니다. 잠시 후 다시 시도해주세요."}, status=429)
+                text = (payload.get("text") or "").strip()
+                if not text:
+                    # 클라이언트 입력 오류 → 400 (게이트웨이 오류 502가 아님)
+                    return _send(self, {"ok": False, "error": "전송할 분석 결과가 없습니다."}, status=400)
+                result = send_telegram_message(text)
                 return _send(self, result, status=200 if result.get("ok") else 502)
 
             return _send(self, {"ok": False, "error": "Not Found"}, status=404)
