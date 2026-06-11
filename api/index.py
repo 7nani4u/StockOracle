@@ -5436,6 +5436,23 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     if not atr or np.isnan(atr):
         atr = last_price * 0.02
 
+    # ── 밴드 깊이용 ATR 상한 + 밴드 가격 하한 ─────────────────────────
+    # 급락 직후에는 ATR이 현재가의 수십~수백%까지 커져 last_price - k×ATR이
+    # 음수로 떨어진다(저가주·폭락주). 매수 밴드 깊이 계산에는 가격의 15%로
+    # 캡한 ATR(atr_d)을 쓰고, 최종 밴드는 현재가의 10% 아래로 내려가지 않게
+    # 막는다. 정상 종목의 ATR은 가격의 1.5~6% 수준이라 캡이 발동하지 않는다.
+    atr_d = min(atr, last_price * 0.15)
+    _band_floor = last_price * 0.10
+
+    def _floor_band(lo: float, hi: float) -> tuple[float, float]:
+        hi = max(hi, _band_floor + atr_d * 0.05)
+        lo = max(min(lo, hi - atr_d * 0.05), _band_floor)
+        return lo, hi
+
+    # BB 하단이 0 이하인 경우(초고변동성 급락주)는 지지 앵커로 무효 처리
+    if bb_l_raw is not None and float(bb_l_raw) <= 0:
+        bb_l_raw = None
+
     rnd = 4 if market == "US" else 2
 
     # ── 변동성 동적 계수 ──────────────────────────────────────────────
@@ -5602,20 +5619,21 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # ── ⚡ 공격적 매수 구간 ────────────────────────────────────────────
     # 근거: ATR 단기 눌림목 + MA20 이탈 전 + MACD 시그널
     # RSI, 거래량 매수압력 조정
-    agg_center = last_price - atr * (0.40 + rsi_adj)
-    agg_half   = atr * 0.25
+    agg_center = last_price - atr_d * (0.40 + rsi_adj)
+    agg_half   = atr_d * 0.25
     # MA20 가격이 공격 구간 상단보다 낮으면 MA20을 상단 앵커로 활용
     if ma20 < last_price and ma20 > agg_center:
-        agg_high = min(ma20, last_price - atr * 0.15)
-        agg_low  = agg_high - atr * 0.50
+        agg_high = min(ma20, last_price - atr_d * 0.15)
+        agg_low  = agg_high - atr_d * 0.50
     else:
         agg_low  = agg_center - agg_half
         agg_high = agg_center + agg_half
+    agg_low, agg_high = _floor_band(agg_low, agg_high)
     agg_pct_l = round((agg_low  - last_price) / last_price * 100, 2)
     agg_pct_h = round((agg_high - last_price) / last_price * 100, 2)
 
     agg_basis = []
-    agg_basis.append(f"단기 ATR 눌림 구간 (ATR×{0.40+rsi_adj:.2f} ≈ {atr*(0.40+rsi_adj):,.2f})")
+    agg_basis.append(f"단기 ATR 눌림 구간 (ATR×{0.40+rsi_adj:.2f} ≈ {atr_d*(0.40+rsi_adj):,.2f})")
     if ma20 and abs(ma20 - last_price) / last_price < 0.10:
         agg_basis.append(f"MA20 지지 근접 ({ma20:,.{rnd}f})")
     if macd > sig_line:
@@ -5640,10 +5658,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         anchors.append(vwap_approx * 0.995)
     if fib_382 > last_price * 0.85 and fib_382 < last_price:
         anchors.append(fib_382)
-    rec_low_anchor  = float(np.mean([a for a in anchors if a < last_price])) if any(a < last_price for a in anchors) else last_price - atr * 1.2
-    rec_half = atr * (0.35 + abs(rsi_adj) * 0.5)
+    rec_low_anchor  = float(np.mean([a for a in anchors if a < last_price])) if any(a < last_price for a in anchors) else last_price - atr_d * 1.2
+    rec_half = atr_d * (0.35 + abs(rsi_adj) * 0.5)
     rec_low  = rec_low_anchor - rec_half * 0.5
     rec_high = rec_low_anchor + rec_half * 0.5
+    rec_low, rec_high = _floor_band(rec_low, rec_high)
     rec_pct_l = round((rec_low  - last_price) / last_price * 100, 2)
     rec_pct_h = round((rec_high - last_price) / last_price * 100, 2)
 
@@ -5667,9 +5686,10 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     if last_price * 0.75 < fib_anchor < last_price:
         con_anchors.append(fib_anchor)
     con_center = float(np.mean(con_anchors))
-    con_half   = atr * (0.60 + abs(rsi_adj) * 0.3)
+    con_half   = atr_d * (0.60 + abs(rsi_adj) * 0.3)
     con_low    = con_center - con_half * 0.5
     con_high   = con_center + con_half * 0.5
+    con_low, con_high = _floor_band(con_low, con_high)
     con_pct_l  = round((con_low  - last_price) / last_price * 100, 2)
     con_pct_h  = round((con_high - last_price) / last_price * 100, 2)
 
@@ -5740,12 +5760,13 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         if downside_level == "severe":
             _k1 = max(_k1, 1.55)
             _k2 = max(_k2, 2.15)
-        _center = last_price - ((_k1 + _k2) / 2) * atr
-        _hw     = (_z["k2"] - _z["k1"]) * atr * _bw * 0.5
+        _center = last_price - ((_k1 + _k2) / 2) * atr_d
+        _hw     = (_z["k2"] - _z["k1"]) * atr_d * _bw * 0.5
         _lo, _hi = _center - _hw, _center + _hw
         if downside_level in ("high", "severe") and strong_support:
-            _hi = min(_hi, strong_support - atr * 0.10)
-            _lo = min(_lo, _hi - atr * 0.20)
+            _hi = min(_hi, strong_support - atr_d * 0.10)
+            _lo = min(_lo, _hi - atr_d * 0.20)
+        _lo, _hi = _floor_band(_lo, _hi)
         _win = _ap(_z["win"]); _los = round(100.0 - _win, 1)
         aggressive_bands.append({
             "band": _zn,
@@ -5767,12 +5788,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # ── 추천 매수 밴드 A/B/C ─────────────────────────────────────────
     # 개념: 기술적 지표 앵커(VWAP·BB·MA·Fib) 기반 고확률 진입 구간
     # 각 밴드는 백테스트 Zone B·C 데이터(더 높은 승률 구간)에 매핑
-    _vwap = vwap_approx if vwap_approx else last_price - 0.875 * atr
+    _vwap = vwap_approx if vwap_approx else last_price - 0.875 * atr_d
 
     # 앵커 산출: 각 지표가 현재가보다 아래에 있어야 유효한 지지선
     # ── Band A: VWAP·BB중간 수렴 (현재가보다 낮은 경우만) ──────────────
     _anc_A_raw = (_vwap + bb_m) / 2 if bb_m_raw else _vwap
-    _anc_A = min(_anc_A_raw, last_price - atr * (0.55 + _base_depth_offset + depth_shift))   # 위험이 높을수록 더 낮게 대기
+    _anc_A = min(_anc_A_raw, last_price - atr_d * (0.55 + _base_depth_offset + depth_shift))   # 위험이 높을수록 더 낮게 대기
 
     # ── Band B: BB하단·MA20 수렴 (현재가보다 낮은 경우만) ───────────────
     if bb_l_raw and ma20_raw:
@@ -5780,9 +5801,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     elif bb_l_raw:
         _anc_B_raw = bb_l
     else:
-        _anc_B_raw = last_price - 1.10 * atr
+        _anc_B_raw = last_price - 1.10 * atr_d
     # Band A보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_B = min(_anc_B_raw, _anc_A - atr * (0.35 + depth_shift * 0.45))
+    _anc_B = min(_anc_B_raw, _anc_A - atr_d * (0.35 + depth_shift * 0.45))
 
     # ── Band C: MA60·Fib 38.2~50% 수렴 ──────────────────────────────
     # fib_382가 현재가보다 낮을 때만(= 유효한 지지선) 사용
@@ -5793,16 +5814,16 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     elif ma60_raw:
         _anc_C_raw = ma60
     else:
-        _anc_C_raw = last_price - 1.40 * atr
+        _anc_C_raw = last_price - 1.40 * atr_d
     # Band B보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_C = min(_anc_C_raw, _anc_B - atr * (0.45 + depth_shift * 0.55))
+    _anc_C = min(_anc_C_raw, _anc_B - atr_d * (0.45 + depth_shift * 0.55))
     if downside_level in ("high", "severe") and strong_support:
-        _anc_A = min(_anc_A, strong_support - atr * 0.20)
-        _anc_B = min(_anc_B, strong_support - atr * (0.75 + depth_shift * 0.30))
-        _anc_C = min(_anc_C, strong_support - atr * (1.15 + depth_shift * 0.40))
+        _anc_A = min(_anc_A, strong_support - atr_d * 0.20)
+        _anc_B = min(_anc_B, strong_support - atr_d * (0.75 + depth_shift * 0.30))
+        _anc_C = min(_anc_C, strong_support - atr_d * (1.15 + depth_shift * 0.40))
 
     _rec_anchor = {"A": _anc_A, "B": _anc_B, "C": _anc_C}
-    _rec_hw = {"A": atr * 0.25 * _bw, "B": atr * 0.35 * _bw, "C": atr * 0.50 * _bw}
+    _rec_hw = {"A": atr_d * 0.25 * _bw, "B": atr_d * 0.35 * _bw, "C": atr_d * 0.50 * _bw}
     _rec_btmap = {"A": "B", "B": "C", "C": "C"}  # 기술적 앵커 구간 → 백테스트 Zone 매핑
     _rec_basis = {
         "A": (f"VWAP({_vwap:,.{rnd}f}) + BB중간({bb_m:,.{rnd}f}) 수렴 지지 — 기관 매집 참조" if bb_m_raw
@@ -5817,7 +5838,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "B": f"분할 매수 구간 · 평균 {_btz['C']['hold']:.0f}일 보유 전략",
         "C": "중기 저점 매집 · 리스크 분산 보유 (ATR 낙폭 소화 후 반등)",
     }
-    _price_ceiling = last_price - atr * 0.05   # 모든 밴드 상단은 현재가보다 낮아야 함
+    _price_ceiling = last_price - atr_d * 0.05   # 모든 밴드 상단은 현재가보다 낮아야 함
     recommended_bands = []
     for _zn in ["A", "B", "C"]:
         _bk  = _rec_btmap[_zn]
@@ -5826,7 +5847,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _hw  = _rec_hw[_zn]
         _lo  = _anc - _hw
         _hi  = min(_anc + _hw, _price_ceiling)   # 현재가 위로 올라가지 않도록 클램프
-        _lo  = min(_lo, _hi - atr * 0.05)        # 하단이 상단보다 낮도록 보장
+        _lo  = min(_lo, _hi - atr_d * 0.05)      # 하단이 상단보다 낮도록 보장
+        _lo, _hi = _floor_band(_lo, _hi)
         _win = _ap(_z["win"])
         recommended_bands.append({
             "band": _zn,
