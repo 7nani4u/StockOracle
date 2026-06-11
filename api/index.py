@@ -4498,17 +4498,30 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
     elif vol_trend == "contracting": vmul *= 1.10
 
     # ── 기술적 지표 참조 (dd 있을 때) ────────────────────────────────
-    bb_u  = None; bb_l = None; ma20 = None; ma60 = None
-    rsi   = 50.0;  macd = 0.0; sig_line = 0.0
+    bb_u  = None; bb_l = None; ma20 = None; ma60 = None; ma120 = None
+    rsi   = 50.0;  macd = 0.0; sig_line = 0.0; adx = 20.0; dip = 0.0; dim = 0.0
+    recent_low_break = False; heavy_sell_volume = False
     if dd is not None:
         def _last(k): a = dd.get(k, []); return float(a[-1]) if a and a[-1] is not None else None
         bb_u     = _last("BB_Upper")
         bb_l     = _last("BB_Lower")
         ma20     = _last("MA20")
         ma60     = _last("MA60")
+        ma120    = _last("MA120")
         rsi      = float(dd.get("RSI",          [50])[-1] or 50)
         macd     = float(dd.get("MACD",         [0])[-1]  or 0)
         sig_line = float(dd.get("Signal_Line",  [0])[-1]  or 0)
+        adx      = float(dd.get("ADX",          [20])[-1] or 20)
+        dip      = float(dd.get("DI_Plus",      [0])[-1]  or 0)
+        dim      = float(dd.get("DI_Minus",     [0])[-1]  or 0)
+        lows     = [float(x) for x in dd.get("Low", []) if x is not None]
+        vols     = [float(x) for x in dd.get("Volume", []) if x is not None]
+        closes   = [float(x) for x in dd.get("Close", []) if x is not None]
+        if len(lows) >= 21:
+            recent_low_break = price < min(lows[-21:-1])
+        if len(vols) >= 20 and len(closes) >= 2:
+            avg_vol = float(np.mean(vols[-20:]))
+            heavy_sell_volume = avg_vol > 0 and vols[-1] > avg_vol * 1.35 and closes[-1] < closes[-2]
 
     # ── 추세 강도 점수 (0~4) ──────────────────────────────────────────
     trend = 0
@@ -4517,16 +4530,37 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
     if macd  > sig_line:        trend += 1
     if rsi   > 50:              trend += 1
 
+    downside_points = 0
+    if ma20 and price < ma20: downside_points += 12
+    if ma60 and price < ma60: downside_points += 14
+    if ma120 and price < ma120: downside_points += 10
+    if macd <= sig_line: downside_points += 12
+    if adx >= 25 and dim > dip: downside_points += 18
+    if rsi < 45: downside_points += 8
+    if recent_low_break: downside_points += 18
+    if heavy_sell_volume: downside_points += 10
+    if vol_trend == "expanding": downside_points += 8
+    downside_risk_level = "high" if downside_points >= 58 else "medium" if downside_points >= 32 else "low"
+
+    stop_vmul = vmul
+    target_vmul = vmul
+    if downside_risk_level == "high":
+        stop_vmul *= 1.12
+        target_vmul *= 0.88
+    elif downside_risk_level == "medium":
+        stop_vmul *= 1.06
+        target_vmul *= 0.95
+
     # ── 각 리스크 성향별 ATR 배수 (변동성 조정 포함) ─────────────────
     # 보수적: 짧은 손절 · 작은 목표
-    cons_stp_mul  = round(0.80 * vmul, 2)
-    cons_tgt_mul  = round(1.20 * vmul + trend * 0.10, 2)
+    cons_stp_mul  = round(0.80 * stop_vmul, 2)
+    cons_tgt_mul  = round(1.20 * target_vmul + trend * 0.10, 2)
     # 중립적: 스윙 트레이딩 배율
-    bal_stp_mul   = round(1.30 * vmul, 2)
-    bal_tgt_mul   = round(2.50 * vmul + trend * 0.15, 2)
+    bal_stp_mul   = round(1.30 * stop_vmul, 2)
+    bal_tgt_mul   = round(2.50 * target_vmul + trend * 0.15, 2)
     # 공격적: 추세 추종 배율 (트렌드 강할수록 목표 확대)
-    agg_stp_mul   = round(1.80 * vmul, 2)
-    agg_tgt_mul   = round(4.50 * vmul + trend * 0.30, 2)
+    agg_stp_mul   = round(1.80 * stop_vmul, 2)
+    agg_tgt_mul   = round(4.50 * target_vmul + trend * 0.30, 2)
 
     def _rng(base_mul, width_pct=0.3):
         mid = price + atr * base_mul
@@ -4631,6 +4665,20 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
     bal_tp  = _make_tp_from_tgt(bal_tgt_range)
     agg_tp  = _make_tp_from_tgt(agg_tgt_range)
 
+    alloc_factor = 0.55 if downside_risk_level == "high" else 0.75 if downside_risk_level == "medium" else 1.0
+    volatility_expanded = vol_trend == "expanding" or atr_pct > 4.0
+
+    def _risk_detail(base_alloc: float, max_loss_cap: float, stop_pct: float) -> Dict:
+        alloc = round(base_alloc * alloc_factor, 1)
+        if volatility_expanded:
+            alloc = round(alloc * 0.8, 1)
+        return {
+            "allocation_pct": alloc,
+            "max_loss_pct": round(min(abs(stop_pct), max_loss_cap), 2),
+            "volatility_expanded": volatility_expanded,
+            "volatility_note": "변동성 확대 — 평소보다 작은 비중 권장" if volatility_expanded else "변동성 안정권",
+        }
+
     r = lambda v: round(v, rnd)
     # ── 시나리오별 실패 조건 산출 ─────────────────────────────────────
     def _fail_conditions(scenario: str) -> list[str]:
@@ -4673,6 +4721,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
             "interpretation": f"BB 하단 참조 손절 · 단기 반등 목표 (R/R {cons_rr:.1f}:1)",
             "tp_levels": cons_tp,
             "failure_conditions": _fail_conditions("conservative"),
+            "position_plan": _risk_detail(25, 2.5, cons_stp_pct),
         },
         "balanced": {
             "label": "중립적",
@@ -4688,6 +4737,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
             "interpretation": f"MA20 지지 손절 · 중기 추세 목표 (R/R {bal_rr:.1f}:1)",
             "tp_levels": bal_tp,
             "failure_conditions": _fail_conditions("balanced"),
+            "position_plan": _risk_detail(45, 4.0, bal_stp_pct),
         },
         "aggressive": {
             "label": "공격적",
@@ -4703,10 +4753,13 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
             "interpretation": f"BB 상단 참조 목표 · 추세 지속 시 최대 수익 (R/R {agg_rr:.1f}:1)",
             "tp_levels": agg_tp,
             "failure_conditions": _fail_conditions("aggressive"),
+            "position_plan": _risk_detail(30, 6.0, agg_stp_pct),
         },
         "vol_state": vol_state_txt,
         "vol_trend": vol_trend_txt,
         "atr_pct": round(atr_pct, 2),
+        "downside_risk_level": downside_risk_level,
+        "downside_risk_score": min(100, downside_points),
     }
 
 def calc_pivot_points(dd: Dict) -> Dict:
@@ -5004,6 +5057,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
     highs    = [float(x) for x in dd.get("High",  []) if x is not None]
     closes   = [float(x) for x in dd.get("Close", []) if x is not None]
+    opens    = [float(x) for x in dd.get("Open",  []) if x is not None]
     volumes  = [float(x) for x in dd.get("Volume",[]) if x is not None]
 
     def _last(k):
@@ -5020,6 +5074,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     macd     = float(dd.get("MACD",          [0])[-1] or 0)
     sig_line = float(dd.get("Signal_Line",   [0])[-1] or 0)
     adx      = float(dd.get("ADX",           [20])[-1] or 20)
+    di_plus  = float(dd.get("DI_Plus",       [0])[-1] or 0)
+    di_minus = float(dd.get("DI_Minus",      [0])[-1] or 0)
     bp       = _last("BUY_PRESSURE") or 50.0
 
     if not atr or np.isnan(atr):
@@ -5076,6 +5132,80 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         v20 = np.array(volumes[-20:])
         if v20.sum() > 0:
             vwap_approx = float(np.average(c20, weights=v20))
+
+    # ── 추가 하락 위험 평가 ─────────────────────────────────────────
+    ma120_raw = _last("MA120")
+    ma20_slope = 0.0
+    ma60_slope = 0.0
+    ma20_arr = [float(x) for x in dd.get("MA20", []) if x is not None]
+    ma60_arr = [float(x) for x in dd.get("MA60", []) if x is not None]
+    if len(ma20_arr) >= 6 and ma20_arr[-6] > 0:
+        ma20_slope = (ma20_arr[-1] - ma20_arr[-6]) / ma20_arr[-6] * 100
+    if len(ma60_arr) >= 6 and ma60_arr[-6] > 0:
+        ma60_slope = (ma60_arr[-1] - ma60_arr[-6]) / ma60_arr[-6] * 100
+
+    recent_low20 = min(lows[-21:-1]) if len(lows) >= 21 else None
+    recent_low_break = bool(recent_low20 and last_price < recent_low20)
+    support_break = bool(strong_support and last_price < strong_support)
+    gap_down = False
+    if len(opens) >= 1 and len(closes) >= 2 and closes[-2] > 0:
+        gap_down = opens[-1] < closes[-2] * 0.985 and closes[-1] <= opens[-1] * 1.01
+    vol_ratio = 1.0
+    heavy_sell_volume = False
+    if len(volumes) >= 20 and len(closes) >= 2:
+        avg_vol20 = float(np.mean(volumes[-20:]))
+        if avg_vol20 > 0:
+            vol_ratio = volumes[-1] / avg_vol20
+            heavy_sell_volume = vol_ratio >= 1.35 and closes[-1] < closes[-2]
+
+    ma_bear = sum([
+        1 if ma20_raw and last_price < float(ma20_raw) else 0,
+        1 if ma60_raw and last_price < float(ma60_raw) else 0,
+        1 if ma120_raw and last_price < float(ma120_raw) else 0,
+    ])
+    downtrend_strong = (adx >= 25 and di_minus > di_plus) or (ma_bear >= 2 and macd <= sig_line and ma20_slope < 0)
+
+    downside_score = 0
+    downside_reasons: list[str] = []
+    if ma20_raw and last_price < float(ma20_raw):
+        downside_score += 10; downside_reasons.append(f"현재가가 MA20({float(ma20_raw):,.{rnd}f}) 아래")
+    if ma60_raw and last_price < float(ma60_raw):
+        downside_score += 12; downside_reasons.append(f"현재가가 MA60({float(ma60_raw):,.{rnd}f}) 아래")
+    if ma120_raw and last_price < float(ma120_raw):
+        downside_score += 8; downside_reasons.append(f"현재가가 MA120({float(ma120_raw):,.{rnd}f}) 아래")
+    if ma20_slope < -0.6:
+        downside_score += 8; downside_reasons.append(f"MA20 기울기 {ma20_slope:.1f}%로 하락")
+    if macd <= sig_line:
+        downside_score += 10; downside_reasons.append("MACD가 Signal 아래 — 하락 모멘텀 우위")
+    if adx >= 25 and di_minus > di_plus:
+        downside_score += 16; downside_reasons.append(f"ADX {adx:.0f}·-DI 우위 — 하락 추세 강도 높음")
+    if rsi < 40:
+        downside_score += 8; downside_reasons.append(f"RSI {rsi:.1f} — 약세권, 과매도 반등 확인 전")
+    elif rsi > 70:
+        downside_score += 8; downside_reasons.append(f"RSI {rsi:.1f} — 과열 후 조정 위험")
+    if recent_low_break:
+        downside_score += 16; downside_reasons.append(f"최근 20일 저점({recent_low20:,.{rnd}f}) 이탈")
+    if support_break:
+        downside_score += 12; downside_reasons.append(f"단기 지지 클러스터({strong_support:,.{rnd}f}) 이탈")
+    if heavy_sell_volume:
+        downside_score += 10; downside_reasons.append(f"거래량 {vol_ratio:.1f}배 동반 하락")
+    if gap_down:
+        downside_score += 10; downside_reasons.append("갭 하락 후 회복 실패 가능성")
+    if vol_trend == "expanding":
+        downside_score += 8; downside_reasons.append("ATR 변동성 확대 — 지지선 이탈 시 낙폭 확대 가능")
+
+    downside_score = int(min(100, downside_score))
+    if downside_score >= 72:
+        downside_level, downside_label, depth_shift = "severe", "매수 보류", 0.85
+    elif downside_score >= 55:
+        downside_level, downside_label, depth_shift = "high", "추가 하락 위험 높음", 0.60
+    elif downside_score >= 35:
+        downside_level, downside_label, depth_shift = "medium", "추가 하락 위험 주의", 0.35
+    else:
+        downside_level, downside_label, depth_shift = "low", "추가 하락 위험 낮음", 0.10
+
+    if not downside_reasons:
+        downside_reasons.append("이평선·MACD·거래량 기준의 뚜렷한 하락 가속 신호 없음")
 
     # ── 구간별 핵심 앵커 가격 선택 ────────────────────────────────────
     bb_l  = float(bb_l_raw) if bb_l_raw else last_price * 0.97
@@ -5208,10 +5338,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     ])
     _mom_adj  = (_trend - 2) * 2.5   # 추세 중립(2)에서 ±5pp
     _rsi_adj2 = 5.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
+    _risk_penalty = min(22.0, downside_score * 0.22)
 
     def _ap(base_prob):
         """백테스트 기저확률 + 모멘텀·RSI 보정 → 최종 확률 (5~95% 클램프)"""
-        return round(min(95.0, max(5.0, base_prob + _mom_adj + _rsi_adj2)), 1)
+        return round(min(95.0, max(5.0, base_prob + _mom_adj + _rsi_adj2 - _risk_penalty)), 1)
 
     # ── 공격적 매수 밴드 A/B/C ────────────────────────────────────────
     # 개념: ATR 눌림목 깊이를 3단계로 세분 → 각 단계별 진입 근거·기대수익·손실확률
@@ -5223,17 +5354,23 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     aggressive_bands = []
     for _zn in ["A", "B", "C"]:
         _z = _btz[_zn]
-        _center = last_price - _z["k"] * atr
+        _k1 = _z["k1"] + depth_shift
+        _k2 = _z["k2"] + depth_shift
+        _center = last_price - (_z["k"] + depth_shift) * atr
         _hw     = (_z["k2"] - _z["k1"]) * atr * _bw * 0.5
         _lo, _hi = _center - _hw, _center + _hw
+        if downside_level in ("high", "severe") and strong_support:
+            _hi = min(_hi, strong_support - atr * 0.10)
+            _lo = min(_lo, _hi - atr * 0.20)
         _win = _ap(_z["win"]); _los = round(100.0 - _win, 1)
         aggressive_bands.append({
             "band": _zn,
             "range": [round(_lo, rnd), round(_hi, rnd)],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
-            "atr_basis": f"ATR×{_z['k1']:.2f}~{_z['k2']:.2f} 눌림 ({_mkt} 백테스트 {_z['win']}% 기저승률)",
+            "atr_basis": f"ATR×{_k1:.2f}~{_k2:.2f} 보수 눌림 (기본 {_z['k1']:.2f}~{_z['k2']:.2f} + 위험 보정 {depth_shift:.2f})",
             "tech_note": _agg_tech[_zn],
+            "risk_note": f"{downside_label}: 확률 -{_risk_penalty:.1f}pp 반영",
             "expected_return_pct": _z["ret"],
             "win_prob_pct":  _win,
             "loss_prob_pct": _los,
@@ -5248,7 +5385,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # 앵커 산출: 각 지표가 현재가보다 아래에 있어야 유효한 지지선
     # ── Band A: VWAP·BB중간 수렴 (현재가보다 낮은 경우만) ──────────────
     _anc_A_raw = (_vwap + bb_m) / 2 if bb_m_raw else _vwap
-    _anc_A = min(_anc_A_raw, last_price - atr * 0.20)   # 최소 0.2 ATR 아래 보장
+    _anc_A = min(_anc_A_raw, last_price - atr * (0.35 + depth_shift))   # 위험이 높을수록 더 낮게 대기
 
     # ── Band B: BB하단·MA20 수렴 (현재가보다 낮은 경우만) ───────────────
     if bb_l_raw and ma20_raw:
@@ -5258,7 +5395,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     else:
         _anc_B_raw = last_price - 1.10 * atr
     # Band A보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_B = min(_anc_B_raw, _anc_A - atr * 0.20)
+    _anc_B = min(_anc_B_raw, _anc_A - atr * (0.25 + depth_shift * 0.35))
 
     # ── Band C: MA60·Fib 38.2~50% 수렴 ──────────────────────────────
     # fib_382가 현재가보다 낮을 때만(= 유효한 지지선) 사용
@@ -5271,7 +5408,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     else:
         _anc_C_raw = last_price - 1.40 * atr
     # Band B보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_C = min(_anc_C_raw, _anc_B - atr * 0.20)
+    _anc_C = min(_anc_C_raw, _anc_B - atr * (0.30 + depth_shift * 0.45))
+    if downside_level in ("high", "severe") and strong_support:
+        _anc_A = min(_anc_A, strong_support - atr * 0.20)
+        _anc_B = min(_anc_B, strong_support - atr * (0.55 + depth_shift * 0.20))
+        _anc_C = min(_anc_C, strong_support - atr * (0.95 + depth_shift * 0.30))
 
     _rec_anchor = {"A": _anc_A, "B": _anc_B, "C": _anc_C}
     _rec_hw = {"A": atr * 0.25 * _bw, "B": atr * 0.35 * _bw, "C": atr * 0.50 * _bw}
@@ -5307,6 +5448,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                       round((_hi - last_price) / last_price * 100, 2)],
             "basis":         _rec_basis[_zn],
             "hold_note":     _rec_hold[_zn],
+            "risk_note":     f"{downside_label}: 지지선 확인 전 상단 추격 제한",
             "expected_sharpe": _z["sharpe"],
             "win_prob_pct":  _win,
             "avg_hold_days": _z["hold"],
@@ -5375,6 +5517,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _ctx = "strong_uptrend" if _trend_cnt == 4 and _adx_strong else "uptrend"
     elif rsi < 40 and macd > sig_line:
         _ctx = "recovery"
+    elif downside_level == "severe" or (downtrend_strong and downside_score >= 55):
+        _ctx = "breakdown"
     elif _trend_cnt <= 1:
         _ctx = "downtrend"
     else:
@@ -5386,6 +5530,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "uptrend":        ("✅ 밴드 A~B 분할 매수",    "split_buy",    "B",   ["A","B"],  60+_trend_cnt*5),
         "recovery":       ("✅ 밴드 B~C 저점 분할",    "recovery_buy", "C",   ["B","C"],  58+(5 if macd>sig_line else 0)),
         "downtrend":      ("⚠️ 관망 후 지지선 확인",   "wait_support", "C",   [],         max(15, 40-(_trend_cnt)*8)),
+        "breakdown":      ("⛔ 매수 보류 · 추가 하락 위험", "wait_breakdown", None, [], max(8, 38 - downside_score // 2)),
         "sideways":       ("✅ 밴드 B 분할 매수",       "split_buy",    "B",   ["A","B"],  55+(5 if rsi<50 else 0)),
     }
     _action, _akey, _pband, _abands, _conf = _ctx_map.get(_ctx, _ctx_map["sideways"])
@@ -5401,6 +5546,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _rationale = [f"RSI {rsi:.0f} — 과매도 반등 가능성 높음", "MACD 매수 전환 시그널 포착", "단기 급락 후 반등 구간 — 저가 분할 매수 유리"]
     elif _ctx == "downtrend":
         _rationale = ["하락 추세 진행 중 — 추가 하락 가능", f"RSI {rsi:.0f} — 아직 바닥 반전 신호 없음", "하락 추세 반전 확인(캔들·거래량) 후 진입 권장"]
+    elif _ctx == "breakdown":
+        _rationale = [f"{downside_label}({downside_score}점) — 매수 구간보다 위험 확인이 우선"] + downside_reasons[:3]
     else:
         _rationale = ["횡보 구간 — 지지선 근접 시 매수 기회", f"RSI {rsi:.0f} — 중립 구간, 방향성 탐색 중", "밴드 B 진입 후 저항선 도달 시 차익 실현 전략"]
 
@@ -5417,6 +5564,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "uptrend":        f"현재가 대비 +3% 이상({_chase_price:,.{rnd}f}) 이미 올랐다면 진입 지양",
         "recovery":       f"반등 초기 — 현재가 대비 +4% 이상({_chase_price:,.{rnd}f}) 급등 시 추격 지양",
         "downtrend":      f"하락 추세 중 반등은 단기에 그칠 수 있음 — 추격 매수 금지",
+        "breakdown":      "저점 이탈·하락 추세 조건에서는 반등 양봉과 거래량 회복 전 신규 매수 보류",
         "sideways":       f"횡보 중 갑작스러운 3% 이상 급등({_chase_price:,.{rnd}f}) 시 추격 지양",
     }
 
@@ -5467,6 +5615,18 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "atr_pct": round(atr_pct, 2),
         "vol_trend": vol_trend,
         "market": _mkt,
+        "downside_risk": {
+            "score": downside_score,
+            "level": downside_level,
+            "label": downside_label,
+            "reasons": downside_reasons,
+            "depth_shift_atr": round(depth_shift, 2),
+            "recent_low_break": recent_low_break,
+            "support_break": support_break,
+            "gap_down": gap_down,
+            "volume_ratio": round(vol_ratio, 2),
+            "downtrend_strong": downtrend_strong,
+        },
         "strategy_rec": strategy_rec,
     }
 
@@ -10783,7 +10943,8 @@ function renderForecast(d, isKrx) {
       const ctxColorMap = {
         overbought:     ['#f85149','#2d1515'], strong_uptrend: ['#3fb950','#0d2d1a'],
         uptrend:        ['#3fb950','#0d2d1a'], recovery:       ['#d29922','#2d2200'],
-        downtrend:      ['#f85149','#2d1515'], sideways:       ['#58a6ff','#0d1b33'],
+        downtrend:      ['#f85149','#2d1515'], breakdown:      ['#f85149','#2d1515'],
+        sideways:       ['#58a6ff','#0d1b33'],
       };
       const [bannerC, bannerBg] = ctxColorMap[sr.context] || ['#d29922','#2d2200'];
       const confColor = (sr.confidence_pct || 50) >= 70 ? '#3fb950' : (sr.confidence_pct || 50) >= 50 ? '#d29922' : '#f85149';
@@ -10802,6 +10963,21 @@ function renderForecast(d, isKrx) {
           <div style="margin-top:10px;padding:8px 10px;background:#2d0d0d;border-left:3px solid #f85149;border-radius:0 6px 6px 0;font-size:11px;color:#f85149">
             ⛔ 추격 매수 위험: ${sr.chase_zone.reason}
           </div>` : ''}
+        </div>` : '';
+
+      const dr = bp.downside_risk || null;
+      const riskTone = dr && (dr.level === 'severe' || dr.level === 'high') ? '#f85149'
+                     : dr && dr.level === 'medium' ? '#d29922' : '#3fb950';
+      const downsideRiskHtml = dr ? `
+        <div style="background:#0d1117;border:1px solid ${riskTone}66;border-radius:10px;padding:12px 14px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+            <div style="font-size:13px;font-weight:800;color:${riskTone}">추가 하락 위험: ${dr.label}</div>
+            <div style="font-size:12px;font-weight:800;color:${riskTone};background:${riskTone}1f;border-radius:4px;padding:2px 8px">${dr.score}점</div>
+          </div>
+          <div style="font-size:11px;color:#8b949e;margin-bottom:7px">매수 밴드는 기본 ATR 구간보다 ${dr.depth_shift_atr}ATR 낮춰 계산했습니다.</div>
+          <div style="font-size:11px;color:#cdd9e5;line-height:1.5">
+            ${(dr.reasons || []).slice(0, 4).map(r => `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:2px"><span style="color:${riskTone};flex-shrink:0">•</span><span>${r}</span></div>`).join('')}
+          </div>
         </div>` : '';
 
       // ── 추천 밴드 (active_bands 기준으로 필터링) ──
@@ -10826,6 +11002,7 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
             <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
+            <div style="font-size:10px;color:#d29922;margin-top:2px">승률 ${b.win_prob_pct}% · ${b.risk_note || '위험 보정 반영'}</div>
           </div>`;
         } else {
           return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
@@ -10836,6 +11013,8 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
+            <div style="font-size:10px;color:#d29922;margin-top:2px">승률 ${b.win_prob_pct}% · 손실확률 ${b.loss_prob_pct}%</div>
+            <div style="font-size:10px;color:#f97316;margin-top:1px">• ${b.risk_note || '시장 위험 보정 반영'}</div>
           </div>`;
         }
       };
@@ -10858,7 +11037,7 @@ function renderForecast(d, isKrx) {
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + downsideRiskHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
     }
   }
 
@@ -10892,6 +11071,23 @@ function renderForecast(d, isKrx) {
         const failHtml = (sc.failure_conditions || [])
           .map(f => `<div style="display:flex;align-items:flex-start;gap:5px;margin-bottom:2px"><span style="color:#f97316;flex-shrink:0">•</span><span>${f}</span></div>`)
           .join('');
+        const pp = sc.position_plan || null;
+        const positionPlanHtml = pp ? `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;${DIVIDER}">
+            <div>
+              <div style="font-size:10px;color:#8b949e">분할 비중</div>
+              <div style="font-size:12px;color:#58a6ff;font-weight:700">${pp.allocation_pct}%</div>
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:10px;color:#8b949e">최대 허용 손실</div>
+              <div style="font-size:12px;color:#f85149;font-weight:700">${pp.max_loss_pct}%</div>
+            </div>
+            <div style="text-align:right;max-width:110px">
+              <div style="font-size:10px;color:#8b949e">변동성</div>
+              <div style="font-size:10px;color:${pp.volatility_expanded ? '#f97316' : '#3fb950'};font-weight:700">${pp.volatility_expanded ? '확대' : '안정'}</div>
+            </div>
+          </div>
+          <div style="font-size:10px;color:#8b949e;margin-top:4px">${pp.volatility_note || ''}</div>` : '';
         // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
         const pbHtml = (() => {
           const pa = d.pullback_analysis || null;
@@ -10966,6 +11162,7 @@ function renderForecast(d, isKrx) {
               <div style="font-size:12px;color:#3fb950;font-weight:700">+${sc.return}%</div>
             </div>
           </div>
+          ${positionPlanHtml}
           ${pbHtml}
           <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
           ${sc.tp_levels && sc.tp_levels.length ? `
