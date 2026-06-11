@@ -738,23 +738,46 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
             
             df = df[np.isin(df.index.date, target_dates)]
 
-        # 뉴스
+        # 뉴스 — 감성 분석용 헤드라인 수집: 구글 뉴스 RSS + 야후 파이낸스 RSS
+        #   야후 RSS는 티커 전용 피드라 종목 연관성이 보장되고, 구글 뉴스는 커버리지가 넓다.
+        #   제목 기준 중복 제거 후 source_type 을 부여 → confidence_engine 의
+        #   출처 신뢰도 가중(_SRC_CRED)에 그대로 사용된다.
         news = []
         if FEEDPARSER_AVAILABLE:
-            try:
-                if market == "KRX":
-                    q = sym.replace(".KS","").replace(".KQ","") + " 주가"
-                    url = f"https://news.google.com/rss/search?q={quote(q)}&hl=ko&gl=KR&ceid=KR:ko"
-                else:
-                    url = f"https://news.google.com/rss/search?q={sym}+stock&hl=en-US&gl=US&ceid=US:en"
-                for e in feedparser.parse(url).entries[:5]:
-                    news.append({
-                        "title": e.title, "link": e.link,
-                        "publisher": getattr(e, "source", type("", (), {"title": "Google News"})()).title,
-                        "published": getattr(e, "published", ""),
-                    })
-            except Exception:
-                pass
+            _seen_titles: set = set()
+
+            def _collect_feed(url: str, source_type: str, default_pub: str, limit: int = 8):
+                try:
+                    for e in feedparser.parse(url).entries[:limit]:
+                        title = (getattr(e, "title", "") or "").strip()
+                        key = " ".join(title.split()).lower()
+                        if not title or key in _seen_titles:
+                            continue
+                        _seen_titles.add(key)
+                        news.append({
+                            "title": title, "link": getattr(e, "link", ""),
+                            "publisher": getattr(getattr(e, "source", None), "title", None) or default_pub,
+                            "published": getattr(e, "published", ""),
+                            "source_type": source_type,
+                        })
+                except Exception:
+                    pass
+
+            # ① 야후 파이낸스 RSS — 티커 단위 공식 헤드라인 (KRX 심볼도 야후 형식 그대로 지원)
+            _collect_feed(
+                f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(sym)}&region=US&lang=en-US",
+                "yahoo_rss", "Yahoo Finance")
+            # ② 구글 뉴스 RSS — 폭넓은 커버리지 (기존 쿼리 유지)
+            if market == "KRX":
+                q = sym.replace(".KS","").replace(".KQ","") + " 주가"
+                _collect_feed(
+                    f"https://news.google.com/rss/search?q={quote(q)}&hl=ko&gl=KR&ceid=KR:ko",
+                    "google_news", "Google News")
+            else:
+                _collect_feed(
+                    f"https://news.google.com/rss/search?q={quote(sym + ' stock')}&hl=en-US&gl=US&ceid=US:en",
+                    "google_news", "Google News")
+            news = news[:10]
 
         df2 = df.reset_index()
         # 분봉 데이터인 경우 인덱스 이름이 "Datetime"일 수 있으므로 "Date"로 통일
@@ -7051,9 +7074,32 @@ def route(path: str, params: Dict) -> Dict:
             _cl5 = [float(c) for c in (dd.get("Close") or []) if c is not None]
             _pct5 = ((_cl5[-1] - _cl5[-6]) / _cl5[-6] * 100.0) if len(_cl5) >= 6 and _cl5[-6] else None
             # 뉴스 → 감정 분석 입력 (title + published + 출처유형)
+            #   RSS 수집분은 fetch_stock_data 가 부여한 source_type(yahoo_rss/google_news)을
+            #   그대로 전달 → confidence_engine 출처 신뢰도 가중에 반영.
+            #
+            #   종목 연관성 필터 (stockflow sentiment_agent 의 strict relevance check 이식):
+            #   야후 티커 피드조차 관련 시장 기사(타 종목)가 섞여 오므로 RSS 수집분 전체에
+            #   적용 — 헤드라인에 회사명 전체 / 회사명 핵심 단어 / 티커가 없으면 감정 입력에서
+            #   제외한다. 종목 페이지 출처(네이버/공시/DART)는 이후 별도 병합되며 필터하지 않는다.
+            _name_key   = re.sub(r"\s+", "", str(company or "")).lower()
+            _name_words = [w.lower() for w in re.split(r"\s+", str(company or "")) if len(w) > 4]
+            _tkr_key    = sym.split(".")[0].lower()
+            def _relevant_headline(title: str) -> bool:
+                t_nosp = re.sub(r"\s+", "", str(title or "")).lower()
+                if len(_name_key) >= 2 and _name_key in t_nosp:
+                    return True
+                if len(_tkr_key) >= 2 and _tkr_key in t_nosp:
+                    return True
+                if not _name_words:
+                    return False
+                # 회사명 핵심 단어가 1개뿐이면 1개 일치, 2개 이상이면 2개 일치 요구
+                t_low = str(title or "").lower()
+                return sum(1 for w in _name_words if w in t_low) >= min(2, len(_name_words))
             _news_in = [{"title": n.get("title"), "source": n.get("publisher"),
-                         "source_type": "google_news",
-                         "published": n.get("published")} for n in (news or []) if n.get("title")]
+                         "source_type": n.get("source_type") or "google_news",
+                         "published": n.get("published")}
+                        for n in (news or [])
+                        if n.get("title") and _relevant_headline(n.get("title"))]
             # KRX: 네이버 종목뉴스 + 공시 + DART(키 설정 시)를 감정 입력에 병합.
             #   출처유형(source_type)을 부여 → confidence_engine이 신뢰도 가중을 적용
             #   (DART/공시 > 네이버 뉴스 > 포털 RSS). 한국어 헤드라인은 KR-FinBERT로 자동 분석.
@@ -9570,30 +9616,52 @@ function shareToTelegram() {
   if (bp.vol_trend === 'expanding') pushUniq(bulls, '거래량 확대 — 시장 관심 증가');
   if (stopLoss) pushUniq(warns, '손절가 ' + stopLoss + ' 이탈 시 추가 조정 가능');
 
-  // ── 성장 포인트 — 실제 뉴스/실적 데이터가 있을 때만 인용 (임의 생성 금지) ──
+  // ── 성장률/수익성 수치 검증 — NaN·Infinity·계산 오류·비현실적 수치 차단 ──
+  //   정상 범위를 벗어난 값은 null 을 돌려 원본 수치가 노출되지 않게 한다.
+  const sanePct = (v, lo, hi) => {
+    if (v == null) return null;
+    const n = Number(v);
+    return (isFinite(n) && n >= lo && n <= hi) ? n : null;
+  };
+
+  // ── 성장 포인트 — 해당 종목과 직접 연관된 실데이터만 인용 (임의 생성 금지) ──
   //   뉴스 소스 우선순위: KRX 네이버 → US Finnhub 보강 → 구글 뉴스 RSS
-  const growth = [];
+  //   헤드라인은 종목명/티커가 포함된 것만 채택해 무관한 산업·타사 기사를 거른다.
+  const growth      = [];   // 실데이터 기반 성장 포인트 (✓)
+  const growthNotes = [];   // 데이터 품질 안내 문구 (•)
+  const _tickerBase = String(ticker || '').replace(/\.(KS|KQ)$/i, '').toUpperCase();
+  const _nameFull   = _norm(company).replace(/\s+/g, '').toUpperCase();
+  const _nameFirst  = (_norm(company).split(' ')[0] || '').toUpperCase();
+  const isRelevant  = (title) => {
+    const t = _norm(title).replace(/\s+/g, '').toUpperCase();
+    return (_nameFull.length   >= 2 && t.indexOf(_nameFull)   !== -1)
+        || (_nameFirst.length  >= 2 && t.indexOf(_nameFirst)  !== -1)
+        || (_tickerBase.length >= 2 && t.indexOf(_tickerBase) !== -1);
+  };
   const newsArr = (d.naver && (d.naver.news || []).length)             ? d.naver.news
                 : (d.us_enriched && (d.us_enriched.news || []).length) ? d.us_enriched.news
                 : (d.news || []);
-  newsArr.slice(0, 3).forEach(n => {
-    if (n && n.title) pushUniq(growth, n.title);
-  });
+  newsArr
+    .filter(n => n && n.title && isRelevant(n.title))
+    .slice(0, 3)
+    .forEach(n => pushUniq(growth, n.title));
   if (isKrx && d.naver) {
     const n = d.naver;
-    if (n.eps != null && Number(n.eps) > 0)
-      pushUniq(growth, 'EPS 성장률 ' + n.eps + '% — 이익 성장 흐름');
-    if (n.net_profit_growth != null && Number(n.net_profit_growth) > 0)
-      pushUniq(growth, '순이익 증감률 +' + n.net_profit_growth + '% — 실적 개선');
-    if (n.roe != null && Number(n.roe) >= 10)
-      pushUniq(growth, 'ROE ' + n.roe + '% — 자본 효율 양호');
+    const epsG = sanePct(n.eps, -1000, 1000);               // 성장률로 의미 있는 범위만
+    const npG  = sanePct(n.net_profit_growth, -1000, 1000);
+    const roeV = sanePct(n.roe, 0, 150);
+    if (epsG != null && epsG > 0)
+      pushUniq(growth, 'EPS 성장률 ' + epsG + '% — 이익 성장 흐름');
+    else if (n.eps != null && epsG == null)
+      pushUniq(growthNotes, 'EPS 성장률 데이터 신뢰도 부족');   // 이상치 — 원본 수치 비노출
+    if (npG != null && npG > 0)
+      pushUniq(growth, '순이익 증감률 +' + npG + '% — 실적 개선');
+    if (roeV != null && roeV >= 10)
+      pushUniq(growth, 'ROE ' + roeV + '% — 자본 효율 양호');
   }
-  if (!growth.length) {
-    // 뉴스·실적 데이터가 없는 종목 — 기술적 지표 기반 문장으로 대체
-    if (close && ma20 && close > ma20) pushUniq(growth, '20일 이동평균선 상회 — 단기 추세 양호');
-    if (tp2) pushUniq(growth, '2차 목표가 ' + tp2 + '까지 상승 여력 산출');
-    if (!growth.length) pushUniq(growth, '성장 관련 데이터 부족 — 기술적 지표 중심 판단 권장');
-  }
+  // 근거 있는 항목이 하나도 없으면 억지로 생성하지 않고 안내 문구만 출력
+  if (!growth.length && !growthNotes.length)
+    growthNotes.push('확인 가능한 성장 포인트가 부족합니다.');
 
   // ── 관전 포인트 — 실측 지지/저항/RSI/거래량 기준 동적 생성 ──────
   const watch = [];
@@ -9613,12 +9681,12 @@ function shareToTelegram() {
   //   순서: 제목 → 상승/하락 가능성 → 시간·현재가 → AI 뉴스 요약
   //         → 강세 요인 → 성장 포인트 → 관전 포인트 → 주의 요인 → 매매 전략
   const L = [];
+  // 제목 바로 아래에 확률 라인 연속 출력 — 사이에 빈 줄을 넣지 않는다
   L.push('📊 종목 분석 | ' + company + ' (' + ticker + ')');
-  L.push('');
   if (typeof d.prob_up === 'number' && typeof d.prob_down === 'number') {
     L.push('▲ 상승 가능성 ' + d.prob_up.toFixed(1) + '%   ▼ 하락 가능성 ' + d.prob_down.toFixed(1) + '%');
-    L.push('');
   }
+  L.push('');
   L.push('현재 시간 ' + sentTime + ' 기준 / 💰 현재가 ' + price + pctTxt);
   L.push('');
   if (tossSummary) {
@@ -9631,9 +9699,10 @@ function shareToTelegram() {
     bulls.slice(0, 4).forEach(r => L.push('✓ ' + r));
     L.push('');
   }
-  if (growth.length) {
+  if (growth.length || growthNotes.length) {
     L.push('🌱 성장 포인트');
     growth.slice(0, 5).forEach(g => L.push('✓ ' + g));
+    growthNotes.forEach(g => L.push('• ' + g));
     L.push('');
   }
   if (watch.length) {
@@ -9981,7 +10050,7 @@ function renderSignalConfidence(d) {
     // 📰 뉴스감정 상세 — 출처 구성 · 품질 · 신뢰도 가중 여부 (보강 내용 가시화)
     const _parts = [];
     if (se.source_breakdown) {
-      const _lbl = { dart:'DART', disclosure:'공시', naver:'네이버', google_news:'포털뉴스', news:'뉴스', x:'X' };
+      const _lbl = { dart:'DART', disclosure:'공시', naver:'네이버', yahoo_rss:'야후파이낸스', google_news:'포털뉴스', news:'뉴스', x:'X' };
       const _segs = Object.keys(se.source_breakdown)
         .map(k => (_lbl[k] || k) + ' ' + se.source_breakdown[k]);
       if (_segs.length) _parts.push('출처 ' + _segs.join(' · '));
