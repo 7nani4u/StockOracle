@@ -9469,7 +9469,9 @@ function shareToTelegram() {
   if (!currentData) return;
   const d = currentData;
 
-  const isKrx   = d.market === 'KRX';
+  // 원화 종목 판정 — market 플래그 외에 .KS/.KQ 접미사도 방어적으로 인식해
+  // 원화 종목에 달러 단위가 표시되는 일이 없도록 한다.
+  const isKrx   = d.market === 'KRX' || /\.(KS|KQ)$/i.test(String(d.symbol || ''));
   const unit    = isKrx ? '원' : '달러';
   const company = d.company || d.symbol;
   const ticker  = d.symbol;
@@ -9488,7 +9490,6 @@ function shareToTelegram() {
   const bp  = d.buy_price         || {};
   const pa  = d.pullback_analysis || {};
   const tpd = d.target_price      || {};
-  const sig = (d.indicator_signals && d.indicator_signals.summary) || {};
   const cd  = d.chart_data        || {};
 
   // ── 현재가 ──────────────────────────────────────────────────────
@@ -9525,138 +9526,124 @@ function shareToTelegram() {
   const tp1 = fmtP(tpAt('conservative', 2));   // 보수적 TP3
   const tp2 = fmtP(tpAt('balanced', 0));        // 중립적 TP1
 
-  // ── 기술적 분석 (실데이터 있을 때만 라인 생성) ──────────────────
+  // ── 현재 시간 — 텔레그램 전송 버튼을 누른 시점 (24시간제 HH:MM) ──
+  const _sentAt  = new Date();
+  const sentTime = String(_sentAt.getHours()).padStart(2, '0') + ':'
+                 + String(_sentAt.getMinutes()).padStart(2, '0');
+
+  // ── 기술 지표 원천값 ────────────────────────────────────────────
   const rsi   = (typeof d.rsi === 'number') ? d.rsi : null;
   const close = d.last_close;
   const ma20  = lastOf(cd.ma20), ma60 = lastOf(cd.ma60);
-  const techLines = [];
-  if (sig.overall_label || sig.market_state) {
-    techLines.push('• 추세 판단: '
-      + [sig.overall_label, sig.market_state].filter(Boolean).join(' · '));
-  }
-  if (ma20 && ma60 && close) {
-    let maTxt;
-    if (close > ma20 && ma20 > ma60)      maTxt = '정배열(현재가>20일선>60일선) — 상승 구조';
-    else if (close < ma20 && ma20 < ma60) maTxt = '역배열(현재가<20일선<60일선) — 하락 구조';
-    else                                  maTxt = '혼조 배열 — 방향성 탐색';
-    techLines.push('• 이동평균선: 20일선 ' + nf(ma20)
-      + ' / 60일선 ' + nf(ma60) + ' → ' + maTxt);
-  }
-  if (rsi != null) {
-    const z = rsi >= 70 ? '과매수 구간' : rsi <= 30 ? '과매도 구간'
-            : rsi >= 55 ? '중립~강세' : rsi <= 45 ? '중립~약세' : '중립 구간';
-    techLines.push('• RSI ' + rsi + ' → ' + z);
-  }
-  // 거래량: 화면 상단(r-vol)과 동일하게 실제 거래량 수치 출력 + 추세 보조표기
-  const volNum = (typeof d.volume === 'number' && d.volume > 0) ? d.volume : null;
-  if (volNum != null) {
-    const vtTag = bp.vol_trend === 'expanding'   ? ' (확대)'
-                : bp.vol_trend === 'contracting' ? ' (감소)' : '';
-    techLines.push('• 거래량: ' + volNum.toLocaleString() + '주' + vtTag);
-  } else if (bp.vol_trend) {
-    const vt = bp.vol_trend === 'expanding'   ? '거래량 확대 — 변동성/관심 증가'
-             : bp.vol_trend === 'contracting' ? '거래량 감소 — 에너지 응축 구간'
-             : '거래량 보통 수준';
-    techLines.push('• 거래량: ' + vt);
-  }
   const resTxt = rng(pa.zones && pa.zones.resistance);
   const supTxt = rng(pa.zones && pa.zones.defense);
-  if (supTxt) techLines.push('• 지지 구간: ' + supTxt);
-  if (resTxt) techLines.push('• 저항 구간: ' + resTxt);
 
-  // ── 강세/전략 근거 · 리스크 (실제 산출 배열) ────────────────────
-  const rationale = ((bp.strategy_rec && bp.strategy_rec.rationale) || [])
-    .filter(r => r !== '밴드 B 진입 후 저항선 도달 시 차익 실현 전략');
-  const risks = (tpd.failure_factors || []).filter(f => f && f.indexOf('없음') === -1);
+  // ── 중복 문구 제거 — 섹션 간 같은 의미의 줄이 두 번 들어가지 않게 한다 ──
+  const _seen = new Set();
+  const _norm = (s) => String(s).replace(/\s+/g, ' ').trim();
+  const pushUniq = (arr, line) => {
+    const k = _norm(line);
+    if (!k || _seen.has(k)) return;
+    _seen.add(k);
+    arr.push(k);
+  };
 
-  // ── 기업실적분석 (KRX 네이버 + 거래량 비율) ─────────────────────
-  const fund = [];
+  // ── 강세 요인 / 주의 요인 — 백엔드 산출 근거를 긍정/부정으로 분류 ──
+  //   (rationale 에는 추세 상태에 따라 부정 문구도 섞여 오므로 키워드로 분리)
+  const NEG_RE = /하락|약세|위험|과매수|과열|불리|이탈|손절|주의|경고|부족|지연|난이도|되돌림|저항 가능|반전 신호 없음/;
+  const bulls = [];
+  const warns = [];
+  ((bp.strategy_rec && bp.strategy_rec.rationale) || [])
+    .filter(r => r && r !== '밴드 B 진입 후 저항선 도달 시 차익 실현 전략')
+    .map(r => _norm(String(r).replace(/^⚠️\s*/, '')))
+    .forEach(r => pushUniq(NEG_RE.test(r) ? warns : bulls, r));
+  (tpd.failure_factors || [])
+    .filter(f => f && f.indexOf('없음') === -1)
+    .forEach(f => pushUniq(warns, f));
+  // 실측 지표 기반 보강
+  if (close && ma20 && ma60) {
+    if (close > ma20 && ma20 > ma60)
+      pushUniq(bulls, '이동평균선 정배열(현재가>20일선>60일선) — 상승 구조 유지');
+    else if (close < ma20 && ma20 < ma60)
+      pushUniq(warns, '이동평균선 역배열(현재가<20일선<60일선) — 추세 전환 확인 필요');
+  }
+  if (bp.vol_trend === 'expanding') pushUniq(bulls, '거래량 확대 — 시장 관심 증가');
+  if (stopLoss) pushUniq(warns, '손절가 ' + stopLoss + ' 이탈 시 추가 조정 가능');
+
+  // ── 성장 포인트 — 실제 뉴스/실적 데이터가 있을 때만 인용 (임의 생성 금지) ──
+  //   뉴스 소스 우선순위: KRX 네이버 → US Finnhub 보강 → 구글 뉴스 RSS
+  const growth = [];
+  const newsArr = (d.naver && (d.naver.news || []).length)             ? d.naver.news
+                : (d.us_enriched && (d.us_enriched.news || []).length) ? d.us_enriched.news
+                : (d.news || []);
+  newsArr.slice(0, 3).forEach(n => {
+    if (n && n.title) pushUniq(growth, n.title);
+  });
   if (isKrx && d.naver) {
     const n = d.naver;
-    const clean = (v) => String(v).replace(/\s+/g, ' ').trim();
-    if (n.market_cap && n.market_cap !== '-') fund.push('✓ 시가총액: ' + clean(n.market_cap) + '억원');
-    if (n.eps != null)        fund.push('✓ EPS 성장률: ' + n.eps + '%');
-    if (n.op_margin != null)  fund.push('✓ 영업이익률: ' + n.op_margin + '%');
-    if (n.net_profit_growth_label)
-      fund.push('✓ 순이익 증감률: ' + n.net_profit_growth_label);
-    else if (n.net_profit_growth != null)
-      fund.push('✓ 순이익 증감률: ' + (n.net_profit_growth >= 0 ? '+' : '') + n.net_profit_growth + '%');
-    if (n.roe != null)        fund.push('✓ ROE: ' + n.roe + '%');
-    if (n.debt != null)       fund.push('✓ 부채비율: ' + n.debt + '%');
-    if (n.per && n.per !== '-')   fund.push('✓ PER: ' + clean(n.per) + '배');
+    if (n.eps != null && Number(n.eps) > 0)
+      pushUniq(growth, 'EPS 성장률 ' + n.eps + '% — 이익 성장 흐름');
+    if (n.net_profit_growth != null && Number(n.net_profit_growth) > 0)
+      pushUniq(growth, '순이익 증감률 +' + n.net_profit_growth + '% — 실적 개선');
+    if (n.roe != null && Number(n.roe) >= 10)
+      pushUniq(growth, 'ROE ' + n.roe + '% — 자본 효율 양호');
   }
-  // 거래량 비율 (직전 20거래일 평균 대비) — KRX·US 공통
-  const volArr = (cd.volume || []).filter(v => typeof v === 'number' && v > 0);
-  if (volArr.length >= 6) {
-    const lastVol = volArr[volArr.length - 1];
-    const base = volArr.slice(-21, -1);   // 오늘 제외 직전 20거래일
-    if (base.length >= 5) {
-      const avg = base.reduce((a, b) => a + b, 0) / base.length;
-      if (avg > 0) fund.push('✓ 거래량 비율: 20일 평균 대비 ' + Math.round(lastVol / avg * 100) + '%');
-    }
+  if (!growth.length) {
+    // 뉴스·실적 데이터가 없는 종목 — 기술적 지표 기반 문장으로 대체
+    if (close && ma20 && close > ma20) pushUniq(growth, '20일 이동평균선 상회 — 단기 추세 양호');
+    if (tp2) pushUniq(growth, '2차 목표가 ' + tp2 + '까지 상승 여력 산출');
+    if (!growth.length) pushUniq(growth, '성장 관련 데이터 부족 — 기술적 지표 중심 판단 권장');
   }
 
-  // ── 종합 의견 (실데이터 종합) ───────────────────────────────────
-  const opinion = [];
-  if (sig.overall_label) {
-    opinion.push('현재 종합 신호는 "' + sig.overall_label + '"'
-      + (sig.weighted_score != null ? ` (가중 점수 ${sig.weighted_score})` : '') + '로 판단된다.');
-  }
-  if (supTxt || stopLoss) {
-    let s = '';
-    if (supTxt)   s += supTxt + ' 구간이 단기 지지선으로 작용하고 있으며, ';
-    if (stopLoss) s += stopLoss + ' 이탈 시 손절 관점이 필요하다.';
-    if (s) opinion.push(s.trim());
-  }
-  if (resTxt || tp1) {
-    let s = '';
-    if (resTxt) s += resTxt + ' 저항 돌파 시 ';
-    s += tp1 ? ('1차 목표가 ' + tp1 + '까지 추가 상승 여력을 고려할 수 있다.')
-             : '거래량 증가 동반 여부를 확인할 필요가 있다.';
-    opinion.push(s.trim());
-  }
+  // ── 관전 포인트 — 실측 지지/저항/RSI/거래량 기준 동적 생성 ──────
+  const watch = [];
+  if (supTxt) pushUniq(watch, '지지 구간 ' + supTxt + ' 유지 여부');
   if (rsi != null) {
-    if (rsi >= 70)      opinion.push('다만 RSI ' + rsi + ' 과매수 구간으로 단기 조정 가능성에 유의해야 한다.');
-    else if (rsi <= 30) opinion.push('RSI ' + rsi + ' 과매도 구간으로 기술적 반등 가능성을 염두에 둘 수 있다.');
+    pushUniq(watch, rsi < 50 ? ('RSI ' + rsi + ' → 50선 회복 여부')
+                             : ('RSI ' + rsi + ' → 50선 상회 유지 여부'));
   }
+  pushUniq(watch, bp.vol_trend === 'expanding' ? '거래량 확대 지속 여부'
+                                               : '거래량 증가 동반 상승 여부');
+  if (resTxt) pushUniq(watch, '저항 구간 ' + resTxt + ' 돌파 여부');
 
   // 토스증권 AI 요약 — 비동기 로드되어 _tossAiSummary 에 보관된 성공 결과만 사용
   const tossSummary = (typeof _tossAiSummary === 'string') ? _tossAiSummary.trim() : '';
 
   // ── 메시지 조립 (빈 섹션은 자동 생략) ──────────────────────────
-  //   문맥 흐름: 종목 → 현재가 → 기업 개요(AI·실적) → 분석(기술·강세·리스크)
-  //              → 실행 전략(매매) → 결론(종합 의견)
+  //   순서: 제목 → 상승/하락 가능성 → 시간·현재가 → AI 뉴스 요약
+  //         → 강세 요인 → 성장 포인트 → 관전 포인트 → 주의 요인 → 매매 전략
   const L = [];
   L.push('📊 종목 분석 | ' + company + ' (' + ticker + ')');
+  L.push('');
   if (typeof d.prob_up === 'number' && typeof d.prob_down === 'number') {
     L.push('▲ 상승 가능성 ' + d.prob_up.toFixed(1) + '%   ▼ 하락 가능성 ' + d.prob_down.toFixed(1) + '%');
+    L.push('');
   }
-  L.push('');
-  L.push('💰 현재가 ' + price + pctTxt);
+  L.push('현재 시간 ' + sentTime + ' 기준 / 💰 현재가 ' + price + pctTxt);
   L.push('');
   if (tossSummary) {
     L.push('🤖 AI 뉴스 요약');
     L.push(tossSummary);
     L.push('');
   }
-  if (fund.length) {
-    L.push('💎 기업실적분석');
-    fund.forEach(f => L.push(f));
+  if (bulls.length) {
+    L.push('🔥 강세 요인');
+    bulls.slice(0, 4).forEach(r => L.push('✓ ' + r));
     L.push('');
   }
-  if (techLines.length) {
-    L.push('📈 기술적 분석');
-    techLines.forEach(t => L.push(t));
+  if (growth.length) {
+    L.push('🌱 성장 포인트');
+    growth.slice(0, 5).forEach(g => L.push('✓ ' + g));
     L.push('');
   }
-  if (rationale.length) {
-    L.push('🔥 강세/전략 근거');
-    rationale.slice(0, 4).forEach(r => L.push('✓ ' + r));
+  if (watch.length) {
+    L.push('👀 관전 포인트');
+    watch.slice(0, 4).forEach(w => L.push('✓ ' + w));
     L.push('');
   }
-  if (risks.length) {
-    L.push('⚠️ 리스크 요인');
-    risks.slice(0, 4).forEach(r => L.push('✓ ' + r));
+  if (warns.length) {
+    L.push('⚠️ 주의 요인');
+    warns.slice(0, 4).forEach(r => L.push('⚠️ ' + r));
     L.push('');
   }
   L.push('🎯 매매 전략');
@@ -9664,10 +9651,6 @@ function shareToTelegram() {
   L.push('✓ 손절가: '   + (stopLoss || '현재 산출 불가'));
   L.push('✓ 1차 목표가: ' + (tp1 || NA));
   L.push('✓ 2차 목표가: ' + (tp2 || NA));
-  L.push('');
-  L.push('📝 종합 의견');
-  if (opinion.length) opinion.forEach(o => L.push(o));
-  else L.push('현재 분석 데이터가 부족하여 구체적 종합 의견 산출이 어렵다.');
   L.push('');
   L.push('────────────');
   L.push('⚠️ 본 정보는 투자 참고용이며, 투자 판단과 책임은 본인에게 있습니다.');
