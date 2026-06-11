@@ -4466,7 +4466,335 @@ def calc_probability(score: float, dd: Dict) -> tuple:
     prob_down = round(100.0 - prob_up, 1)
     return round(prob_up, 1), prob_down
 
-def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) -> Dict:
+EVENT_RISK_KEYWORDS = {
+    "earnings_negative": [
+        "earnings miss", "misses estimates", "profit warning", "guidance cut", "cuts guidance",
+        "lowered guidance", "weak guidance", "어닝 쇼크", "실적 쇼크", "실적 부진", "가이던스 하향",
+        "전망 하향", "목표가 하향", "적자전환", "적자 전환",
+    ],
+    "legal": [
+        "lawsuit", "class action", "sec investigation", "doj probe", "antitrust", "fraud",
+        "recall", "소송", "피소", "조사", "수사", "제재", "과징금", "횡령", "배임", "분식",
+    ],
+    "fda": [
+        "fda", "clinical hold", "complete response letter", "crl", "trial failed",
+        "임상 실패", "허가 반려", "승인 지연", "FDA", "식약처", "품목허가 반려",
+    ],
+    "disclosure_negative": [
+        "공시", "유상증자", "전환사채", "cb발행", "bw발행", "관리종목", "상장폐지",
+        "불성실공시", "감사의견", "거래정지", "투자주의", "투자경고",
+    ],
+}
+
+PREDICTION_LEARNING_REPO_OWNER = os.getenv("STOCKORACLE_LEARNING_REPO_OWNER", "7nani4u")
+PREDICTION_LEARNING_REPO_NAME = os.getenv("STOCKORACLE_LEARNING_REPO_NAME", "StockOracle")
+PREDICTION_LEARNING_BRANCH = os.getenv("STOCKORACLE_LEARNING_BRANCH", "main")
+PREDICTION_LEARNING_REPO_PATH = os.getenv(
+    "STOCKORACLE_LEARNING_REPO_PATH",
+    "docs/backtests/prediction_learning.jsonl",
+)
+PREDICTION_LEARNING_GITHUB_TOKEN = (
+    os.getenv("STOCKORACLE_LEARNING_GITHUB_TOKEN")
+    or os.getenv("GITHUB_TOKEN")
+    or ""
+).strip()
+PREDICTION_LEARNING_PATH = os.getenv(
+    "STOCKORACLE_PREDICTION_LOG",
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        *PREDICTION_LEARNING_REPO_PATH.split("/"),
+    ),
+)
+
+def calc_event_risk(symbol: str, market: str, news_items: list | None = None,
+                    disclosures: list | None = None, signal_confidence: Dict | None = None) -> Dict:
+    """실적/FDA/소송/공시/가이던스 이벤트를 매수 위험 점수로 변환."""
+    points = 0
+    reasons: list[str] = []
+    days_to_earnings = None
+
+    if signal_confidence:
+        days_to_earnings = signal_confidence.get("days_to_earnings")
+    if days_to_earnings is None:
+        try:
+            from market_briefing.confidence_engine import get_earnings_proximity
+            ep = get_earnings_proximity(symbol)
+            days_to_earnings = ep.get("days_to_earnings")
+        except Exception:
+            days_to_earnings = None
+    if days_to_earnings is not None and 0 <= int(days_to_earnings) <= 5:
+        d = int(days_to_earnings)
+        add = 18 if d <= 1 else 14 if d <= 3 else 10
+        points += add
+        reasons.append(f"실적 발표 D-{d} — 발표 전후 갭 변동성 확대")
+
+    texts: list[tuple[str, str]] = []
+    for n in news_items or []:
+        title = str((n or {}).get("title") or "")
+        if title:
+            texts.append((title.lower(), "뉴스"))
+    for d in disclosures or []:
+        title = str((d or {}).get("title") or "")
+        if title:
+            texts.append((title.lower(), "공시"))
+
+    matched = set()
+    for text, source in texts[:30]:
+        for group, kws in EVENT_RISK_KEYWORDS.items():
+            if group in matched:
+                continue
+            if any(kw.lower() in text for kw in kws):
+                matched.add(group)
+                if group == "earnings_negative":
+                    points += 14; reasons.append(f"{source}: 실적/가이던스 부정 이벤트")
+                elif group == "legal":
+                    points += 16; reasons.append(f"{source}: 소송·조사·제재 이벤트")
+                elif group == "fda":
+                    points += 14; reasons.append(f"{source}: FDA/임상/허가 이벤트")
+                elif group == "disclosure_negative":
+                    points += 12; reasons.append(f"{source}: 희석·관리·거래정지성 공시 위험")
+
+    points = int(min(45, points))
+    level = "high" if points >= 28 else "medium" if points >= 12 else "low"
+    if not reasons:
+        reasons.append("확인된 임박 실적·소송·FDA·부정 공시 이벤트 없음")
+    return {
+        "score": points,
+        "level": level,
+        "reasons": reasons,
+        "days_to_earnings": days_to_earnings,
+    }
+
+def _read_prediction_learning_events() -> list[dict]:
+    github_text = _github_read_prediction_learning_text()
+    if github_text is not None:
+        return _parse_prediction_learning_jsonl(github_text)
+    try:
+        if not os.path.exists(PREDICTION_LEARNING_PATH):
+            return []
+        with open(PREDICTION_LEARNING_PATH, "r", encoding="utf-8") as f:
+            return _parse_prediction_learning_jsonl(f.read())
+    except Exception:
+        return []
+
+def _append_prediction_learning_event(row: Dict) -> None:
+    line = json.dumps(row, ensure_ascii=False, default=str)
+    try:
+        os.makedirs(os.path.dirname(PREDICTION_LEARNING_PATH), exist_ok=True)
+        with open(PREDICTION_LEARNING_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    _github_append_prediction_learning_line(line)
+
+def _parse_prediction_learning_jsonl(text: str) -> list[dict]:
+    rows = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    return rows[-5000:]
+
+def _github_contents_url() -> str:
+    return (
+        f"https://api.github.com/repos/{PREDICTION_LEARNING_REPO_OWNER}/"
+        f"{PREDICTION_LEARNING_REPO_NAME}/contents/{PREDICTION_LEARNING_REPO_PATH}"
+    )
+
+def _github_headers(write: bool = False) -> Dict[str, str]:
+    h = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "StockOracle-learning-sync",
+    }
+    if write and PREDICTION_LEARNING_GITHUB_TOKEN:
+        h["Authorization"] = f"Bearer {PREDICTION_LEARNING_GITHUB_TOKEN}"
+    return h
+
+def _github_read_prediction_learning_text() -> str | None:
+    """GitHub 저장소의 학습 로그를 읽는다. 쓰기 토큰이 없어도 공개 repo면 읽기 가능."""
+    try:
+        r = requests.get(
+            _github_contents_url(),
+            params={"ref": PREDICTION_LEARNING_BRANCH},
+            headers=_github_headers(write=False),
+            timeout=8,
+        )
+        if r.status_code == 404:
+            return None
+        if r.status_code != 200:
+            return None
+        body = r.json()
+        content = body.get("content") or ""
+        encoding = body.get("encoding")
+        if encoding == "base64":
+            import base64
+            return base64.b64decode(content).decode("utf-8", errors="replace")
+        return content
+    except Exception:
+        return None
+
+def _github_append_prediction_learning_line(line: str) -> None:
+    """토큰이 있으면 7nani4u/StockOracle의 학습 로그 파일에 직접 커밋한다."""
+    if not PREDICTION_LEARNING_GITHUB_TOKEN:
+        return
+    try:
+        import base64
+        url = _github_contents_url()
+        get_r = requests.get(
+            url,
+            params={"ref": PREDICTION_LEARNING_BRANCH},
+            headers=_github_headers(write=True),
+            timeout=8,
+        )
+        sha = None
+        old_text = ""
+        if get_r.status_code == 200:
+            body = get_r.json()
+            sha = body.get("sha")
+            old_text = base64.b64decode(body.get("content") or "").decode("utf-8", errors="replace")
+        elif get_r.status_code != 404:
+            return
+        new_text = (old_text.rstrip("\n") + "\n" if old_text else "") + line + "\n"
+        payload = {
+            "message": "chore: append StockOracle prediction learning event",
+            "content": base64.b64encode(new_text.encode("utf-8")).decode("ascii"),
+            "branch": PREDICTION_LEARNING_BRANCH,
+        }
+        if sha:
+            payload["sha"] = sha
+        requests.put(url, headers=_github_headers(write=True), json=payload, timeout=12)
+    except Exception:
+        pass
+
+def calc_learning_adjustment(market: str) -> Dict:
+    """저장된 예측-실현 기록으로 월별 ATR 깊이/보류 임계값을 보정."""
+    rows = [r for r in _read_prediction_learning_events()
+            if r.get("type") == "outcome" and r.get("market") == market]
+    if not rows:
+        return {"depth_extra": 0.0, "hold_score_delta": 0, "allocation_scale": 1.0,
+                "sample_n": 0, "reason": "학습 표본 부족 — 기본 보수값 사용"}
+    rows = rows[-240:]
+    extra = sum(1 for r in rows if r.get("extra_drop")) / len(rows)
+    stop = sum(1 for r in rows if r.get("stop_hit")) / len(rows)
+    bounce = sum(1 for r in rows if r.get("bounce_success")) / len(rows)
+    depth_extra = 0.0
+    hold_delta = 0
+    alloc_scale = 1.0
+    reasons = []
+    if extra >= 0.72:
+        depth_extra += 0.18; hold_delta -= 5; alloc_scale *= 0.88
+        reasons.append(f"최근 추가 하락률 {extra*100:.1f}% — 밴드 하향")
+    elif extra >= 0.62:
+        depth_extra += 0.10; hold_delta -= 3; alloc_scale *= 0.94
+        reasons.append(f"최근 추가 하락률 {extra*100:.1f}% — 소폭 보수화")
+    if stop >= 0.55:
+        depth_extra += 0.08; hold_delta -= 3; alloc_scale *= 0.92
+        reasons.append(f"최근 손절률 {stop*100:.1f}% — 진입/비중 축소")
+    if bounce >= 0.74 and extra < 0.60:
+        depth_extra = max(0.0, depth_extra - 0.05)
+        hold_delta += 2
+        reasons.append(f"반등 성공률 {bounce*100:.1f}% — 과도한 보수화 일부 완화")
+    return {
+        "depth_extra": round(min(0.35, depth_extra), 2),
+        "hold_score_delta": int(max(-10, min(4, hold_delta))),
+        "allocation_scale": round(max(0.70, min(1.05, alloc_scale)), 2),
+        "sample_n": len(rows),
+        "extra_drop_rate": round(extra * 100, 1),
+        "stop_hit_rate": round(stop * 100, 1),
+        "bounce_success_rate": round(bounce * 100, 1),
+        "reason": " / ".join(reasons) if reasons else "최근 성과 안정 — 추가 보정 없음",
+    }
+
+def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str, dd: Dict,
+                                           buy_price: Dict, risk: Dict,
+                                           event_risk: Dict, learning: Dict) -> None:
+    """현재 예측을 저장하고, 과거 저장 예측 중 20거래일이 지난 건의 실현 결과를 append."""
+    dates = [str(x)[:10] for x in dd.get("Date", [])]
+    lows = [float(x) for x in dd.get("Low", []) if x is not None]
+    highs = [float(x) for x in dd.get("High", []) if x is not None]
+    closes = [float(x) for x in dd.get("Close", []) if x is not None]
+    atrs = [float(x) for x in dd.get("ATR", []) if x is not None]
+    if not dates or not lows or not highs or not closes:
+        return
+
+    events = _read_prediction_learning_events()
+    outcome_ids = {r.get("prediction_id") for r in events if r.get("type") == "outcome"}
+    predictions = [r for r in events if r.get("type") == "prediction" and r.get("symbol") == symbol]
+    date_to_idx = {d: i for i, d in enumerate(dates)}
+
+    for p in predictions[-200:]:
+        pid = p.get("id")
+        sd = p.get("signal_date")
+        if not pid or pid in outcome_ids or sd not in date_to_idx:
+            continue
+        i = date_to_idx[sd]
+        if i + 20 >= len(closes):
+            continue
+        for zone_name in ("primary", "secondary"):
+            band = (p.get("bands") or {}).get(zone_name)
+            if not band:
+                continue
+            lo, hi = float(band[0]), float(band[1])
+            fut_low = lows[i + 1:i + 21]
+            fut_high = highs[i + 1:i + 21]
+            fut_close = closes[i + 1:i + 21]
+            if not fut_low or not fut_high:
+                continue
+            entry_i = next((j for j, lv in enumerate(fut_low) if lv <= hi), None)
+            if entry_i is None:
+                continue
+            entry = min(hi, max(lo, fut_close[entry_i]))
+            atr = float(p.get("atr") or (atrs[min(i, len(atrs)-1)] if atrs else entry * 0.02))
+            after_low = fut_low[entry_i:]
+            after_high = fut_high[entry_i:]
+            after_close = fut_close[entry_i:]
+            stop = entry - atr * (1.35 if zone_name == "primary" else 1.75)
+            target = entry + atr * (1.15 if zone_name == "primary" else 1.65)
+            _append_prediction_learning_event({
+                "type": "outcome", "prediction_id": pid, "zone": zone_name,
+                "symbol": symbol, "market": market, "signal_date": sd,
+                "evaluated_at": dt.now().isoformat(timespec="seconds"),
+                "entry_price": round(entry, 4),
+                "bounce_success": bool(max(after_high) >= target),
+                "stop_hit": bool(min(after_low) <= stop),
+                "extra_drop": bool(min(after_low) <= entry - atr * 0.75),
+                "return_pct": round((after_close[-1] - entry) / entry * 100, 3),
+                "max_drawdown_pct": round((min(after_low) - entry) / entry * 100, 3),
+            })
+
+    today = dates[-1]
+    current = buy_price.get("current")
+    pid = f"{symbol}|{today}|{period}|{current}"
+    if any(r.get("type") == "prediction" and r.get("id") == pid for r in events[-300:]):
+        return
+    def _range_of(rows, key):
+        for r in rows or []:
+            if r.get("band") == key:
+                return r.get("range")
+        return None
+    _append_prediction_learning_event({
+        "type": "prediction", "id": pid, "symbol": symbol, "market": market,
+        "period": period, "signal_date": today, "created_at": dt.now().isoformat(timespec="seconds"),
+        "current": current, "atr": buy_price.get("atr"),
+        "risk_score": (buy_price.get("downside_risk") or {}).get("score"),
+        "event_risk": event_risk, "learning": learning,
+        "bands": {
+            "primary": _range_of(buy_price.get("aggressive_bands"), "A"),
+            "secondary": _range_of(buy_price.get("recommended_bands"), "B"),
+        },
+        "risk_plan": {
+            "downside_risk_level": risk.get("downside_risk_level"),
+            "downside_risk_score": risk.get("downside_risk_score"),
+        },
+    })
+
+def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
+              event_risk: Dict | None = None, learning_adjustment: Dict | None = None) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
     rnd = 4 if market == "US" else 2
 
@@ -4537,10 +4865,29 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
     if macd <= sig_line: downside_points += 12
     if adx >= 25 and dim > dip: downside_points += 18
     if rsi < 45: downside_points += 8
+    if market == "KRX":
+        if atr_pct >= 5.5: downside_points += 14
+        elif atr_pct >= 4.0: downside_points += 7
+    else:
+        if atr_pct >= 3.2: downside_points += 14
+        elif atr_pct >= 2.4: downside_points += 7
     if recent_low_break: downside_points += 18
     if heavy_sell_volume: downside_points += 10
+    if dd is not None:
+        vols2 = [float(x) for x in dd.get("Volume", []) if x is not None]
+        closes2 = [float(x) for x in dd.get("Close", []) if x is not None]
+        if len(vols2) >= 20 and len(closes2) >= 2:
+            avg_v2 = float(np.mean(vols2[-20:]))
+            low_vol_weak = avg_v2 > 0 and vols2[-1] / avg_v2 < 0.70 and ma20 and price < ma20
+            if low_vol_weak:
+                downside_points += 8
     if vol_trend == "expanding": downside_points += 8
-    downside_risk_level = "high" if downside_points >= 58 else "medium" if downside_points >= 32 else "low"
+    event_points = int((event_risk or {}).get("score") or 0)
+    downside_points += event_points
+    hold_delta = int((learning_adjustment or {}).get("hold_score_delta") or 0)
+    high_thr = max(42, 50 + hold_delta)
+    med_thr = max(24, 30 + hold_delta)
+    downside_risk_level = "high" if downside_points >= high_thr else "medium" if downside_points >= med_thr else "low"
 
     stop_vmul = vmul
     target_vmul = vmul
@@ -4666,6 +5013,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
     agg_tp  = _make_tp_from_tgt(agg_tgt_range)
 
     alloc_factor = 0.55 if downside_risk_level == "high" else 0.75 if downside_risk_level == "medium" else 1.0
+    alloc_factor *= float((learning_adjustment or {}).get("allocation_scale") or 1.0)
     volatility_expanded = vol_trend == "expanding" or atr_pct > 4.0
 
     def _risk_detail(base_alloc: float, max_loss_cap: float, stop_pct: float) -> Dict:
@@ -4685,6 +5033,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
         conds: list[str] = []
         if vol_trend == "expanding":
             conds.append("변동성 확대 중 — 손절 이탈 가능성 증가")
+        if event_points >= 12:
+            conds.append("실적·공시·소송·가이던스 이벤트 위험 — 갭 하락 가능성 증가")
         if rsi > 65:
             conds.append(f"RSI {rsi:.0f} — 과열권, 조정 압력 상존")
         if scenario == "conservative":
@@ -4760,6 +5110,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None) ->
         "atr_pct": round(atr_pct, 2),
         "downside_risk_level": downside_risk_level,
         "downside_risk_score": min(100, downside_points),
+        "event_risk": event_risk or {"score": 0, "level": "low", "reasons": []},
+        "learning_adjustment": learning_adjustment or {"sample_n": 0, "depth_extra": 0.0},
     }
 
 def calc_pivot_points(dd: Dict) -> Dict:
@@ -5052,7 +5404,10 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         },
     }
 
-def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict, market: str = "KRX", period: str = "1y") -> Dict:
+def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict,
+                   market: str = "KRX", period: str = "1y",
+                   event_risk: Dict | None = None,
+                   learning_adjustment: Dict | None = None) -> Dict:
     """매수 적정 가격 예측 — 다중 지표 기반 정밀 구간 산출"""
     lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
     highs    = [float(x) for x in dd.get("High",  []) if x is not None]
@@ -5183,26 +5538,50 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         downside_score += 8; downside_reasons.append(f"RSI {rsi:.1f} — 약세권, 과매도 반등 확인 전")
     elif rsi > 70:
         downside_score += 8; downside_reasons.append(f"RSI {rsi:.1f} — 과열 후 조정 위험")
+    if market == "KRX":
+        if atr_pct >= 5.5:
+            downside_score += 14; downside_reasons.append(f"ATR {atr_pct:.1f}% — 한국 주식 기준 변동성 위험 구간")
+        elif atr_pct >= 4.0:
+            downside_score += 7; downside_reasons.append(f"ATR {atr_pct:.1f}% — 평균보다 큰 변동성")
+    else:
+        if atr_pct >= 3.2:
+            downside_score += 14; downside_reasons.append(f"ATR {atr_pct:.1f}% — 미국 주식 기준 변동성 위험 구간")
+        elif atr_pct >= 2.4:
+            downside_score += 7; downside_reasons.append(f"ATR {atr_pct:.1f}% — 평균보다 큰 변동성")
     if recent_low_break:
         downside_score += 16; downside_reasons.append(f"최근 20일 저점({recent_low20:,.{rnd}f}) 이탈")
     if support_break:
         downside_score += 12; downside_reasons.append(f"단기 지지 클러스터({strong_support:,.{rnd}f}) 이탈")
     if heavy_sell_volume:
         downside_score += 10; downside_reasons.append(f"거래량 {vol_ratio:.1f}배 동반 하락")
+    if vol_ratio < 0.70 and ma20_raw and last_price < float(ma20_raw):
+        downside_score += 8; downside_reasons.append(f"거래량 {vol_ratio:.1f}배로 위축 + MA20 하회 — 반등 수요 부족")
     if gap_down:
         downside_score += 10; downside_reasons.append("갭 하락 후 회복 실패 가능성")
     if vol_trend == "expanding":
         downside_score += 8; downside_reasons.append("ATR 변동성 확대 — 지지선 이탈 시 낙폭 확대 가능")
+    event_points = int((event_risk or {}).get("score") or 0)
+    if event_points:
+        downside_score += event_points
+        for er in (event_risk or {}).get("reasons", [])[:3]:
+            if er not in downside_reasons:
+                downside_reasons.append(er)
 
     downside_score = int(min(100, downside_score))
-    if downside_score >= 72:
-        downside_level, downside_label, depth_shift = "severe", "매수 보류", 0.85
-    elif downside_score >= 55:
-        downside_level, downside_label, depth_shift = "high", "추가 하락 위험 높음", 0.60
-    elif downside_score >= 35:
-        downside_level, downside_label, depth_shift = "medium", "추가 하락 위험 주의", 0.35
+    learn_depth = float((learning_adjustment or {}).get("depth_extra") or 0.0)
+    learn_hold_delta = int((learning_adjustment or {}).get("hold_score_delta") or 0)
+    severe_thr = max(58, 68 + learn_hold_delta)
+    high_thr = max(42, 50 + learn_hold_delta)
+    medium_thr = max(24, 30 + learn_hold_delta)
+    if downside_score >= severe_thr:
+        downside_level, downside_label, depth_shift = "severe", "매수 보류", 1.05
+    elif downside_score >= high_thr:
+        downside_level, downside_label, depth_shift = "high", "추가 하락 위험 높음", 0.75
+    elif downside_score >= medium_thr:
+        downside_level, downside_label, depth_shift = "medium", "추가 하락 위험 주의", 0.45
     else:
-        downside_level, downside_label, depth_shift = "low", "추가 하락 위험 낮음", 0.10
+        downside_level, downside_label, depth_shift = "low", "추가 하락 위험 낮음", 0.20
+    depth_shift += learn_depth
 
     if not downside_reasons:
         downside_reasons.append("이평선·MACD·거래량 기준의 뚜렷한 하락 가속 신호 없음")
@@ -5352,11 +5731,16 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "C": (f"BB하단({bb_l:,.{rnd}f}) 구조적 지지" if bb_l_raw else "볼린저 하단 기준"),
     }
     aggressive_bands = []
+    _base_depth_offset = 0.20 if _mkt == "KRX" else 0.15
+    _allocation_scale = float((learning_adjustment or {}).get("allocation_scale") or 1.0)
     for _zn in ["A", "B", "C"]:
         _z = _btz[_zn]
-        _k1 = _z["k1"] + depth_shift
-        _k2 = _z["k2"] + depth_shift
-        _center = last_price - (_z["k"] + depth_shift) * atr
+        _k1 = _z["k1"] + _base_depth_offset + depth_shift
+        _k2 = _z["k2"] + _base_depth_offset + depth_shift
+        if downside_level == "severe":
+            _k1 = max(_k1, 1.55)
+            _k2 = max(_k2, 2.15)
+        _center = last_price - ((_k1 + _k2) / 2) * atr
         _hw     = (_z["k2"] - _z["k1"]) * atr * _bw * 0.5
         _lo, _hi = _center - _hw, _center + _hw
         if downside_level in ("high", "severe") and strong_support:
@@ -5368,9 +5752,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "range": [round(_lo, rnd), round(_hi, rnd)],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
-            "atr_basis": f"ATR×{_k1:.2f}~{_k2:.2f} 보수 눌림 (기본 {_z['k1']:.2f}~{_z['k2']:.2f} + 위험 보정 {depth_shift:.2f})",
+            "atr_basis": f"ATR×{_k1:.2f}~{_k2:.2f} 보수 눌림 (기본 {_z['k1']:.2f}~{_z['k2']:.2f} + 시장/위험 보정 {(_base_depth_offset + depth_shift):.2f})",
             "tech_note": _agg_tech[_zn],
             "risk_note": f"{downside_label}: 확률 -{_risk_penalty:.1f}pp 반영",
+            "entry_role": "소액 탐색 진입",
+            "allocation_pct": round((6 if _zn == "A" else 4 if _zn == "B" else 3) * _allocation_scale, 1),
+            "confirm_note": "반등 캔들·거래량 회복 전에는 소액만 테스트",
             "expected_return_pct": _z["ret"],
             "win_prob_pct":  _win,
             "loss_prob_pct": _los,
@@ -5385,7 +5772,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # 앵커 산출: 각 지표가 현재가보다 아래에 있어야 유효한 지지선
     # ── Band A: VWAP·BB중간 수렴 (현재가보다 낮은 경우만) ──────────────
     _anc_A_raw = (_vwap + bb_m) / 2 if bb_m_raw else _vwap
-    _anc_A = min(_anc_A_raw, last_price - atr * (0.35 + depth_shift))   # 위험이 높을수록 더 낮게 대기
+    _anc_A = min(_anc_A_raw, last_price - atr * (0.55 + _base_depth_offset + depth_shift))   # 위험이 높을수록 더 낮게 대기
 
     # ── Band B: BB하단·MA20 수렴 (현재가보다 낮은 경우만) ───────────────
     if bb_l_raw and ma20_raw:
@@ -5395,7 +5782,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     else:
         _anc_B_raw = last_price - 1.10 * atr
     # Band A보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_B = min(_anc_B_raw, _anc_A - atr * (0.25 + depth_shift * 0.35))
+    _anc_B = min(_anc_B_raw, _anc_A - atr * (0.35 + depth_shift * 0.45))
 
     # ── Band C: MA60·Fib 38.2~50% 수렴 ──────────────────────────────
     # fib_382가 현재가보다 낮을 때만(= 유효한 지지선) 사용
@@ -5408,11 +5795,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     else:
         _anc_C_raw = last_price - 1.40 * atr
     # Band B보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_C = min(_anc_C_raw, _anc_B - atr * (0.30 + depth_shift * 0.45))
+    _anc_C = min(_anc_C_raw, _anc_B - atr * (0.45 + depth_shift * 0.55))
     if downside_level in ("high", "severe") and strong_support:
         _anc_A = min(_anc_A, strong_support - atr * 0.20)
-        _anc_B = min(_anc_B, strong_support - atr * (0.55 + depth_shift * 0.20))
-        _anc_C = min(_anc_C, strong_support - atr * (0.95 + depth_shift * 0.30))
+        _anc_B = min(_anc_B, strong_support - atr * (0.75 + depth_shift * 0.30))
+        _anc_C = min(_anc_C, strong_support - atr * (1.15 + depth_shift * 0.40))
 
     _rec_anchor = {"A": _anc_A, "B": _anc_B, "C": _anc_C}
     _rec_hw = {"A": atr * 0.25 * _bw, "B": atr * 0.35 * _bw, "C": atr * 0.50 * _bw}
@@ -5449,6 +5836,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "basis":         _rec_basis[_zn],
             "hold_note":     _rec_hold[_zn],
             "risk_note":     f"{downside_label}: 지지선 확인 전 상단 추격 제한",
+            "entry_role":     "주 진입",
+            "allocation_pct": round((22 if _zn == "A" else 35 if _zn == "B" else 18) * _allocation_scale, 1),
+            "confirm_note":   "지지선 재확인·하락 거래량 둔화 시 주 진입",
             "expected_sharpe": _z["sharpe"],
             "win_prob_pct":  _win,
             "avg_hold_days": _z["hold"],
@@ -5517,7 +5907,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _ctx = "strong_uptrend" if _trend_cnt == 4 and _adx_strong else "uptrend"
     elif rsi < 40 and macd > sig_line:
         _ctx = "recovery"
-    elif downside_level == "severe" or (downtrend_strong and downside_score >= 55):
+    elif downside_level == "severe" or (downtrend_strong and downside_score >= 50):
         _ctx = "breakdown"
     elif _trend_cnt <= 1:
         _ctx = "downtrend"
@@ -5626,7 +6016,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "gap_down": gap_down,
             "volume_ratio": round(vol_ratio, 2),
             "downtrend_strong": downtrend_strong,
+            "event_risk": event_risk or {"score": 0, "level": "low", "reasons": []},
         },
+        "learning_adjustment": learning_adjustment or {"sample_n": 0, "depth_extra": 0.0, "reason": "학습 표본 부족"},
         "strategy_rec": strategy_rec,
     }
 
@@ -6564,8 +6956,19 @@ def route(path: str, params: Dict) -> Dict:
         atr_val          = float(atrs[-1]) if atrs and atrs[-1] else last * 0.02
         pivot_points     = calc_pivot_points(dd)
         indicator_signals= calc_indicator_signals(dd)
-        risk             = calc_risk(last, atr_val, market, dd)
-        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period)
+        # 이벤트 위험: 실적 발표, FDA/임상, 소송/조사, 공시, 가이던스 하향을 매수 위험 점수에 반영
+        _event_news = list(news or [])
+        _event_disclosures = []
+        if market == "KRX" and naver:
+            _event_news += list(naver.get("news") or [])
+            _event_disclosures += list(naver.get("disclosures") or [])
+        if market == "US" and us_enriched:
+            _event_news += list(us_enriched.get("news") or [])
+        event_risk = calc_event_risk(sym, market, _event_news, _event_disclosures)
+        learning_adjustment = calc_learning_adjustment(market)
+        risk             = calc_risk(last, atr_val, market, dd, event_risk, learning_adjustment)
+        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period,
+                                          event_risk, learning_adjustment)
         target_price     = calc_target_price(dd, last, atr_val, period, market)
         pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
 
@@ -6664,6 +7067,10 @@ def route(path: str, params: Dict) -> Dict:
         except Exception:
             signal_confidence = None   # 엔진 실패 시 기존 응답 유지
 
+        _record_prediction_and_update_outcomes(
+            sym, market, period, dd, buy_price, risk, event_risk, learning_adjustment
+        )
+
         return {
             "symbol": sym, "company": company or sym, "market": market,
             "last_close": round(last, 2), "prev_close": round(prev, 2),
@@ -6700,6 +7107,8 @@ def route(path: str, params: Dict) -> Dict:
             "investor_flow": investor_flow,
             "hybrid_score": hybrid_score,  # HybridTurtle NCS/BQS/FWS
             "signal_confidence": signal_confidence,  # 신뢰도 종합(거시·섹터·실적·불일치·뉴스감정·신뢰구간)
+            "event_risk": event_risk,
+            "learning_adjustment": learning_adjustment,
         }
 
     if path == "/api/screener":
@@ -10980,6 +11389,28 @@ function renderForecast(d, isKrx) {
           </div>
         </div>` : '';
 
+      const er = d.event_risk || (dr && dr.event_risk) || null;
+      const eventRiskHtml = er && er.score > 0 ? `
+        <div style="background:#2d1515;border:1px solid #f8514966;border-radius:10px;padding:12px 14px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:7px">
+            <div style="font-size:13px;font-weight:800;color:#f85149">이벤트 캘린더 위험 반영</div>
+            <div style="font-size:12px;font-weight:800;color:#f85149;background:#f851491f;border-radius:4px;padding:2px 8px">+${er.score}점</div>
+          </div>
+          <div style="font-size:11px;color:#cdd9e5;line-height:1.5">
+            ${(er.reasons || []).slice(0, 4).map(r => `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:2px"><span style="color:#f85149;flex-shrink:0">•</span><span>${r}</span></div>`).join('')}
+          </div>
+        </div>` : '';
+
+      const la = bp.learning_adjustment || d.learning_adjustment || null;
+      const learningHtml = la ? `
+        <div style="background:#0d1b33;border:1px solid #58a6ff55;border-radius:10px;padding:10px 14px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="font-size:12px;font-weight:800;color:#58a6ff">월별 예측 학습 보정</div>
+            <div style="font-size:10px;color:#8b949e">표본 ${la.sample_n || 0}건 · ATR +${la.depth_extra || 0}</div>
+          </div>
+          <div style="font-size:10px;color:#8b949e;margin-top:5px">${la.reason || '학습 표본 부족 — 기본값 사용'}</div>
+        </div>` : '';
+
       // ── 추천 밴드 (active_bands 기준으로 필터링) ──
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
@@ -11000,8 +11431,13 @@ function renderForecast(d, isKrx) {
               <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}</span>
             </div>
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">
+              <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || '주 진입'}</span>
+              <span style="font-size:9px;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px">권장 ${b.allocation_pct || 0}%</span>
+            </div>
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
             <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
+            <div style="font-size:10px;color:#8b949e;margin-top:1px">• ${b.confirm_note || '지지 확인 후 진입'}</div>
             <div style="font-size:10px;color:#d29922;margin-top:2px">승률 ${b.win_prob_pct}% · ${b.risk_note || '위험 보정 반영'}</div>
           </div>`;
         } else {
@@ -11011,8 +11447,13 @@ function renderForecast(d, isKrx) {
               <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}</span>
             </div>
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">
+              <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || '소액 탐색 진입'}</span>
+              <span style="font-size:9px;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px">권장 ${b.allocation_pct || 0}%</span>
+            </div>
             <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
+            <div style="font-size:10px;color:#8b949e;margin-top:1px">• ${b.confirm_note || '반등 확인 전 소액만 테스트'}</div>
             <div style="font-size:10px;color:#d29922;margin-top:2px">승률 ${b.win_prob_pct}% · 손실확률 ${b.loss_prob_pct}%</div>
             <div style="font-size:10px;color:#f97316;margin-top:1px">• ${b.risk_note || '시장 위험 보정 반영'}</div>
           </div>`;
@@ -11022,8 +11463,8 @@ function renderForecast(d, isKrx) {
       const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
         ? `<div class="buy-card recommended" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 2차 매수 구간</div>
-              <div style="font-size:10px;color:#484f58">※ 지지선·이평선·VWAP 앵커 기반</div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 2차 매수 구간 · 주 진입</div>
+              <div style="font-size:10px;color:#484f58">※ 지지선·이평선·VWAP 앵커 기반, 주 비중</div>
             </div>
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
           </div>` : '';
@@ -11031,13 +11472,13 @@ function renderForecast(d, isKrx) {
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
         ? `<div class="buy-card aggressive" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">⚡ 1차 매수 구간 (ATR 기반)</div>
-              <div style="font-size:10px;color:#484f58">※ 백테스트(1년·${bp.market||'KRX'}) 기저확률 + 추세·RSI 보정</div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">⚡ 1차 매수 구간 (ATR 기반) · 소액 탐색</div>
+              <div style="font-size:10px;color:#484f58">※ 백테스트 + 이벤트 위험 + 월별 학습 보정</div>
             </div>
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + downsideRiskHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + eventRiskHtml + downsideRiskHtml + learningHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
     }
   }
 
