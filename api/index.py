@@ -802,49 +802,64 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         print(f"[StockOracle Error] fetch_stock_data 예외 발생: {e}")
         return None, None, f"조회 중 예외 발생: {str(e)}"
 
+@ttl_cache(10)  # 10초 — 재분석 시 현재가 실시간 반영용 경량 캐시
+def fetch_naver_realtime(code: str):
+    """KRX 현재가·전일종가만 조회하는 경량 함수 (HTML 파싱 없음).
+
+    fetch_naver(60초 캐시)는 뉴스·공시·재무까지 파싱하는 무거운 호출이라
+    현재가까지 1분 캐시에 묶이면 '분석 시작' 재클릭 시 가격이 갱신되지 않는다.
+    현재가 보정은 이 함수를 우선 사용한다.
+    반환: {"price": str|None, "prev_close": str|None}
+    """
+    code = str(code).replace(".KS","").replace(".KQ","")
+    r = {"price": None, "prev_close": None}
+    # 1차 시도: Mobile JSON API
+    try:
+        m_url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        m_resp = requests.get(m_url, timeout=5)
+        if m_resp.status_code == 200:
+            m_data = m_resp.json()
+            cur_val = m_data.get("closePrice")
+            if cur_val:
+                r["price"] = cur_val.replace(",", "")
+                # compareToPreviousClosePrice 값 추출 로직
+                diff_val = m_data.get("compareToPreviousClosePrice", "0").replace(",", "")
+                # compareToPreviousPrice.code가 5(하락)이면 빼주고, 그 외는 더함
+                code_type = m_data.get("compareToPreviousPrice", {}).get("code", "3")
+                if code_type == "5":
+                    r["prev_close"] = str(float(r["price"]) + float(diff_val))
+                else:
+                    r["prev_close"] = str(float(r["price"]) - float(diff_val))
+    except Exception:
+        pass
+
+    # 2차 시도: 기존 polling API (Mobile API 실패 시)
+    if not r["price"]:
+        json_url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        try:
+            j_resp = requests.get(json_url, timeout=5)
+            j_data = j_resp.json()
+            if j_data and "datas" in j_data and len(j_data["datas"]) > 0:
+                item = j_data["datas"][0]
+                cur_val = item.get("closePriceRaw")
+                diff_val = item.get("compareToPreviousClosePriceRaw")
+                if cur_val:
+                    r["price"] = str(cur_val)
+                    if diff_val:
+                        r["prev_close"] = str(float(cur_val) - float(diff_val))
+        except Exception as e:
+            print(f"Naver JSON API Error: {e}")
+    return r
+
 @ttl_cache(60)  # 1분 캐시
 def fetch_naver(code: str):
     code = str(code).replace(".KS","").replace(".KQ","")
     url = f"https://finance.naver.com/item/main.naver?code={code}"
     r = {"price":None,"prev_close":None,"market_cap":None,"per":None,"pbr":None,"opinion":None,"news":[],"disclosures":[]}
     try:
-        # JSON API로 현재가 및 전일종가 조회 (1분 캐시)
-        # 1차 시도: Mobile JSON API
-        try:
-            m_url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-            m_resp = requests.get(m_url, timeout=5)
-            if m_resp.status_code == 200:
-                m_data = m_resp.json()
-                cur_val = m_data.get("closePrice")
-                if cur_val:
-                    r["price"] = cur_val.replace(",", "")
-                    # compareToPreviousClosePrice 값 추출 로직
-                    diff_val = m_data.get("compareToPreviousClosePrice", "0").replace(",", "")
-                    # compareToPreviousPrice.code가 5(하락)이면 빼주고, 그 외는 더함
-                    code_type = m_data.get("compareToPreviousPrice", {}).get("code", "3")
-                    if code_type == "5":
-                        r["prev_close"] = str(float(r["price"]) + float(diff_val))
-                    else:
-                        r["prev_close"] = str(float(r["price"]) - float(diff_val))
-        except Exception as e:
-            pass
-
-        # 2차 시도: 기존 polling API (Mobile API 실패 시)
-        if not r["price"]:
-            json_url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-            try:
-                j_resp = requests.get(json_url, timeout=5)
-                j_data = j_resp.json()
-                if j_data and "datas" in j_data and len(j_data["datas"]) > 0:
-                    item = j_data["datas"][0]
-                    cur_val = item.get("closePriceRaw")
-                    diff_val = item.get("compareToPreviousClosePriceRaw")
-                    if cur_val:
-                        r["price"] = cur_val
-                        if diff_val:
-                            r["prev_close"] = str(float(cur_val) - float(diff_val))
-            except Exception as e:
-                print(f"Naver JSON API Error: {e}")
+        # 현재가·전일종가 — 경량 실시간 함수 재사용 (10초 캐시)
+        rt = fetch_naver_realtime(code)
+        r["price"], r["prev_close"] = rt.get("price"), rt.get("prev_close")
 
         # User-Agent 업데이트 및 타임아웃 증가
         hdrs = {
@@ -6905,22 +6920,28 @@ def route(path: str, params: Dict) -> Dict:
         # KRX: 네이버 금융 실시간 현재가 최우선
         # US : USStockPriceFetcher → Pre-Market / Overnight / After-Hours / 정규장 순 자동 선택
         session_name = "정규장"   # 기본값
-        if market == "KRX" and naver and naver.get("price"):
-            try:
-                real_price = float(naver["price"])
-                # 30% 이내 차이일 때만 보정 (액면분할 등 비정상 이격 방지)
-                if last > 0 and abs(real_price - last) / last < 0.3:
-                    last = real_price
-                    nv_prev = naver.get("prev_close")
-                    if nv_prev:
-                        try:
-                            prev = float(nv_prev)
-                        except Exception:
-                            pass
-                    if prev > 0:
-                        pct = (last - prev) / prev * 100
-            except Exception:
-                pass
+        if market == "KRX":
+            # 현재가 소스: 10초 캐시 경량 실시간 API 우선.
+            # fetch_naver(60초 캐시)의 가격을 그대로 쓰면 '분석 시작'을
+            # 다시 눌러도 최대 1분간 같은 현재가가 반환된다.
+            _rt = fetch_naver_realtime(sym)
+            _src = _rt if (_rt and _rt.get("price")) else (naver or {})
+            if _src.get("price"):
+                try:
+                    real_price = float(_src["price"])
+                    # 30% 이내 차이일 때만 보정 (액면분할 등 비정상 이격 방지)
+                    if last > 0 and abs(real_price - last) / last < 0.3:
+                        last = real_price
+                        nv_prev = _src.get("prev_close")
+                        if nv_prev:
+                            try:
+                                prev = float(nv_prev)
+                            except Exception:
+                                pass
+                        if prev > 0:
+                            pct = (last - prev) / prev * 100
+                except Exception:
+                    pass
         elif market == "US":
             # ① USStockPriceFetcher: overnightMarketPrice / preMarketPrice / postMarketPrice
             #
@@ -9826,7 +9847,7 @@ function _startPricePolling(symbol) {
   _pricePoller = setInterval(async () => {
     if (!_pollTicker) return;
     try {
-      const r = await fetch(`/api/price?ticker=${encodeURIComponent(_pollTicker)}&market=US`);
+      const r = await fetch(`/api/price?ticker=${encodeURIComponent(_pollTicker)}&market=US&_ts=${Date.now()}`, {cache:'no-store'});
       if (!r.ok) return;
       const d = await r.json();
       if (d.error || !d.price) return;
@@ -9901,7 +9922,9 @@ async function analyze() {
   document.getElementById('analyze-btn').disabled = true;
   destroyCharts();
   try {
-    const r = await fetch(`/api/stock?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${currentMarket}`);
+    // 캐시 우회: 같은 종목을 다시 분석해도 항상 서버에서 최신 현재가를 받아온다.
+    // cache:'no-store' = 브라우저 HTTP 캐시 우회 / _ts = CDN(s-maxage) 캐시 키 분리
+    const r = await fetch(`/api/stock?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${currentMarket}&_ts=${Date.now()}`, {cache:'no-store'});
     let text = await r.text();
     let d;
     try {
@@ -14409,9 +14432,12 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
                 _smx, _swr = 300, 600
             cache_control = f"public, s-maxage={_smx}, stale-while-revalidate={_swr}"
 
-        elif path == "/api/stock":
-            # 종목 분석 — 장중 60초, 장 외 5분
-            cache_control = "public, s-maxage=60, stale-while-revalidate=300"
+        elif path in ("/api/stock", "/api/price", "/api/alert/quote"):
+            # 실시간 현재가 포함 응답 — 캐시 금지.
+            # s-maxage(CDN)·stale-while-revalidate(브라우저 SWR)가 걸리면
+            # '분석 시작'을 다시 눌러도 이전 응답이 그대로 재사용돼
+            # 현재가가 갱신되지 않는다. 항상 서버에서 최신가를 계산해 반환한다.
+            cache_control = "no-store, no-cache, must-revalidate, proxy-revalidate"
 
         elif path == "/" or path == "/index.html":
             # HTML — 1시간 캐시 (정적에 가깝고 자주 바뀌지 않음)
