@@ -1707,6 +1707,41 @@ class USStockPriceFetcher:
             logger.warning(f"[{source}] {ticker} 실패: {e}")
             return None
 
+    def _try_yf_market_state_extended(
+        self,
+        ticker: str,
+        source: str = "yfinance(marketState)",
+        notes: str = "marketState 기반 시간외 가격",
+    ) -> Optional["PriceResult"]:
+        """
+        detect_session()이 CLOSED 를 반환하더라도, Yahoo marketState 가
+        실제 시간외 세션을 보고하면 해당 가격을 우선 채택합니다.
+        """
+        try:
+            raw5 = self.yf.get_market_state_price(ticker)
+            if raw5 is None:
+                return None
+
+            price, prev_close, ts, ptype, market_state = raw5
+            session = {
+                "overnight":   MarketSession.OVERNIGHT,
+                "pre_market":  MarketSession.PRE_MARKET,
+                "post_market": MarketSession.AFTER_HOURS,
+            }.get(ptype)
+            if session is None:
+                return None
+
+            result = self._build(ticker, (price, prev_close, ts, ptype), session, source, notes)
+            if result:
+                result.notes = (
+                    f"{notes} [Yahoo marketState={market_state}]"
+                    if notes else f"Yahoo marketState={market_state}"
+                ).strip()
+            return result
+        except Exception as e:
+            logger.warning(f"[{source}] {ticker} 실패: {e}")
+            return None
+
     def _first(self, *results: Optional["PriceResult"]) -> Optional["PriceResult"]:
         return next((r for r in results if r is not None and r.price > 0), None)
 
@@ -1939,6 +1974,32 @@ class USStockPriceFetcher:
 
         # ── 5. 장마감 (주말 / NYSE 공휴일) ───────────────────────────────────
         elif session == MarketSession.CLOSED:
+            # CLOSED 로 감지돼도 Yahoo 가 실제 시간외 세션(overnight/pre/post)을
+            # 보고하는 경우가 있어 먼저 한 번 더 확인합니다.
+            extended = self._first(
+                self._try_yfd(
+                    self.yfd.get_overnight_price, ticker, MarketSession.OVERNIGHT,
+                    "Yahoo Finance Direct",
+                    "overnightMarketPrice/postMarketPrice — 장마감 재확인",
+                ),
+                self._try_yfd(
+                    self.yfd.get_premarket_price, ticker, MarketSession.PRE_MARKET,
+                    "Yahoo Finance Direct",
+                    "preMarketPrice — 장마감 재확인",
+                ),
+                self._try_yfd(
+                    self.yfd.get_postmarket_price, ticker, MarketSession.AFTER_HOURS,
+                    "Yahoo Finance Direct",
+                    "postMarketPrice — 장마감 재확인",
+                ),
+                self._try_yf_market_state_extended(
+                    ticker,
+                    notes="marketState 기반 시간외 가격 — 장마감 재확인",
+                ),
+            )
+            if extended:
+                return extended
+
             result = self._first(
                 # ① 네이버 증권: closePrice (마지막 정규장 종가)
                 self._try(
