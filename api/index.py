@@ -8939,6 +8939,43 @@ input::placeholder{color:#484f58}
 .buy-price-val{font-size:18px;font-weight:800;margin-bottom:4px;word-break:break-all}
 .buy-basis-box{font-size:11px;color:#8b949e;line-height:1.5;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
 
+/* 예측 탭 목표가 요약 */
+.forecast-stack{display:flex;flex-direction:column;gap:12px}
+.forecast-hero{background:#21262d;border:1px solid #30363d;border-radius:12px;padding:18px;display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:16px;align-items:stretch}
+.forecast-kicker{font-size:11px;color:#8b949e;margin-bottom:6px}
+.forecast-title-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.forecast-title{font-size:13px;font-weight:800;color:#cdd9e5}
+.forecast-badge{font-size:10px;font-weight:800;border-radius:999px;padding:2px 8px;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb55;white-space:nowrap}
+.forecast-range{font-size:26px;font-weight:900;line-height:1.25;color:#3fb950;white-space:nowrap}
+.forecast-return{font-size:13px;color:#8b949e;margin-top:8px;line-height:1.5}
+.forecast-return strong{color:#e6edf3;white-space:nowrap}
+.forecast-return span{color:#3fb950;font-weight:800;white-space:nowrap}
+.forecast-stat-grid{display:grid;grid-template-columns:1fr;gap:10px;min-width:0}
+.forecast-stat{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;text-align:center;min-width:0}
+.forecast-stat-label{font-size:10px;color:#8b949e;margin-bottom:4px;line-height:1.35}
+.forecast-stat-value{font-size:22px;font-weight:900;line-height:1.2;white-space:nowrap}
+.forecast-stat-sub{font-size:11px;color:#8b949e;margin-top:4px;line-height:1.4}
+.forecast-prob-bar{height:6px;background:#21262d;border-radius:999px;overflow:hidden;margin-top:8px}
+.forecast-prob-fill{height:100%;border-radius:999px;transition:width .4s ease}
+.forecast-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.forecast-info-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;min-width:0}
+.forecast-info-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.forecast-info-title{font-size:11px;color:#8b949e;font-weight:700}
+.forecast-info-body{font-size:12px;color:#e6edf3;line-height:1.55;word-break:keep-all;overflow-wrap:anywhere}
+.forecast-risk-badge{font-size:11px;font-weight:800;border-radius:999px;padding:2px 8px;white-space:nowrap}
+.forecast-list-row{display:flex;align-items:flex-start;gap:6px;margin-bottom:4px}
+.forecast-longterm{display:flex;flex-direction:column;gap:8px}
+.forecast-section-title{font-size:12px;color:#8b949e;font-weight:700}
+.forecast-longterm-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.forecast-long-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;min-width:0}
+.forecast-long-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:6px}
+.forecast-long-label{font-size:12px;font-weight:800;color:#e6edf3}
+.forecast-long-risk{font-size:10px;font-weight:700;white-space:nowrap}
+.forecast-long-price{font-size:16px;font-weight:900;color:#3fb950;line-height:1.35;white-space:nowrap}
+.forecast-long-return{font-size:11px;color:#8b949e;margin-top:4px;line-height:1.4}
+.forecast-long-note{font-size:10px;color:#484f58;margin-top:5px;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
+.forecast-helper{font-size:10px;color:#484f58;line-height:1.5}
+
 /* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
 .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 
@@ -8986,6 +9023,10 @@ input::placeholder{color:#484f58}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
   .two-col-grid{grid-template-columns:1fr}
+  .forecast-hero{grid-template-columns:1fr}
+  .forecast-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .forecast-info-grid{grid-template-columns:1fr}
+  .forecast-longterm-grid{grid-template-columns:1fr}
   /* 900px 이하: 3열 */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
@@ -9023,6 +9064,10 @@ input::placeholder{color:#484f58}
   .indicator-grid{grid-template-columns:1fr}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
+  .forecast-hero{padding:14px;gap:12px}
+  .forecast-range{font-size:22px}
+  .forecast-stat-value{font-size:19px}
+  .forecast-long-price{font-size:15px}
 
   /* 헤더/타이포 */
   .page-header h2{font-size:18px}
@@ -9070,6 +9115,12 @@ input::placeholder{color:#484f58}
   .pattern-item{font-size:12px;padding:12px}
   .flow-chip{width:100%}
   .flow-range-meta{flex-direction:column;align-items:flex-start}
+  .forecast-hero{padding:12px;border-radius:10px}
+  .forecast-stat-grid{grid-template-columns:1fr}
+  .forecast-range{font-size:20px}
+  .forecast-return{font-size:12px}
+  .forecast-info-card,.forecast-long-card{padding:10px}
+  .forecast-long-price{font-size:14px;white-space:normal}
   .risk-card{padding:12px}
   .buy-card{padding:12px}
   .fund-grid{grid-template-columns:1fr 1fr}
@@ -9732,11 +9783,7 @@ input::placeholder{color:#484f58}
       <!-- 예측 탭 -->
       <div id="tab-forecast" style="display:none">
         <div class="card">
-          <div class="card-title">💡 AI 종합 진단 및 트레이딩 전략</div>
-          <div id="ai-strategy-section"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">📈 향후 주가 상승 가능 범위 (목표가 예측)</div>
+          <div class="card-title">📈 예측 결과 요약</div>
           <div id="target-price-section"></div>
         </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
@@ -9750,6 +9797,10 @@ input::placeholder{color:#484f58}
           <div class="card-title">🛡️ 리스크 관리 (ATR 기반)</div>
           <div class="risk-grid" id="risk-grid"></div>
           <div id="pullback-atr-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">💡 AI 보조 해석</div>
+          <div id="ai-strategy-section"></div>
         </div>
       </div>
 
@@ -12020,70 +12071,87 @@ function renderForecast(d, isKrx) {
       const sn  = (!isKrx && d.session_name && !['정규장','장마감'].includes(d.session_name))
                   ? ` <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:#6e40c933;color:#bc8cff;margin-left:4px">${d.session_name}</span>`
                   : '';
-      const probColor  = (tp.reach_probability || 50) >= 65 ? '#3fb950' : (tp.reach_probability || 50) >= 45 ? '#d29922' : '#f85149';
+      const prob = Number(tp.reach_probability || 0);
+      const probColor  = prob >= 65 ? '#3fb950' : prob >= 45 ? '#d29922' : '#f85149';
+      const probTone   = prob >= 65 ? '높음' : prob >= 45 ? '보통' : '낮음';
       const riskColors = { '낮음':'#3fb950', '중간':'#d29922', '높음':'#f85149' };
       const riskC      = riskColors[tp.risk_level] || '#d29922';
+      const riskText   = tp.risk_level ? `${tp.risk_level} 위험` : '확인 필요';
+      const retMin = Number(tp.min_return || 0);
+      const retMax = Number(tp.max_return || 0);
+      const retText = `${retMin >= 0 ? '+' : ''}${tp.min_return}% ~ ${retMax >= 0 ? '+' : ''}${tp.max_return}%`;
       const failHtml   = (tp.failure_factors || [])
-        .map(f => `<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px"><span style="color:#f85149;flex-shrink:0">•</span><span>${f}</span></div>`)
-        .join('');
+        .slice(0, 4)
+        .map(f => `<div class="forecast-list-row"><span style="color:#f85149;flex-shrink:0">•</span><span>${f}</span></div>`)
+        .join('') || '<div class="forecast-info-body" style="color:#8b949e">현재 뚜렷한 실패 요인은 적습니다.</div>';
+      const daysHtml = tp.expected_trading_days ? `
+        <div class="forecast-stat">
+          <div class="forecast-stat-label">예상 소요 기간</div>
+          <div class="forecast-stat-value" style="color:#58a6ff">${tp.expected_trading_days[0]}~${tp.expected_trading_days[1]}일</div>
+          <div class="forecast-stat-sub">거래일 기준</div>
+        </div>` : '';
       const ltHtml = (tp.long_term || []).length ? `
-        <div style="margin:0 0 10px">
-          <div style="font-size:12px;color:#8b949e;margin:0 0 8px">장기 목표가 예측</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
+        <div class="forecast-longterm">
+          <div class="forecast-section-title">기간별 목표가 전망</div>
+          <div class="forecast-longterm-grid">
             ${(tp.long_term || []).map(x => {
               const minRet = Number(x.min_return || 0);
               const maxRet = Number(x.max_return || 0);
               const retHtml = `${minRet >= 0 ? '+' : ''}${minRet}% ~ ${maxRet >= 0 ? '+' : ''}${maxRet}%`;
-              return `<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:11px">
-                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:6px">
-                  <div style="font-size:12px;font-weight:800;color:#e6edf3">예상 목표가 범위 (${x.label})</div>
-                  <div style="font-size:10px;color:${x.uncertainty === '높음' ? '#d29922' : '#58a6ff'}">${x.uncertainty || '중간'}</div>
+              const uncColor = x.uncertainty === '높음' ? '#d29922' : '#58a6ff';
+              return `<div class="forecast-long-card">
+                <div class="forecast-long-head">
+                  <div class="forecast-long-label">${x.label}</div>
+                  <div class="forecast-long-risk" style="color:${uncColor}">불확실성 ${x.uncertainty || '중간'}</div>
                 </div>
-                <div style="font-size:16px;font-weight:800;color:#3fb950">${fmt(x.min_price, isKrx)} ~ ${fmt(x.max_price, isKrx)}</div>
-                <div style="font-size:11px;color:#8b949e;margin-top:4px">현재가 기준 <span style="color:${maxRet >= 0 ? '#3fb950' : '#f85149'}">${retHtml}</span></div>
-                <div style="font-size:10px;color:#484f58;margin-top:5px">연 환산 가정 ${x.annual_assumption_pct || 0}% · ${x.basis || ''}</div>
+                <div class="forecast-long-price">${fmt(x.min_price, isKrx)} ~ ${fmt(x.max_price, isKrx)}</div>
+                <div class="forecast-long-return">예상 수익률 <span style="color:${maxRet >= 0 ? '#3fb950' : '#f85149'};font-weight:800">${retHtml}</span></div>
+                <div class="forecast-long-note">연 환산 가정 ${x.annual_assumption_pct || 0}%</div>
               </div>`;
             }).join('')}
           </div>
-          ${tp.long_term_note ? `<div style="font-size:10px;color:#484f58;margin-top:6px">${tp.long_term_note}</div>` : ''}
+          ${tp.long_term_note ? `<div class="forecast-helper">${tp.long_term_note}</div>` : ''}
         </div>` : '';
       tpEl.innerHTML = `
-        <div style="background:#21262d;border-radius:10px;padding:16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
-          <div>
-            <div style="font-size:12px;color:#8b949e;margin-bottom:6px">예상 목표가 범위 (${tp.period})</div>
-            <div style="font-size:24px;font-weight:800;color:#3fb950">${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
-            <div style="font-size:13px;color:#8b949e;margin-top:4px">
-              현재가${sn} <b data-tp-cur style="color:#e6edf3">${fmt(cur, isKrx)}</b> 기준 예상 수익률:
-              <span data-tp-return style="color:#3fb950">+${tp.min_return}% ~ +${tp.max_return}%</span>
+        <div class="forecast-stack">
+          <div class="forecast-hero">
+            <div>
+              <div class="forecast-kicker">현재가${sn} <strong data-tp-cur style="color:#e6edf3">${fmt(cur, isKrx)}</strong> 기준</div>
+              <div class="forecast-title-row">
+                <div class="forecast-title">예상 목표가 (${tp.period})</div>
+                <div class="forecast-badge">중기 전망</div>
+              </div>
+              <div class="forecast-range">${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
+              <div class="forecast-return">예상 수익률 <span data-tp-return>${retText}</span></div>
+            </div>
+            <div class="forecast-stat-grid">
+              <div class="forecast-stat" style="border-color:${probColor}55">
+                <div class="forecast-stat-label">예상 목표가에 도달할 가능성</div>
+                <div class="forecast-stat-value" style="color:${probColor}">${tp.reach_probability || '—'}%</div>
+                <div class="forecast-prob-bar"><div class="forecast-prob-fill" style="width:${Math.max(0, Math.min(100, prob))}%;background:${probColor}"></div></div>
+                <div class="forecast-stat-sub">신뢰도 ${probTone}</div>
+              </div>
+              ${daysHtml}
             </div>
           </div>
-          <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
-            <div style="text-align:center;background:#0d1117;border-radius:10px;padding:8px 14px;border:1px solid ${probColor}44">
-              <div style="font-size:10px;color:#8b949e;margin-bottom:2px">목표가 도달 확률</div>
-              <div style="font-size:20px;font-weight:800;color:${probColor}">${tp.reach_probability || '—'}%</div>
+          <div class="forecast-info-grid">
+            <div class="forecast-info-card">
+              <div class="forecast-info-head">
+                <div class="forecast-info-title">예측 근거</div>
+              </div>
+              <div class="forecast-info-body">${tp.reason}</div>
             </div>
-            ${tp.expected_trading_days ? `
-            <div style="text-align:center;background:#0d1117;border-radius:8px;padding:6px 12px">
-              <div style="font-size:10px;color:#8b949e;margin-bottom:1px">예상 소요 기간</div>
-              <div style="font-size:13px;font-weight:700;color:#58a6ff">거래일 기준 ${tp.expected_trading_days[0]}~${tp.expected_trading_days[1]}일</div>
-            </div>` : ''}
+            <div class="forecast-info-card" style="border-color:${riskC}44">
+              <div class="forecast-info-head">
+                <div class="forecast-info-title">주의할 점</div>
+                <div class="forecast-risk-badge" style="color:${riskC};background:${riskC}22;border:1px solid ${riskC}33">${riskText}</div>
+              </div>
+              <div class="forecast-info-body" style="color:#8b949e;margin-bottom:6px">${tp.risk_reason || '지표가 엇갈리는 구간입니다.'}</div>
+              <div class="forecast-info-body">${failHtml}</div>
+            </div>
           </div>
+          ${ltHtml}
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
-            <div style="font-size:11px;color:#8b949e;margin-bottom:6px">📋 예측 근거</div>
-            <div style="font-size:12px;color:#e6edf3;line-height:1.5">${tp.reason}</div>
-          </div>
-          <div style="background:#161b22;border:1px solid ${riskC}33;border-radius:10px;padding:12px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-              <div style="font-size:11px;color:#8b949e">⚠️ 실패 가능성</div>
-              <div style="font-size:11px;font-weight:700;color:${riskC};background:${riskC}22;border-radius:4px;padding:1px 7px">리스크 ${tp.risk_level || '—'}</div>
-            </div>
-            <div style="font-size:11px;color:#8b949e;margin-bottom:6px">${tp.risk_reason || ''}</div>
-            <div style="font-size:11px;color:#cdd9e5;line-height:1.5">${failHtml}</div>
-          </div>
-        </div>
-        ${ltHtml}
       `;
       _lastTp    = tp;
       _lastIsKrx = isKrx;
