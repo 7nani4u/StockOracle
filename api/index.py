@@ -4748,6 +4748,185 @@ def calc_learning_adjustment(market: str) -> Dict:
         "reason": " / ".join(reasons) if reasons else "최근 성과 안정 — 추가 보정 없음",
     }
 
+def _clip(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+def _float_series(dd: Dict | None, key: str) -> list[float]:
+    if not dd:
+        return []
+    out: list[float] = []
+    for x in dd.get(key, []) or []:
+        try:
+            fx = float(x)
+            if np.isfinite(fx):
+                out.append(fx)
+        except Exception:
+            pass
+    return out
+
+def _last_float(dd: Dict | None, key: str, default: float = 0.0) -> float:
+    vals = _float_series(dd, key)
+    return vals[-1] if vals else default
+
+def _pct_rank(values: list[float], current: float) -> float:
+    vals = [float(v) for v in values if v is not None and np.isfinite(v)]
+    if not vals:
+        return 0.5
+    return sum(1 for v in vals if v <= current) / len(vals)
+
+def _slope_pct(values: list[float], window: int) -> float:
+    if len(values) < window + 1 or values[-window - 1] == 0:
+        return 0.0
+    return (values[-1] - values[-window - 1]) / values[-window - 1] * 100.0
+
+def _swing_indices(values: list[float], radius: int = 3, mode: str = "low") -> list[int]:
+    if len(values) < radius * 2 + 3:
+        return []
+    idxs: list[int] = []
+    for i in range(radius, len(values) - radius):
+        chunk = values[i - radius:i + radius + 1]
+        if mode == "high":
+            if values[i] == max(chunk):
+                idxs.append(i)
+        else:
+            if values[i] == min(chunk):
+                idxs.append(i)
+    return idxs
+
+def _prediction_feature_profile(dd: Dict | None, last_price: float, atr: float, market: str = "KRX") -> Dict:
+    """Observable-data profile used to tighten bands and probabilities."""
+    closes = _float_series(dd, "Close")
+    highs = _float_series(dd, "High")
+    lows = _float_series(dd, "Low")
+    vols = _float_series(dd, "Volume")
+    atrs = _float_series(dd, "ATR")
+    if last_price <= 0:
+        return {
+            "atr_pct": 0.0, "atr_rank": 0.5, "trend_score": 0.0, "momentum_score": 0.0,
+            "volume_ratio": 1.0, "band_width_mult": 1.0, "target_width_mult": 1.0,
+            "core_depth_atr": 0.25, "cycle_depth_atr": 0.0, "cycle_bias": 0.0,
+            "prob_adj_pp": 0.0, "support": 0.0, "resistance": 0.0,
+            "cycle_days": None, "cycle_phase": None,
+        }
+
+    atr = atr if atr and atr > 0 else last_price * 0.02
+    atr_pct = atr / last_price * 100.0
+    atr_pct_hist: list[float] = []
+    for a, c in zip(atrs[-160:], closes[-160:]):
+        if c > 0:
+            atr_pct_hist.append(a / c * 100.0)
+    atr_rank = _pct_rank(atr_pct_hist, atr_pct)
+
+    rets: list[float] = []
+    if len(closes) >= 2:
+        for p, c in zip(closes[-31:-1], closes[-30:]):
+            if p > 0 and c > 0:
+                rets.append(math.log(c / p))
+    realized_vol_pct = float(np.std(rets) * math.sqrt(20) * 100.0) if len(rets) >= 10 else atr_pct * 2.2
+
+    ma20 = _last_float(dd, "MA20", last_price)
+    ma60 = _last_float(dd, "MA60", last_price)
+    ma120 = _last_float(dd, "MA120", last_price)
+    rsi = _last_float(dd, "RSI", 50.0)
+    macd = _last_float(dd, "MACD", 0.0)
+    sig = _last_float(dd, "Signal_Line", 0.0)
+    adx = _last_float(dd, "ADX", 20.0)
+    dip = _last_float(dd, "DI_Plus", 0.0)
+    dim = _last_float(dd, "DI_Minus", 0.0)
+
+    ret5 = ((closes[-1] - closes[-6]) / closes[-6] * 100.0) if len(closes) >= 6 and closes[-6] else 0.0
+    ret20 = ((closes[-1] - closes[-21]) / closes[-21] * 100.0) if len(closes) >= 21 and closes[-21] else 0.0
+    ma20_slope = _slope_pct(_float_series(dd, "MA20"), 5)
+    ma60_slope = _slope_pct(_float_series(dd, "MA60"), 10)
+
+    trend_raw = 0.0
+    trend_raw += 0.22 if last_price > ma20 else -0.22
+    trend_raw += 0.18 if last_price > ma60 else -0.18
+    trend_raw += 0.12 if last_price > ma120 else -0.12
+    trend_raw += 0.18 if macd > sig else -0.18
+    trend_raw += 0.16 if dip > dim else -0.16
+    trend_raw += _clip(ma20_slope / 4.0, -0.16, 0.16)
+    trend_raw += _clip(ma60_slope / 6.0, -0.10, 0.10)
+    if adx >= 25:
+        trend_raw *= 1.15
+    trend_score = _clip(trend_raw, -1.0, 1.0)
+
+    momentum_raw = _clip(ret5 / 8.0, -0.35, 0.35) + _clip(ret20 / 18.0, -0.35, 0.35)
+    if rsi < 35:
+        momentum_raw += 0.12
+    elif rsi > 70:
+        momentum_raw -= 0.18
+    momentum_score = _clip(momentum_raw, -1.0, 1.0)
+
+    volume_ratio = 1.0
+    if len(vols) >= 20:
+        avg_v = float(np.mean(vols[-20:]))
+        if avg_v > 0:
+            volume_ratio = vols[-1] / avg_v
+    buy_pressure = _last_float(dd, "BUY_PRESSURE", 50.0)
+    volume_score = _clip((volume_ratio - 1.0) * 0.35 + (buy_pressure - 50.0) / 100.0, -0.35, 0.35)
+
+    support = 0.0
+    resistance = 0.0
+    if lows:
+        recent_lows = [x for x in lows[-40:] if x > 0]
+        support = float(np.mean(sorted(recent_lows)[:5])) if len(recent_lows) >= 5 else min(recent_lows or [last_price * 0.95])
+    if highs:
+        above = [x for x in highs[-60:] if x > last_price]
+        resistance = min(above) if above else max(highs[-20:])
+
+    swing_lows = _swing_indices(lows[-160:], 3, "low")
+    cycle_days = None
+    cycle_phase = None
+    cycle_bias = 0.0
+    cycle_depth_atr = 0.0
+    if len(swing_lows) >= 3:
+        diffs = [b - a for a, b in zip(swing_lows[-6:-1], swing_lows[-5:]) if b > a]
+        if diffs:
+            cycle_days = float(np.median(diffs))
+            since_low = len(lows[-160:]) - 1 - swing_lows[-1]
+            cycle_phase = _clip(since_low / max(cycle_days, 1.0), 0.0, 1.6)
+            if 0.15 <= cycle_phase <= 0.65 and momentum_score >= -0.2:
+                cycle_bias = 0.10
+            elif cycle_phase >= 0.95:
+                cycle_bias = -0.08
+                cycle_depth_atr = 0.10
+
+    market_ref_atr = 1.83 if market == "US" else 2.37
+    vol_ratio_to_ref = atr_pct / max(market_ref_atr, 0.01)
+    band_width_mult = _clip(0.88 + atr_rank * 0.34 + max(0.0, vol_ratio_to_ref - 1.0) * 0.10, 0.82, 1.32)
+    if abs(trend_score) >= 0.55 and atr_rank < 0.75:
+        band_width_mult *= 0.92
+    if volume_ratio < 0.65 and last_price < ma20:
+        band_width_mult *= 1.08
+    target_width_mult = _clip(1.05 + atr_rank * 0.35 - max(trend_score, 0.0) * 0.18, 0.72, 1.42)
+    core_depth_atr = _clip(0.22 + atr_rank * 0.22 + max(0.0, -trend_score) * 0.18 + cycle_depth_atr, 0.18, 0.65)
+    prob_adj_pp = _clip(
+        trend_score * 8.0 + momentum_score * 4.0 + volume_score * 5.0 + cycle_bias * 20.0
+        - max(0.0, atr_rank - 0.75) * 10.0,
+        -18.0, 16.0,
+    )
+
+    return {
+        "atr_pct": round(atr_pct, 3),
+        "atr_rank": round(atr_rank, 3),
+        "realized_vol_pct": round(realized_vol_pct, 3),
+        "trend_score": round(trend_score, 3),
+        "momentum_score": round(momentum_score, 3),
+        "volume_ratio": round(volume_ratio, 3),
+        "volume_score": round(volume_score, 3),
+        "band_width_mult": round(float(band_width_mult), 3),
+        "target_width_mult": round(float(target_width_mult), 3),
+        "core_depth_atr": round(float(core_depth_atr), 3),
+        "cycle_depth_atr": round(float(cycle_depth_atr), 3),
+        "cycle_bias": round(float(cycle_bias), 3),
+        "prob_adj_pp": round(float(prob_adj_pp), 2),
+        "support": support,
+        "resistance": resistance,
+        "cycle_days": round(cycle_days, 1) if cycle_days else None,
+        "cycle_phase": round(cycle_phase, 2) if cycle_phase is not None else None,
+    }
+
 def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str, dd: Dict,
                                            buy_price: Dict, risk: Dict,
                                            event_risk: Dict, learning: Dict) -> None:
@@ -5505,6 +5684,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             if   vr > 1.3: vol_trend = "expanding"
             elif vr < 0.7: vol_trend = "contracting"
 
+    _profile = _prediction_feature_profile(dd, last_price, atr_d, market)
+
     # ── 지지/저항 분석 ────────────────────────────────────────────────
     recent_lows  = sorted([x for x in lows[-30:] if x > 0])
     support_zone = float(np.mean(recent_lows[:5])) if len(recent_lows) >= 5 else last_price * 0.95
@@ -5636,7 +5817,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         downside_level, downside_label, depth_shift = "medium", "추가 하락 위험 주의", 0.45
     else:
         downside_level, downside_label, depth_shift = "low", "추가 하락 위험 낮음", 0.20
-    depth_shift += learn_depth
+    cycle_depth = float(_profile.get("cycle_depth_atr") or 0.0)
+    core_depth_extra = float(_profile.get("core_depth_atr") or 0.25)
+    depth_shift += learn_depth + cycle_depth
 
     if not downside_reasons:
         downside_reasons.append("이평선·MACD·거래량 기준의 뚜렷한 하락 가속 신호 없음")
@@ -5763,7 +5946,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     _mkt = market if market in _BT_Z else "KRX"
     _btz = _BT_Z[_mkt]
     # 한국: 수급 급등락 반영 → 밴드 폭 18% 확대 / 미국: 추세 안정 → 8% 축소
-    _bw = 1.18 if _mkt == "KRX" else 0.92
+    _bw = (1.18 if _mkt == "KRX" else 0.92) * float(_profile.get("band_width_mult") or 1.0)
 
     # 추세 강도(0~4) + RSI 기반 확률 보정
     # 백테스트 기저 확률에 모멘텀·기술적 상태를 반영한 조정치 적용
@@ -5776,10 +5959,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     _mom_adj  = (_trend - 2) * 2.5   # 추세 중립(2)에서 ±5pp
     _rsi_adj2 = 5.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _risk_penalty = min(22.0, downside_score * 0.22)
+    _stat_adj = float(_profile.get("prob_adj_pp") or 0.0)
 
     def _ap(base_prob):
         """백테스트 기저확률 + 모멘텀·RSI 보정 → 최종 확률 (5~95% 클램프)"""
-        return round(min(95.0, max(5.0, base_prob + _mom_adj + _rsi_adj2 - _risk_penalty)), 1)
+        return round(min(95.0, max(5.0, base_prob + _mom_adj + _rsi_adj2 + _stat_adj - _risk_penalty)), 1)
 
     # ── 공격적 매수 밴드 A/B/C ────────────────────────────────────────
     # 개념: ATR 눌림목 깊이를 3단계로 세분 → 각 단계별 진입 근거·기대수익·손실확률
@@ -5841,7 +6025,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     else:
         _anc_B_raw = last_price - 1.10 * atr_d
     # Band A보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_B = min(_anc_B_raw, _anc_A - atr_d * (0.35 + depth_shift * 0.45))
+    _anc_B = min(_anc_B_raw, _anc_A - atr_d * (0.35 + core_depth_extra + depth_shift * 0.45))
 
     # ── Band C: MA60·Fib 38.2~50% 수렴 ──────────────────────────────
     # fib_382가 현재가보다 낮을 때만(= 유효한 지지선) 사용
@@ -5854,7 +6038,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     else:
         _anc_C_raw = last_price - 1.40 * atr_d
     # Band B보다 최소 0.2 ATR 아래에 위치하도록 보장
-    _anc_C = min(_anc_C_raw, _anc_B - atr_d * (0.45 + depth_shift * 0.55))
+    _anc_C = min(_anc_C_raw, _anc_B - atr_d * (0.45 + core_depth_extra + depth_shift * 0.55))
     if downside_level in ("high", "severe") and strong_support:
         _anc_A = min(_anc_A, strong_support - atr_d * 0.20)
         _anc_B = min(_anc_B, strong_support - atr_d * (0.75 + depth_shift * 0.30))
@@ -5886,6 +6070,19 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _lo  = _anc - _hw
         _hi  = min(_anc + _hw, _price_ceiling)   # 현재가 위로 올라가지 않도록 클램프
         _lo  = min(_lo, _hi - atr_d * 0.05)      # 하단이 상단보다 낮도록 보장
+        _idx = {"A": 0, "B": 1, "C": 2}.get(_zn, 0)
+        if _idx < len(aggressive_bands):
+            _agg_lo = float(aggressive_bands[_idx]["range"][0])
+            _min_gap = max(atr_d * (0.18 + _idx * 0.08), last_price * 0.002)
+            _max_core_hi = _agg_lo - _min_gap
+            if _hi > _max_core_hi:
+                _shift = _hi - _max_core_hi
+                _hi -= _shift
+                _lo -= _shift
+            if _lo < _band_floor:
+                _width = max(atr_d * 0.08, min(_hi - _lo, atr_d * (0.22 + _idx * 0.08)))
+                _hi = min(_hi, max(_band_floor + _width, _max_core_hi))
+                _lo = max(_band_floor, _hi - _width)
         _lo, _hi = _floor_band(_lo, _hi)
         _win = _ap(_z["win"])
         recommended_bands.append({
@@ -6065,6 +6262,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "atr_pct": round(atr_pct, 2),
         "vol_trend": vol_trend,
         "market": _mkt,
+        "prediction_profile": _profile,
         "downside_risk": {
             "score": downside_score,
             "level": downside_level,
@@ -6542,6 +6740,7 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         atr = last_price * 0.02
 
     rnd = 4 if market == "US" else 2
+    _profile = _prediction_feature_profile(dd, last_price, atr, market)
 
     # ── 추세 강도 분석 (0 ~ 4, RSI 과매수 시 -1 보정) ──────────────────
     trend_strength = (
@@ -6584,6 +6783,21 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
                   "일차적인 저항선을 목표로 보수적인 접근이 필요합니다.")
 
     # ── 수익률: 현재가(last_price) 기준 ──────────────────────────────
+    _trend_score = float(_profile.get("trend_score") or 0.0)
+    _momentum_score = float(_profile.get("momentum_score") or 0.0)
+    _cycle_bias = float(_profile.get("cycle_bias") or 0.0)
+    _target_width_mult = float(_profile.get("target_width_mult") or 1.0)
+    _resistance = float(_profile.get("resistance") or 0.0)
+    _raw_mid = (min_target + max_target) / 2.0
+    _bias_mul = _clip(1.0 + _trend_score * 0.12 + _momentum_score * 0.08 + _cycle_bias * 0.06, 0.82, 1.18)
+    _mid = last_price + max(atr * 0.35, (_raw_mid - last_price) * _bias_mul)
+    if _resistance > last_price and _resistance < max_target + atr * 2.0:
+        _mid = _mid * 0.65 + _resistance * 0.35
+    _old_half = max(atr * 0.25, (max_target - min_target) / 2.0)
+    _half = _clip(_old_half * _target_width_mult, atr * 0.28, last_price * (0.018 if market == "US" else 0.028) + atr * 0.90)
+    min_target = max(last_price + atr * 0.25, _mid - _half)
+    max_target = max(min_target + atr * 0.25, _mid + _half)
+
     min_return = (min_target - last_price) / last_price * 100
     max_return = (max_target - last_price) / last_price * 100
 
@@ -6595,7 +6809,8 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
     _rsi_adj   =  8.0 if rsi < 40 else (-8.0 if rsi > 70 else 0.0)
     _vol_adj   = -6.0 if atr_pct > 4.0 else (4.0 if atr_pct < 1.5 else 0.0)
     _dist_adj  = max(-20.0, -(dist_pct - 5.0) * 1.5) if dist_pct > 5.0 else 0.0
-    reach_probability = round(min(92.0, max(8.0, _base_prob + _rsi_adj + _vol_adj + _dist_adj)), 1)
+    _profile_prob_adj = float(_profile.get("prob_adj_pp") or 0.0) * 0.55
+    reach_probability = round(min(92.0, max(8.0, _base_prob + _rsi_adj + _vol_adj + _dist_adj + _profile_prob_adj)), 1)
 
     # ── 예상 소요 기간 ─────────────────────────────────────────────────
     _period_days = {"1d":5, "3d":7, "1wk":10, "2wk":14, "1mo":30, "3mo":65, "6mo":130, "1y":252}.get(period, 20)
@@ -6660,6 +6875,8 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         "failure_factors":         failure_factors,
         "risk_level":              risk_level,
         "risk_reason":             risk_reason,
+        "prediction_profile":      _profile,
+        "precision_note":          "ATR, realized volatility, trend, volume, resistance, and swing-cycle context refined the target range",
     }
 
 def holt_winters_forecast(dd: Dict, days: int = 30):
