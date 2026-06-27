@@ -1921,6 +1921,150 @@ _TOSS_AI_CACHE: dict      = {}     # {(ticker_upper, market): result_dict}
 _TOSS_AI_CACHE_TS: dict   = {}     # {(ticker_upper, market): monotonic_timestamp}
 _TOSS_AI_CACHE_TTL: float = 300.0
 
+# ── Toss industry cache (best-effort, non-blocking) ─────────────────────────
+_TOSS_INDUSTRY_CACHE: dict      = {}
+_TOSS_INDUSTRY_CACHE_TS: dict   = {}
+_TOSS_INDUSTRY_CACHE_TTL: float = 3600.0
+
+
+def _toss_json_result(url: str, params: dict | None = None, timeout: float = 4.0) -> dict:
+    try:
+        r = _toss_session.get(url, params=params or None, timeout=timeout)
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        return data.get("result") if isinstance(data, dict) and "result" in data else data
+    except Exception:
+        return {}
+
+
+def _pick_industry_fields(payload: Any) -> dict:
+    """Toss 응답 구조 변경에 대비해 sector/industry/tics 계열 필드를 재귀 탐색."""
+    out = {"sector": "", "industry": "", "tics_id": ""}
+    if not payload:
+        return out
+
+    sector_keys = {"sector", "sectorname", "sectordisplayname", "sectorlabel", "category", "categoryname"}
+    industry_keys = {"industry", "industryname", "industrydisplayname", "industrylabel", "businesssector", "businesscategory"}
+    tics_id_keys = {"ticsid", "ticscode", "ticsindustryid", "industryid"}
+    tics_name_keys = {"tics", "ticsname", "ticsdisplayname"}
+
+    def _clean(v: Any) -> str:
+        return re.sub(r"\s+", " ", str(v or "")).strip()
+
+    def _walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            lowered = {str(k).lower().replace("_", "").replace("-", ""): k for k in obj.keys()}
+            for lk, original_key in lowered.items():
+                val = obj.get(original_key)
+                sval = _clean(val) if not isinstance(val, (dict, list)) else ""
+                if sval:
+                    if lk in sector_keys and not out["sector"]:
+                        out["sector"] = sval
+                    if lk in industry_keys and not out["industry"]:
+                        out["industry"] = sval
+                    if lk in tics_name_keys and not out["industry"]:
+                        out["industry"] = sval
+                    if lk in tics_id_keys and not out["tics_id"]:
+                        out["tics_id"] = sval
+            for val in obj.values():
+                if not (out["sector"] and out["industry"] and out["tics_id"]):
+                    _walk(val)
+        elif isinstance(obj, list):
+            for item in obj[:30]:
+                if out["sector"] and out["industry"] and out["tics_id"]:
+                    break
+                _walk(item)
+
+    _walk(payload)
+    return out
+
+
+def _fallback_sector_from_default_stocks(ticker: str) -> str:
+    code = str(ticker or "").replace(".KS", "").replace(".KQ", "")
+    try:
+        for item in globals().get("_SECTOR_DEFAULT_STOCKS", []):
+            if str(item.get("code") or "") == code:
+                return str(item.get("sector") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def fetch_toss_industry_info(ticker: str, market: str) -> dict:
+    """토스증권 산업/업종 정보 조회. 실패 시 빈 값 또는 안전한 폴백만 반환."""
+    key = (str(ticker or "").upper(), str(market or "").upper())
+    now = time.monotonic()
+    if key in _TOSS_INDUSTRY_CACHE and (now - _TOSS_INDUSTRY_CACHE_TS.get(key, 0)) < _TOSS_INDUSTRY_CACHE_TTL:
+        return _TOSS_INDUSTRY_CACHE[key]
+
+    result = {"sector": "", "industry": "", "product_code": "", "source": "", "ok": False}
+    try:
+        product_code = to_toss_product_code(ticker, market) if market == "KRX" else ""
+        if market != "KRX":
+            product_code = _fetch_toss_us_product_code(str(ticker or "").upper()) or ""
+        result["product_code"] = product_code
+
+        payloads: list[tuple[str, dict]] = []
+        if product_code:
+            for version in ("v2", "v1"):
+                url = f"https://wts-info-api.tossinvest.com/api/{version}/stock-infos/{quote(product_code)}"
+                payloads.append((f"toss-stock-info-{version}", _toss_json_result(url)))
+            payloads.append((
+                "toss-stock-header",
+                _toss_json_result(f"https://wts-info-api.tossinvest.com/api/v1/stock-infos/header/{quote(product_code)}"),
+            ))
+
+        tics_id = ""
+        for source, payload in payloads:
+            picked = _pick_industry_fields(payload)
+            if picked.get("sector") and not result["sector"]:
+                result["sector"] = picked["sector"]
+            if picked.get("industry") and not result["industry"]:
+                result["industry"] = picked["industry"]
+            if picked.get("tics_id") and not tics_id:
+                tics_id = picked["tics_id"]
+            if result["sector"] or result["industry"]:
+                result.update({"source": source, "ok": True})
+                break
+
+        if tics_id and not (result["sector"] or result["industry"]):
+            tics_payloads = [
+                ("toss-tics-overview", _toss_json_result(f"https://wts-info-api.tossinvest.com/api/v2/dashboard/wts/overview/tics/{quote(tics_id)}/overview")),
+                ("toss-tics-simple", _toss_json_result(f"https://wts-info-api.tossinvest.com/api/v2/dashboard/wts/overview/tics/{quote(tics_id)}/simple")),
+                ("toss-tics-related", _toss_json_result(f"https://wts-info-api.tossinvest.com/api/v1/tics/{quote(tics_id)}/related")),
+            ]
+            for source, payload in tics_payloads:
+                picked = _pick_industry_fields(payload)
+                if picked.get("sector") and not result["sector"]:
+                    result["sector"] = picked["sector"]
+                if picked.get("industry") and not result["industry"]:
+                    result["industry"] = picked["industry"]
+                if result["sector"] or result["industry"]:
+                    result.update({"source": source, "ok": True})
+                    break
+
+        if market == "KRX" and not (result["sector"] or result["industry"]):
+            sec = _fallback_sector_from_default_stocks(ticker)
+            if sec:
+                result.update({"sector": sec, "industry": sec, "source": "sector-default-fallback", "ok": True})
+
+        if not (result["sector"] or result["industry"]):
+            try:
+                info = yf.Ticker(ticker).info
+                result["sector"] = str(info.get("sector") or "").strip()
+                result["industry"] = str(info.get("industry") or "").strip()
+                if result["sector"] or result["industry"]:
+                    result.update({"source": "yfinance-fallback", "ok": True})
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[TossIndustry] lookup failed {ticker}: {e}")
+
+    _TOSS_INDUSTRY_CACHE[key] = result
+    _TOSS_INDUSTRY_CACHE_TS[key] = now
+    return result
+
 
 def _fetch_toss_us_ranking_productcodes() -> dict:
     """
@@ -4603,17 +4747,46 @@ def calc_event_risk(symbol: str, market: str, news_items: list | None = None,
         "days_to_earnings": days_to_earnings,
     }
 
-def _read_prediction_learning_events() -> list[dict]:
-    github_text = _github_read_prediction_learning_text()
-    if github_text is not None:
-        return _parse_prediction_learning_jsonl(github_text)
+def _read_local_prediction_learning_text() -> str | None:
     try:
         if not os.path.exists(PREDICTION_LEARNING_PATH):
-            return []
+            return None
         with open(PREDICTION_LEARNING_PATH, "r", encoding="utf-8") as f:
-            return _parse_prediction_learning_jsonl(f.read())
-    except Exception:
-        return []
+            return f.read()
+    except Exception as e:
+        print(f"[PredictionLearning] local read failed: {e}")
+        return None
+
+
+def _learning_event_key(row: dict) -> tuple:
+    typ = row.get("type") or ""
+    if typ == "prediction":
+        return (typ, row.get("id"))
+    if typ == "outcome":
+        return (typ, row.get("prediction_id"), row.get("zone"))
+    return (typ, row.get("created_at"), row.get("evaluated_at"), json.dumps(row, sort_keys=True, default=str))
+
+
+def _read_prediction_learning_events() -> list[dict]:
+    github_rows = _parse_prediction_learning_jsonl(_github_read_prediction_learning_text() or "")
+    local_rows = _parse_prediction_learning_jsonl(_read_local_prediction_learning_text() or "")
+    if not github_rows:
+        rows = local_rows
+    elif not local_rows:
+        rows = github_rows
+    else:
+        merged: list[dict] = []
+        seen: set[tuple] = set()
+        for row in github_rows + local_rows:
+            key = _learning_event_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+        rows = merged[-5000:]
+    if github_rows or local_rows:
+        print(f"[PredictionLearning] loaded github={len(github_rows)} local={len(local_rows)} merged={len(rows)}")
+    return rows[-5000:]
 
 def _append_prediction_learning_event(row: Dict) -> None:
     line = json.dumps(row, ensure_ascii=False, default=str)
@@ -4621,8 +4794,9 @@ def _append_prediction_learning_event(row: Dict) -> None:
         os.makedirs(os.path.dirname(PREDICTION_LEARNING_PATH), exist_ok=True)
         with open(PREDICTION_LEARNING_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
-        pass
+        print(f"[PredictionLearning] appended local {row.get('type')} {row.get('id') or row.get('prediction_id') or ''}")
+    except Exception as e:
+        print(f"[PredictionLearning] local append failed: {e}")
     _github_append_prediction_learning_line(line)
 
 def _parse_prediction_learning_jsonl(text: str) -> list[dict]:
@@ -4705,9 +4879,13 @@ def _github_append_prediction_learning_line(line: str) -> None:
         }
         if sha:
             payload["sha"] = sha
-        requests.put(url, headers=_github_headers(write=True), json=payload, timeout=12)
-    except Exception:
-        pass
+        put_r = requests.put(url, headers=_github_headers(write=True), json=payload, timeout=12)
+        if put_r.status_code in (200, 201):
+            print("[PredictionLearning] appended github")
+        else:
+            print(f"[PredictionLearning] github append skipped status={put_r.status_code}")
+    except Exception as e:
+        print(f"[PredictionLearning] github append failed: {e}")
 
 def calc_learning_adjustment(market: str) -> Dict:
     """저장된 예측-실현 기록으로 월별 ATR 깊이/보류 임계값을 보정."""
@@ -4715,7 +4893,8 @@ def calc_learning_adjustment(market: str) -> Dict:
             if r.get("type") == "outcome" and r.get("market") == market]
     if not rows:
         return {"depth_extra": 0.0, "hold_score_delta": 0, "allocation_scale": 1.0,
-                "sample_n": 0, "reason": "학습 표본 부족 — 기본 보수값 사용"}
+                "sample_n": 0, "applied": False,
+                "reason": "학습 표본 부족 — 기본 보수값 사용"}
     rows = rows[-240:]
     extra = sum(1 for r in rows if r.get("extra_drop")) / len(rows)
     stop = sum(1 for r in rows if r.get("stop_hit")) / len(rows)
@@ -4745,6 +4924,7 @@ def calc_learning_adjustment(market: str) -> Dict:
         "extra_drop_rate": round(extra * 100, 1),
         "stop_hit_rate": round(stop * 100, 1),
         "bounce_success_rate": round(bounce * 100, 1),
+        "applied": True,
         "reason": " / ".join(reasons) if reasons else "최근 성과 안정 — 추가 보정 없음",
     }
 
@@ -6879,6 +7059,218 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         "precision_note":          "ATR, realized volatility, trend, volume, resistance, and swing-cycle context refined the target range",
     }
 
+
+def _apply_signal_confidence_to_target(target: Dict, signal_confidence: Dict | None,
+                                       last_price: float, atr: float, market: str = "KRX") -> Dict:
+    """Use signal confidence as an auxiliary target-range weight, preserving base model output."""
+    if not target or not signal_confidence or last_price <= 0:
+        return target
+    try:
+        rnd = 4 if market == "US" else 2
+        conf = float(signal_confidence.get("confidence") or 50.0)
+        sig = str(signal_confidence.get("signal") or "").upper()
+        interval = signal_confidence.get("confidence_interval") or {}
+        spread = float(interval.get("spread") or 18.0)
+
+        lo = float(target.get("min_price") or 0)
+        hi = float(target.get("max_price") or 0)
+        if lo <= 0 or hi <= 0:
+            return target
+        mid = (lo + hi) / 2.0
+        half = max((hi - lo) / 2.0, atr * 0.20)
+
+        clarity = _clip((conf - 50.0) / 45.0, -1.0, 1.0)
+        uncertainty = _clip((spread - 14.0) / 31.0, 0.0, 1.0)
+        width_mult = _clip(1.0 - max(0.0, clarity) * 0.16 + uncertainty * 0.28, 0.78, 1.36)
+        direction_bias = 0.0
+        if sig == "BUY":
+            direction_bias = max(0.0, clarity) * atr * 0.22
+        elif sig == "SELL":
+            direction_bias = -max(0.0, clarity) * atr * 0.28
+        elif conf < 42:
+            direction_bias = -atr * 0.08
+
+        adj_mid = max(last_price + atr * 0.18, mid + direction_bias)
+        adj_half = half * width_mult
+        new_lo = max(last_price + atr * 0.12, adj_mid - adj_half)
+        new_hi = max(new_lo + atr * 0.18, adj_mid + adj_half)
+
+        prob = float(target.get("reach_probability") or 50.0)
+        prob_adj = _clip((conf - 50.0) * 0.18 - uncertainty * 5.0, -10.0, 9.0)
+        if sig == "SELL":
+            prob_adj -= max(0.0, conf - 55.0) * 0.08
+
+        target["min_price"] = round(new_lo, rnd)
+        target["max_price"] = round(new_hi, rnd)
+        target["min_return"] = round((new_lo - last_price) / last_price * 100.0, 1)
+        target["max_return"] = round((new_hi - last_price) / last_price * 100.0, 1)
+        target["reach_probability"] = round(_clip(prob + prob_adj, 5.0, 94.0), 1)
+        target["confidence_adjustment"] = {
+            "confidence": round(conf, 1),
+            "signal": sig or "UNKNOWN",
+            "interval_spread": round(spread, 1),
+            "range_width_mult": round(width_mult, 3),
+            "probability_adj_pp": round(prob_adj, 2),
+            "note": "신호 신뢰도가 높을수록 범위를 압축하고, 낮거나 분산이 클수록 범위를 확대",
+        }
+    except Exception as e:
+        print(f"[TargetConfidence] adjustment skipped: {e}")
+    return target
+
+
+def _apply_learning_adjustment_to_target(target: Dict, learning: Dict | None) -> Dict:
+    """Reflect monthly prediction learning in target probability/range without replacing base logic."""
+    if not target or not learning:
+        return target
+    try:
+        sample_n = int(learning.get("sample_n") or 0)
+        if sample_n <= 0:
+            target["learning_adjustment"] = learning
+            return target
+        extra = float(learning.get("extra_drop_rate") or 0.0)
+        stop = float(learning.get("stop_hit_rate") or 0.0)
+        bounce = float(learning.get("bounce_success_rate") or 0.0)
+        prob = float(target.get("reach_probability") or 50.0)
+        adj = 0.0
+        if extra >= 62.0:
+            adj -= min(6.0, (extra - 55.0) * 0.12)
+        if stop >= 50.0:
+            adj -= min(5.0, (stop - 45.0) * 0.12)
+        if bounce >= 70.0:
+            adj += min(4.0, (bounce - 65.0) * 0.10)
+        target["reach_probability"] = round(_clip(prob + adj, 5.0, 94.0), 1)
+        target["learning_adjustment"] = {**learning, "target_probability_adj_pp": round(adj, 2)}
+    except Exception as e:
+        print(f"[TargetLearning] adjustment skipped: {e}")
+    return target
+
+
+def _fundamental_score_from_context(naver: Dict | None, us_enriched: Dict | None,
+                                    industry_info: Dict | None) -> dict:
+    def _num(v: Any) -> float | None:
+        if v is None or v == "-":
+            return None
+        try:
+            return float(str(v).replace(",", "").replace("%", "").strip())
+        except Exception:
+            return None
+
+    ov = (us_enriched or {}).get("overview") or {}
+    industry = ((industry_info or {}).get("industry") or (industry_info or {}).get("sector")
+                or (naver or {}).get("industry") or (naver or {}).get("sector")
+                or ov.get("industry") or ov.get("sector") or "")
+    text = str(industry).lower()
+    growth = 0.0
+    quality = 0.0
+    value = 0.0
+
+    per = _num((naver or {}).get("per")) or _num(ov.get("per"))
+    pbr = _num((naver or {}).get("pbr")) or _num(ov.get("pbr"))
+    roe = _num((naver or {}).get("roe"))
+    debt = _num((naver or {}).get("debt"))
+    op_margin = _num((naver or {}).get("op_margin"))
+    np_growth = _num((naver or {}).get("net_profit_growth"))
+
+    if roe is not None:
+        quality += _clip((roe - 8.0) / 18.0, -0.4, 0.6)
+    if op_margin is not None:
+        quality += _clip((op_margin - 6.0) / 18.0, -0.3, 0.5)
+    if debt is not None:
+        quality += 0.15 if debt <= 100 else -0.20 if debt >= 180 else 0.0
+    if np_growth is not None:
+        growth += _clip(np_growth / 45.0, -0.5, 0.7)
+    if (naver or {}).get("net_profit_growth_label") == "흑자전환":
+        growth += 0.25
+    elif (naver or {}).get("net_profit_growth_label") == "적자전환":
+        growth -= 0.35
+    if per is not None:
+        value += 0.18 if 0 < per <= 12 else -0.12 if per >= 35 else 0.0
+    if pbr is not None:
+        value += 0.10 if 0 < pbr <= 1.2 else -0.10 if pbr >= 5.0 else 0.0
+
+    industry_bonus = 0.0
+    if any(k in text for k in ("반도체", "semiconductor", "ai", "software", "internet", "전력기기", "방산", "바이오", "biotech")):
+        industry_bonus = 0.16
+    elif any(k in text for k in ("배터리", "자동차", "healthcare", "technology", "조선")):
+        industry_bonus = 0.08
+    elif any(k in text for k in ("금융", "bank", "통신", "telecom", "utility", "유틸", "정유")):
+        industry_bonus = -0.02
+    elif any(k in text for k in ("cyclical", "materials", "철강", "화학", "에너지")):
+        industry_bonus = -0.05
+
+    return {
+        "growth": round(_clip(growth, -0.7, 0.8), 3),
+        "quality": round(_clip(quality, -0.6, 0.8), 3),
+        "value": round(_clip(value, -0.4, 0.4), 3),
+        "industry_bonus": round(industry_bonus, 3),
+        "industry": industry,
+    }
+
+
+def _build_long_term_targets(dd: Dict, last_price: float, atr: float, market: str,
+                             base_target: Dict, signal_confidence: Dict | None,
+                             learning: Dict | None, naver: Dict | None,
+                             us_enriched: Dict | None, industry_info: Dict | None) -> list[dict]:
+    if last_price <= 0:
+        return []
+    try:
+        rnd = 4 if market == "US" else 2
+        profile = (base_target or {}).get("prediction_profile") or _prediction_feature_profile(dd, last_price, atr, market)
+        fscore = _fundamental_score_from_context(naver, us_enriched, industry_info)
+        trend = float(profile.get("trend_score") or 0.0)
+        momentum = float(profile.get("momentum_score") or 0.0)
+        atr_pct = float(profile.get("atr_pct") or ((atr / last_price * 100.0) if atr else 2.0))
+        realized_vol = float(profile.get("realized_vol_pct") or atr_pct * 2.2)
+        conf = float((signal_confidence or {}).get("confidence") or 50.0)
+        spread = float(((signal_confidence or {}).get("confidence_interval") or {}).get("spread") or 18.0)
+        learn_drag = 0.0
+        if learning and int(learning.get("sample_n") or 0) > 0:
+            learn_drag = min(0.025, max(0.0, float(learning.get("stop_hit_rate") or 0.0) - 50.0) / 1000.0)
+
+        annual = (
+            0.045
+            + fscore["growth"] * 0.055
+            + fscore["quality"] * 0.035
+            + fscore["value"] * 0.020
+            + fscore["industry_bonus"] * 0.060
+            + trend * 0.030
+            + momentum * 0.012
+            + _clip((conf - 50.0) / 50.0, -1.0, 1.0) * 0.018
+            - learn_drag
+        )
+        annual = _clip(annual, -0.08, 0.22)
+        vol_factor = _clip(realized_vol / 22.0, 0.55, 1.75)
+        confidence_width = _clip(1.0 + max(0.0, spread - 16.0) / 50.0 - max(0.0, conf - 65.0) / 180.0, 0.82, 1.35)
+
+        horizons = [
+            ("1년", 1, 0.20),
+            ("5년", 5, 0.46),
+            ("10년", 10, 0.68),
+        ]
+        out = []
+        for label, years, base_uncertainty in horizons:
+            mid = last_price * ((1.0 + annual) ** years)
+            uncertainty = _clip(base_uncertainty * vol_factor * confidence_width * math.sqrt(years) / math.sqrt(max(1, years)),
+                                0.16 if years == 1 else 0.30,
+                                1.55 if years >= 10 else 1.05)
+            lo = max(0.01, mid * (1.0 - uncertainty))
+            hi = max(lo * 1.05, mid * (1.0 + uncertainty))
+            out.append({
+                "label": label,
+                "years": years,
+                "min_price": round(lo, rnd),
+                "max_price": round(hi, rnd),
+                "min_return": round((lo - last_price) / last_price * 100.0, 1),
+                "max_return": round((hi - last_price) / last_price * 100.0, 1),
+                "annual_assumption_pct": round(annual * 100.0, 1),
+                "uncertainty": "높음" if years >= 5 or spread >= 28 else "중간",
+                "basis": "기업가치·성장성·산업 전망·실적 추세·기술 흐름·변동성 종합",
+            })
+        return out
+    except Exception as e:
+        print(f"[LongTermTarget] build failed: {e}")
+        return []
+
 def holt_winters_forecast(dd: Dict, days: int = 30):
     """
     Lightweight implementation of Double Exponential Smoothing (Holt's Linear Trend)
@@ -7130,6 +7522,18 @@ def route(path: str, params: Dict) -> Dict:
             except Exception:
                 pass
 
+        toss_industry = fetch_toss_industry_info(sym, market)
+        if market == "KRX":
+            if naver is None:
+                naver = {}
+            if toss_industry.get("sector") and not naver.get("sector"):
+                naver["sector"] = toss_industry.get("sector")
+            if toss_industry.get("industry") and not naver.get("industry"):
+                naver["industry"] = toss_industry.get("industry")
+            elif toss_industry.get("sector") and not naver.get("industry"):
+                naver["industry"] = toss_industry.get("sector")
+            naver["industry_source"] = toss_industry.get("source") or ""
+
         # ── Step 2: 현재가 보정 ───────────────────────────────────────────────
         # 반드시 calc_buy_price / calc_target_price / calc_risk 호출 전에 완료해야 함.
         # 보정된 last 가 예측·리스크 계산의 기준값(현재가)으로 사용됩니다.
@@ -7252,8 +7656,6 @@ def route(path: str, params: Dict) -> Dict:
         risk             = calc_risk(last, atr_val, market, dd, event_risk, learning_adjustment)
         buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period,
                                           event_risk, learning_adjustment)
-        target_price     = calc_target_price(dd, last, atr_val, period, market)
-        pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
 
         # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) ────────────────────
         hybrid_score = None
@@ -7373,6 +7775,17 @@ def route(path: str, params: Dict) -> Dict:
         except Exception:
             signal_confidence = None   # 엔진 실패 시 기존 응답 유지
 
+        target_price = calc_target_price(dd, last, atr_val, period, market)
+        target_price = _apply_signal_confidence_to_target(target_price, signal_confidence, last, atr_val, market)
+        target_price = _apply_learning_adjustment_to_target(target_price, learning_adjustment)
+        if target_price:
+            target_price["long_term"] = _build_long_term_targets(
+                dd, last, atr_val, market, target_price, signal_confidence,
+                learning_adjustment, naver, us_enriched, toss_industry
+            )
+            target_price["long_term_note"] = "장기 전망은 기업가치·성장성·산업 전망·실적 추세·기술 흐름·변동성을 함께 반영한 참고 범위입니다."
+        pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
+
         _record_prediction_and_update_outcomes(
             sym, market, period, dd, buy_price, risk, event_risk, learning_adjustment
         )
@@ -7410,6 +7823,7 @@ def route(path: str, params: Dict) -> Dict:
             "target_price": target_price,
             "pullback_analysis": pullback_analysis,
             "news": news or [], "naver": naver, "us_enriched": us_enriched,
+            "toss_industry": toss_industry,
             "investor_flow": investor_flow,
             "hybrid_score": hybrid_score,  # HybridTurtle NCS/BQS/FWS
             "signal_confidence": signal_confidence,  # 신뢰도 종합(거시·섹터·실적·불일치·뉴스감정·신뢰구간)
@@ -9241,6 +9655,7 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">시가총액</div><div class="fund-val" id="f-mktcap"></div></div>
           <div class="fund-item"><div class="fund-label">PER</div><div class="fund-val" id="f-per"></div></div>
           <div class="fund-item"><div class="fund-label">PBR</div><div class="fund-val" id="f-pbr"></div></div>
+          <div class="fund-item"><div class="fund-label">산업</div><div class="fund-val" id="f-industry" style="font-size:12px"></div></div>
         </div>
       </div>
       <div id="r-us-fund" style="display:none" class="card">
@@ -10418,6 +10833,7 @@ function renderResult(d) {
     document.getElementById('f-mktcap').textContent = d.naver.market_cap || '-';
     document.getElementById('f-per').textContent = d.naver.per || '-';
     document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
+    document.getElementById('f-industry').textContent = d.naver.industry || d.naver.sector || '-';
     document.getElementById('r-us-fund').style.display = 'none';
   } else if (!isKrx && d.us_enriched && d.us_enriched.overview && d.us_enriched.overview.sector) {
     document.getElementById('r-naver-fund').style.display = 'none';
@@ -11610,6 +12026,27 @@ function renderForecast(d, isKrx) {
       const failHtml   = (tp.failure_factors || [])
         .map(f => `<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px"><span style="color:#f85149;flex-shrink:0">•</span><span>${f}</span></div>`)
         .join('');
+      const ltHtml = (tp.long_term || []).length ? `
+        <div style="margin:0 0 10px">
+          <div style="font-size:12px;color:#8b949e;margin:0 0 8px">장기 목표가 예측</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">
+            ${(tp.long_term || []).map(x => {
+              const minRet = Number(x.min_return || 0);
+              const maxRet = Number(x.max_return || 0);
+              const retHtml = `${minRet >= 0 ? '+' : ''}${minRet}% ~ ${maxRet >= 0 ? '+' : ''}${maxRet}%`;
+              return `<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:11px">
+                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:6px">
+                  <div style="font-size:12px;font-weight:800;color:#e6edf3">예상 목표가 범위 (${x.label})</div>
+                  <div style="font-size:10px;color:${x.uncertainty === '높음' ? '#d29922' : '#58a6ff'}">${x.uncertainty || '중간'}</div>
+                </div>
+                <div style="font-size:16px;font-weight:800;color:#3fb950">${fmt(x.min_price, isKrx)} ~ ${fmt(x.max_price, isKrx)}</div>
+                <div style="font-size:11px;color:#8b949e;margin-top:4px">현재가 기준 <span style="color:${maxRet >= 0 ? '#3fb950' : '#f85149'}">${retHtml}</span></div>
+                <div style="font-size:10px;color:#484f58;margin-top:5px">연 환산 가정 ${x.annual_assumption_pct || 0}% · ${x.basis || ''}</div>
+              </div>`;
+            }).join('')}
+          </div>
+          ${tp.long_term_note ? `<div style="font-size:10px;color:#484f58;margin-top:6px">${tp.long_term_note}</div>` : ''}
+        </div>` : '';
       tpEl.innerHTML = `
         <div style="background:#21262d;border-radius:10px;padding:16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
           <div>
@@ -11646,6 +12083,7 @@ function renderForecast(d, isKrx) {
             <div style="font-size:11px;color:#cdd9e5;line-height:1.5">${failHtml}</div>
           </div>
         </div>
+        ${ltHtml}
       `;
       _lastTp    = tp;
       _lastIsKrx = isKrx;
@@ -12824,9 +13262,9 @@ function renderFlowTab(d) {
   // 섹터 정보 (스크리너 데이터 활용)
   const sectorCard = document.getElementById('flow-sector-card');
   const sectorContent = document.getElementById('flow-sector-content');
-  if (sectorCard && sectorContent && d.naver) {
-    const sector = d.naver.sector || '';
-    const industry = d.naver.industry || '';
+  if (sectorCard && sectorContent && (d.naver || d.toss_industry)) {
+    const sector = (d.naver && d.naver.sector) || (d.toss_industry && d.toss_industry.sector) || '';
+    const industry = (d.naver && d.naver.industry) || (d.toss_industry && d.toss_industry.industry) || '';
     if (sector || industry) {
       sectorContent.innerHTML = `
         <div class="flow-chip-row">
