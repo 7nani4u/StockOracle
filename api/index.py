@@ -6429,6 +6429,24 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "context":        _ctx,
     }
 
+    band_distance_warning = None
+    try:
+        first_band = aggressive_bands[0] if aggressive_bands else None
+        first_high = float((first_band or {}).get("range", [None, None])[1] or 0)
+        first_gap_pct = ((first_high - last_price) / last_price * 100) if first_high > 0 and last_price > 0 else None
+        far_limit = -15.0 if _mkt == "US" else -10.0
+        wait_mode = _akey in ("wait", "wait_support", "wait_breakdown")
+        if first_gap_pct is not None and (first_gap_pct <= far_limit or downside_level in ("high", "severe") or wait_mode):
+            band_distance_warning = {
+                "level": "severe" if downside_level == "severe" else ("high" if first_gap_pct <= far_limit else "medium"),
+                "gap_pct": round(first_gap_pct, 2),
+                "display_mode": "reference_only" if wait_mode else "caution",
+                "message": "1차 매수 구간이 현재가와 크게 떨어져 있어 즉시 매수 구간이 아닙니다.",
+                "action": "반등 캔들, 거래량 회복, 지지 확인 전까지 관망이 우선입니다.",
+            }
+    except Exception:
+        band_distance_warning = None
+
     r = lambda v: round(v, rnd)
     return {
         "current": r(last_price),
@@ -6483,6 +6501,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         },
         "learning_adjustment": learning_adjustment or {"sample_n": 0, "depth_extra": 0.0, "reason": "학습 표본 부족"},
         "strategy_rec": strategy_rec,
+        "band_distance_warning": band_distance_warning,
     }
 
 def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float, market: str = "KRX", target_price_data: Dict = None) -> Dict:
@@ -12262,6 +12281,18 @@ function renderForecast(d, isKrx) {
         </div>` : '';
 
       // ── 추천 밴드 (active_bands 기준으로 필터링) ──
+      const bw = bp.band_distance_warning || null;
+      const bwGap = bw && Number.isFinite(Number(bw.gap_pct)) ? Math.abs(Number(bw.gap_pct)).toFixed(1) : null;
+      const bandDistanceHtml = bw ? `
+        <div style="background:${bw.level === 'severe' ? '#2d1515' : '#241a0a'};border:1px solid ${bw.level === 'severe' ? '#f8514966' : '#d2992255'};border-radius:10px;padding:10px 14px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+            <div style="font-size:12px;font-weight:800;color:${bw.level === 'severe' ? '#f85149' : '#d29922'}">1차 구간 이격 주의</div>
+            ${bwGap ? `<div style="font-size:10px;color:#8b949e;background:#0d1117;border-radius:4px;padding:2px 7px">현재가 대비 -${bwGap}%</div>` : ''}
+          </div>
+          <div style="font-size:11px;color:#cdd9e5;line-height:1.5">${bw.message || '현재가와 1차 구간의 차이가 큽니다.'}</div>
+          <div style="font-size:10px;color:#8b949e;margin-top:3px">${bw.action || '반등 확인 전까지 관망이 우선입니다.'}</div>
+        </div>` : '';
+
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
 
@@ -12273,6 +12304,9 @@ function renderForecast(d, isKrx) {
         const isActive = activeBands.includes(b.band);
         const isPriority = b.band === sr.priority_band;
         const dimStyle = isActive ? '' : 'opacity:0.4;';
+        const allocationTag = isActive
+          ? `<span style="font-size:9px;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px">권장 ${b.allocation_pct || 0}%</span>`
+          : `<span style="font-size:9px;color:#8b949e;background:#21262d;border-radius:3px;padding:1px 5px">대기</span>`;
         const priTag   = isPriority ? `<span style="font-size:9px;background:${bc}33;color:${bc};border:1px solid ${bc};border-radius:3px;padding:1px 5px;margin-left:4px">권장</span>` : '';
         if (isRec) {
           return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
@@ -12283,7 +12317,7 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">
               <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || '주 진입'}</span>
-              <span style="font-size:9px;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px">권장 ${b.allocation_pct || 0}%</span>
+              ${allocationTag}
             </div>
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
             <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
@@ -12299,7 +12333,7 @@ function renderForecast(d, isKrx) {
             <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
             <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">
               <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || '소액 탐색 진입'}</span>
-              <span style="font-size:9px;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px">권장 ${b.allocation_pct || 0}%</span>
+              ${allocationTag}
             </div>
             <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
             <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
@@ -12319,16 +12353,24 @@ function renderForecast(d, isKrx) {
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
           </div>` : '';
 
+      const isWaitMode = ['wait', 'wait_support', 'wait_breakdown'].includes(sr.action_key);
+      const aggTitle = isWaitMode
+        ? '⚡ 1차 매수 구간 (ATR 기반) · 참고용 대기 구간'
+        : '⚡ 1차 매수 구간 (ATR 기반) · 소액 탐색';
+      const aggNote = isWaitMode
+        ? '매수 보류 상태 · 반등 확인 전 실행 구간 아님'
+        : '백테스트 + 이벤트 위험 + 월별 학습 보정';
+
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
         ? `<div class="buy-card aggressive" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">⚡ 1차 매수 구간 (ATR 기반) · 소액 탐색</div>
-              <div style="font-size:10px;color:#484f58">※ 백테스트 + 이벤트 위험 + 월별 학습 보정</div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">${aggTitle}</div>
+              <div style="font-size:10px;color:#484f58">※ ${aggNote}</div>
             </div>
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + eventRiskHtml + downsideRiskHtml + learningHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + eventRiskHtml + downsideRiskHtml + learningHtml + bandDistanceHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
     }
   }
 
