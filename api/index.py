@@ -12442,7 +12442,7 @@ function renderForecast(d, isKrx) {
         : '⚡ 1차 매수 구간 (ATR 기반) · 소액 탐색';
       const aggNote = isWaitMode
         ? '매수 보류 상태 · 반등 확인 전 실행 구간 아님'
-        : '백테스트 + 이벤트 위험 + 월별 학습 보정';
+        : '백테스트 + 이벤트 위험 반영';
 
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
         ? `<div class="buy-card aggressive" style="padding:12px 14px">
@@ -12453,7 +12453,7 @@ function renderForecast(d, isKrx) {
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + eventRiskHtml + downsideRiskHtml + learningHtml + bandDistanceHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + eventRiskHtml + downsideRiskHtml + bandDistanceHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
     }
   }
 
