@@ -4687,6 +4687,9 @@ PREDICTION_LEARNING_PATH = os.getenv(
         *PREDICTION_LEARNING_REPO_PATH.split("/"),
     ),
 )
+_PREDICTION_LEARNING_EVENTS_CACHE: list[dict] | None = None
+_PREDICTION_LEARNING_EVENTS_CACHE_TS: float = 0.0
+_PREDICTION_LEARNING_EVENTS_CACHE_TTL: float = 60.0
 
 def calc_event_risk(symbol: str, market: str, news_items: list | None = None,
                     disclosures: list | None = None, signal_confidence: Dict | None = None) -> Dict:
@@ -4768,6 +4771,12 @@ def _learning_event_key(row: dict) -> tuple:
 
 
 def _read_prediction_learning_events() -> list[dict]:
+    global _PREDICTION_LEARNING_EVENTS_CACHE, _PREDICTION_LEARNING_EVENTS_CACHE_TS
+    now = time.monotonic()
+    if (_PREDICTION_LEARNING_EVENTS_CACHE is not None and
+            now - _PREDICTION_LEARNING_EVENTS_CACHE_TS < _PREDICTION_LEARNING_EVENTS_CACHE_TTL):
+        return list(_PREDICTION_LEARNING_EVENTS_CACHE)
+
     github_rows = _parse_prediction_learning_jsonl(_github_read_prediction_learning_text() or "")
     local_rows = _parse_prediction_learning_jsonl(_read_local_prediction_learning_text() or "")
     if not github_rows:
@@ -4786,9 +4795,13 @@ def _read_prediction_learning_events() -> list[dict]:
         rows = merged[-5000:]
     if github_rows or local_rows:
         print(f"[PredictionLearning] loaded github={len(github_rows)} local={len(local_rows)} merged={len(rows)}")
-    return rows[-5000:]
+    rows = rows[-5000:]
+    _PREDICTION_LEARNING_EVENTS_CACHE = list(rows)
+    _PREDICTION_LEARNING_EVENTS_CACHE_TS = now
+    return rows
 
 def _append_prediction_learning_event(row: Dict) -> None:
+    global _PREDICTION_LEARNING_EVENTS_CACHE, _PREDICTION_LEARNING_EVENTS_CACHE_TS
     line = json.dumps(row, ensure_ascii=False, default=str)
     try:
         os.makedirs(os.path.dirname(PREDICTION_LEARNING_PATH), exist_ok=True)
@@ -4797,6 +4810,12 @@ def _append_prediction_learning_event(row: Dict) -> None:
         print(f"[PredictionLearning] appended local {row.get('type')} {row.get('id') or row.get('prediction_id') or ''}")
     except Exception as e:
         print(f"[PredictionLearning] local append failed: {e}")
+    if _PREDICTION_LEARNING_EVENTS_CACHE is not None:
+        key = _learning_event_key(row)
+        rows = [r for r in _PREDICTION_LEARNING_EVENTS_CACHE if _learning_event_key(r) != key]
+        rows.append(row)
+        _PREDICTION_LEARNING_EVENTS_CACHE = rows[-5000:]
+        _PREDICTION_LEARNING_EVENTS_CACHE_TS = time.monotonic()
     _github_append_prediction_learning_line(line)
 
 def _parse_prediction_learning_jsonl(text: str) -> list[dict]:
@@ -5839,6 +5858,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # 캡한 ATR(atr_d)을 쓰고, 최종 밴드는 현재가의 10% 아래로 내려가지 않게
     # 막는다. 정상 종목의 ATR은 가격의 1.5~6% 수준이라 캡이 발동하지 않는다.
     atr_d = min(atr, last_price * 0.15)
+    atr_capped = atr_d < atr
     _band_floor = last_price * 0.10
 
     def _floor_band(lo: float, hi: float) -> tuple[float, float]:
@@ -6034,7 +6054,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     agg_pct_h = round((agg_high - last_price) / last_price * 100, 2)
 
     agg_basis = []
-    agg_basis.append(f"단기 ATR 눌림 구간 (ATR×{0.40+rsi_adj:.2f} ≈ {atr_d*(0.40+rsi_adj):,.2f})")
+    agg_basis.append(f"단기 ATR 눌림 구간 (계산 ATR×{0.40+rsi_adj:.2f} ≈ {atr_d*(0.40+rsi_adj):,.{rnd}f})")
     if ma20 and abs(ma20 - last_price) / last_price < 0.10:
         agg_basis.append(f"MA20 지지 근접 ({ma20:,.{rnd}f})")
     if macd > sig_line:
@@ -6166,8 +6186,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _hw     = (_z["k2"] - _z["k1"]) * atr_d * _bw * 0.5
         _lo, _hi = _center - _hw, _center + _hw
         if downside_level in ("high", "severe") and strong_support:
-            _hi = min(_hi, strong_support - atr_d * 0.10)
-            _lo = min(_lo, _hi - atr_d * 0.20)
+            _zone_idx = {"A": 0, "B": 1, "C": 2}.get(_zn, 0)
+            _support_gap = atr_d * (0.10 + _zone_idx * (0.35 if downside_level == "severe" else 0.22))
+            _min_width = atr_d * (0.20 + _zone_idx * 0.08)
+            _hi = min(_hi, strong_support - _support_gap)
+            _lo = min(_lo, _hi - _min_width)
         _lo, _hi = _floor_band(_lo, _hi)
         _win = _ap(_z["win"]); _los = round(100.0 - _win, 1)
         aggressive_bands.append({
@@ -6439,6 +6462,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "rsi": round(rsi, 1),
         "rsi_context": rsi_ctx,
         "atr": r(atr),
+        "atr_effective": r(atr_d),
+        "atr_capped": bool(atr_capped),
         "atr_pct": round(atr_pct, 2),
         "vol_trend": vol_trend,
         "market": _mkt,
@@ -7522,7 +7547,13 @@ def route(path: str, params: Dict) -> Dict:
             except Exception:
                 pass
 
-        toss_industry = fetch_toss_industry_info(sym, market)
+        toss_industry = fetch_toss_industry_info(sym, market) if market == "KRX" else {
+            "sector": ((us_enriched or {}).get("overview") or {}).get("sector") or "",
+            "industry": ((us_enriched or {}).get("overview") or {}).get("industry") or "",
+            "product_code": "",
+            "source": "us-enriched",
+            "ok": bool(((us_enriched or {}).get("overview") or {}).get("sector") or ((us_enriched or {}).get("overview") or {}).get("industry")),
+        }
         if market == "KRX":
             if naver is None:
                 naver = {}
@@ -7790,14 +7821,15 @@ def route(path: str, params: Dict) -> Dict:
             sym, market, period, dd, buy_price, risk, event_risk, learning_adjustment
         )
 
+        _price_rnd = 4 if market == "US" else 2
         return {
             "symbol": sym, "company": company or sym, "market": market,
-            "last_close": round(last, 2), "prev_close": round(prev, 2),
+            "last_close": round(last, _price_rnd), "prev_close": round(prev, _price_rnd),
             "pct_change": round(pct, 2),
             "session_name": session_name,
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
-            "atr": round(atr_val, 2),
+            "atr": round(atr_val, _price_rnd),
             "score": score, "prob_up": prob_up, "prob_down": prob_down,
             "analysis_steps": steps, "ai_strategy": ai_strategy,
             "candlestick_patterns": patterns,
@@ -10679,12 +10711,10 @@ function setState(s) {
 //   · 종목코드: KRX는 시장 접미사(.KS/.KQ) 제거, US는 티커 유지
 // ════════════════════════════════════════════════════════════════════════
 function _fmtKrNum(v) { return Number(v).toLocaleString('ko-KR', {maximumFractionDigits:0}); }
-// US: $1 미만(서브달러) 종목은 소수 4자리까지 표시(시장 관행 — 백엔드도 4자리로 산출),
-//     $1 이상은 기존대로 2자리. trailing zero는 자동 제거(200.00→200, 0.5→0.5).
+// US: 모든 미국 주식 가격은 소수점 4자리 고정 표시(저가주·프리마켓 가격 정밀도 보존).
 function _fmtUsNum(v) {
   const n = Number(v);
-  const maxFD = (n !== 0 && Math.abs(n) < 1) ? 4 : 2;
-  return n.toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:maxFD});
+  return n.toLocaleString('en-US', {minimumFractionDigits:4, maximumFractionDigits:4});
 }
 
 // 통화기호 포함 가격 (현재가·목표가·매수전략·ATR 리스크 등)

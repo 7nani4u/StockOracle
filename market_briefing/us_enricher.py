@@ -8,6 +8,8 @@ API 우선순위:
 from __future__ import annotations
 
 import datetime
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import requests
@@ -17,6 +19,8 @@ TIINGO_KEY  = "12ebd1feef89b6728cc15808864b7402449a5637"
 AV_KEY      = "E0ODFSRNDU4P9HDU"
 
 _TIMEOUT = 6  # seconds per request
+_US_ENRICH_CACHE: dict[str, tuple[dict, float]] = {}
+_US_ENRICH_TTL = 300.0
 
 
 def _get(url: str, headers: dict | None = None) -> Any:
@@ -164,17 +168,60 @@ def fetch_us_enriched(symbol: str) -> dict:
           "tiingo":    dict,         # Tiingo EOD (보조)
         }
     """
-    overview  = fetch_alpha_overview(symbol)
-    news      = fetch_finnhub_news(symbol)
-    sentiment = fetch_finnhub_sentiment(symbol)
-    # Tiingo는 Alpha Vantage 가격 데이터가 없을 때만 호출
-    tiingo    = fetch_tiingo_price(symbol) if not overview.get("per") else {}
-    earnings  = fetch_alpha_earnings(symbol) if overview.get("sector") else []
+    symbol = (symbol or "").upper().strip()
+    now = time.time()
+    cached = _US_ENRICH_CACHE.get(symbol)
+    if cached and now - cached[1] < _US_ENRICH_TTL:
+        return cached[0]
 
-    return {
+    overview: dict = {}
+    news: list[dict] = []
+    sentiment: dict = {}
+    earnings: list[dict] = []
+    tiingo: dict = {}
+
+    try:
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            fut_overview = ex.submit(fetch_alpha_overview, symbol)
+            fut_news = ex.submit(fetch_finnhub_news, symbol)
+            fut_sentiment = ex.submit(fetch_finnhub_sentiment, symbol)
+            overview = fut_overview.result(timeout=_TIMEOUT + 1) or {}
+            news = fut_news.result(timeout=_TIMEOUT + 1) or []
+            sentiment = fut_sentiment.result(timeout=_TIMEOUT + 1) or {}
+    except Exception:
+        overview = overview or {}
+        news = news or []
+        sentiment = sentiment or {}
+
+    followups = []
+    try:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            if overview.get("sector"):
+                followups.append(("earnings", ex.submit(fetch_alpha_earnings, symbol)))
+            # Tiingo는 가격 보조용이라 분석 정확도 핵심이 아니다. AV 개요가 비어 있을 때만 짧게 시도한다.
+            if not overview.get("per") and not overview.get("sector"):
+                followups.append(("tiingo", ex.submit(fetch_tiingo_price, symbol)))
+            for key, fut in followups:
+                try:
+                    if key == "earnings":
+                        earnings = fut.result(timeout=_TIMEOUT + 1) or []
+                    elif key == "tiingo":
+                        tiingo = fut.result(timeout=3) or {}
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    result = {
         "news":      news,
         "sentiment": sentiment,
         "overview":  overview,
         "earnings":  earnings,
         "tiingo":    tiingo,
     }
+    _US_ENRICH_CACHE[symbol] = (result, now)
+    if len(_US_ENRICH_CACHE) > 200:
+        for k, (_, ts) in list(_US_ENRICH_CACHE.items()):
+            if now - ts > _US_ENRICH_TTL:
+                _US_ENRICH_CACHE.pop(k, None)
+    return result
