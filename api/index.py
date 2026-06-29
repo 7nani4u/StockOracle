@@ -7315,6 +7315,38 @@ def _build_long_term_targets(dd: Dict, last_price: float, atr: float, market: st
         print(f"[LongTermTarget] build failed: {e}")
         return []
 
+
+def _normalize_target_output(target: Dict, current_price: float, market: str = "KRX") -> Dict:
+    """Keep target prices and displayed returns aligned to the same current price."""
+    if not target or current_price <= 0:
+        return target
+    rnd = 4 if market == "US" else 2
+
+    def _num(v: Any) -> float | None:
+        try:
+            n = float(v)
+            return n if math.isfinite(n) else None
+        except Exception:
+            return None
+
+    def _normalize_pair(obj: Dict) -> None:
+        lo = _num(obj.get("min_price"))
+        hi = _num(obj.get("max_price"))
+        if lo is None or hi is None:
+            return
+        lo, hi = min(lo, hi), max(lo, hi)
+        obj["min_price"] = round(lo, rnd)
+        obj["max_price"] = round(hi, rnd)
+        obj["min_return"] = round((lo - current_price) / current_price * 100.0, 1)
+        obj["max_return"] = round((hi - current_price) / current_price * 100.0, 1)
+
+    _normalize_pair(target)
+    target["base_price"] = round(current_price, rnd)
+    for row in target.get("long_term") or []:
+        if isinstance(row, dict):
+            _normalize_pair(row)
+    return target
+
 def holt_winters_forecast(dd: Dict, days: int = 30):
     """
     Lightweight implementation of Double Exponential Smoothing (Holt's Linear Trend)
@@ -7834,6 +7866,7 @@ def route(path: str, params: Dict) -> Dict:
                 learning_adjustment, naver, us_enriched, toss_industry
             )
             target_price["long_term_note"] = "장기 전망은 기업가치·성장성·산업 전망·실적 추세·기술 흐름·변동성을 함께 반영한 참고 범위입니다."
+            target_price = _normalize_target_output(target_price, last, market)
         pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
 
         _record_prediction_and_update_outcomes(
@@ -10629,15 +10662,61 @@ function _syncTargetPriceSection(newPrice) {
   if (!tpEl) return;
 
   // 최신 현재가 기준으로 수익률 재계산
-  const minReturn = ((_lastTp.min_price - newPrice) / newPrice * 100).toFixed(1);
-  const maxReturn = ((_lastTp.max_price - newPrice) / newPrice * 100).toFixed(1);
+  const signedPct = (v) => {
+    const n = Number(v);
+    if (!isFinite(n)) return '-';
+    return `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`;
+  };
+  const rangeColor = (lo, hi) => {
+    if (hi < 0) return '#f85149';
+    if (lo < 0) return '#d29922';
+    return '#3fb950';
+  };
+  const retRangeText = (lo, hi) => `${signedPct(lo)} ~ ${signedPct(hi)}`;
+  const priceFromRet = (ret) => newPrice * (1 + Number(ret) / 100);
   const fmtUs = v => fmtPrice(v, false);
 
   // data 속성으로 타겟 요소만 핀포인트 업데이트 (전체 re-render 없음)
   const curEl    = tpEl.querySelector('[data-tp-cur]');
+  const rangeEl  = tpEl.querySelector('[data-tp-range]');
   const returnEl = tpEl.querySelector('[data-tp-return]');
   if (curEl)    curEl.textContent    = fmtUs(newPrice);
-  if (returnEl) returnEl.textContent = `+${minReturn}% ~ +${maxReturn}%`;
+  let minRet = Number(_lastTp.min_return);
+  let maxRet = Number(_lastTp.max_return);
+  if (!isFinite(minRet) || !isFinite(maxRet)) {
+    minRet = ((_lastTp.min_price - newPrice) / newPrice * 100);
+    maxRet = ((_lastTp.max_price - newPrice) / newPrice * 100);
+  }
+  const loRet = Math.min(minRet, maxRet);
+  const hiRet = Math.max(minRet, maxRet);
+  const loPrice = priceFromRet(loRet);
+  const hiPrice = priceFromRet(hiRet);
+  if (rangeEl && isFinite(loPrice) && isFinite(hiPrice)) {
+    rangeEl.textContent = `${fmtUs(Math.min(loPrice, hiPrice))} ~ ${fmtUs(Math.max(loPrice, hiPrice))}`;
+  }
+  if (returnEl) {
+    returnEl.textContent = retRangeText(loRet, hiRet);
+    returnEl.style.color = rangeColor(loRet, hiRet);
+  }
+
+  tpEl.querySelectorAll('[data-lt-card]').forEach(card => {
+    const ltMinRet = Number(card.getAttribute('data-lt-ret-min'));
+    const ltMaxRet = Number(card.getAttribute('data-lt-ret-max'));
+    if (!isFinite(ltMinRet) || !isFinite(ltMaxRet)) return;
+    const ltLoRet = Math.min(ltMinRet, ltMaxRet);
+    const ltHiRet = Math.max(ltMinRet, ltMaxRet);
+    const ltLoPrice = priceFromRet(ltLoRet);
+    const ltHiPrice = priceFromRet(ltHiRet);
+    const priceNode = card.querySelector('[data-lt-price]');
+    const returnNode = card.querySelector('[data-lt-return]');
+    if (priceNode && isFinite(ltLoPrice) && isFinite(ltHiPrice)) {
+      priceNode.textContent = `${fmtUs(Math.min(ltLoPrice, ltHiPrice))} ~ ${fmtUs(Math.max(ltLoPrice, ltHiPrice))}`;
+    }
+    if (returnNode) {
+      returnNode.textContent = retRangeText(ltLoRet, ltHiRet);
+      returnNode.style.color = rangeColor(ltLoRet, ltHiRet);
+    }
+  });
 }
 
 async function analyze() {
@@ -12128,7 +12207,9 @@ function renderForecast(d, isKrx) {
       const riskText   = tp.risk_level ? `${tp.risk_level} 위험` : '확인 필요';
       const retMin = Number(tp.min_return || 0);
       const retMax = Number(tp.max_return || 0);
-      const retText = `${retMin >= 0 ? '+' : ''}${tp.min_return}% ~ ${retMax >= 0 ? '+' : ''}${tp.max_return}%`;
+      const retLo = Math.min(retMin, retMax);
+      const retHi = Math.max(retMin, retMax);
+      const retText = `${retLo >= 0 ? '+' : ''}${retLo.toFixed(1)}% ~ ${retHi >= 0 ? '+' : ''}${retHi.toFixed(1)}%`;
       const failHtml   = (tp.failure_factors || [])
         .slice(0, 4)
         .map(f => `<div class="forecast-list-row"><span style="color:#f85149;flex-shrink:0">•</span><span>${f}</span></div>`)
@@ -12146,15 +12227,17 @@ function renderForecast(d, isKrx) {
             ${(tp.long_term || []).map(x => {
               const minRet = Number(x.min_return || 0);
               const maxRet = Number(x.max_return || 0);
-              const retHtml = `${minRet >= 0 ? '+' : ''}${minRet}% ~ ${maxRet >= 0 ? '+' : ''}${maxRet}%`;
+              const ltRetLo = Math.min(minRet, maxRet);
+              const ltRetHi = Math.max(minRet, maxRet);
+              const retHtml = `${ltRetLo >= 0 ? '+' : ''}${ltRetLo.toFixed(1)}% ~ ${ltRetHi >= 0 ? '+' : ''}${ltRetHi.toFixed(1)}%`;
               const uncColor = x.uncertainty === '높음' ? '#d29922' : '#58a6ff';
-              return `<div class="forecast-long-card">
+              return `<div class="forecast-long-card" data-lt-card data-lt-ret-min="${ltRetLo}" data-lt-ret-max="${ltRetHi}">
                 <div class="forecast-long-head">
                   <div class="forecast-long-label">${x.label}</div>
                   <div class="forecast-long-risk" style="color:${uncColor}">불확실성 ${x.uncertainty || '중간'}</div>
                 </div>
-                <div class="forecast-long-price">${fmt(x.min_price, isKrx)} ~ ${fmt(x.max_price, isKrx)}</div>
-                <div class="forecast-long-return">예상 수익률 <span style="color:${maxRet >= 0 ? '#3fb950' : '#f85149'};font-weight:800">${retHtml}</span></div>
+                <div class="forecast-long-price" data-lt-price>${fmt(x.min_price, isKrx)} ~ ${fmt(x.max_price, isKrx)}</div>
+                <div class="forecast-long-return">예상 수익률 <span data-lt-return style="color:${ltRetHi >= 0 ? '#3fb950' : '#f85149'};font-weight:800">${retHtml}</span></div>
                 <div class="forecast-long-note">연 환산 가정 ${x.annual_assumption_pct || 0}%</div>
               </div>`;
             }).join('')}
@@ -12170,8 +12253,8 @@ function renderForecast(d, isKrx) {
                 <div class="forecast-title">예상 목표가 (${tp.period})</div>
                 <div class="forecast-badge">중기 전망</div>
               </div>
-              <div class="forecast-range">${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
-              <div class="forecast-return">예상 수익률 <span data-tp-return>${retText}</span></div>
+              <div class="forecast-range" data-tp-range>${fmt(tp.min_price, isKrx)} ~ ${fmt(tp.max_price, isKrx)}</div>
+              <div class="forecast-return">예상 수익률 <span data-tp-return style="color:${retHi < 0 ? '#f85149' : retLo < 0 ? '#d29922' : '#3fb950'}">${retText}</span></div>
             </div>
             <div class="forecast-stat-grid">
               <div class="forecast-stat" style="border-color:${probColor}55">
