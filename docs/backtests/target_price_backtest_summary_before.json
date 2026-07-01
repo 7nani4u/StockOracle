@@ -1,0 +1,219 @@
+{
+  "period": "~2y daily data, signals every 15 trading days over the trailing ~1y, fixed 90-trading-day forward window per signal",
+  "krx_tickers": [
+    "005930.KS",
+    "000660.KS",
+    "373220.KS",
+    "207940.KS",
+    "005380.KS",
+    "000270.KS",
+    "068270.KS",
+    "105560.KS",
+    "055550.KS",
+    "005490.KS",
+    "035420.KS",
+    "035720.KS",
+    "051910.KS",
+    "006400.KS",
+    "012330.KS",
+    "028260.KS",
+    "012450.KS",
+    "034020.KS",
+    "247540.KQ",
+    "196170.KQ",
+    "009150.KS",
+    "009540.KS",
+    "015760.KS",
+    "033780.KS",
+    "086790.KS",
+    "003670.KS",
+    "259960.KS",
+    "086520.KQ",
+    "028300.KQ",
+    "145020.KQ"
+  ],
+  "us_tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOGL",
+    "META",
+    "TSLA",
+    "BRK-B",
+    "LLY",
+    "AVGO",
+    "JPM",
+    "V",
+    "UNH",
+    "XOM",
+    "MA",
+    "ORCL",
+    "COST",
+    "NFLX",
+    "JNJ",
+    "WMT",
+    "PG",
+    "BAC",
+    "HD",
+    "CVX",
+    "MRK",
+    "ABBV",
+    "CRM",
+    "KO",
+    "AMD",
+    "ACN"
+  ],
+  "summary": {
+    "overall": {
+      "KRX|aggressive": {
+        "n_signals": 419,
+        "hit_rate_pct": 78.5,
+        "avg_return_needed_pct": 19.42,
+        "median_predicted_confidence_pct": 62.6,
+        "median_days_to_hit": 25.0,
+        "median_predicted_days": 85.5
+      },
+      "KRX|balanced": {
+        "n_signals": 419,
+        "hit_rate_pct": 89.0,
+        "avg_return_needed_pct": 10.31,
+        "median_predicted_confidence_pct": 78.0,
+        "median_days_to_hit": 14.0,
+        "median_predicted_days": 44.8
+      },
+      "KRX|conservative": {
+        "n_signals": 419,
+        "hit_rate_pct": 95.9,
+        "avg_return_needed_pct": 4.18,
+        "median_predicted_confidence_pct": 87.9,
+        "median_days_to_hit": 4.0,
+        "median_predicted_days": 17.0
+      },
+      "KRX|pullback_ext": {
+        "n_signals": 419,
+        "hit_rate_pct": 64.0,
+        "avg_return_needed_pct": 28.42,
+        "median_predicted_confidence_pct": 52.1,
+        "median_days_to_hit": 33.0,
+        "median_predicted_days": null
+      },
+      "KRX|pullback_main": {
+        "n_signals": 419,
+        "hit_rate_pct": 86.6,
+        "avg_return_needed_pct": 12.05,
+        "median_predicted_confidence_pct": 81.0,
+        "median_days_to_hit": 14.0,
+        "median_predicted_days": null
+      },
+      "US|aggressive": {
+        "n_signals": 450,
+        "hit_rate_pct": 48.4,
+        "avg_return_needed_pct": 15.33,
+        "median_predicted_confidence_pct": 35.2,
+        "median_days_to_hit": 37.0,
+        "median_predicted_days": 95.5
+      },
+      "US|balanced": {
+        "n_signals": 450,
+        "hit_rate_pct": 70.4,
+        "avg_return_needed_pct": 8.44,
+        "median_predicted_confidence_pct": 59.4,
+        "median_days_to_hit": 22.0,
+        "median_predicted_days": 54.2
+      },
+      "US|conservative": {
+        "n_signals": 450,
+        "hit_rate_pct": 91.1,
+        "avg_return_needed_pct": 3.05,
+        "median_predicted_confidence_pct": 80.7,
+        "median_days_to_hit": 5.0,
+        "median_predicted_days": 17.9
+      },
+      "US|pullback_ext": {
+        "n_signals": 450,
+        "hit_rate_pct": 30.7,
+        "avg_return_needed_pct": 23.83,
+        "median_predicted_confidence_pct": 49.7,
+        "median_days_to_hit": 43.0,
+        "median_predicted_days": null
+      },
+      "US|pullback_main": {
+        "n_signals": 450,
+        "hit_rate_pct": 67.3,
+        "avg_return_needed_pct": 9.62,
+        "median_predicted_confidence_pct": 77.5,
+        "median_days_to_hit": 14.0,
+        "median_predicted_days": null
+      }
+    },
+    "by_confidence_bucket": {
+      "aggressive|high(60%+)": {
+        "n_signals": 321,
+        "avg_predicted_confidence_pct": 64.9,
+        "actual_hit_rate_pct": 76.0,
+        "calibration_gap_pp": 11.1
+      },
+      "aggressive|low(<35%)": {
+        "n_signals": 217,
+        "avg_predicted_confidence_pct": 21.3,
+        "actual_hit_rate_pct": 43.3,
+        "calibration_gap_pp": 22.0
+      },
+      "aggressive|mid(35-60%)": {
+        "n_signals": 331,
+        "avg_predicted_confidence_pct": 46.8,
+        "actual_hit_rate_pct": 63.1,
+        "calibration_gap_pp": 16.4
+      },
+      "balanced|high(60%+)": {
+        "n_signals": 638,
+        "avg_predicted_confidence_pct": 73.4,
+        "actual_hit_rate_pct": 84.8,
+        "calibration_gap_pp": 11.4
+      },
+      "balanced|low(<35%)": {
+        "n_signals": 4,
+        "avg_predicted_confidence_pct": 32.2,
+        "actual_hit_rate_pct": 50.0,
+        "calibration_gap_pp": 17.8
+      },
+      "balanced|mid(35-60%)": {
+        "n_signals": 227,
+        "avg_predicted_confidence_pct": 51.3,
+        "actual_hit_rate_pct": 64.8,
+        "calibration_gap_pp": 13.5
+      },
+      "conservative|high(60%+)": {
+        "n_signals": 869,
+        "avg_predicted_confidence_pct": 84.0,
+        "actual_hit_rate_pct": 93.4,
+        "calibration_gap_pp": 9.4
+      },
+      "pullback_ext|low(<35%)": {
+        "n_signals": 80,
+        "avg_predicted_confidence_pct": 32.3,
+        "actual_hit_rate_pct": 31.2,
+        "calibration_gap_pp": -1.0
+      },
+      "pullback_ext|mid(35-60%)": {
+        "n_signals": 789,
+        "avg_predicted_confidence_pct": 49.4,
+        "actual_hit_rate_pct": 48.3,
+        "calibration_gap_pp": -1.1
+      },
+      "pullback_main|high(60%+)": {
+        "n_signals": 695,
+        "avg_predicted_confidence_pct": 81.5,
+        "actual_hit_rate_pct": 81.6,
+        "calibration_gap_pp": 0.1
+      },
+      "pullback_main|mid(35-60%)": {
+        "n_signals": 174,
+        "avg_predicted_confidence_pct": 52.0,
+        "actual_hit_rate_pct": 56.9,
+        "calibration_gap_pp": 4.9
+      }
+    }
+  }
+}

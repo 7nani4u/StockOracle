@@ -5245,6 +5245,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     bb_u  = None; bb_l = None; ma20 = None; ma60 = None; ma120 = None
     rsi   = 50.0;  macd = 0.0; sig_line = 0.0; adx = 20.0; dip = 0.0; dim = 0.0
     recent_low_break = False; heavy_sell_volume = False
+    lows: list[float] = []; vols: list[float] = []; closes: list[float] = []; highs: list[float] = []
     if dd is not None:
         def _last(k): a = dd.get(k, []); return float(a[-1]) if a and a[-1] is not None else None
         bb_u     = _last("BB_Upper")
@@ -5258,9 +5259,10 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         adx      = float(dd.get("ADX",          [20])[-1] or 20)
         dip      = float(dd.get("DI_Plus",      [0])[-1]  or 0)
         dim      = float(dd.get("DI_Minus",     [0])[-1]  or 0)
-        lows     = [float(x) for x in dd.get("Low", []) if x is not None]
-        vols     = [float(x) for x in dd.get("Volume", []) if x is not None]
+        lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
+        vols     = [float(x) for x in dd.get("Volume",[]) if x is not None]
         closes   = [float(x) for x in dd.get("Close", []) if x is not None]
+        highs    = [float(x) for x in dd.get("High",  []) if x is not None]
         if len(lows) >= 21:
             recent_low_break = price < min(lows[-21:-1])
         if len(vols) >= 20 and len(closes) >= 2:
@@ -5314,29 +5316,121 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         stop_vmul *= 1.06
         target_vmul *= 0.95
 
-    # ── 각 리스크 성향별 ATR 배수 (변동성 조정 포함) ─────────────────
-    # 보수적: 짧은 손절 · 작은 목표
+    # ── 손절용 ATR 배수 (변동성 조정 포함) — 손절 로직은 기존 유지 ─────
     cons_stp_mul  = round(0.80 * stop_vmul, 2)
-    cons_tgt_mul  = round(1.20 * target_vmul + trend * 0.10, 2)
-    # 중립적: 스윙 트레이딩 배율
     bal_stp_mul   = round(1.30 * stop_vmul, 2)
-    bal_tgt_mul   = round(2.50 * target_vmul + trend * 0.15, 2)
-    # 공격적: 추세 추종 배율 (트렌드 강할수록 목표 확대)
     agg_stp_mul   = round(1.80 * stop_vmul, 2)
-    agg_tgt_mul   = round(4.50 * target_vmul + trend * 0.30, 2)
-
-    def _rng(base_mul, width_pct=0.3):
-        mid = price + atr * base_mul
-        delta = price * width_pct / 100
-        return [mid - delta, mid + delta]
 
     def _stp_rng(base_mul, width_pct=0.3):
         mid = price - atr * base_mul
         delta = price * width_pct / 100
         return [mid - delta, mid + delta]
 
+    # ══════════════════════════════════════════════════════════════════
+    # 목표가 산출: ATR 단일 배수 대신, 스윙 고점·피보나치 확장·추세 강도·
+    # 거래량·저항 돌파 가능성을 종합해 전략별로 서로 다른 로직을 적용한다.
+    # ══════════════════════════════════════════════════════════════════
+    n60  = min(60,  len(closes)) if closes else 0
+    n120 = min(120, len(closes)) if closes else 0
+    h60  = max(highs[-n60:])  if highs and n60  >= 5  else price * 1.08
+    l60  = min(lows[-n60:])   if lows  and n60  >= 5  else price * 0.92
+    h120 = max(highs[-n120:]) if highs and n120 >= 20 else h60 * 1.05
+    swing_span = max(h60 - l60, price * 0.03)   # 스윙 구간 폭 (과소 폭 방지 하한)
+
+    vol_ratio_now = 1.0
+    if vols and len(vols) >= 20:
+        _avg_vol20 = float(np.mean(vols[-20:]))
+        if _avg_vol20 > 0:
+            vol_ratio_now = vols[-1] / _avg_vol20
+
+    near_resistance     = price >= h60 * 0.97
+    breakout_confirmed  = near_resistance and vol_ratio_now >= 1.2 and adx >= 20
+
+    _fib_label = {"236": "23.6%", "382": "38.2%", "618": "61.8%",
+                  "1000": "100%", "1272": "127.2%", "1618": "161.8%"}
+    fib_ext = {k: h60 + swing_span * m for k, m in
+               (("236", 0.236), ("382", 0.382), ("618", 0.618),
+                ("1000", 1.000), ("1272", 1.272), ("1618", 1.618))}
+
+    # 저항 돌파 확률 (ADX 추세강도 + 거래량 + 추세점수 + RSI 과열 감산)
+    breakout_probability_pct = round(min(92.0, max(8.0,
+        30.0
+        + (adx - 20.0) * 1.2
+        + (vol_ratio_now - 1.0) * 25.0
+        + (trend - 2) * 8.0
+        + (12.0 if near_resistance else -8.0)
+        - (15.0 if rsi > 75 else 0.0)
+    )), 1)
+
+    # 기존 ATR 배수 체계(1.2 / 2.5 / 4.5)를 "현실적으로 도달 가능한 범위"의 기준선으로
+    # 유지하고, 구조적 앵커(저항·피보나치 확장 등)는 이 기준선의 ATR 거리 대비
+    # 일정 비율 안에서만 목표가를 조정하도록 한다 — 그래야 도달 확률/기간 모델(ATR
+    # 거리 기반)이 유효 범위를 벗어나 비현실적인 확률·기간(예: 5%, 200일)을 내지
+    # 않으면서도, 약세 구간에서는 목표를 낮춰 도달 가능성을 높이고 강세 구간에서는
+    # 소폭 상향해 구조적 근거를 반영할 수 있다.
+    _cons_base_mul = 1.20 * target_vmul + trend * 0.10
+    _bal_base_mul  = 2.50 * target_vmul + trend * 0.15
+    _agg_base_mul  = 4.50 * target_vmul + trend * 0.30
+
+    def _clip_to_baseline(anchor, base_mul, lo_mul, hi_mul, basis_lbl):
+        lo = price + atr * base_mul * lo_mul
+        hi = price + atr * base_mul * hi_mul
+        if anchor > hi:
+            return hi, basis_lbl + " · ATR 기준 현실적 도달 범위로 하향 보정"
+        if anchor < lo:
+            return lo, basis_lbl + " · ATR 기준 최소 목표로 상향 보정"
+        return anchor, basis_lbl
+
+    # ── 보수적: 가장 가까운 기술적 저항(BB 상단 / 직전 스윙 고점) 기준 단기 반등 ──
+    cons_cands = [
+        (float(bb_u), f"볼린저 상단({float(bb_u):,.{rnd}f})") if bb_u and float(bb_u) > price * 1.01 else None,
+        (h60,  f"최근 60일 고점({h60:,.{rnd}f})") if h60 > price * 1.01 else None,
+        (fib_ext["236"], f"피보나치 확장 23.6%({fib_ext['236']:,.{rnd}f})"),
+    ]
+    cons_cands = [c for c in cons_cands if c]
+    cons_anchor, cons_basis_lbl = min(cons_cands, key=lambda t: t[0]) if cons_cands else (price * 1.02, "뚜렷한 저항 부재 — 최소 반등폭 기준")
+    if trend <= 1 or vol_trend == "expanding":
+        cons_anchor = price + (cons_anchor - price) * 0.75   # 추세 약함/변동성 확대 → 목표 축소
+        cons_basis_lbl += " · 추세 약화 반영 축소"
+    cons_anchor, cons_basis_lbl = _clip_to_baseline(cons_anchor, _cons_base_mul, 0.65, 1.10, cons_basis_lbl)
+
+    # ── 중립적: 최근 스윙(h60~l60) 피보나치 확장 — 레벨은 추세 강도로 선택 ──
+    if trend >= 3 and adx >= 22:
+        bal_fib_key = "1000"
+    elif trend >= 2:
+        bal_fib_key = "618"
+    else:
+        bal_fib_key = "382"
+    bal_anchor = fib_ext[bal_fib_key]
+    bal_basis_lbl = f"스윙(고 {h60:,.{rnd}f}/저 {l60:,.{rnd}f}) 확장 {_fib_label[bal_fib_key]} 목표"
+    if h120 > h60 * 1.02 and h120 < bal_anchor:
+        bal_anchor = h120
+        bal_basis_lbl += f" · 120일 고점({h120:,.{rnd}f}) 상한 반영"
+    bal_anchor, bal_basis_lbl = _clip_to_baseline(bal_anchor, _bal_base_mul, 0.65, 1.10, bal_basis_lbl)
+    bal_anchor = max(bal_anchor, cons_anchor * 1.05)
+
+    # ── 공격적: 추세 지속/돌파 가정 — 중립적보다 한 단계 높은 피보나치 확장 ──
+    agg_fib_key = "1618" if bal_fib_key == "1000" else "1272" if bal_fib_key == "618" else "1000"
+    agg_anchor_full = fib_ext[agg_fib_key]
+    if breakout_confirmed:
+        agg_anchor = agg_anchor_full
+        agg_basis_lbl = (f"저항 돌파 확인(거래량 {vol_ratio_now:.1f}배·ADX {adx:.0f}) — "
+                          f"확장 {_fib_label[agg_fib_key]} 목표({agg_anchor_full:,.{rnd}f})")
+    else:
+        # 돌파 전에는 돌파확률만큼 확장폭을 가중 반영 (확률 낮을수록 목표 축소)
+        _conf = max(0.45, min(1.0, breakout_probability_pct / 100 + 0.15))
+        agg_anchor = h60 + (agg_anchor_full - h60) * _conf
+        agg_basis_lbl = (f"돌파 전 — 저항({h60:,.{rnd}f}) 상단 확장 목표를 "
+                          f"돌파확률({breakout_probability_pct:.0f}%) 가중 반영({agg_anchor:,.{rnd}f})")
+    agg_anchor, agg_basis_lbl = _clip_to_baseline(agg_anchor, _agg_base_mul, 0.70, 1.15, agg_basis_lbl)
+    agg_anchor = max(agg_anchor, bal_anchor * 1.05)
+
+    def _center_rng(anchor, width_pct=0.3):
+        delta = price * width_pct / 100
+        return [anchor - delta, anchor + delta]
+
     # 보수적
-    cons_tgt_range = _rng(cons_tgt_mul, 0.25)
+    cons_tgt_range = _center_rng(cons_anchor, 0.25)
     cons_stp_range = _stp_rng(cons_stp_mul, 0.20)
     # BB 하단을 손절 참조로 활용
     if bb_l and float(bb_l) < cons_stp_range[1]:
@@ -5347,9 +5441,11 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     cons_rr     = round(cons_reward / cons_risk, 2) if cons_risk > 0 else 0
     cons_ret    = round(cons_reward / price * 100, 2)
     cons_stp_pct= round(-cons_risk / price * 100, 2)
+    cons_tgt_mul = round((cons_anchor - price) / atr, 2) if atr > 0 else 0.0
+    cons_basis  = [cons_basis_lbl, f"추세강도 {trend}/4 · 거래량추세 {vol_trend}"]
 
     # 중립적
-    bal_tgt_range = _rng(bal_tgt_mul, 0.35)
+    bal_tgt_range = _center_rng(bal_anchor, 0.35)
     bal_stp_range = _stp_rng(bal_stp_mul, 0.25)
     if ma20 and float(ma20) < price:
         bal_stp_range[0] = min(bal_stp_range[0], float(ma20) - atr * 0.2)
@@ -5359,9 +5455,11 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     bal_rr     = round(bal_reward / bal_risk, 2) if bal_risk > 0 else 0
     bal_ret    = round(bal_reward / price * 100, 2)
     bal_stp_pct= round(-bal_risk / price * 100, 2)
+    bal_tgt_mul = round((bal_anchor - price) / atr, 2) if atr > 0 else 0.0
+    bal_basis   = [bal_basis_lbl, f"ADX {adx:.0f} · 거래량 {vol_ratio_now:.1f}배(평균 대비)"]
 
     # 공격적: BB 상단 또는 MA 기반 목표가 참조
-    agg_tgt_range = _rng(agg_tgt_mul, 0.50)
+    agg_tgt_range = _center_rng(agg_anchor, 0.50)
     if bb_u and float(bb_u) > agg_tgt_range[0]:
         agg_tgt_range[1] = max(agg_tgt_range[1], float(bb_u) + atr * 0.5)
     agg_stp_range = _stp_rng(agg_stp_mul, 0.30)
@@ -5370,6 +5468,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     agg_rr     = round(agg_reward / agg_risk, 2) if agg_risk > 0 else 0
     agg_ret    = round(agg_reward / price * 100, 2)
     agg_stp_pct= round(-agg_risk / price * 100, 2)
+    agg_tgt_mul = round((agg_anchor - price) / atr, 2) if atr > 0 else 0.0
+    agg_basis   = [agg_basis_lbl, f"저항 돌파확률 {breakout_probability_pct:.0f}% 기준"]
 
     # ── 변동성 상태 텍스트 ────────────────────────────────────────────
     vol_state_txt = (
@@ -5384,12 +5484,16 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         "normal":      "→ 변동성 안정 구간"
     }[vol_trend]
 
-    # ── TP 확률 산출 (백테스트 분포 기반) ────────────────────────────
-    # 기준점: KRX Zone C 승률 74.3% − 6pp 시장보정 = 68.3% (0.8 ATR 거리)
-    #         US  Zone C 승률 75.2% + 5pp 시장보정 = 80.2% (0.8 ATR 거리)
-    # 거리 감쇄: 0.8 ATR 초과분당 12pp 감소 (백테스트 Zone A→C 구간 분포 보간)
+    # ── TP 확률 산출 (2025~2026 KRX 30종목·US 30종목 1년 실데이터 백테스트로 보정) ──
+    # scripts/backtest_target_price_accuracy.py 결과, 기존 기준점(0.8 ATR=68.3/80.2%,
+    # ATR당 12pp 감쇄)은 실제 도달률 대비 전 구간에서 과소평가(최대 −62pp, 공격적/KRX)
+    # 되어 있었다. 보수적·공격적 두 지점의 실측 적중률로 절편/감쇄율을 다시 선형 회귀한
+    # 뒤, 특정 구간(2025~2026 상승장)에 과최적화되지 않도록 실측값의 ~70%만 반영했다.
+    #   KRX: cons 0.99ATR→95.9% 적중 / agg 5.12ATR→78.5% 적중 (회귀: 절편 96.7, 감쇄 4.2pp)
+    #   US : cons 1.23ATR→91.1% 적중 / agg 6.06ATR→48.4% 적중 (회귀: 절편 94.9, 감쇄 8.8pp)
     _is_us    = (market == "US")
-    _tp1_base = 80.2 if _is_us else 68.3
+    _tp1_base = 84.0 if _is_us else 88.0
+    _decay_rate = 9.5 if _is_us else 6.0
     _tp_mom   = (trend - 2) * 3.0          # 추세 강도별 ±6pp
     _tp_rsi   = 5.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _base_days = 12.3 if _is_us else 13.0  # Zone B 평균 보유일 기준
@@ -5399,16 +5503,16 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     def _make_tp_from_tgt(tgt_range):
         """목표가 범위(tgt_range)를 TP1/TP2/TP3로 분할 → 각각 도달 확률·기간 산출.
         TP 가격은 반드시 해당 리스크 프로필의 실제 목표가에서 나와야 한다.
-        확률은 현재가 대비 ATR 거리 기반으로 백테스트 분포를 보간하여 계산."""
+        확률은 현재가 대비 ATR 거리 기반으로 실데이터 백테스트 분포를 보간하여 계산."""
         lo, hi = tgt_range[0], tgt_range[1]
         tp_prices = [lo, (lo + hi) / 2, hi]   # TP1=하단, TP2=중간, TP3=상단
         result = []
         for tp_price in tp_prices:
             # ATR 단위 거리 (현재가 기준, 목표가가 위에 있어야 양수)
             dist_atr = (tp_price - price) / atr if atr > 0 else 1.0
-            # 0.8 ATR 이내: 기준 확률 유지 / 초과분: ATR당 12pp 감소
-            decay    = max(0.0, dist_atr - 0.8) * 12.0
-            prob     = round(min(93.0, max(5.0, _tp1_base - decay + _tp_mom + _tp_rsi)), 1)
+            # 0.8 ATR 이내: 기준 확률 유지 / 초과분: ATR당 감쇄(시장별 실측 보정)
+            decay    = max(0.0, dist_atr - 0.8) * _decay_rate
+            prob     = round(min(95.0, max(10.0, _tp1_base - decay + _tp_mom + _tp_rsi)), 1)
             # 도달 기간: 0.8 ATR = base_days, 이후 거리에 비례하여 증가
             days     = round(_base_days * max(0.5, dist_atr / 0.8), 1)
             ret_pct  = round((tp_price - price) / price * 100, 2) if price > 0 else 0.0
@@ -5485,6 +5589,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_tgt": cons_tgt_mul,
             "atr_mul_stp": cons_stp_mul,
             "interpretation": f"BB 하단 참조 손절 · 단기 반등 목표 (R/R {cons_rr:.1f}:1)",
+            "target_basis": cons_basis,
+            "target_confidence_pct": cons_tp[1]["prob_pct"] if len(cons_tp) > 1 else None,
             "tp_levels": cons_tp,
             "failure_conditions": _fail_conditions("conservative"),
             "position_plan": _risk_detail(25, 2.5, cons_stp_pct),
@@ -5501,6 +5607,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_tgt": bal_tgt_mul,
             "atr_mul_stp": bal_stp_mul,
             "interpretation": f"MA20 지지 손절 · 중기 추세 목표 (R/R {bal_rr:.1f}:1)",
+            "target_basis": bal_basis,
+            "target_confidence_pct": bal_tp[1]["prob_pct"] if len(bal_tp) > 1 else None,
             "tp_levels": bal_tp,
             "failure_conditions": _fail_conditions("balanced"),
             "position_plan": _risk_detail(45, 4.0, bal_stp_pct),
@@ -5517,6 +5625,9 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_tgt": agg_tgt_mul,
             "atr_mul_stp": agg_stp_mul,
             "interpretation": f"BB 상단 참조 목표 · 추세 지속 시 최대 수익 (R/R {agg_rr:.1f}:1)",
+            "target_basis": agg_basis,
+            "target_confidence_pct": agg_tp[1]["prob_pct"] if len(agg_tp) > 1 else None,
+            "breakout_probability_pct": breakout_probability_pct,
             "tp_levels": agg_tp,
             "failure_conditions": _fail_conditions("aggressive"),
             "position_plan": _risk_detail(30, 6.0, agg_stp_pct),
@@ -5524,6 +5635,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         "vol_state": vol_state_txt,
         "vol_trend": vol_trend_txt,
         "atr_pct": round(atr_pct, 2),
+        "breakout_probability_pct": breakout_probability_pct,
         "downside_risk_level": downside_risk_level,
         "downside_risk_score": min(100, downside_points),
         "event_risk": event_risk or {"score": 0, "level": "low", "reasons": []},
@@ -6788,8 +6900,87 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
     sl_price    = round(max(atr_sl, struct_sl), rnd2)   # 더 높은(타이트한) 손절선
     sl_pct      = round((sl_price - last_price) / last_price * 100, 2)
 
-    # 목표가: 앙상블 예측 → 저항대 → 최소 5% 상승 순으로 우선 적용
-    forecast_min = None; forecast_max = None; forecast_source = "기술적 저항대 기반"
+    # ── 목표가 산출: 스윙 고점·피보나치 확장·눌림목 품질·거래량·추세 종합 반영 ──
+    adx_val_pb   = adx_arr[-1] if adx_arr else 20.0
+    trend_cnt_pb = sum([
+        1 if ma20_val and last_price > ma20_val else 0,
+        1 if ma60_val and last_price > ma60_val else 0,
+        1 if rsi_val > 50 else 0,
+        1 if adx_val_pb >= 22 else 0,
+    ])
+    vol_ratio_pb = (volumes[-1] / vol_avg) if volumes and vol_avg > 0 else 1.0
+    quality      = pb_score_pct   # 눌림목 체크리스트 점수 (0~100)
+
+    # 스윙 기준: 급등봉 저가(있으면·h60보다 낮을 때)를 저점으로, 없으면 60일 저점 사용
+    swing_lo_pb  = surge_low_price if (surge_low_price and surge_low_price < h60) else l60
+    swing_hi_pb  = h60
+    swing_rng_pb = max(swing_hi_pb - swing_lo_pb, last_price * 0.02)
+    fib1_pb = swing_hi_pb + swing_rng_pb * 0.382
+    fib2_pb = swing_hi_pb + swing_rng_pb * 0.618
+    fib3_pb = swing_hi_pb + swing_rng_pb * 1.000
+    fib4_pb = swing_hi_pb + swing_rng_pb * 1.272
+
+    # ATR 기반 현실 도달 범위(기존 손익비 로직과 동일한 스케일을 하한/상한 기준으로 유지)
+    _pb_base_main = last_price + atr * (1.5 + quality / 100 * 1.0 + trend_cnt_pb * 0.25)
+    _pb_base_ext  = last_price + atr * (3.0 + quality / 100 * 1.5 + trend_cnt_pb * 0.40)
+
+    def _clip_pb(anchor, base, lo_mul, hi_mul, basis_lbl):
+        lo, hi = base * lo_mul, base * hi_mul
+        if anchor > hi:
+            return hi, basis_lbl + " · ATR 기준 현실 범위로 보정"
+        if anchor < lo:
+            return lo, basis_lbl + " · ATR 기준 최소 목표로 보정"
+        return anchor, basis_lbl
+
+    # ── 1차 정밀 목표가: 눌림목 품질·추세 강도로 피보나치 레벨 선택 ──
+    if quality >= 75 and trend_cnt_pb >= 3:
+        main_fib, main_lbl = fib2_pb, "61.8%"
+    elif quality >= 50:
+        main_fib, main_lbl = fib1_pb, "38.2%"
+    else:
+        main_fib, main_lbl = swing_hi_pb * 1.01, "직전 고점 소폭 상회"
+
+    if resist_high > last_price * 1.01 and resist_high < main_fib:
+        target_main_raw = resist_high
+        main_basis_lbl = f"근접 저항대({resist_low:,.{rnd}f}~{resist_high:,.{rnd}f}) 최우선 관문"
+    else:
+        target_main_raw = main_fib
+        main_basis_lbl = f"스윙(저 {swing_lo_pb:,.{rnd}f}~고 {swing_hi_pb:,.{rnd}f}) 확장 {main_lbl} 목표"
+    target_main_raw, main_basis_lbl = _clip_pb(target_main_raw, _pb_base_main, 0.70, 1.15, main_basis_lbl)
+    main_basis = [main_basis_lbl, f"눌림목 품질 {quality}% · 추세강도 {trend_cnt_pb}/4"]
+
+    # ── 2차 목표(돌파 후): 1차 돌파를 가정한 다음 확장 구간, 거래량 확인 시 상향 ──
+    if vol_ratio_pb >= 1.3 and trend_cnt_pb >= 3:
+        ext_fib, ext_lbl = fib4_pb, "127.2%"
+    elif quality >= 50:
+        ext_fib, ext_lbl = fib3_pb, "100%"
+    else:
+        ext_fib, ext_lbl = fib2_pb, "61.8%"
+    target_ext_raw = ext_fib
+    ext_basis_lbl = f"1차 목표 돌파 가정 — 스윙 확장 {ext_lbl} 목표({ext_fib:,.{rnd}f})"
+    if h120 > h60 * 1.02 and h120 > target_main_raw * 1.05 and h120 < target_ext_raw:
+        target_ext_raw = h120
+        ext_basis_lbl += f" · 120일 고점({h120:,.{rnd}f}) 저항 반영"
+    target_ext_raw, ext_basis_lbl = _clip_pb(target_ext_raw, _pb_base_ext, 0.70, 1.20, ext_basis_lbl)
+    target_ext_raw = max(target_ext_raw, target_main_raw * 1.05)
+    ext_basis = [ext_basis_lbl, f"거래량 {vol_ratio_pb:.1f}배(평균 대비) · " +
+                 ("추세 지속 확인" if trend_cnt_pb >= 3 else "돌파 후 거래량 재확인 필요")]
+
+    # 신뢰도 계수는 scripts/backtest_target_price_accuracy.py의 KRX 30·US 30종목
+    # 1년 백테스트로 보정했다. 1차(main)는 원래도 준수하게 보정돼 있었으나(오차 +5~9pp,
+    # 과소평가) 절편을 소폭 상향했다. 2차(ext)는 "돌파 확인" 보너스가 실제로는 반대로
+    # 작용했다(고신뢰 구간 예측 66% vs 실제 적중 39% — 과대평가) — 확인 여부에 따른
+    # 급격한 가중을 없애고 범위를 좁혀(20~55%) 과신을 방지했다.
+    main_confidence = round(min(92.0, max(15.0,
+        40.0 + quality * 0.40 + trend_cnt_pb * 7.0 + (vol_ratio_pb - 1.0) * 8.0
+        - (10.0 if rsi_val > 72 else 0.0)
+    )), 1)
+    ext_confidence = round(min(55.0, max(20.0,
+        28.0 + quality * 0.22 + trend_cnt_pb * 4.0 + (vol_ratio_pb - 1.0) * 3.0
+    )), 1)
+
+    # 목표가: 앙상블 예측이 있으면 우선하되, 구조적 분석 대비 과도하게 괴리되면 현실성 있게 보정
+    forecast_min = None; forecast_max = None; forecast_source = "구조적 분석 기반 (피보나치 확장 + 스윙 저항 + 거래량·추세 반영)"
     if target_price_data and isinstance(target_price_data, dict):
         _fmin = target_price_data.get("min_price")
         _fmax = target_price_data.get("max_price")
@@ -6798,12 +6989,17 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
             forecast_source = f"앙상블 예측 ({target_price_data.get('period','—')})"
 
     if forecast_min:
-        target_main  = round(forecast_min, rnd2)
-        target_high2 = round(forecast_max, rnd2)
+        _cap_main = target_main_raw * 1.5
+        if forecast_min > _cap_main:
+            target_main = round(_cap_main, rnd2)
+            forecast_source += " · 구조적 상한 보정"
+        else:
+            target_main = round(forecast_min, rnd2)
+        _cap_ext = target_ext_raw * 1.6
+        target_high2 = round(min(forecast_max, _cap_ext), rnd2)
     else:
-        target_raw   = (resist_high + resist_low) / 2
-        target_main  = round(max(target_raw, last_price * 1.05), rnd2)
-        target_high2 = round(max(resist_high * 1.05, last_price * 1.10), rnd2)
+        target_main  = round(target_main_raw, rnd2)
+        target_high2 = round(target_ext_raw, rnd2)
 
     risk_amt     = last_price - sl_price if last_price > sl_price else atr * 2.0
     reward_main  = target_main - last_price
@@ -6937,6 +7133,10 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
         "target_main":     target_main,
         "target_ext":      target_high2,
         "target_source":   forecast_source,
+        "target_main_basis":         main_basis,
+        "target_ext_basis":          ext_basis,
+        "target_main_confidence_pct": main_confidence,
+        "target_ext_confidence_pct":  ext_confidence,
         "trail_stop":      trail_stop,
         "rr_main":         rr_main,
         "rr_scenarios":    rr_scenarios,
@@ -12539,31 +12739,38 @@ function renderForecast(d, isKrx) {
             }
             return { type: 'out' };
           };
-          const targetItem = (price, baseLabel, color, sub) => {
+          const targetItem = (price, baseLabel, color, sub, basis, confidence) => {
             const r = tpRel(price);
-            if (r.type === 'eq')      return { label: baseLabel, rel: `TP${r.n} 연계` };
-            if (r.type === 'between') return { label: baseLabel, rel: `TP${r.a}~TP${r.b} 구간` };
-            return { label: baseLabel, value: price, color, sub };
+            if (r.type === 'eq')      return { label: baseLabel, rel: `TP${r.n} 연계`, basis, confidence };
+            if (r.type === 'between') return { label: baseLabel, rel: `TP${r.a}~TP${r.b} 구간`, basis, confidence };
+            return { label: baseLabel, value: price, color, sub, basis, confidence };
           };
           let items = [];
           if (sc.label === '중립적' && pa.target_main != null) {
             const sub = [pa.rr_main != null ? `R/R ${pa.rr_main}:1` : '', pa.target_source || ''].filter(Boolean).join(' · ');
-            items.push(targetItem(pa.target_main, '1차 정밀 목표가', '#3fb950', sub));
+            items.push(targetItem(pa.target_main, '1차 정밀 목표가', '#3fb950', sub, pa.target_main_basis, pa.target_main_confidence_pct));
           } else if (sc.label === '공격적' && pa.target_ext != null) {
-            items.push(targetItem(pa.target_ext, '2차 목표 (돌파 후)', '#58a6ff', '1차 돌파 확인 후 홀딩 기준'));
+            items.push(targetItem(pa.target_ext, '2차 목표 (돌파 후)', '#58a6ff', '1차 돌파 확인 후 홀딩 기준', pa.target_ext_basis, pa.target_ext_confidence_pct));
           }
           if (!items.length) return '';
           const rows = items.map(it => {
+            const confColor = it.confidence == null ? '#8b949e' : it.confidence >= 60 ? '#3fb950' : it.confidence >= 35 ? '#d29922' : '#f97316';
+            const basisHtml = (it.basis && it.basis.length)
+              ? `<div style="font-size:10px;color:#8b949e;line-height:1.5;margin-top:2px">${it.basis.map(b => `• ${b}`).join('<br>')}</div>`
+              : '';
+            const confHtml = it.confidence != null
+              ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">신뢰도 <b style="color:${confColor}">${it.confidence}%</b></div>`
+              : '';
             if (it.rel) {
-              return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:5px">
+              return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:2px">
                 <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
                 <span style="font-size:11px;font-weight:700;color:#58a6ff;background:#58a6ff1a;border-radius:4px;padding:1px 7px">${it.rel}</span>
-              </div>`;
+              </div>${basisHtml}${confHtml}<div style="margin-bottom:4px"></div>`;
             }
             return `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
                 <span style="font-size:11px;color:#cdd9e5">${it.label}</span>
                 <span style="font-size:13px;font-weight:700;color:${it.color}">${fmt(it.value, isKrx)}</span>
-              </div>${it.sub ? `<div style="font-size:10px;color:#8b949e;margin-top:1px;margin-bottom:5px">${it.sub}</div>` : '<div style="margin-bottom:4px"></div>'}`;
+              </div>${it.sub ? `<div style="font-size:10px;color:#8b949e;margin-top:1px">${it.sub}</div>` : ''}${basisHtml}${confHtml}<div style="margin-bottom:4px"></div>`;
           }).join('');
           return `<div style="margin-top:8px;padding-top:8px;${DIVIDER}">
             <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📌 눌림목 정밀가</div>
@@ -12575,10 +12782,18 @@ function renderForecast(d, isKrx) {
           <div class="risk-icon">${sc.icon}</div>
           <div class="risk-name">${sc.label}</div>
           <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
-          <div class="risk-row" style="margin-bottom:6px">
+          <div class="risk-row" style="margin-bottom:4px">
             <span class="risk-lbl">🎯 목표가</span>
             <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
           </div>
+          ${(sc.target_basis && sc.target_basis.length) ? `
+          <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:6px">
+            ${sc.target_basis.map(b => `• ${b}`).join('<br>')}
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:2px">
+            ${sc.target_confidence_pct != null ? `<span style="font-size:10px;color:#8b949e">목표가 신뢰도 <b style="color:${sc.target_confidence_pct >= 60 ? '#3fb950' : sc.target_confidence_pct >= 35 ? '#d29922' : '#f97316'}">${sc.target_confidence_pct}%</b></span>` : ''}
+            ${sc.breakout_probability_pct != null ? `<span style="font-size:10px;color:#8b949e">저항 돌파확률 <b style="color:#58a6ff">${sc.breakout_probability_pct}%</b></span>` : ''}
+          </div>` : ''}
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;${DIVIDER}">
             <div>
               <div style="font-size:10px;color:#8b949e">손절 %</div>
