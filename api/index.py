@@ -6175,6 +6175,10 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     aggressive_bands = []
     _base_depth_offset = 0.20 if _mkt == "KRX" else 0.15
     _allocation_scale = float((learning_adjustment or {}).get("allocation_scale") or 1.0)
+    # strong_support(최근 20일 저점 클러스터)가 현재가와 4 ATR 이상 떨어져 있으면
+    # 급등 전 옛 저점 등 더 이상 유효하지 않은 지지대일 가능성이 높다 — 이 경우
+    # 지지선 기반 클램프를 적용하면 밴드가 현재가에서 비현실적으로 멀어지므로 건너뛴다.
+    _support_is_near = bool(strong_support) and strong_support >= last_price - atr_d * 4.0
     for _zn in ["A", "B", "C"]:
         _z = _btz[_zn]
         _k1 = _z["k1"] + _base_depth_offset + depth_shift
@@ -6185,7 +6189,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _center = last_price - ((_k1 + _k2) / 2) * atr_d
         _hw     = (_z["k2"] - _z["k1"]) * atr_d * _bw * 0.5
         _lo, _hi = _center - _hw, _center + _hw
-        if downside_level in ("high", "severe") and strong_support:
+        if downside_level in ("high", "severe") and _support_is_near:
             _zone_idx = {"A": 0, "B": 1, "C": 2}.get(_zn, 0)
             _support_gap = atr_d * (0.10 + _zone_idx * (0.35 if downside_level == "severe" else 0.22))
             _min_width = atr_d * (0.20 + _zone_idx * 0.08)
@@ -6219,6 +6223,10 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # ── Band A: VWAP·BB중간 수렴 (현재가보다 낮은 경우만) ──────────────
     _anc_A_raw = (_vwap + bb_m) / 2 if bb_m_raw else _vwap
     _anc_A = min(_anc_A_raw, last_price - atr_d * (0.55 + _base_depth_offset + depth_shift))   # 위험이 높을수록 더 낮게 대기
+    # B/C 앵커가 이미 depth_shift가 반영된 A/B를 기준으로 추가로 depth_shift를
+    # 다시 가산하면서 위험 보정이 단계마다 중첩(최대 2배)되어 현재가 대비
+    # 비현실적으로 깊은 밴드가 나올 수 있다 — 앵커별 ATR 이격 상한을 둔다.
+    _anc_A = max(_anc_A, last_price - atr_d * 2.60)
 
     # ── Band B: BB하단·MA20 수렴 (현재가보다 낮은 경우만) ───────────────
     if bb_l_raw and ma20_raw:
@@ -6229,6 +6237,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _anc_B_raw = last_price - 1.10 * atr_d
     # Band A보다 최소 0.2 ATR 아래에 위치하도록 보장
     _anc_B = min(_anc_B_raw, _anc_A - atr_d * (0.35 + core_depth_extra + depth_shift * 0.45))
+    _anc_B = max(_anc_B, last_price - atr_d * 3.10)
 
     # ── Band C: MA60·Fib 38.2~50% 수렴 ──────────────────────────────
     # fib_382가 현재가보다 낮을 때만(= 유효한 지지선) 사용
@@ -6242,10 +6251,16 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _anc_C_raw = last_price - 1.40 * atr_d
     # Band B보다 최소 0.2 ATR 아래에 위치하도록 보장
     _anc_C = min(_anc_C_raw, _anc_B - atr_d * (0.45 + core_depth_extra + depth_shift * 0.55))
-    if downside_level in ("high", "severe") and strong_support:
+    _anc_C = max(_anc_C, last_price - atr_d * 3.60)
+    if downside_level in ("high", "severe") and _support_is_near:
         _anc_A = min(_anc_A, strong_support - atr_d * 0.20)
         _anc_B = min(_anc_B, strong_support - atr_d * (0.75 + depth_shift * 0.30))
         _anc_C = min(_anc_C, strong_support - atr_d * (1.15 + depth_shift * 0.40))
+        # 지지선 클램프 이후에도 동일한 ATR 이격 상한을 재적용 (근접 지지선이라도
+        # depth_shift가 다시 얹혀 상한을 초과하지 않도록 보장)
+        _anc_A = max(_anc_A, last_price - atr_d * 2.60)
+        _anc_B = max(_anc_B, last_price - atr_d * 3.10)
+        _anc_C = max(_anc_C, last_price - atr_d * 3.60)
 
     _rec_anchor = {"A": _anc_A, "B": _anc_B, "C": _anc_C}
     _rec_hw = {"A": atr_d * 0.25 * _bw, "B": atr_d * 0.35 * _bw, "C": atr_d * 0.50 * _bw}
