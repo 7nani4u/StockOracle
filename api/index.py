@@ -2793,6 +2793,28 @@ _US_SURGE_UNIVERSE = list(dict.fromkeys([
     "UNP","ETN","ADP","CB","NEE","DUK","SO","EOG",
 ]))
 
+# 미국 개장 급등 추천은 소액 접근이 가능한 저가주만 노출한다.
+# 전일 종가와 현재 세션 가격을 모두 검사해 $20 경계값·갭 변동 시에도 누출되지 않게 한다.
+_US_SURGE_MAX_PRICE = 20.0
+
+# 저가주 스캔은 전체 대형주 유니버스를 매번 내려받지 않고, 유동성이 있는
+# 저가·고변동 후보군만 먼저 조회한다. 실제 포함 여부는 아래의 실시간 가격
+# 검증(0 < price < $20)으로 다시 결정하므로 가격 변동 시 경계값 누출이 없다.
+_US_SURGE_SCAN_UNIVERSE = list(dict.fromkeys([
+    "INTC", "SOFI", "SNAP", "GRAB", "U",
+    "NIO", "XPEV", "RIVN", "LCID", "ACHR", "JOBY",
+    "F", "AAL", "WBD", "NOK", "PLUG", "RKLB", "SOUN", "MARA", "RIOT",
+]))
+
+
+def _is_us_surge_price_eligible(price: Any) -> bool:
+    """미국 개장 급등 추천 가격 조건: 0 < 현재가 < $20 (경계값 제외)."""
+    try:
+        value = float(price)
+        return bool(np.isfinite(value) and 0 < value < _US_SURGE_MAX_PRICE)
+    except (TypeError, ValueError):
+        return False
+
 def _us_calc_rsi(close, period=14):
     """RSI 계산"""
     if len(close) < period + 1:
@@ -3685,7 +3707,7 @@ def fetch_us_longterm_reco():
 
 @ttl_cache(900)  # 15분 캐시 (프리마켓 빠른 갱신)
 def fetch_us_opening_surge():
-    """미국 개장 급등 추천 Top 10 (PM RVOL + ATR 스캐닝)"""
+    """현재 세션 가격이 $20 미만인 미국 개장 급등 추천 Top 10."""
     try:
         # ── 세션 감지 ────────────────────────────────────────────────
         try:
@@ -3710,11 +3732,12 @@ def fetch_us_opening_surge():
             _session = "closed"
             _session_label = f"장 외 시간 (ET {_time_str})"
 
-        tickers = _US_SURGE_UNIVERSE  # 대형주+고변동 전용 유니버스
+        tickers = _US_SURGE_SCAN_UNIVERSE  # $20 미만 가능성이 높은 고변동 후보군
 
         # ── 기준 종가 + 평균 거래량 조회 ────────────────────────────
         daily = yf.download(tickers, period="5d", interval="1d",
-                            progress=False, auto_adjust=True, threads=True)
+                            progress=False, auto_adjust=True, threads=True,
+                            timeout=8)
         if daily.empty:
             return {"error": "데이터 없음", "items": []}
 
@@ -3748,9 +3771,28 @@ def fetch_us_opening_surge():
         else:
             prev_close_s = pd.Series({tickers[0]: float(daily["Close"].iloc[_pc_idx])})
 
+        # 전일 종가가 이미 $20 이상이면 상승 중 현재가가 $20 미만일 수 없으므로
+        # 분봉 요청 전에 제외한다. 전체 유니버스 분봉을 받지 않아 응답량·계산량도 줄어든다.
+        eligible_tickers = []
+        for tkr in tickers:
+            try:
+                if _is_us_surge_price_eligible(prev_close_s.get(tkr, 0)):
+                    eligible_tickers.append(tkr)
+            except Exception:
+                continue
+
+        if not eligible_tickers:
+            return {
+                "items": [],
+                "note": f"{_session_label} 기준 $20 미만 스캔 대상이 없습니다.",
+                "session": _session, "session_label": _session_label,
+                "price_filter": "0 < price < 20 USD", "max_price_exclusive": _US_SURGE_MAX_PRICE,
+            }
+
         # ── 실시간/PM 1분봉 조회 ────────────────────────────────────
-        pm_raw = yf.download(tickers, period="1d", interval="1m",
-                             prepost=True, progress=False, auto_adjust=True, threads=True)
+        pm_raw = yf.download(eligible_tickers, period="1d", interval="1m",
+                             prepost=True, progress=False, auto_adjust=True, threads=True,
+                             timeout=8)
         if pm_raw.empty:
             _note = f"현재 시세 없음 ({_session_label}) — 프리마켓(04:00~09:30 ET)에 다시 확인"
             return {"items": [], "note": _note, "session": _session, "session_label": _session_label}
@@ -3760,7 +3802,7 @@ def fetch_us_opening_surge():
         try:
             if isinstance(pm_raw.columns, pd.MultiIndex):
                 vdf = pm_raw["Volume"]
-                for tkr in tickers:
+                for tkr in eligible_tickers:
                     if tkr in vdf.columns:
                         pm_vol_map[tkr] = float(vdf[tkr].dropna().sum())
         except Exception:
@@ -3769,17 +3811,17 @@ def fetch_us_opening_surge():
         if isinstance(pm_raw.columns, pd.MultiIndex):
             latest_price = pm_raw["Close"].iloc[-1]
         else:
-            latest_price = pd.Series({tickers[0]: float(pm_raw["Close"].iloc[-1])})
+            latest_price = pd.Series({eligible_tickers[0]: float(pm_raw["Close"].iloc[-1])})
 
         # ── PM 변동률 계산 + RVOL 추정 ──────────────────────────────
         _pm_elapsed = max(0.1, min(_et_h - 4.0, 5.5)) if _session == "premarket" else 6.5
 
         gainers = []
-        for tkr in tickers:
+        for tkr in eligible_tickers:
             try:
                 pc = float(prev_close_s.get(tkr, 0) or 0)
                 lp = float(latest_price.get(tkr, 0) or 0)
-                if pc <= 0 or lp <= 0: continue
+                if pc <= 0 or not _is_us_surge_price_eligible(lp): continue
                 chg = (lp - pc) / pc * 100
                 if chg < 1.0: continue  # 1.5% → 1.0% 완화
                 # RVOL = PM 누적 거래량 / (평균 일일거래량 × PM 경과비율)
@@ -3797,12 +3839,15 @@ def fetch_us_opening_surge():
             if _session == "closed":
                 _note = f"장 외 시간 ({_time_str} ET) — 프리마켓(04:00~09:30 ET)에 다시 확인하세요"
             elif _session == "regular":
-                _note = f"정규장 중 ({_time_str} ET) — 전일 대비 1% 이상 상승 종목 없음"
+                _note = f"정규장 중 ({_time_str} ET) — $20 미만·전일 대비 1% 이상 상승 종목 없음"
             elif _session == "afterhours":
-                _note = f"시간외 ({_time_str} ET) — 전일 종가 대비 1% 이상 상승 종목 없음"
+                _note = f"시간외 ({_time_str} ET) — $20 미만·전일 종가 대비 1% 이상 상승 종목 없음"
             else:
-                _note = f"+1.0% 이상 급등 종목 없음 ({_session_label})"
-            return {"items": [], "note": _note, "session": _session, "session_label": _session_label}
+                _note = f"$20 미만·+1.0% 이상 급등 종목 없음 ({_session_label})"
+            return {
+                "items": [], "note": _note, "session": _session, "session_label": _session_label,
+                "price_filter": "0 < price < 20 USD", "max_price_exclusive": _US_SURGE_MAX_PRICE,
+            }
 
         gainers.sort(key=lambda x: x[2], reverse=True)
         gainers = gainers[:60]  # 30 → 60 확대
@@ -3810,11 +3855,22 @@ def fetch_us_opening_surge():
         gainer_tickers = [g[0] for g in gainers]
 
         # ── 기술적 분석 (3개월 일봉) ─────────────────────────────────
-        hist_raw = yf.download(gainer_tickers, period="3mo", interval="1d",
-                               progress=False, auto_adjust=True, threads=True)
-        spy_raw = yf.download(["SPY"], period="3mo", interval="1d",
-                              progress=False, auto_adjust=True, threads=True)
-        spy_df = spy_raw if not spy_raw.empty else None
+        # 후보 분석과 SPY 상대강도 계산을 한 번의 배치 요청으로 처리한다.
+        # 네트워크 왕복을 하나 줄여 Vercel 서버리스 응답 지연을 제한한다.
+        analysis_tickers = list(dict.fromkeys(gainer_tickers + ["SPY"]))
+        hist_raw = yf.download(analysis_tickers, period="3mo", interval="1d",
+                               progress=False, auto_adjust=True, threads=True,
+                               timeout=8)
+        spy_df = None
+        if not hist_raw.empty:
+            if isinstance(hist_raw.columns, pd.MultiIndex):
+                try:
+                    if "SPY" in hist_raw.columns.get_level_values(1):
+                        spy_df = hist_raw.xs("SPY", axis=1, level=1).dropna(how="all")
+                except Exception:
+                    spy_df = None
+            elif gainer_tickers == ["SPY"]:
+                spy_df = hist_raw.copy()
 
         candidates = []
         for tkr, (pm_price, pm_chg, rvol) in gainer_dict.items():
@@ -3850,6 +3906,9 @@ def fetch_us_opening_surge():
                         "afterhours": "시간외", "closed": "전일비"}.get(_session, "전일비")
 
         for tkr, score, a, pm_price, pm_chg, rvol in candidates[:10]:
+            # 앞단 필터 이후 데이터 정정·fallback이 있어도 응답 경계에서 재검증한다.
+            if not _is_us_surge_price_eligible(pm_price):
+                continue
             rsi = a.get("rsi"); adx = a.get("adx"); rs = a.get("rs")
             vol = a.get("volume"); sq = a.get("squeeze"); stoch = a.get("stochastic")
             atr_v = a.get("atr") or 0
@@ -3911,6 +3970,7 @@ def fetch_us_opening_surge():
         return {
             "items": results, "ts": int(time.time()),
             "session": _session, "session_label": _session_label,
+            "price_filter": "0 < price < 20 USD", "max_price_exclusive": _US_SURGE_MAX_PRICE,
         }
     except Exception as e:
         return {"error": str(e), "items": []}
@@ -4265,9 +4325,12 @@ def get_market_weights(market: str) -> dict:
     else:
         return {"trend": 20.0, "momentum": 35.0, "volatility": 25.0, "volume": 20.0, "quality": 0.0}
 
-def check_market_regime(market: str) -> str:
-    """시장 전체의 추세를 판단하여 투자 비중 조절 신호 발생"""
-    index_ticker = "^KS11" if market == "KRX" else "^GSPC"
+def check_market_regime(market: str, symbol: str = "") -> str:
+    """종목 시장의 대표지수 추세를 판단한다 (KOSPI/KOSDAQ/S&P 500)."""
+    if market == "KRX":
+        index_ticker = "^KQ11" if str(symbol).upper().endswith(".KQ") else "^KS11"
+    else:
+        index_ticker = "^GSPC"
     try:
         df = yf.Ticker(index_ticker).history(period="6mo")
         if df.empty or len(df) < 120:
@@ -5935,7 +5998,10 @@ def calc_indicator_signals(dd: Dict) -> Dict:
 def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict,
                    market: str = "KRX", period: str = "1y",
                    event_risk: Dict | None = None,
-                   learning_adjustment: Dict | None = None) -> Dict:
+                   learning_adjustment: Dict | None = None,
+                   market_regime: str = "NEUTRAL",
+                   reference_prev_close: float | None = None,
+                   reference_pct_change: float | None = None) -> Dict:
     """매수 적정 가격 예측 — 다중 지표 기반 정밀 구간 산출"""
     lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
     highs    = [float(x) for x in dd.get("High",  []) if x is not None]
@@ -6060,6 +6126,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         if avg_vol20 > 0:
             vol_ratio = volumes[-1] / avg_vol20
             heavy_sell_volume = vol_ratio >= 1.35 and closes[-1] < closes[-2]
+    _price_prev_ref = (float(reference_prev_close) if reference_prev_close and reference_prev_close > 0
+                       else (closes[-2] if len(closes) >= 2 else last_price))
+    _price_up_reference = last_price >= _price_prev_ref
 
     ma_bear = sum([
         1 if ma20_raw and last_price < float(ma20_raw) else 0,
@@ -6319,7 +6388,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "risk_note": f"{downside_label}: 확률 -{_risk_penalty:.1f}pp 반영",
             "entry_role": "소액 탐색 진입",
             "allocation_pct": round((6 if _zn == "A" else 4 if _zn == "B" else 3) * _allocation_scale, 1),
-            "confirm_note": "반등 캔들·거래량 회복 전에는 소액만 테스트",
+            "confirm_note": (f"종가가 밴드 상단을 회복하고 거래량이 20일 평균 이상일 때만 소액 확인"
+                             if vol_ratio < 1.0 else
+                             f"종가 지지 + 현재 거래량 {vol_ratio:.1f}배 유지 시 소액 확인"),
             "expected_return_pct": _z["ret"],
             "win_prob_pct":  _win,
             "loss_prob_pct": _los,
@@ -6425,7 +6496,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "risk_note":     f"{downside_label}: 지지선 확인 전 상단 추격 제한",
             "entry_role":     "주 진입",
             "allocation_pct": round((22 if _zn == "A" else 35 if _zn == "B" else 18) * _allocation_scale, 1),
-            "confirm_note":   "지지선 재확인·하락 거래량 둔화 시 주 진입",
+            "confirm_note":   (f"밴드 내 종가 지지·하락 거래량 {vol_ratio:.1f}배 이하 둔화·RSI 재상승 확인 후 주 진입"
+                               if not _price_up_reference else
+                               f"밴드 재테스트 후 종가 지지·거래량 {max(1.0, vol_ratio):.1f}배 이상 회복 시 주 진입"),
             "expected_sharpe": _z["sharpe"],
             "win_prob_pct":  _win,
             "avg_hold_days": _z["hold"],
@@ -6556,6 +6629,37 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "context":        _ctx,
     }
 
+    # 매수 카드 상단에서 현재가의 기술적 위치·거래량·시장 체제를 한 번만 설명한다.
+    # 밴드마다 반복하지 않아 모바일 길이를 줄이고, 실제 진입은 조건 충족형으로 제한한다.
+    _prev_close = _price_prev_ref
+    _prev_pct = (float(reference_pct_change) if reference_pct_change is not None else
+                 (((last_price - _prev_close) / _prev_close * 100.0) if _prev_close else 0.0))
+    _range_low = min(lows[-20:]) if lows else last_price
+    _range_high = max(highs[-20:]) if highs else last_price
+    _range_pos = ((last_price - _range_low) / (_range_high - _range_low) * 100.0) if _range_high > _range_low else 50.0
+    _ma_parts = []
+    if ma20_raw:
+        _ma_parts.append(f"MA20 {float(ma20_raw):,.{rnd}f} {'상회' if last_price >= float(ma20_raw) else '하회'}")
+    if ma60_raw:
+        _ma_parts.append(f"MA60 {float(ma60_raw):,.{rnd}f} {'상회' if last_price >= float(ma60_raw) else '하회'}")
+    _market_index = "KOSPI/KOSDAQ 대표지수" if market == "KRX" else "S&P 500"
+    _market_note = {
+        "BULL": f"{_market_index} 중기 추세 우호 — 개별 지지 확인 시에만 분할 접근",
+        "BEAR": f"{_market_index} 중기 추세 약세 — 종목 신호가 좋아도 신규 진입 비중 축소",
+        "NEUTRAL": f"{_market_index} 방향 중립 — 개별 가격·거래량 확인을 우선",
+    }.get(market_regime, f"{_market_index} 흐름은 현재 확보 데이터 기준으로 중립 처리")
+    _volume_note = (
+        f"20일 평균 대비 {vol_ratio:.1f}배 거래량을 동반한 {'상승' if _price_up_reference else '하락'} — "
+        + ("신호 확인력이 높음" if vol_ratio >= 1.2 else "거래량 확인이 더 필요")
+    )
+    current_context = {
+        "price_position": (f"전일 종가 대비 {_prev_pct:+.2f}% · 최근 20봉 범위의 {_range_pos:.0f}% 위치"
+                           + (f" · {' / '.join(_ma_parts)}" if _ma_parts else "")),
+        "volume": _volume_note,
+        "market": _market_note,
+        "entry_rule": "지지 구간 종가 유지와 거래량 확인이 동시에 충족될 때만 단계적으로 접근",
+    }
+
     band_distance_warning = None
     try:
         first_band = aggressive_bands[0] if aggressive_bands else None
@@ -6628,6 +6732,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         },
         "learning_adjustment": learning_adjustment or {"sample_n": 0, "depth_extra": 0.0, "reason": "학습 표본 부족"},
         "strategy_rec": strategy_rec,
+        "current_context": current_context,
         "band_distance_warning": band_distance_warning,
     }
 
@@ -7743,6 +7848,369 @@ _SECTOR_DEFAULT_STOCKS: list = [
     {"code": "036460", "name": "한국가스공사",    "market": "KOSPI", "sector": "에너지"},
 ]
 
+
+def build_prediction_outlook(
+    *, symbol: str, market: str, dd: Dict, last_price: float, prev_close: float,
+    pct_change: float, atr: float, regime: str, score: float,
+    prob_up: float, prob_down: float, pivot_points: Dict,
+    indicator_signals: Dict, buy_price: Dict, target_price: Dict,
+    pullback_analysis: Dict, signal_confidence: Dict | None,
+    investor_flow: Dict | None, ai_strategy: Dict | None,
+    candlestick_patterns: list | None, naver: Dict | None,
+    us_enriched: Dict | None, toss_industry: Dict | None,
+    event_risk: Dict | None,
+) -> Dict:
+    """이미 계산된 분석 결과를 예측 탭용 조건부 구조로 재조합한다.
+
+    외부 호출 없이 현재 응답의 OHLCV·지표·시장 체제·수급·AI 진단을 한 번만
+    순회하므로 탭 전환 시 분석을 재실행하지 않는다.
+    """
+    if last_price <= 0:
+        return {}
+
+    def _arr(key: str) -> list[float]:
+        out = []
+        for value in dd.get(key, []) or []:
+            try:
+                if value is not None and np.isfinite(float(value)):
+                    out.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _last(key: str, default: float | None = None) -> float | None:
+        values = _arr(key)
+        return values[-1] if values else default
+
+    def _bounded(value: float, low: float, high: float) -> float:
+        return max(low, min(high, value))
+
+    closes = _arr("Close"); opens = _arr("Open"); highs = _arr("High")
+    lows = _arr("Low"); volumes = _arr("Volume")
+    ma20 = _last("MA20"); ma60 = _last("MA60"); ma120 = _last("MA120")
+    rsi = float(_last("RSI", 50.0) or 50.0)
+    macd = float(_last("MACD", 0.0) or 0.0)
+    macd_signal = float(_last("Signal_Line", 0.0) or 0.0)
+    bb_upper = _last("BB_Upper"); bb_lower = _last("BB_Lower")
+    atr_value = float(atr or last_price * 0.02)
+    atr_pct = atr_value / last_price * 100.0
+    rnd = 2 if market == "US" else 0
+
+    avg_volume = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else (
+        float(np.mean(volumes[:-1])) if len(volumes) >= 2 else 0.0
+    )
+    volume_ratio = volumes[-1] / avg_volume if volumes and avg_volume > 0 else 1.0
+    candle_up = bool(closes and len(closes) >= 2 and closes[-1] >= closes[-2])
+
+    recent_low = min(lows[-20:]) if lows else last_price - atr_value
+    recent_high = max(highs[-20:]) if highs else last_price + atr_value
+    range_position = ((last_price - recent_low) / (recent_high - recent_low) * 100.0
+                      if recent_high > recent_low else 50.0)
+
+    classic = (pivot_points or {}).get("classic") or {}
+    zones = (pullback_analysis or {}).get("zones") or {}
+    support_candidates: list[tuple[float, str]] = []
+    resistance_candidates: list[tuple[float, str]] = []
+
+    def _add_level(value: Any, label: str) -> None:
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            return
+        if not np.isfinite(price) or price <= 0:
+            return
+        if price < last_price:
+            if label.startswith("피봇 R"):
+                label += " 전환 지지"
+            support_candidates.append((price, label))
+        elif price > last_price:
+            if label.startswith("피봇 S"):
+                label += " 회복 저항"
+            resistance_candidates.append((price, label))
+
+    for key in ("S1", "S2", "S3", "R1", "R2", "R3", "Pivot"):
+        _add_level(classic.get(key), f"피봇 {key}")
+    for zone_key, zone_label in (("core", "핵심 지지대"), ("defense", "방어 지지대"),
+                                 ("resistance", "구조 저항대")):
+        zone = zones.get(zone_key) or {}
+        _add_level(zone.get("low"), zone_label)
+        _add_level(zone.get("high"), zone_label)
+    for value, label in ((ma20, "MA20"), (ma60, "MA60"), (ma120, "MA120"),
+                         (bb_upper, "볼린저 상단"), (recent_low, "최근 20봉 저점"),
+                         (recent_high, "최근 20봉 고점")):
+        _add_level(value, label)
+    _add_level(bb_lower, "볼린저 하단 회복선" if bb_lower and bb_lower > last_price else "볼린저 하단")
+
+    support_price, support_label = (max(support_candidates, key=lambda x: x[0])
+                                    if support_candidates else (last_price - atr_value, "ATR 1배 하단"))
+    resistance_price, resistance_label = (min(resistance_candidates, key=lambda x: x[0])
+                                          if resistance_candidates else (last_price + atr_value, "ATR 1배 상단"))
+
+    trend_points = sum((
+        1 if ma20 and last_price >= ma20 else 0,
+        1 if ma60 and last_price >= ma60 else 0,
+        1 if macd >= macd_signal else 0,
+        1 if rsi >= 50 else 0,
+    ))
+    if trend_points >= 3:
+        trend_key, trend_label, trend_tone = "up", "단기 상승 우위", "positive"
+    elif trend_points <= 1:
+        trend_key, trend_label, trend_tone = "down", "단기 하락 우위", "negative"
+    else:
+        trend_key, trend_label, trend_tone = "sideways", "방향 확인 구간", "neutral"
+
+    ma_detail = []
+    if ma20:
+        ma_detail.append(f"MA20 {'위' if last_price >= ma20 else '아래'}")
+    if ma60:
+        ma_detail.append(f"MA60 {'위' if last_price >= ma60 else '아래'}")
+    ma_detail.append(f"RSI {rsi:.1f}")
+    ma_detail.append(f"MACD {'우위' if macd >= macd_signal else '열위'}")
+
+    if volume_ratio >= 1.5:
+        volume_key, volume_label, volume_tone = "surge", "거래량 급증", "positive" if candle_up else "negative"
+    elif volume_ratio >= 1.1:
+        volume_key, volume_label, volume_tone = "above", "평균 이상", "positive" if candle_up else "negative"
+    elif volume_ratio <= 0.7:
+        volume_key, volume_label, volume_tone = "dry", "거래량 위축", "neutral"
+    else:
+        volume_key, volume_label, volume_tone = "normal", "평균 수준", "neutral"
+
+    high_vol_threshold = 4.0 if market == "KRX" else 3.2
+    if atr_pct >= high_vol_threshold:
+        vol_key, vol_label, vol_tone = "high", "고변동성", "negative"
+        vol_detail = "일일 가격 범위가 커 손절 폭은 넓어지고, 진입 비중은 줄여야 합니다."
+    elif atr_pct < 1.0:
+        vol_key, vol_label, vol_tone = "low", "저변동성", "neutral"
+        vol_detail = "가격 진폭이 작아 손절 기준이 상대적으로 좁아질 수 있습니다."
+    else:
+        vol_key, vol_label, vol_tone = "normal", "보통 변동성", "neutral"
+        vol_detail = "현재 ATR 범위 안에서 분할 진입과 손실 제한 기준을 적용합니다."
+
+    wick_note = "최근 캔들 꼬리 정보가 부족합니다."
+    if opens and highs and lows and closes:
+        candle_range = max(highs[-1] - lows[-1], last_price * 0.0001)
+        upper_wick = (highs[-1] - max(opens[-1], closes[-1])) / candle_range * 100.0
+        lower_wick = (min(opens[-1], closes[-1]) - lows[-1]) / candle_range * 100.0
+        if upper_wick >= 35:
+            wick_note = f"윗꼬리 {upper_wick:.0f}% — 고가 매도 압력 확인 필요"
+        elif lower_wick >= 35:
+            wick_note = f"아랫꼬리 {lower_wick:.0f}% — 저가 매수 유입, 종가 지지 여부 확인"
+        else:
+            wick_note = "꼬리 비중이 크지 않아 종가 방향과 거래량을 우선 확인"
+
+    flags = (pullback_analysis or {}).get("manipulation_flags") or []
+    pattern_names = [str(flag.get("pattern")) for flag in flags if flag.get("pattern")]
+    candle_names = [str(p.get("name")) for p in (candlestick_patterns or []) if p.get("name")][:3]
+    breakdown_count = int((pullback_analysis or {}).get("sl_triggered") or 0)
+
+    confidence = float((signal_confidence or {}).get("confidence") or
+                       (target_price or {}).get("reach_probability") or 50.0)
+    conf_interval = (signal_confidence or {}).get("confidence_interval") or {}
+    conf_spread = float(conf_interval.get("spread") or 18.0)
+    conf_lower = float(conf_interval.get("lower") or max(5.0, confidence - conf_spread / 2))
+    conf_upper = float(conf_interval.get("upper") or min(95.0, confidence + conf_spread / 2))
+
+    side_prob = int(round(_bounded(22.0 + (conf_spread - 14.0) * 0.35
+                                   + (6.0 if trend_points == 2 else 0.0)
+                                   + (3.0 if flags else 0.0), 15.0, 38.0)))
+    up_share = _bounded(float(prob_up or 50.0), 8.0, 92.0) / 100.0
+    up_prob = int(round((100 - side_prob) * up_share))
+    down_prob = 100 - side_prob - up_prob
+    if regime == "BULL":
+        shift = min(5, down_prob)
+        up_prob += shift; down_prob -= shift
+    elif regime == "BEAR":
+        shift = min(7, up_prob)
+        down_prob += shift; up_prob -= shift
+
+    target_lo = float((target_price or {}).get("min_price") or resistance_price)
+    target_hi = float((target_price or {}).get("max_price") or max(target_lo, resistance_price + atr_value))
+    if target_lo > target_hi:
+        target_lo, target_hi = target_hi, target_lo
+    side_lo = max(support_price, last_price - atr_value * 0.75)
+    side_hi = min(resistance_price, last_price + atr_value * 0.75)
+    if side_hi <= side_lo:
+        side_lo, side_hi = last_price - atr_value * 0.5, last_price + atr_value * 0.5
+    stop_price = float((pullback_analysis or {}).get("stop_loss") or last_price - atr_value * 1.8)
+    down_lo, down_hi = sorted((max(0.01, stop_price), support_price))
+
+    manipulation_up = ("세력 흔들림 패턴 감지 시에도 종가가 주요 지지선을 유지해야 반등 시나리오 유효"
+                       if flags else "주요 지지선 유지 후 저항 돌파 시 반등 신뢰 상승")
+    manipulation_down = ("흔들림 패턴 이후 지지 회복에 실패하면 단순 손절 유도가 아닌 추세 이탈로 재평가"
+                         if flags else "지지선 이탈 후 1~2개 봉 안에 회복하지 못하면 하락 시나리오 강화")
+
+    scenarios = [
+        {
+            "key": "upside", "label": "상승 시나리오", "tone": "positive", "probability": up_prob,
+            "price_range": [round(target_lo, rnd), round(target_hi, rnd)],
+            "summary": manipulation_up,
+            "conditions": [
+                "저항선을 종가 기준으로 상회",
+                "20일 평균 대비 거래량 1.2배 이상 동반",
+                "MACD 우위 유지와 RSI 50 이상 확인",
+            ],
+            "checks": [
+                {"label": "확인 가격", "value": round(resistance_price, rnd), "note": f"{resistance_label} 종가 돌파"},
+                {"label": "거래량", "text": "20일 평균의 1.2배 이상"},
+                {"label": "지표", "text": "MACD 우위 · RSI 50~70"},
+            ],
+        },
+        {
+            "key": "sideways", "label": "중립·횡보 시나리오", "tone": "neutral", "probability": side_prob,
+            "price_range": [round(side_lo, rnd), round(side_hi, rnd)],
+            "summary": "지지와 저항 사이에서 거래량이 줄면 방향성보다 박스권 대응이 우선입니다.",
+            "conditions": [
+                "지지선과 저항선 사이 종가 유지",
+                "거래량이 평균의 0.7~1.2배 범위",
+                "RSI 45~60 및 MACD 방향성 둔화",
+            ],
+            "checks": [
+                {"label": "하단", "value": round(side_lo, rnd), "note": "박스권 지지 확인"},
+                {"label": "상단", "value": round(side_hi, rnd), "note": "돌파 전 추격 제한"},
+                {"label": "지표", "text": "RSI 중립 · 거래량 감소"},
+            ],
+        },
+        {
+            "key": "downside", "label": "하락 시나리오", "tone": "negative", "probability": down_prob,
+            "price_range": [round(down_lo, rnd), round(down_hi, rnd)],
+            "summary": manipulation_down,
+            "conditions": [
+                "주요 지지선을 종가 기준으로 이탈",
+                "하락 거래량이 20일 평균의 1.5배 이상",
+                "MACD 열위 확대 또는 RSI 40 하회",
+            ],
+            "checks": [
+                {"label": "주의 가격", "value": round(support_price, rnd), "note": f"{support_label} 이탈 여부"},
+                {"label": "손실 제한", "value": round(stop_price, rnd), "note": "ATR·구조 기준 손절가"},
+                {"label": "지표", "text": "MACD 열위 · RSI 40 하회"},
+            ],
+        },
+    ]
+
+    strategy = (buy_price or {}).get("strategy_rec") or {}
+    action_key = str(strategy.get("action_key") or "wait_support")
+    if action_key in ("band_a", "split_buy", "recovery_buy") and breakdown_count == 0:
+        decision_key, decision_label, decision_tone = "conditional", "조건부 분할 접근", "positive"
+    elif action_key == "wait_breakdown" or breakdown_count >= 2:
+        decision_key, decision_label, decision_tone = "caution", "주의·매수 보류", "negative"
+    else:
+        decision_key, decision_label, decision_tone = "watch", "관망 우선", "neutral"
+    direction_label = "상승 우위" if up_prob >= down_prob + 8 else ("하락 우위" if down_prob >= up_prob + 8 else "중립")
+
+    if flags:
+        decision_summary = (f"세력 흔들림 패턴 {len(flags)}건이 감지되었습니다. "
+                            f"{support_label}을 종가로 유지하고 거래량이 회복될 때만 단기 반등 시나리오를 유효하게 봅니다.")
+    else:
+        decision_summary = (f"현재는 {trend_label}입니다. {support_label} 유지와 거래량 확인 시 단계적 접근이 가능하지만, "
+                            "지지 이탈 시 관망을 우선합니다.")
+
+    macro = (signal_confidence or {}).get("macro_regime") or {}
+    macro_components = macro.get("components") or {}
+    market_facts = []
+    data_gaps = []
+    if market == "KRX":
+        index_name = "KOSDAQ" if str(symbol).upper().endswith(".KQ") else "KOSPI"
+        index_value = {"BULL": "중기 상승", "BEAR": "중기 약세", "NEUTRAL": "중립"}.get(regime, "중립")
+        market_facts.append({"label": index_name, "value": index_value,
+                             "detail": "대표지수 60일·120일 이동평균 구조 기준", "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
+        industry = ((naver or {}).get("industry") or (naver or {}).get("sector") or
+                    (toss_industry or {}).get("industry") or (toss_industry or {}).get("sector"))
+        if industry:
+            market_facts.append({"label": "업종", "value": str(industry),
+                                 "detail": "종목 분류 정보이며 실시간 업종 강도는 홈 데이터가 있을 때 보완", "tone": "neutral"})
+        flow = investor_flow or {}
+        if flow.get("ok"):
+            foreign = int(flow.get("외국인") or 0); institution = int(flow.get("기관") or 0)
+            flow_tone = "positive" if foreign > 0 and institution > 0 else "negative" if foreign < 0 and institution < 0 else "neutral"
+            market_facts.append({"label": "외국인·기관", "value": "동반 순매수" if flow_tone == "positive" else "동반 순매도" if flow_tone == "negative" else "수급 혼조",
+                                 "detail": f"외국인 {foreign:+,}주 · 기관 {institution:+,}주", "tone": flow_tone})
+        else:
+            data_gaps.append("외국인·기관 최신 수급 데이터 미확보")
+        data_gaps.append("원/달러 환율은 현재 종목 분석 응답에 수치가 없을 때 확정 판단에서 제외")
+    else:
+        sp = macro_components.get("sp500") or {}; vix = macro_components.get("vix") or {}; dxy = macro_components.get("dxy") or {}
+        if sp.get("pct5d") is not None:
+            sp5 = float(sp.get("pct5d")); market_facts.append({"label": "S&P 500", "value": f"5일 {sp5:+.2f}%", "detail": f"거시 체제 {macro.get('regime', 'Neutral')}", "tone": "positive" if sp5 > 1 else "negative" if sp5 < -1 else "neutral"})
+        if vix.get("level") is not None:
+            vix_level = float(vix.get("level")); market_facts.append({"label": "VIX", "value": f"{vix_level:.1f}", "detail": "22 초과 시 위험 회피 압력 확대 가능", "tone": "negative" if vix_level > 22 else "neutral"})
+        if dxy.get("pct5d") is not None:
+            dxy5 = float(dxy.get("pct5d")); market_facts.append({"label": "달러", "value": f"5일 {dxy5:+.2f}%", "detail": "달러 강세는 성장주 밸류에이션에 부담 가능", "tone": "negative" if dxy5 > 1 else "neutral"})
+        sector_rel = (signal_confidence or {}).get("sector_relative") or {}
+        sector = sector_rel.get("sector") or {}
+        if sector:
+            market_facts.append({"label": "섹터", "value": str(sector.get("name") or sector.get("etf") or "—"),
+                                 "detail": str(sector_rel.get("reason") or f"섹터 ETF 5일 {float(sector.get('pct5d') or 0):+.1f}%"),
+                                 "tone": "positive" if sector_rel.get("adjust", 0) > 0 else "negative" if sector_rel.get("adjust", 0) < 0 else "neutral"})
+        earnings = (signal_confidence or {}).get("earnings") or {}
+        if earnings.get("days_to_earnings") is not None:
+            days = int(earnings.get("days_to_earnings")); market_facts.append({"label": "실적", "value": f"D-{days}" if days >= 0 else "발표 경과", "detail": "5거래일 이내에는 갭 변동 위험 반영", "tone": "negative" if 0 <= days <= 5 else "neutral"})
+        data_gaps.extend(["나스닥은 홈 시장 데이터가 있으면 재사용하며, 없으면 별도 호출하지 않음",
+                          "최신 정책금리 수치가 응답에 없으면 금리 방향을 확정 판단에서 제외"])
+
+    ai_lines = []
+    if isinstance(ai_strategy, dict):
+        ai_lines = [line.strip() for line in str(ai_strategy.get("result") or "").split(" | ") if line.strip()][:4]
+    if (indicator_signals or {}).get("summary", {}).get("overall_label"):
+        ai_lines.append(f"기술지표 종합: {indicator_signals['summary']['overall_label']}")
+    if flags:
+        ai_lines.append("세력 흔들림 점검: " + ", ".join(pattern_names[:3]))
+
+    risk_triggers = [
+        f"{support_label} {support_price:,.{rnd}f} 종가 이탈",
+        "평균 1.5배 이상 거래량을 동반한 하락",
+        "시장 대표지수 급락 또는 위험 회피 체제 전환",
+    ]
+    for cond in (pullback_analysis or {}).get("sl_conditions") or []:
+        if cond.get("triggered"):
+            risk_triggers.append(str(cond.get("cond") or cond.get("desc")))
+    for reason in (event_risk or {}).get("reasons") or []:
+        if reason not in risk_triggers:
+            risk_triggers.append(str(reason))
+
+    return {
+        "decision": {
+            "key": decision_key, "label": decision_label, "tone": decision_tone,
+            "direction": direction_label, "summary": decision_summary,
+            "confidence": round(confidence, 1),
+            "confidence_interval": [round(conf_lower, 1), round(conf_upper, 1)],
+            "confidence_note": "여러 지표의 일치도와 데이터 가용성을 반영한 참고 신뢰도",
+        },
+        "status": [
+            {"key": "position", "label": "현재가 위치", "value": f"20봉 범위 {range_position:.0f}%", "tone": "neutral",
+             "detail": f"전일 대비 {pct_change:+.2f}% · {support_label} 위 {((last_price-support_price)/last_price*100):.1f}%",
+             "help": "최근 20개 봉의 저점(0%)과 고점(100%) 사이 위치"},
+            {"key": "trend", "label": "단기 추세", "value": trend_label, "tone": trend_tone,
+             "detail": " · ".join(ma_detail), "help": "이동평균·RSI·MACD를 함께 본 방향"},
+            {"key": "volume", "label": "거래량", "value": volume_label, "tone": volume_tone,
+             "detail": f"20일 평균 대비 {volume_ratio:.2f}배 · {'상승봉' if candle_up else '하락봉'}",
+             "help": "가격 움직임에 실제 거래 참여가 동반됐는지 확인"},
+            {"key": "volatility", "label": "변동성", "value": vol_label, "tone": vol_tone,
+             "detail": f"ATR {atr_pct:.2f}% · {vol_detail}", "help": "ATR은 최근 평균 가격 진폭"},
+            {"key": "levels", "label": "주요 가격", "value": f"지지 / 저항", "tone": "neutral",
+             "detail": f"{support_label} {support_price:,.{rnd}f} · {resistance_label} {resistance_price:,.{rnd}f}",
+             "help": "지지는 매수 유입 가능 구간, 저항은 매도 압력 가능 구간"},
+        ],
+        "levels": {
+            "support": round(support_price, rnd), "support_label": support_label,
+            "resistance": round(resistance_price, rnd), "resistance_label": resistance_label,
+            "warning_zone": [round(max(stop_price, support_price - atr_value * 0.5), rnd), round(support_price, rnd)],
+            "stop": round(stop_price, rnd),
+        },
+        "scenarios": scenarios,
+        "scenario_note": "시나리오 비중은 현재 앱에서 확보한 데이터 기준의 상대 비교이며 확정 확률이 아닙니다.",
+        "market_context": {"facts": market_facts, "data_gaps": data_gaps,
+                           "basis": "기존 분석 요청과 홈에서 이미 받은 시장 데이터를 재사용"},
+        "pattern_context": {
+            "manipulation_detected": bool(flags), "manipulation_count": len(flags),
+            "items": flags[:4], "candles": candle_names, "wick_note": wick_note,
+            "breakdown_count": breakdown_count,
+        },
+        "ai_evidence": ai_lines[:6],
+        "risk_triggers": risk_triggers[:6],
+        "data_scope": "현재 앱에서 확보 가능한 가격·거래량·기술지표·수급·시장 데이터 기준",
+    }
+
 # =============================================================================
 # 라우팅
 # =============================================================================
@@ -7767,7 +8235,7 @@ def route(path: str, params: Dict) -> Dict:
         prob_up, prob_down = calc_probability(score, dd)  # 상승/하락 가능성 계산
 
         # Market Regime 필터 적용
-        regime = check_market_regime(market)
+        regime = check_market_regime(market, sym)
         if regime == "BEAR":
             if isinstance(ai_strategy, dict):
                 ai_strategy["result"] += " | [시장 상태] 시장 전체 하락장(BEAR) 진입: 신규 매수 금지 및 현금 비중 확대 권장"
@@ -7952,7 +8420,7 @@ def route(path: str, params: Dict) -> Dict:
         learning_adjustment = calc_learning_adjustment(market)
         risk             = calc_risk(last, atr_val, market, dd, event_risk, learning_adjustment)
         buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period,
-                                          event_risk, learning_adjustment)
+                                          event_risk, learning_adjustment, regime, prev, pct)
 
         # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) ────────────────────
         hybrid_score = None
@@ -8083,6 +8551,17 @@ def route(path: str, params: Dict) -> Dict:
             target_price["long_term_note"] = "장기 전망은 기업가치·성장성·산업 전망·실적 추세·기술 흐름·변동성을 함께 반영한 참고 범위입니다."
             target_price = _normalize_target_output(target_price, last, market)
         pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
+        prediction_outlook = build_prediction_outlook(
+            symbol=sym, market=market, dd=dd, last_price=last, prev_close=prev,
+            pct_change=pct, atr=atr_val, regime=regime, score=score,
+            prob_up=prob_up, prob_down=prob_down, pivot_points=pivot_points,
+            indicator_signals=indicator_signals, buy_price=buy_price,
+            target_price=target_price, pullback_analysis=pullback_analysis,
+            signal_confidence=signal_confidence, investor_flow=investor_flow,
+            ai_strategy=ai_strategy, candlestick_patterns=patterns,
+            naver=naver, us_enriched=us_enriched, toss_industry=toss_industry,
+            event_risk=event_risk,
+        )
 
         _record_prediction_and_update_outcomes(
             sym, market, period, dd, buy_price, risk, event_risk, learning_adjustment
@@ -8121,6 +8600,8 @@ def route(path: str, params: Dict) -> Dict:
             "buy_price": buy_price,
             "target_price": target_price,
             "pullback_analysis": pullback_analysis,
+            "prediction_outlook": prediction_outlook,
+            "market_regime": regime,
             "news": news or [], "naver": naver, "us_enriched": us_enriched,
             "toss_industry": toss_industry,
             "investor_flow": investor_flow,
@@ -9275,6 +9756,51 @@ input::placeholder{color:#484f58}
 .forecast-long-note{font-size:10px;color:#484f58;margin-top:5px;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
 .forecast-helper{font-size:10px;color:#484f58;line-height:1.5}
 
+/* 예측 탭 — 핵심 판단·현재 상태·조건부 시나리오 */
+.prediction-stack{display:flex;flex-direction:column;gap:14px}
+.prediction-decision{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:16px;background:linear-gradient(135deg,#161b22,#111820);border:1px solid #30363d;border-radius:12px;padding:18px}
+.prediction-kicker{font-size:10px;color:#8b949e;letter-spacing:.06em;text-transform:uppercase;margin-bottom:7px}
+.prediction-badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:9px}
+.prediction-action{font-size:23px;font-weight:900;line-height:1.25;color:#e6edf3}
+.prediction-chip{font-size:10px;font-weight:800;border-radius:999px;padding:3px 8px;border:1px solid #30363d;background:#0d1117;white-space:nowrap}
+.prediction-summary{font-size:12px;color:#cdd9e5;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}
+.prediction-confidence{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px;display:flex;flex-direction:column;justify-content:center;min-width:0}
+.prediction-confidence-head{display:flex;justify-content:space-between;gap:8px;align-items:end}
+.prediction-confidence-value{font-size:25px;font-weight:900;line-height:1}
+.prediction-confidence-range{font-size:10px;color:#8b949e;margin-top:5px}
+.prediction-status-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.prediction-status-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:11px;min-width:0}
+.prediction-status-label{font-size:10px;color:#8b949e;margin-bottom:4px;display:flex;gap:4px;align-items:center}
+.prediction-help{cursor:help;color:#484f58;font-weight:700}
+.prediction-status-value{font-size:13px;font-weight:800;line-height:1.35;margin-bottom:5px}
+.prediction-status-detail{font-size:10px;color:#8b949e;line-height:1.5;word-break:keep-all;overflow-wrap:anywhere}
+.prediction-scenario-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.prediction-scenario{border:1px solid #30363d;border-radius:12px;padding:14px;background:#161b22;min-width:0}
+.prediction-scenario.positive{border-color:#3fb95055;background:#0d2d1a66}
+.prediction-scenario.neutral{border-color:#d2992255;background:#2d220066}
+.prediction-scenario.negative{border-color:#f8514955;background:#2d151566}
+.prediction-scenario-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
+.prediction-scenario-title{font-size:14px;font-weight:900}
+.prediction-prob{font-size:11px;font-weight:800;border-radius:999px;padding:2px 7px;background:#0d1117;border:1px solid #30363d;white-space:nowrap}
+.prediction-price-range{font-size:17px;font-weight:900;color:#e6edf3;line-height:1.35;margin-bottom:7px;white-space:nowrap}
+.prediction-scenario-summary{font-size:11px;color:#cdd9e5;line-height:1.55;min-height:51px;word-break:keep-all}
+.prediction-condition-list{border-top:1px solid #30363d;margin-top:9px;padding-top:8px}
+.prediction-condition{display:flex;align-items:flex-start;gap:5px;font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:3px}
+.prediction-checks{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.prediction-check{display:flex;justify-content:space-between;gap:8px;background:#0d1117;border-radius:6px;padding:5px 7px;font-size:10px}
+.prediction-check-label{color:#8b949e;white-space:nowrap}.prediction-check-value{color:#cdd9e5;text-align:right;font-weight:700}
+.prediction-context-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:10px}
+.prediction-context-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:13px;min-width:0}
+.prediction-context-title{font-size:12px;font-weight:800;color:#cdd9e5;margin-bottom:9px}
+.prediction-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.prediction-fact{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px;min-width:0}
+.prediction-fact-head{display:flex;justify-content:space-between;gap:6px;align-items:baseline;margin-bottom:3px}
+.prediction-fact-label{font-size:10px;color:#8b949e}.prediction-fact-value{font-size:11px;font-weight:800;text-align:right}
+.prediction-fact-detail{font-size:10px;color:#8b949e;line-height:1.45;word-break:keep-all}
+.prediction-pattern-alert{font-size:11px;line-height:1.55;border-left:3px solid #d29922;background:#2d220055;border-radius:0 7px 7px 0;padding:8px 10px;margin-bottom:8px}
+.prediction-mini-list{font-size:10px;color:#8b949e;line-height:1.55}
+.prediction-scope{font-size:10px;color:#484f58;line-height:1.5;margin-top:9px}
+
 /* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
 .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 
@@ -9309,6 +9835,7 @@ input::placeholder{color:#484f58}
   .ai-bottom-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   /* 1100px 이하: 7열 → 4열 */
   .sector-cards{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .prediction-status-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
 
 /* ── 태블릿 (≤ 900px) ── */
@@ -9326,6 +9853,10 @@ input::placeholder{color:#484f58}
   .forecast-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .forecast-info-grid{grid-template-columns:1fr}
   .forecast-longterm-grid{grid-template-columns:1fr}
+  .prediction-decision{grid-template-columns:1fr}
+  .prediction-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .prediction-scenario-grid{grid-template-columns:1fr}
+  .prediction-context-grid{grid-template-columns:1fr}
   /* 900px 이하: 3열 */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
@@ -9367,6 +9898,7 @@ input::placeholder{color:#484f58}
   .forecast-range{font-size:22px}
   .forecast-stat-value{font-size:19px}
   .forecast-long-price{font-size:15px}
+  .prediction-action{font-size:20px}
 
   /* 헤더/타이포 */
   .page-header h2{font-size:18px}
@@ -9420,6 +9952,10 @@ input::placeholder{color:#484f58}
   .forecast-return{font-size:12px}
   .forecast-info-card,.forecast-long-card{padding:10px}
   .forecast-long-price{font-size:14px;white-space:normal}
+  .prediction-decision{padding:12px}
+  .prediction-status-grid,.prediction-facts{grid-template-columns:1fr}
+  .prediction-price-range{font-size:15px;white-space:normal}
+  .prediction-scenario-summary{min-height:0}
   .risk-card{padding:12px}
   .buy-card{padding:12px}
   .fund-grid{grid-template-columns:1fr 1fr}
@@ -10082,7 +10618,19 @@ input::placeholder{color:#484f58}
       <!-- 예측 탭 -->
       <div id="tab-forecast" style="display:none">
         <div class="card">
-          <div class="card-title">📈 예측 결과 요약</div>
+          <div class="card-title">🔮 핵심 판단과 현재 상태</div>
+          <div id="prediction-overview-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">🧭 조건부 예측 시나리오</div>
+          <div id="prediction-scenarios-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">🌐 시장 흐름 · AI 진단 반영</div>
+          <div id="prediction-context-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">📈 목표 가격 범위</div>
           <div id="target-price-section"></div>
         </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
@@ -10381,7 +10929,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px">
       <div>
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🇺🇸 미국 개장 급등 추천</h2>
-        <p style="font-size:12px;color:#8b949e">PM RVOL · ATR 기반 당일 모멘텀 Top 10</p>
+        <p style="font-size:12px;color:#8b949e">현재 세션 가격 $20 미만 · PM RVOL · ATR 기반 당일 모멘텀 Top 10</p>
       </div>
     </div>
     <div class="home-section">
@@ -10392,7 +10940,7 @@ input::placeholder{color:#484f58}
       <div id="us-surge-content" style="display:none">
         <div class="us-reco-header">
           <span class="us-reco-title">🇺🇸 미국 개장 급등 추천
-            <span style="font-size:11px;color:#484f58;font-weight:400">PM RVOL·ATR 기반 Top 10</span>
+            <span style="font-size:11px;color:#484f58;font-weight:400">$20 미만 · PM RVOL·ATR 기반 Top 10</span>
             <span id="us-surge-session-label" style="font-size:10px;color:#8b949e;font-weight:400;margin-left:6px"></span>
           </span>
           <button onclick="loadUsSurge(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
@@ -10434,6 +10982,8 @@ let screenerData = [];
 let screenerInfo = {}; // 추가
 let scrnMarket = 'domestic';
 let scrnSort = {key:'price', dir:'desc'};
+let _marketCoreSnapshot = null;   // 홈에서 이미 받은 지수·환율·미국 시장 데이터 재사용
+let _sectorFlowSnapshot = null;   // 홈에서 이미 받은 업종 흐름 데이터 재사용
 let chartInstances = {};
 
 // ── 페이지 전환 ──
@@ -12373,11 +12923,146 @@ function renderPullbackATR(d, isKrx) {
     </div>`;
 }
 
+function _escPrediction(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function _predictionTone(tone) {
+  if (tone === 'positive') return '#3fb950';
+  if (tone === 'negative') return '#f85149';
+  return '#d29922';
+}
+
+function _predictionLiveFacts(d, isKrx) {
+  const facts = [];
+  const core = _marketCoreSnapshot || {};
+  if (isKrx) {
+    const indexKey = String(d.symbol || '').endsWith('.KQ') ? 'KOSDAQ' : 'KOSPI';
+    const idx = (core.indices || {})[indexKey];
+    if (idx) {
+      const change = idx.change_pct || idx.change_abs || '—';
+      facts.push({label:indexKey, value:change, detail:`홈 시장 현황의 최신 ${indexKey} 흐름 재사용`, tone:idx.direction === 'up' ? 'positive' : idx.direction === 'down' ? 'negative' : 'neutral'});
+    }
+    const fx = (core.fx || []).find(x => /미국|USD|달러/i.test(String(x.name || '')));
+    if (fx) facts.push({label:'원/달러', value:fx.value || '—', detail:`변동 ${fx.change || '—'} · 환율 급등 시 외국인 수급 부담 가능`, tone:'neutral'});
+  } else {
+    const overnight = core.overnight || [];
+    [['S&P 500',/S&P|GSPC/i],['NASDAQ',/나스닥|NASDAQ|IXIC/i]].forEach(([label, re]) => {
+      const item = overnight.find(x => re.test(`${x.name || ''} ${x.symbol || ''}`));
+      if (!item) return;
+      const pct = Number(item.change_pct);
+      const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : (item.change_pct || item.change_abs || '—');
+      facts.push({label, value:pctText, detail:'홈에서 이미 받은 미국 시장 흐름 재사용', tone:item.direction === 'up' ? 'positive' : item.direction === 'down' ? 'negative' : 'neutral'});
+    });
+  }
+
+  const sectors = (_sectorFlowSnapshot || {}).sectors || [];
+  const company = String(d.company || '').replace(/\s/g, '');
+  const sector = sectors.find(s => (s.stock_names || []).some(n => String(n).replace(/\s/g, '') === company));
+  if (sector) {
+    const pct = Number(sector.avg_change_pct);
+    facts.push({label:'업종 흐름', value:`${sector.name} ${Number.isFinite(pct) ? (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%' : '—'}`,
+      detail:'홈 업종별 흐름의 기존 응답 재사용', tone:sector.mood || 'neutral'});
+  }
+  return facts;
+}
+
+function renderPredictionSections(d, isKrx) {
+  const p = d.prediction_outlook || null;
+  const overviewEl = document.getElementById('prediction-overview-section');
+  const scenariosEl = document.getElementById('prediction-scenarios-section');
+  const contextEl = document.getElementById('prediction-context-section');
+  if (!overviewEl || !scenariosEl || !contextEl) return;
+  if (!p || !p.decision) {
+    const fallback = '<p style="color:#8b949e;font-size:12px">현재 앱에서 확보한 데이터가 부족해 상세 조건부 시나리오를 만들 수 없습니다.</p>';
+    overviewEl.innerHTML = fallback; scenariosEl.innerHTML = fallback; contextEl.innerHTML = fallback;
+    return;
+  }
+
+  const decision = p.decision;
+  const decisionColor = _predictionTone(decision.tone);
+  const confidence = Number(decision.confidence || 0);
+  const confidenceColor = confidence >= 70 ? '#3fb950' : confidence >= 50 ? '#d29922' : '#f85149';
+  const interval = decision.confidence_interval || [];
+  const statusHtml = (p.status || []).map(item => {
+    const color = _predictionTone(item.tone);
+    return `<div class="prediction-status-card">
+      <div class="prediction-status-label">${_escPrediction(item.label)} <span class="prediction-help" title="${_escPrediction(item.help || '')}">?</span></div>
+      <div class="prediction-status-value" style="color:${color}">${_escPrediction(item.value)}</div>
+      <div class="prediction-status-detail">${_escPrediction(item.detail)}</div>
+    </div>`;
+  }).join('');
+  overviewEl.innerHTML = `<div class="prediction-stack">
+    <div class="prediction-decision" style="border-color:${decisionColor}55">
+      <div>
+        <div class="prediction-kicker">현재 조건에서의 대응 판단</div>
+        <div class="prediction-badges">
+          <div class="prediction-action" style="color:${decisionColor}">${_escPrediction(decision.label)}</div>
+          <span class="prediction-chip" style="color:${decisionColor};border-color:${decisionColor}55">${_escPrediction(decision.direction)}</span>
+          <span class="prediction-chip" style="color:#8b949e">확정 예측 아님</span>
+        </div>
+        <div class="prediction-summary">${_escPrediction(decision.summary)}</div>
+      </div>
+      <div class="prediction-confidence">
+        <div class="prediction-confidence-head"><span style="font-size:10px;color:#8b949e">종합 신뢰도</span><span class="prediction-confidence-value" style="color:${confidenceColor}">${confidence.toFixed(0)}%</span></div>
+        <div class="forecast-prob-bar"><div class="forecast-prob-fill" style="width:${Math.max(0,Math.min(100,confidence))}%;background:${confidenceColor}"></div></div>
+        <div class="prediction-confidence-range">${interval.length === 2 ? `신뢰 구간 ${interval[0]}~${interval[1]}% · ` : ''}${_escPrediction(decision.confidence_note || '')}</div>
+      </div>
+    </div>
+    <div class="prediction-status-grid">${statusHtml}</div>
+    <div class="prediction-scope">${_escPrediction(p.data_scope || '')}</div>
+  </div>`;
+
+  scenariosEl.innerHTML = `<div class="prediction-scenario-grid">${(p.scenarios || []).map(sc => {
+    const color = _predictionTone(sc.tone);
+    const range = sc.price_range || [];
+    const rangeText = range.length === 2 ? `${fmt(range[0], isKrx)} ~ ${fmt(range[1], isKrx)}` : '가격 범위 확인 필요';
+    const conditions = (sc.conditions || []).map(x => `<div class="prediction-condition"><span style="color:${color}">•</span><span>${_escPrediction(x)}</span></div>`).join('');
+    const checks = (sc.checks || []).map(x => {
+      const value = x.value != null ? `${_escPrediction(x.note || '')} ${fmt(x.value, isKrx)}`.trim() : _escPrediction(x.text || x.note || '');
+      return `<div class="prediction-check"><span class="prediction-check-label">${_escPrediction(x.label)}</span><span class="prediction-check-value">${value}</span></div>`;
+    }).join('');
+    return `<div class="prediction-scenario ${_escPrediction(sc.tone || 'neutral')}">
+      <div class="prediction-scenario-head"><div class="prediction-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="prediction-prob" style="color:${color};border-color:${color}55">상대 비중 ${Number(sc.probability || 0).toFixed(0)}%</div></div>
+      <div class="prediction-price-range">${rangeText}</div>
+      <div class="prediction-scenario-summary">${_escPrediction(sc.summary)}</div>
+      <div class="prediction-condition-list">${conditions}</div>
+      <div class="prediction-checks">${checks}</div>
+    </div>`;
+  }).join('')}</div><div class="prediction-scope">${_escPrediction(p.scenario_note || '')}</div>`;
+
+  const marketContext = p.market_context || {};
+  const factMap = new Map();
+  (marketContext.facts || []).forEach(f => factMap.set(f.label, f));
+  _predictionLiveFacts(d, isKrx).forEach(f => factMap.set(f.label, f));
+  const factsHtml = [...factMap.values()].map(f => {
+    const color = _predictionTone(f.tone);
+    return `<div class="prediction-fact"><div class="prediction-fact-head"><span class="prediction-fact-label">${_escPrediction(f.label)}</span><span class="prediction-fact-value" style="color:${color}">${_escPrediction(f.value)}</span></div><div class="prediction-fact-detail">${_escPrediction(f.detail)}</div></div>`;
+  }).join('') || '<div class="prediction-mini-list">시장 데이터가 부족해 종목 내부 신호를 우선합니다.</div>';
+
+  const pattern = p.pattern_context || {};
+  const patternColor = pattern.manipulation_detected ? '#d29922' : '#3fb950';
+  const patternItems = (pattern.items || []).map(x => `<div style="margin-bottom:5px"><b style="color:${patternColor}">${_escPrediction(x.pattern || '패턴')}</b><br>${_escPrediction(x.desc || '')}<br><span style="color:#cdd9e5">조건: ${_escPrediction(x.action || '')}</span></div>`).join('');
+  const aiHtml = (p.ai_evidence || []).slice(0,4).map(x => `<div>• ${_escPrediction(x)}</div>`).join('');
+  const gapsHtml = (marketContext.data_gaps || []).map(x => `<div>• ${_escPrediction(x)}</div>`).join('');
+  contextEl.innerHTML = `<div class="prediction-context-grid">
+    <div class="prediction-context-card"><div class="prediction-context-title">시장·업종·수급</div><div class="prediction-facts">${factsHtml}</div><div class="prediction-scope">${_escPrediction(marketContext.basis || '')}</div>${gapsHtml ? `<div class="prediction-mini-list" style="margin-top:7px">${gapsHtml}</div>` : ''}</div>
+    <div class="prediction-context-card"><div class="prediction-context-title">AI 진단 · 세력 흔들림 재활용</div>
+      <div class="prediction-pattern-alert" style="border-color:${patternColor};color:${patternColor}">${pattern.manipulation_detected ? `세력 흔들림 패턴 ${pattern.manipulation_count || 0}건 감지 — 지지 유지 여부를 조건으로 판단` : '뚜렷한 세력 흔들림 패턴 없음 — 가격·거래량 기본 조건 우선'}</div>
+      <div class="prediction-mini-list">${patternItems || ''}${pattern.wick_note ? `<div style="margin-bottom:6px">캔들: ${_escPrediction(pattern.wick_note)}</div>` : ''}${aiHtml}</div>
+    </div>
+  </div>`;
+}
+
 function renderForecast(d, isKrx) {
   const risk = d.risk_scenarios;
   const bp   = d.buy_price;
   const tp   = d.target_price;
   const ai   = d.ai_strategy;
+
+  renderPredictionSections(d, isKrx);
 
   // ── AI 종합 진단 및 트레이딩 전략 섹션 ──
   const aiEl = document.getElementById('ai-strategy-section');
@@ -12392,14 +13077,19 @@ function renderForecast(d, isKrx) {
       .map(line => line.trim())
       .filter(line => line && !hiddenAiStrategyPatterns.some(pattern => pattern.test(line)));
 
+    const reusedEvidence = ((d.prediction_outlook || {}).ai_evidence || []).slice(0, 4);
+    const conciseLines = reusedEvidence.length ? reusedEvidence : visibleAiStrategyLines.slice(0, 4);
+
     aiEl.innerHTML = `
       <div style="background: rgba(31, 111, 235, 0.05); border-radius:10px; padding:16px; margin-bottom:16px; border: 1px solid #1f6feb;">
+        <div style="font-size:11px;color:#58a6ff;font-weight:700;margin-bottom:8px">AI 진단 탭에서 재사용한 보조 근거</div>
         <div style="color:#e6edf3; font-size: 14px; line-height: 1.6;">
-          ${visibleAiStrategyLines.map(line => {
+          ${conciseLines.map(line => {
             if (line.startsWith('[')) return `<div style="margin-top:12px; font-weight:bold; color:#388bfd; font-size: 15px;">${line}</div>`;
             return `<div style="margin-top:6px; margin-left:8px;">${line}</div>`;
           }).join('')}
         </div>
+        <div style="font-size:10px;color:#8b949e;margin-top:10px">단독 매매 신호가 아니라 가격·거래량·지지선 조건과 함께 확인하는 참고 정보입니다.</div>
       </div>
     `;
   }
@@ -12525,6 +13215,10 @@ function renderForecast(d, isKrx) {
       const [bannerC, bannerBg] = ctxColorMap[sr.context] || ['#d29922','#2d2200'];
       const confColor = (sr.confidence_pct || 50) >= 70 ? '#3fb950' : (sr.confidence_pct || 50) >= 50 ? '#d29922' : '#f85149';
       const ratHtml   = (sr.rationale || []).map(r => `<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:3px"><span style="color:${bannerC};flex-shrink:0">•</span><span>${r}</span></div>`).join('');
+      const currentContext = bp.current_context || {};
+      const currentContextHtml = ['price_position','volume','market','entry_rule']
+        .filter(k => currentContext[k])
+        .map(k => `<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:3px"><span style="color:#58a6ff;flex-shrink:0">✓</span><span>${currentContext[k]}</span></div>`).join('');
       const stratBanner = sr.action ? `
         <div style="background:${bannerBg};border:1px solid ${bannerC}55;border-radius:10px;padding:14px;margin-bottom:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
@@ -12535,6 +13229,7 @@ function renderForecast(d, isKrx) {
             </div>
           </div>
           <div style="font-size:12px;color:#cdd9e5;line-height:1.6">${ratHtml}</div>
+          ${currentContextHtml ? `<div style="font-size:11px;color:#8b949e;line-height:1.55;margin-top:9px;padding-top:9px;border-top:1px solid #30363d">${currentContextHtml}</div>` : ''}
           ${sr.chase_zone && sr.chase_zone.reason ? `
           <div style="margin-top:10px;padding:8px 10px;background:#2d0d0d;border-left:3px solid #f85149;border-radius:0 6px 6px 0;font-size:11px;color:#f85149">
             ⛔ 추격 매수 위험: ${sr.chase_zone.reason}
@@ -12652,9 +13347,7 @@ function renderForecast(d, isKrx) {
           </div>` : '';
 
       const isWaitMode = ['wait', 'wait_support', 'wait_breakdown'].includes(sr.action_key);
-      const aggTitle = isWaitMode
-        ? '⚡ 1차 매수 구간 (ATR 기반) · 참고용 대기 구간'
-        : '⚡ 1차 매수 구간 (ATR 기반) · 소액 탐색';
+      const aggTitle = '⚡ 1차 매수 구간 (ATR 기반) · 소액 탐색';
       const aggNote = isWaitMode
         ? '매수 보류 상태 · 반등 확인 전 실행 구간 아님'
         : '백테스트 + 이벤트 위험 반영';
@@ -12691,11 +13384,20 @@ function renderForecast(d, isKrx) {
     } else if (_stopBal && _stopBal.stop) {
       _stopVal = _stopBal.stop[0]; _stopPct = _stopBal.stop_pct;
     }
+    const outlook = d.prediction_outlook || {};
+    const warningZone = (outlook.levels || {}).warning_zone || [];
+    const warningZoneHtml = warningZone.length === 2
+      ? `<div style="margin-top:8px"><div style="font-size:10px;color:#8b949e">주의 구간</div><div style="font-size:12px;font-weight:700;color:#d29922">${fmt(warningZone[0], isKrx)} ~ ${fmt(warningZone[1], isKrx)}</div><div style="font-size:10px;color:#8b949e;margin-top:2px">지지 회복 전 신규 진입 비중 축소</div></div>` : '';
+    const riskTriggerHtml = (outlook.risk_triggers || []).slice(0, 5)
+      .map(x => `<div style="display:flex;gap:5px;align-items:flex-start;margin-bottom:2px"><span style="color:#f85149">•</span><span>${x}</span></div>`).join('');
     const commonStopHtml = (_stopVal == null) ? '' : `
       <div style="grid-column:1 / -1;background:#0d1117;border-radius:8px;padding:11px 14px;border:1px solid #f85149">
-        <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">손절선</div>
+        <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">손절가</div>
         <div style="font-size:17px;font-weight:800;color:#f85149">${fmt(_stopVal, isKrx)}</div>
-        <div style="font-size:11px;color:#d29922;margin-top:4px">${_stopPct != null ? _stopPct + '% 손실 — ' : ''}이탈 시 미련 없이 정리</div>
+        <div style="font-size:11px;color:#d29922;margin-top:4px">${_stopPct != null ? _stopPct + '% 범위 · ' : ''}종가 이탈과 거래량 증가가 함께 나타나면 손실 제한 우선</div>
+        <div style="font-size:10px;color:#8b949e;margin-top:5px">${risk.vol_state || ''} · ${risk.vol_trend || ''} 변동성이 클수록 정상 가격 진폭도 커져 ATR 손절 폭이 넓어지며, 저변동성에서는 기준이 좁아질 수 있습니다.</div>
+        ${warningZoneHtml}
+        ${riskTriggerHtml ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #30363d"><div style="font-size:10px;color:#f85149;font-weight:700;margin-bottom:4px">리스크 확대 조건</div><div style="font-size:10px;color:#8b949e;line-height:1.5">${riskTriggerHtml}</div></div>` : ''}
       </div>`;
     rgEl.innerHTML = `
       ${riskEntries.map(sc => {
@@ -12782,6 +13484,7 @@ function renderForecast(d, isKrx) {
           <div class="risk-icon">${sc.icon}</div>
           <div class="risk-name">${sc.label}</div>
           <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
+          <div style="font-size:10px;color:#8b949e;margin:-4px 0 8px">ATR ${risk.atr_pct || '—'}% · 손절 기준 ${sc.atr_mul_stp || '—'}ATR · 현재 변동성 보정 반영</div>
           <div class="risk-row" style="margin-bottom:4px">
             <span class="risk-lbl">🎯 목표가</span>
             <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
@@ -13358,6 +14061,7 @@ async function loadMarketCore() {
 }
 
 function renderMarketCore(d) {
+  _marketCoreSnapshot = d;
   // 시장 무드 배지 — 한국/미국 개별 표시
   const moodMap = {
     positive: ['mood-positive', '우호적'],
@@ -13428,6 +14132,9 @@ function renderMarketCore(d) {
       </div>
     </div>`;
   }).join('');
+  if (currentData && currentData.prediction_outlook) {
+    renderPredictionSections(currentData, currentData.market === 'KRX');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -13504,6 +14211,8 @@ function renderSectorFlow(d) {
   const cardsEl = document.getElementById('sector-cards');
   if (!cardsEl) return;
 
+  _sectorFlowSnapshot = d;
+
   const sectors = d.sectors || [];
   if (!sectors.length) {
     cardsEl.innerHTML = '<p style="color:#484f58;font-size:13px">섹터 데이터 없음</p>';
@@ -13520,6 +14229,9 @@ function renderSectorFlow(d) {
   });
 
   cardsEl.innerHTML = sorted.map(_buildSectorCardHtml).join('');
+  if (currentData && currentData.prediction_outlook) {
+    renderPredictionSections(currentData, currentData.market === 'KRX');
+  }
 }
 
 // ── 섹터 카드 토글 (펼치기 / 접기) ───────────────────────────────────────
@@ -14481,10 +15193,11 @@ function renderUsSurgeCards(items, note) {
   if (!el) return;
   // US 장기 추천에 이미 포함된 티커는 중복 제거
   var filtered = (items || []).filter(function(it) {
-    return !_usLtTickers.has(it.ticker);
+    var price = Number(it.pm_price);
+    return Number.isFinite(price) && price > 0 && price < 20 && !_usLtTickers.has(it.ticker);
   });
   if (!filtered.length) {
-    var msg = note || '현재 급등 조건에 부합하는 종목이 없습니다.<br>프리마켓 시간(미국 동부 오전 4~9시30분)에 확인해 주세요.';
+    var msg = note || '현재 $20 미만 급등 조건에 부합하는 종목이 없습니다.<br>프리마켓 시간(미국 동부 오전 4~9시30분)에 확인해 주세요.';
     el.innerHTML = '<div class="us-reco-empty">' + msg + '</div>';
     return;
   }
