@@ -1,6 +1,6 @@
 """예측 탭 구조화 로직과 미국 급등 추천 가격 경계 검증."""
 
-from api.index import _is_us_surge_price_eligible, build_prediction_outlook
+from api.index import HTML, _is_us_surge_price_eligible, build_prediction_outlook
 
 
 def _sample_dd():
@@ -127,3 +127,21 @@ def test_us_prediction_reuses_macro_sector_and_earnings_context():
     assert {"S&P 500", "VIX", "달러", "섹터", "실적"}.issubset(labels)
     assert any("나스닥" in gap for gap in result["market_context"]["data_gaps"])
     assert any("정책금리" in gap for gap in result["market_context"]["data_gaps"])
+
+
+def test_forecast_tab_sections_follow_decision_context_order():
+    forecast_html = HTML.split('<div id="tab-forecast"', 1)[1].split('<!-- 뉴스 탭 -->', 1)[0]
+    ordered_labels = [
+        "🔮 핵심 판단과 현재 상태",
+        "🌐 판단 근거 · 시장 흐름과 AI 진단",
+        "🧭 조건부 예측 시나리오",
+        "📈 목표 가격 범위",
+        "🎯 현재가 기준 매수 전략",
+        "🛡️ 리스크 관리 (ATR 기반)",
+    ]
+    positions = [forecast_html.index(label) for label in ordered_labels]
+
+    assert positions == sorted(positions)
+    assert forecast_html.count('id="ai-strategy-section"') == 1
+    assert "분석 흐름" in forecast_html
+    assert "AI 보조 해석 상세 보기" in forecast_html

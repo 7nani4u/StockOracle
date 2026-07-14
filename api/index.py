@@ -9757,6 +9757,12 @@ input::placeholder{color:#484f58}
 .forecast-helper{font-size:10px;color:#484f58;line-height:1.5}
 
 /* 예측 탭 — 핵심 판단·현재 상태·조건부 시나리오 */
+.forecast-reading-flow{display:flex;align-items:center;gap:12px;background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:10px 12px;margin-bottom:12px;min-width:0}
+.forecast-flow-label{font-size:10px;font-weight:800;color:#8b949e;white-space:nowrap}
+.forecast-flow-list{display:flex;align-items:center;gap:6px;flex-wrap:wrap;list-style:none;margin:0;padding:0;min-width:0}
+.forecast-flow-step{display:flex;align-items:center;gap:5px;font-size:10px;color:#cdd9e5;white-space:nowrap}
+.forecast-flow-step:not(:last-child)::after{content:'→';color:#484f58;margin-left:1px}
+.forecast-flow-index{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#1f6feb22;border:1px solid #1f6feb66;color:#58a6ff;font-size:9px;font-weight:900;flex:0 0 auto}
 .prediction-stack{display:flex;flex-direction:column;gap:14px}
 .prediction-decision{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:16px;background:linear-gradient(135deg,#161b22,#111820);border:1px solid #30363d;border-radius:12px;padding:18px}
 .prediction-kicker{font-size:10px;color:#8b949e;letter-spacing:.06em;text-transform:uppercase;margin-bottom:7px}
@@ -9800,6 +9806,12 @@ input::placeholder{color:#484f58}
 .prediction-pattern-alert{font-size:11px;line-height:1.55;border-left:3px solid #d29922;background:#2d220055;border-radius:0 7px 7px 0;padding:8px 10px;margin-bottom:8px}
 .prediction-mini-list{font-size:10px;color:#8b949e;line-height:1.55}
 .prediction-scope{font-size:10px;color:#484f58;line-height:1.5;margin-top:9px}
+.prediction-ai-details{margin-top:10px;border-top:1px solid #30363d;padding-top:10px}
+.prediction-ai-details>summary{cursor:pointer;list-style:none;font-size:11px;font-weight:800;color:#58a6ff;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0}
+.prediction-ai-details>summary::-webkit-details-marker{display:none}
+.prediction-ai-details>summary::after{content:'＋';font-size:14px;color:#8b949e}
+.prediction-ai-details[open]>summary::after{content:'－'}
+.prediction-ai-details #ai-strategy-section{margin-top:9px}
 
 /* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
 .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -9857,6 +9869,7 @@ input::placeholder{color:#484f58}
   .prediction-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prediction-scenario-grid{grid-template-columns:1fr}
   .prediction-context-grid{grid-template-columns:1fr}
+  .forecast-reading-flow{align-items:flex-start;flex-direction:column;gap:7px}
   /* 900px 이하: 3열 */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
@@ -9956,6 +9969,9 @@ input::placeholder{color:#484f58}
   .prediction-status-grid,.prediction-facts{grid-template-columns:1fr}
   .prediction-price-range{font-size:15px;white-space:normal}
   .prediction-scenario-summary{min-height:0}
+  .forecast-flow-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:6px}
+  .forecast-flow-step{white-space:normal}
+  .forecast-flow-step:not(:last-child)::after{display:none}
   .risk-card{padding:12px}
   .buy-card{padding:12px}
   .fund-grid{grid-template-columns:1fr 1fr}
@@ -10617,17 +10633,32 @@ input::placeholder{color:#484f58}
 
       <!-- 예측 탭 -->
       <div id="tab-forecast" style="display:none">
+        <div class="forecast-reading-flow" aria-label="예측 탭 정보 확인 순서">
+          <div class="forecast-flow-label">분석 흐름</div>
+          <ol class="forecast-flow-list">
+            <li class="forecast-flow-step"><span class="forecast-flow-index">1</span><span>현재 상태</span></li>
+            <li class="forecast-flow-step"><span class="forecast-flow-index">2</span><span>판단 근거</span></li>
+            <li class="forecast-flow-step"><span class="forecast-flow-index">3</span><span>조건부 시나리오</span></li>
+            <li class="forecast-flow-step"><span class="forecast-flow-index">4</span><span>목표 범위</span></li>
+            <li class="forecast-flow-step"><span class="forecast-flow-index">5</span><span>진입 조건</span></li>
+            <li class="forecast-flow-step"><span class="forecast-flow-index">6</span><span>위험 관리</span></li>
+          </ol>
+        </div>
         <div class="card">
           <div class="card-title">🔮 핵심 판단과 현재 상태</div>
           <div id="prediction-overview-section"></div>
         </div>
         <div class="card">
-          <div class="card-title">🧭 조건부 예측 시나리오</div>
-          <div id="prediction-scenarios-section"></div>
+          <div class="card-title">🌐 판단 근거 · 시장 흐름과 AI 진단</div>
+          <div id="prediction-context-section"></div>
+          <details class="prediction-ai-details">
+            <summary>💡 AI 보조 해석 상세 보기</summary>
+            <div id="ai-strategy-section"></div>
+          </details>
         </div>
         <div class="card">
-          <div class="card-title">🌐 시장 흐름 · AI 진단 반영</div>
-          <div id="prediction-context-section"></div>
+          <div class="card-title">🧭 조건부 예측 시나리오</div>
+          <div id="prediction-scenarios-section"></div>
         </div>
         <div class="card">
           <div class="card-title">📈 목표 가격 범위</div>
@@ -10644,10 +10675,6 @@ input::placeholder{color:#484f58}
           <div class="card-title">🛡️ 리스크 관리 (ATR 기반)</div>
           <div class="risk-grid" id="risk-grid"></div>
           <div id="pullback-atr-section"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">💡 AI 보조 해석</div>
-          <div id="ai-strategy-section"></div>
         </div>
       </div>
 
@@ -13063,9 +13090,12 @@ function renderForecast(d, isKrx) {
   const ai   = d.ai_strategy;
 
   renderPredictionSections(d, isKrx);
-
   // ── AI 종합 진단 및 트레이딩 전략 섹션 ──
   const aiEl = document.getElementById('ai-strategy-section');
+  if (aiEl) {
+    const aiDetailsEl = aiEl.closest('details');
+    if (aiDetailsEl) aiDetailsEl.style.display = ai ? 'block' : 'none';
+  }
   if (aiEl && ai) {
     const hiddenAiStrategyPatterns = [
       /^\[시장 상태\]/,
@@ -13078,18 +13108,24 @@ function renderForecast(d, isKrx) {
       .filter(line => line && !hiddenAiStrategyPatterns.some(pattern => pattern.test(line)));
 
     const reusedEvidence = ((d.prediction_outlook || {}).ai_evidence || []).slice(0, 4);
-    const conciseLines = reusedEvidence.length ? reusedEvidence : visibleAiStrategyLines.slice(0, 4);
+    const reusedSet = new Set(reusedEvidence.map(line => String(line).replace(/\s+/g, ' ').trim()));
+    const conciseLines = visibleAiStrategyLines
+      .filter(line => !reusedSet.has(String(line).replace(/\s+/g, ' ').trim()))
+      .slice(0, 6);
+    const detailBody = conciseLines.length
+      ? conciseLines.map(line => {
+          if (line.startsWith('[')) return `<div style="margin-top:10px;font-weight:bold;color:#388bfd;font-size:13px">${_escPrediction(line)}</div>`;
+          return `<div style="margin-top:5px;margin-left:8px">${_escPrediction(line)}</div>`;
+        }).join('')
+      : '<div style="color:#8b949e">추가 해석은 위의 시장·AI 판단 근거에 통합되어 있습니다.</div>';
 
     aiEl.innerHTML = `
-      <div style="background: rgba(31, 111, 235, 0.05); border-radius:10px; padding:16px; margin-bottom:16px; border: 1px solid #1f6feb;">
-        <div style="font-size:11px;color:#58a6ff;font-weight:700;margin-bottom:8px">AI 진단 탭에서 재사용한 보조 근거</div>
-        <div style="color:#e6edf3; font-size: 14px; line-height: 1.6;">
-          ${conciseLines.map(line => {
-            if (line.startsWith('[')) return `<div style="margin-top:12px; font-weight:bold; color:#388bfd; font-size: 15px;">${line}</div>`;
-            return `<div style="margin-top:6px; margin-left:8px;">${line}</div>`;
-          }).join('')}
+      <div style="background:rgba(31,111,235,.05);border-radius:10px;padding:13px;border:1px solid #1f6feb55">
+        <div style="font-size:11px;color:#58a6ff;font-weight:700;margin-bottom:8px">AI 진단 탭의 추가 근거</div>
+        <div style="color:#cdd9e5;font-size:12px;line-height:1.6">
+          ${detailBody}
         </div>
-        <div style="font-size:10px;color:#8b949e;margin-top:10px">단독 매매 신호가 아니라 가격·거래량·지지선 조건과 함께 확인하는 참고 정보입니다.</div>
+        <div style="font-size:10px;color:#8b949e;margin-top:9px">단독 매매 신호가 아니라 가격·거래량·지지선 조건과 함께 확인하는 참고 정보입니다.</div>
       </div>
     `;
   }
