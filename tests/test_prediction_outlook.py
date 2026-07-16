@@ -129,19 +129,22 @@ def test_us_prediction_reuses_macro_sector_and_earnings_context():
     assert any("정책금리" in gap for gap in result["market_context"]["data_gaps"])
 
 
-def test_forecast_tab_sections_follow_decision_context_order():
+def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     forecast_html = HTML.split('<div id="tab-forecast"', 1)[1].split('<!-- 뉴스 탭 -->', 1)[0]
-    ordered_labels = [
-        "🔮 핵심 판단과 현재 상태",
-        "🌐 판단 근거 · 시장 흐름과 AI 진단",
-        "🧭 조건부 예측 시나리오",
-        "📈 목표 가격 범위",
-        "🎯 현재가 기준 매수 전략",
-        "🛡️ 리스크 관리 (ATR 기반)",
-    ]
-    positions = [forecast_html.index(label) for label in ordered_labels]
+    overview_pos = forecast_html.index("🔮 핵심 판단과 현재 상태")
+    buy_pos = forecast_html.index('id="buy-price-section"')
+    scenario_pos = forecast_html.index('id="prediction-scenarios-section"')
+    risk_pos = forecast_html.index('id="risk-grid"')
 
-    assert positions == sorted(positions)
+    assert overview_pos < buy_pos < scenario_pos < risk_pos
+    assert "분석 흐름" not in forecast_html
+    assert "📈 목표 가격 범위" not in forecast_html
+    assert 'id="target-price-section"' not in forecast_html
     assert forecast_html.count('id="ai-strategy-section"') == 1
-    assert "분석 흐름" in forecast_html
-    assert "AI 보조 해석 상세 보기" in forecast_html
+    assert "시장·AI 판단 근거 상세 보기" in forecast_html
+    assert '<div class="buy-card forecast-scenario-group">' in forecast_html
+
+
+def test_us_fundamentals_are_hidden_only_on_forecast_tab():
+    assert 'id="r-us-fund"' in HTML
+    assert "hasFundamentals && tab !== 'forecast' ? 'block' : 'none'" in HTML
