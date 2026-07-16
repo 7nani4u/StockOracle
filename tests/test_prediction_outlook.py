@@ -1,6 +1,6 @@
 """예측 탭 구조화 로직과 미국 급등 추천 가격 경계 검증."""
 
-from api.index import HTML, _is_us_surge_price_eligible, build_prediction_outlook
+from api.index import HTML, _is_us_surge_price_eligible, build_prediction_outlook, calc_risk
 
 
 def _sample_dd():
@@ -81,6 +81,38 @@ def test_us_surge_price_filter_is_strictly_below_20():
     assert not _is_us_surge_price_eligible(None)
 
 
+def test_risk_scenarios_expose_five_ordered_tp_estimate_ranges():
+    dd = _sample_dd()
+    for market in ("KRX", "US"):
+        result = calc_risk(
+            price=dd["Close"][-1],
+            atr=2.1,
+            market=market,
+            dd=dd,
+            event_risk={"score": 8, "level": "low", "reasons": []},
+        )
+
+        for key in ("conservative", "balanced", "aggressive"):
+            scenario = result[key]
+            levels = scenario["tp_levels"]
+            assert len(levels) == 5
+            assert [level["price"] for level in levels] == sorted(level["price"] for level in levels)
+            probabilities = [level["prob_pct"] for level in levels]
+            assert probabilities == sorted(probabilities, reverse=True)
+            for level in levels:
+                assert level["prob_low_pct"] <= level["prob_pct"] <= level["prob_high_pct"]
+                assert level["days_min"] <= level["avg_days"] <= level["days_max"]
+            assert "position_plan" not in scenario
+            assert "failure_conditions" not in scenario
+
+
+def test_removed_risk_card_sections_are_not_rendered():
+    assert "분할 비중" not in HTML
+    assert "최대 허용 손실" not in HTML
+    assert "이 시나리오가 실패할 수 있는 조건" not in HTML
+    assert "목표가 레벨별 도달 가능성" in HTML
+
+
 def test_prediction_outlook_builds_three_conditional_scenarios():
     flags = [{
         "pattern": "지지선 이탈 척 (손절 유도)",
@@ -141,10 +173,16 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     assert "📈 목표 가격 범위" not in forecast_html
     assert 'id="target-price-section"' not in forecast_html
     assert forecast_html.count('id="ai-strategy-section"') == 1
-    assert "시장·AI 판단 근거 상세 보기" in forecast_html
+    assert 'class="prediction-context-inline"' in forecast_html
+    assert 'id="prediction-context-section"' in forecast_html
+    assert "시장·AI 판단 근거 상세 보기" not in forecast_html
+    assert "<details" not in forecast_html
+    assert "시장·업종·수급" in HTML
+    assert "AI 진단 · 세력 흔들림 재활용" in HTML
     assert '<div class="buy-card forecast-scenario-group">' in forecast_html
 
 
-def test_us_fundamentals_are_hidden_only_on_forecast_tab():
-    assert 'id="r-us-fund"' in HTML
-    assert "hasFundamentals && tab !== 'forecast' ? 'block' : 'none'" in HTML
+def test_us_fundamentals_are_not_rendered_in_result_ui():
+    assert 'id="r-us-fund"' not in HTML
+    assert 'id="f-us-sector"' not in HTML
+    assert "기업 펀더멘털 (Alpha Vantage)" not in HTML

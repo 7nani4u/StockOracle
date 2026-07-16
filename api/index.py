@@ -5558,87 +5558,89 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     _tp1_base = 84.0 if _is_us else 88.0
     _decay_rate = 9.5 if _is_us else 6.0
     _tp_mom   = (trend - 2) * 3.0          # 추세 강도별 ±6pp
-    _tp_rsi   = 5.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
+    _tp_rsi   = 4.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _base_days = 12.3 if _is_us else 13.0  # Zone B 평균 보유일 기준
-    _fl_b = -1.22 if _is_us else -1.11     # Zone B 실패 손실
-    _fl_a = -1.67 if _is_us else -1.61     # Zone A 실패 손실 (더 깊음)
+    def _make_tp_from_tgt(tgt_range, profile: str):
+        """현재가부터 목표 범위 상단까지 5개 확인 가격과 도달 가능성·기간 범위를 산출한다.
 
-    def _make_tp_from_tgt(tgt_range):
-        """목표가 범위(tgt_range)를 TP1/TP2/TP3로 분할 → 각각 도달 확률·기간 산출.
-        TP 가격은 반드시 해당 리스크 프로필의 실제 목표가에서 나와야 한다.
-        확률은 현재가 대비 ATR 거리 기반으로 실데이터 백테스트 분포를 보간하여 계산."""
+        TP1~TP3은 최종 목표로 가는 중간 확인 가격, TP4~TP5는 목표 범위 진입/상단
+        가격이다. 확률은 ATR 거리 기반 백테스트 보정값에 추세·ADX·거래량·하방 위험을
+        반영하며, 먼 가격의 가능성이 가까운 가격보다 높아지지 않도록 단조 보정한다.
+        """
         lo, hi = tgt_range[0], tgt_range[1]
-        tp_prices = [lo, (lo + hi) / 2, hi]   # TP1=하단, TP2=중간, TP3=상단
+        final_price = max(hi, price + max(atr * 0.5, price * 0.005))
+        total_move = final_price - price
+        lo_progress = min(0.98, max(0.70, (lo - price) / total_move)) if total_move > 0 else 0.90
+        progress_steps = [0.30, 0.48, 0.66, max(0.82, lo_progress), 1.0]
+        tp_prices = [price + total_move * progress for progress in progress_steps]
+
+        adx_adjust = min(5.0, max(0.0, adx - 20.0) * 0.35)
+        if trend <= 1:
+            adx_adjust *= -1.0
+        volume_adjust = min(4.0, max(-4.0, (vol_ratio_now - 1.0) * 8.0))
+        if macd <= sig_line:
+            volume_adjust = min(0.0, volume_adjust)
+        risk_adjust = -min(12.0, downside_points * 0.16)
+        volatility_adjust = -3.0 if vol_trend == "expanding" else (1.5 if vol_trend == "contracting" else 0.0)
+        profile_adjust = (
+            (breakout_probability_pct - 50.0) * 0.12 if profile == "aggressive" else
+            (breakout_probability_pct - 50.0) * 0.04 if profile == "balanced" else 0.0
+        )
+
+        speed_factor = 1.0
+        speed_factor *= 0.84 if trend >= 3 else (1.18 if trend <= 1 else 1.0)
+        speed_factor *= 0.90 if adx >= 25 and trend >= 2 else (1.10 if adx < 15 else 1.0)
+        speed_factor *= 0.90 if vol_ratio_now >= 1.25 and macd > sig_line else (1.10 if vol_ratio_now < 0.70 else 1.0)
+
         result = []
-        for tp_price in tp_prices:
-            # ATR 단위 거리 (현재가 기준, 목표가가 위에 있어야 양수)
+        previous_prob = 96.0
+        for index, tp_price in enumerate(tp_prices):
             dist_atr = (tp_price - price) / atr if atr > 0 else 1.0
-            # 0.8 ATR 이내: 기준 확률 유지 / 초과분: ATR당 감쇄(시장별 실측 보정)
-            decay    = max(0.0, dist_atr - 0.8) * _decay_rate
-            prob     = round(min(95.0, max(10.0, _tp1_base - decay + _tp_mom + _tp_rsi)), 1)
-            # 도달 기간: 0.8 ATR = base_days, 이후 거리에 비례하여 증가
-            days     = round(_base_days * max(0.5, dist_atr / 0.8), 1)
-            ret_pct  = round((tp_price - price) / price * 100, 2) if price > 0 else 0.0
-            # 실패 손실: 목표가가 2.5 ATR 이상이면 더 넓은 하락 범위 적용
-            fl       = _fl_b if dist_atr < 2.5 else _fl_a
+            decay = max(0.0, dist_atr - 0.8) * _decay_rate
+            raw_prob = (_tp1_base - decay + _tp_mom + _tp_rsi + adx_adjust
+                        + volume_adjust + risk_adjust + volatility_adjust + profile_adjust)
+            prob = min(95.0, max(8.0, raw_prob))
+            if index:
+                prob = min(prob, previous_prob - 1.0)
+            prob = round(max(8.0, prob), 1)
+            previous_prob = prob
+
+            # 기간은 거래일 기준 중앙 추정치와 변동성·이벤트 위험을 반영한 범위로 제공한다.
+            days = _base_days * max(0.35, (max(dist_atr, 0.1) / 0.8) ** 1.05) * speed_factor
+            uncertainty = 0.24
+            uncertainty += 0.12 if vol_trend == "expanding" else 0.0
+            uncertainty += min(0.12, event_points / 200.0)
+            uncertainty += min(0.10, max(0.0, dist_atr - 2.0) * 0.015)
+            days_min = round(max(1.0, days * (1.0 - uncertainty)), 1)
+            days_max = round(max(days_min + 1.0, days * (1.0 + uncertainty)), 1)
+            days = round(days, 1)
+
+            prob_margin = 4.0
+            prob_margin += 3.0 if vol_trend == "expanding" else 0.0
+            prob_margin += min(3.0, event_points * 0.08)
+            prob_margin += min(3.0, max(0.0, dist_atr - 2.0) * 0.5)
+            ret_pct = round((tp_price - price) / price * 100, 2) if price > 0 else 0.0
             result.append({
                 "price":             round(tp_price, rnd),
                 "return_pct":        ret_pct,
                 "prob_pct":          prob,
+                "prob_low_pct":      round(max(5.0, prob - prob_margin), 1),
+                "prob_high_pct":     round(min(97.0, prob + prob_margin), 1),
                 "avg_days":          days,
-                "fail_avg_loss_pct": fl,
+                "days_min":          days_min,
+                "days_max":          days_max,
             })
         return result
+    # 각 리스크 프로필의 목표 경로를 5개 가격 단계로 생성
+    cons_tp = _make_tp_from_tgt(cons_tgt_range, "conservative")
+    bal_tp  = _make_tp_from_tgt(bal_tgt_range, "balanced")
+    agg_tp  = _make_tp_from_tgt(agg_tgt_range, "aggressive")
 
-    # 각 리스크 프로필의 실제 목표가 범위에서 TP 레벨 생성
-    cons_tp = _make_tp_from_tgt(cons_tgt_range)
-    bal_tp  = _make_tp_from_tgt(bal_tgt_range)
-    agg_tp  = _make_tp_from_tgt(agg_tgt_range)
-
-    alloc_factor = 0.55 if downside_risk_level == "high" else 0.75 if downside_risk_level == "medium" else 1.0
-    alloc_factor *= float((learning_adjustment or {}).get("allocation_scale") or 1.0)
-    volatility_expanded = vol_trend == "expanding" or atr_pct > 4.0
-
-    def _risk_detail(base_alloc: float, max_loss_cap: float, stop_pct: float) -> Dict:
-        alloc = round(base_alloc * alloc_factor, 1)
-        if volatility_expanded:
-            alloc = round(alloc * 0.8, 1)
-        return {
-            "allocation_pct": alloc,
-            "max_loss_pct": round(min(abs(stop_pct), max_loss_cap), 2),
-            "volatility_expanded": volatility_expanded,
-            "volatility_note": "변동성 확대 — 평소보다 작은 비중 권장" if volatility_expanded else "변동성 안정권",
-        }
+    def _target_zone_confidence(tp_levels: list[Dict], target_low: float) -> float | None:
+        return next((level["prob_pct"] for level in tp_levels if level["price"] >= target_low),
+                    tp_levels[-1]["prob_pct"] if tp_levels else None)
 
     r = lambda v: round(v, rnd)
-    # ── 시나리오별 실패 조건 산출 ─────────────────────────────────────
-    def _fail_conditions(scenario: str) -> list[str]:
-        conds: list[str] = []
-        if vol_trend == "expanding":
-            conds.append("변동성 확대 중 — 손절 이탈 가능성 증가")
-        if event_points >= 12:
-            conds.append("실적·공시·소송·가이던스 이벤트 위험 — 갭 하락 가능성 증가")
-        if rsi > 65:
-            conds.append(f"RSI {rsi:.0f} — 과열권, 조정 압력 상존")
-        if scenario == "conservative":
-            if trend < 2:
-                conds.append("추세 약함 — 단기 반등이 제한적일 수 있음")
-            conds.append("BB 하단 이탈 시 손절 즉시 집행 필요")
-        elif scenario == "balanced":
-            if macd <= sig_line:
-                conds.append("MACD 하락 전환 — 중기 추세 약화 가능성")
-            if ma20 and price < ma20:
-                conds.append("MA20 이탈 상태 — 지지 복귀 실패 시 하락 가속")
-            conds.append("MA20 재이탈 시 포지션 재검토 권장")
-        elif scenario == "aggressive":
-            if trend < 3:
-                conds.append("추세 강도 부족 — 목표가 도달 난이도 높음")
-            conds.append("거래량 감소 시 상승 모멘텀 소멸 위험")
-            conds.append("고변동성 구간 — 목표가 이전 손절 이탈 가능")
-        if not conds:
-            conds.append("현재 기준 주요 실패 요인 없음")
-        return conds
-
     return {
         "conservative": {
             "label": "보수적",
@@ -5653,10 +5655,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_stp": cons_stp_mul,
             "interpretation": f"BB 하단 참조 손절 · 단기 반등 목표 (R/R {cons_rr:.1f}:1)",
             "target_basis": cons_basis,
-            "target_confidence_pct": cons_tp[1]["prob_pct"] if len(cons_tp) > 1 else None,
+            "target_confidence_pct": _target_zone_confidence(cons_tp, cons_tgt_range[0]),
             "tp_levels": cons_tp,
-            "failure_conditions": _fail_conditions("conservative"),
-            "position_plan": _risk_detail(25, 2.5, cons_stp_pct),
         },
         "balanced": {
             "label": "중립적",
@@ -5671,10 +5671,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_stp": bal_stp_mul,
             "interpretation": f"MA20 지지 손절 · 중기 추세 목표 (R/R {bal_rr:.1f}:1)",
             "target_basis": bal_basis,
-            "target_confidence_pct": bal_tp[1]["prob_pct"] if len(bal_tp) > 1 else None,
+            "target_confidence_pct": _target_zone_confidence(bal_tp, bal_tgt_range[0]),
             "tp_levels": bal_tp,
-            "failure_conditions": _fail_conditions("balanced"),
-            "position_plan": _risk_detail(45, 4.0, bal_stp_pct),
         },
         "aggressive": {
             "label": "공격적",
@@ -5689,11 +5687,9 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_stp": agg_stp_mul,
             "interpretation": f"BB 상단 참조 목표 · 추세 지속 시 최대 수익 (R/R {agg_rr:.1f}:1)",
             "target_basis": agg_basis,
-            "target_confidence_pct": agg_tp[1]["prob_pct"] if len(agg_tp) > 1 else None,
+            "target_confidence_pct": _target_zone_confidence(agg_tp, agg_tgt_range[0]),
             "breakout_probability_pct": breakout_probability_pct,
             "tp_levels": agg_tp,
-            "failure_conditions": _fail_conditions("aggressive"),
-            "position_plan": _risk_detail(30, 6.0, agg_stp_pct),
         },
         "vol_state": vol_state_txt,
         "vol_trend": vol_trend_txt,
@@ -9652,6 +9648,7 @@ input::placeholder{color:#484f58}
 .risk-tgt{color:#f85149;font-weight:700}
 .risk-stp{color:#388bfd;font-weight:700}
 .risk-ratio{text-align:right;font-size:11px;color:#484f58;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
+.risk-tp-level{display:grid;grid-template-columns:30px minmax(72px,1.1fr) minmax(48px,.7fr) minmax(88px,1fr) minmax(78px,.9fr);gap:5px;align-items:center}
 
 /* 뉴스 */
 .news-item{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #21262d}
@@ -9768,12 +9765,8 @@ input::placeholder{color:#484f58}
 .prediction-pattern-alert{font-size:11px;line-height:1.55;border-left:3px solid #d29922;background:#2d220055;border-radius:0 7px 7px 0;padding:8px 10px;margin-bottom:8px}
 .prediction-mini-list{font-size:10px;color:#8b949e;line-height:1.55}
 .prediction-scope{font-size:10px;color:#484f58;line-height:1.5;margin-top:9px}
-.prediction-ai-details{margin-top:10px;border-top:1px solid #30363d;padding-top:10px}
-.prediction-ai-details>summary{cursor:pointer;list-style:none;font-size:11px;font-weight:800;color:#58a6ff;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0}
-.prediction-ai-details>summary::-webkit-details-marker{display:none}
-.prediction-ai-details>summary::after{content:'＋';font-size:14px;color:#8b949e}
-.prediction-ai-details[open]>summary::after{content:'－'}
-.prediction-ai-details #ai-strategy-section{margin-top:9px}
+.prediction-context-inline{margin-top:12px;border-top:1px solid #30363d;padding-top:12px}
+.prediction-context-inline #ai-strategy-section{margin-top:9px}
 
 /* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
 .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -9916,6 +9909,9 @@ input::placeholder{color:#484f58}
   .prediction-status-grid,.prediction-facts{grid-template-columns:1fr}
   .prediction-price-range{font-size:15px;white-space:normal}
   .risk-card{padding:12px}
+  .risk-tp-level{grid-template-columns:30px minmax(80px,1fr) auto!important;row-gap:2px}
+  .risk-tp-level span:nth-child(4){grid-column:2}
+  .risk-tp-level span:nth-child(5){grid-column:3}
   .buy-card{padding:12px}
   .fund-grid{grid-template-columns:1fr 1fr}
   #result-tabs{gap:5px}
@@ -10503,18 +10499,6 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">산업</div><div class="fund-val" id="f-industry" style="font-size:12px"></div></div>
         </div>
       </div>
-      <div id="r-us-fund" style="display:none" class="card">
-        <div class="card-title">🏢 기업 펀더멘털 (Alpha Vantage)</div>
-        <div class="fund-grid">
-          <div class="fund-item"><div class="fund-label">섹터</div><div class="fund-val" id="f-us-sector" style="font-size:12px"></div></div>
-          <div class="fund-item"><div class="fund-label">PER</div><div class="fund-val" id="f-us-per"></div></div>
-          <div class="fund-item"><div class="fund-label">PBR</div><div class="fund-val" id="f-us-pbr"></div></div>
-          <div class="fund-item"><div class="fund-label">EPS</div><div class="fund-val" id="f-us-eps"></div></div>
-          <div class="fund-item"><div class="fund-label">베타</div><div class="fund-val" id="f-us-beta"></div></div>
-          <div class="fund-item"><div class="fund-label">시총</div><div class="fund-val" id="f-us-mktcap"></div></div>
-        </div>
-        <div id="f-us-sentiment" style="display:none;margin-top:10px;font-size:12px;color:#8b949e"></div>
-      </div>
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트</button>
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
@@ -10579,11 +10563,10 @@ input::placeholder{color:#484f58}
         <div class="card">
           <div class="card-title">🔮 핵심 판단과 현재 상태</div>
           <div id="prediction-overview-section"></div>
-          <details class="prediction-ai-details">
-            <summary>🌐 시장·AI 판단 근거 상세 보기</summary>
+          <div class="prediction-context-inline">
             <div id="prediction-context-section"></div>
             <div id="ai-strategy-section"></div>
-          </details>
+          </div>
         </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
         <div class="card forecast-entry-group">
@@ -11064,17 +11047,16 @@ function shareToTelegram() {
   }
   const stopLoss = fmtP(pa.stop_loss);
 
-  // ── 목표가: 🛡️ 리스크 관리(ATR 기반) 시나리오 TP에서 참조 (KRX·해외 공통) ──
-  //   1차 목표가 = 보수적 TP3 / 2차 목표가 = 중립적 TP1
+  // ── 목표가: 🛡️ 리스크 관리(ATR 기반) 시나리오의 최종 목표 구간 참조 ──
   const risk = d.risk_scenarios || {};
-  const tpAt = (scen, idx) => {
+  const tpFromEnd = (scen, offset = 1) => {
     const s = risk[scen];
-    return (s && Array.isArray(s.tp_levels) && s.tp_levels[idx]
-            && typeof s.tp_levels[idx].price === 'number')
-              ? s.tp_levels[idx].price : null;
+    const levels = s && Array.isArray(s.tp_levels) ? s.tp_levels : [];
+    const level = levels[levels.length - offset];
+    return level && typeof level.price === 'number' ? level.price : null;
   };
-  const tp1 = fmtP(tpAt('conservative', 2));   // 보수적 TP3
-  const tp2 = fmtP(tpAt('balanced', 0));        // 중립적 TP1
+  const tp1 = fmtP(tpFromEnd('conservative'));  // 보수적 목표 상단
+  const tp2 = fmtP(tpFromEnd('balanced', 2));   // 중립적 목표 구간 진입
 
   // ── 현재 시간 — 텔레그램 전송 버튼을 누른 시점 (24시간제 HH:MM) ──
   const _sentAt  = new Date();
@@ -11657,33 +11639,8 @@ function renderResult(d) {
     document.getElementById('f-per').textContent = d.naver.per || '-';
     document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
     document.getElementById('f-industry').textContent = d.naver.industry || d.naver.sector || '-';
-    document.getElementById('r-us-fund').dataset.available = 'false';
-    document.getElementById('r-us-fund').style.display = 'none';
-  } else if (!isKrx && d.us_enriched && d.us_enriched.overview && d.us_enriched.overview.sector) {
-    document.getElementById('r-naver-fund').style.display = 'none';
-    document.getElementById('r-us-fund').dataset.available = 'true';
-    document.getElementById('r-us-fund').style.display = 'block';
-    const ov = d.us_enriched.overview;
-    document.getElementById('f-us-sector').textContent = ov.sector || '-';
-    document.getElementById('f-us-per').textContent = ov.per || '-';
-    document.getElementById('f-us-pbr').textContent = ov.pbr || '-';
-    document.getElementById('f-us-eps').textContent = ov.eps ? '$' + ov.eps : '-';
-    document.getElementById('f-us-beta').textContent = ov.beta ? Number(ov.beta).toFixed(2) : '-';
-    const mc = ov.market_cap && Number(ov.market_cap) > 0
-      ? '$' + (Number(ov.market_cap) / 1e9).toFixed(1) + 'B' : '-';
-    document.getElementById('f-us-mktcap').textContent = mc;
-    const sentEl = document.getElementById('f-us-sentiment');
-    const sent = d.us_enriched.sentiment || {};
-    if (sent.bullish_pct != null) {
-      const bull = (Number(sent.bullish_pct) * 100).toFixed(0);
-      const bear = (Number(sent.bearish_pct || 0) * 100).toFixed(0);
-      sentEl.style.display = 'block';
-      sentEl.innerHTML = `뉴스 감성: <span style="color:#3fb950">▲ ${bull}%</span> / <span style="color:#f85149">▼ ${bear}%</span><span style="color:#484f58;margin-left:8px">(${sent.article_count||0}건/주)</span>`;
-    } else { sentEl.style.display = 'none'; }
   } else {
     document.getElementById('r-naver-fund').style.display = 'none';
-    document.getElementById('r-us-fund').dataset.available = 'false';
-    document.getElementById('r-us-fund').style.display = 'none';
   }
 
   // AI 진단
@@ -13123,26 +13080,6 @@ function renderForecast(d, isKrx) {
       </div>`;
     rgEl.innerHTML = `
       ${riskEntries.map(sc => {
-        const failHtml = (sc.failure_conditions || [])
-          .map(f => `<div style="display:flex;align-items:flex-start;gap:5px;margin-bottom:2px"><span style="color:#f97316;flex-shrink:0">•</span><span>${f}</span></div>`)
-          .join('');
-        const pp = sc.position_plan || null;
-        const positionPlanHtml = pp ? `
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;${DIVIDER}">
-            <div>
-              <div style="font-size:10px;color:#8b949e">분할 비중</div>
-              <div style="font-size:12px;color:#58a6ff;font-weight:700">${pp.allocation_pct}%</div>
-            </div>
-            <div style="text-align:center">
-              <div style="font-size:10px;color:#8b949e">최대 허용 손실</div>
-              <div style="font-size:12px;color:#f85149;font-weight:700">${pp.max_loss_pct}%</div>
-            </div>
-            <div style="text-align:right;max-width:110px">
-              <div style="font-size:10px;color:#8b949e">변동성</div>
-              <div style="font-size:10px;color:${pp.volatility_expanded ? '#f97316' : '#3fb950'};font-weight:700">${pp.volatility_expanded ? '확대' : '안정'}</div>
-            </div>
-          </div>
-          <div style="font-size:10px;color:#8b949e;margin-top:4px">${pp.volatility_note || ''}</div>` : '';
         // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
         const pbHtml = (() => {
           const pa = d.pullback_analysis || null;
@@ -13233,27 +13170,26 @@ function renderForecast(d, isKrx) {
               <div style="font-size:12px;color:#3fb950;font-weight:700">+${sc.return}%</div>
             </div>
           </div>
-          ${positionPlanHtml}
           ${pbHtml}
           <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
           ${sc.tp_levels && sc.tp_levels.length ? `
           <div style="margin-top:8px;padding-top:8px;${DIVIDER}">
-            <div style="font-size:10px;color:#8b949e;margin-bottom:5px">📊 목표가 레벨별 도달 확률</div>
+            <div style="font-size:10px;color:#8b949e;margin-bottom:2px">📊 목표가 레벨별 도달 가능성 · 참고 추정</div>
+            <div style="font-size:9px;color:#6e7681;margin-bottom:6px">ATR 거리·추세·거래량·변동성·시장 위험 보정 · 기간은 거래일 기준</div>
             ${sc.tp_levels.map((lv, i) => {
               const tpC = lv.prob_pct >= 65 ? '#3fb950' : lv.prob_pct >= 45 ? '#d29922' : '#f97316';
-              return `<div style="display:flex;justify-content:space-between;align-items:center;background:#0d1117;border-radius:5px;padding:4px 8px;margin-bottom:3px">
+              const probText = lv.prob_low_pct != null && lv.prob_high_pct != null
+                ? `${lv.prob_low_pct}~${lv.prob_high_pct}%` : `${lv.prob_pct}%`;
+              const daysText = lv.days_min != null && lv.days_max != null
+                ? `${lv.days_min}~${lv.days_max}일` : `약 ${lv.avg_days}일`;
+              return `<div class="risk-tp-level" style="background:#0d1117;border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
                 <span style="font-size:10px;color:#cdd9e5;font-weight:600">${fmt(lv.price, isKrx)}</span>
                 <span style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
-                <span style="font-size:10px;color:${tpC}">도달 ${lv.prob_pct}%</span>
-                <span style="font-size:10px;color:#8b949e">~${lv.avg_days}일</span>
+                <span style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
+                <span style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
               </div>`;
             }).join('')}
-          </div>` : ''}
-          ${failHtml ? `
-          <div style="margin-top:8px;padding-top:8px;${DIVIDER}">
-            <div style="font-size:10px;color:#f97316;margin-bottom:4px;font-weight:600">⚠️ 이 시나리오가 실패할 수 있는 조건</div>
-            <div style="font-size:11px;color:#8b949e;line-height:1.5">${failHtml}</div>
           </div>` : ''}
         </div>`;
       }).join('')}
@@ -13595,12 +13531,6 @@ function switchTab(tab) {
     const m = onclick.match(/switchTab\('(\w+)'\)/);
     if (m) btn.classList.toggle('active', m[1] === tab);
   });
-  // 미국 펀더멘털은 다른 탭에서 유지하되 예측 탭에서만 제외한다.
-  const usFundEl = document.getElementById('r-us-fund');
-  if (usFundEl) {
-    const hasFundamentals = usFundEl.dataset.available === 'true';
-    usFundEl.style.display = hasFundamentals && tab !== 'forecast' ? 'block' : 'none';
-  }
   // 저녁 검증 탭 첫 진입 시 가이드 표시
   if (tab === 'evening') {
     const content = document.getElementById('evening-content');
