@@ -5560,19 +5560,28 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     _tp_mom   = (trend - 2) * 3.0          # 추세 강도별 ±6pp
     _tp_rsi   = 4.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _base_days = 12.3 if _is_us else 13.0  # Zone B 평균 보유일 기준
-    def _make_tp_from_tgt(tgt_range, profile: str):
-        """현재가부터 목표 범위 상단까지 5개 확인 가격과 도달 가능성·기간 범위를 산출한다.
+    def _make_tp_from_tgt(tgt_range, profile: str, previous_ceiling: float | None = None):
+        """시나리오 전용 가격 구간을 TP1~TP5로 나누고 도달 가능성·기간을 산출한다.
 
-        TP1~TP3은 최종 목표로 가는 중간 확인 가격, TP4~TP5는 목표 범위 진입/상단
-        가격이다. 확률은 ATR 거리 기반 백테스트 보정값에 추세·ADX·거래량·하방 위험을
-        반영하며, 먼 가격의 가능성이 가까운 가격보다 높아지지 않도록 단조 보정한다.
+        보수적 구간은 현재가 위에서 시작하고, 중립적·공격적 구간은 직전 시나리오의
+        TP5보다 높은 가격에서 시작한다. 따라서 세 시나리오의 TP 가격은 서로 겹치지 않는다.
         """
-        lo, hi = tgt_range[0], tgt_range[1]
-        final_price = max(hi, price + max(atr * 0.5, price * 0.005))
-        total_move = final_price - price
-        lo_progress = min(0.98, max(0.70, (lo - price) / total_move)) if total_move > 0 else 0.90
-        progress_steps = [0.30, 0.48, 0.66, max(0.82, lo_progress), 1.0]
-        tp_prices = [price + total_move * progress for progress in progress_steps]
+        _, hi = tgt_range[0], tgt_range[1]
+        price_tick = 10 ** (-rnd)
+        boundary_gap = max(price_tick * 2, atr * 0.02, price * 0.0002)
+        if previous_ceiling is None:
+            segment_start = price
+            progress_steps = [0.30, 0.48, 0.66, 0.82, 1.0]
+        else:
+            segment_start = max(price, previous_ceiling + boundary_gap)
+            progress_steps = [0.0, 0.25, 0.50, 0.75, 1.0]
+        minimum_span = max(atr * 0.5, price * 0.005, price_tick * 5)
+        final_price = max(hi, segment_start + minimum_span)
+        total_move = final_price - segment_start
+        tp_prices = [round(segment_start + total_move * progress, rnd) for progress in progress_steps]
+        for index in range(1, len(tp_prices)):
+            if tp_prices[index] <= tp_prices[index - 1]:
+                tp_prices[index] = round(tp_prices[index - 1] + price_tick, rnd)
 
         adx_adjust = min(5.0, max(0.0, adx - 20.0) * 0.35)
         if trend <= 1:
@@ -5631,10 +5640,10 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                 "days_max":          days_max,
             })
         return result
-    # 각 리스크 프로필의 목표 경로를 5개 가격 단계로 생성
+    # 각 시나리오는 직전 시나리오의 TP5 위에서 시작해 가격 범위가 겹치지 않는다.
     cons_tp = _make_tp_from_tgt(cons_tgt_range, "conservative")
-    bal_tp  = _make_tp_from_tgt(bal_tgt_range, "balanced")
-    agg_tp  = _make_tp_from_tgt(agg_tgt_range, "aggressive")
+    bal_tp  = _make_tp_from_tgt(bal_tgt_range, "balanced", cons_tp[-1]["price"])
+    agg_tp  = _make_tp_from_tgt(agg_tgt_range, "aggressive", bal_tp[-1]["price"])
 
     def _target_zone_confidence(tp_levels: list[Dict], target_low: float) -> float | None:
         return next((level["prob_pct"] for level in tp_levels if level["price"] >= target_low),
@@ -5656,6 +5665,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "interpretation": f"BB 하단 참조 손절 · 단기 반등 목표 (R/R {cons_rr:.1f}:1)",
             "target_basis": cons_basis,
             "target_confidence_pct": _target_zone_confidence(cons_tp, cons_tgt_range[0]),
+            "tp_range": [cons_tp[0]["price"], cons_tp[-1]["price"]],
             "tp_levels": cons_tp,
         },
         "balanced": {
@@ -5672,6 +5682,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "interpretation": f"MA20 지지 손절 · 중기 추세 목표 (R/R {bal_rr:.1f}:1)",
             "target_basis": bal_basis,
             "target_confidence_pct": _target_zone_confidence(bal_tp, bal_tgt_range[0]),
+            "tp_range": [bal_tp[0]["price"], bal_tp[-1]["price"]],
             "tp_levels": bal_tp,
         },
         "aggressive": {
@@ -5689,6 +5700,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "target_basis": agg_basis,
             "target_confidence_pct": _target_zone_confidence(agg_tp, agg_tgt_range[0]),
             "breakout_probability_pct": breakout_probability_pct,
+            "tp_range": [agg_tp[0]["price"], agg_tp[-1]["price"]],
             "tp_levels": agg_tp,
         },
         "vol_state": vol_state_txt,
@@ -9649,6 +9661,9 @@ input::placeholder{color:#484f58}
 .risk-stp{color:#388bfd;font-weight:700}
 .risk-ratio{text-align:right;font-size:11px;color:#484f58;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
 .risk-tp-level{display:grid;grid-template-columns:30px minmax(72px,1.1fr) minmax(48px,.7fr) minmax(88px,1fr) minmax(78px,.9fr);gap:5px;align-items:center}
+.risk-tp-head{background:transparent;border-bottom:1px solid #30363d;padding:3px 7px 5px;margin-bottom:4px;color:#6e7681}
+.risk-tp-head span{font-size:9px;font-weight:600;line-height:1.25;white-space:nowrap}
+.risk-tp-head span:last-child{text-align:right}
 
 /* 뉴스 */
 .news-item{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #21262d}
@@ -13173,21 +13188,33 @@ function renderForecast(d, isKrx) {
           ${pbHtml}
           <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
           ${sc.tp_levels && sc.tp_levels.length ? `
-          <div style="margin-top:8px;padding-top:8px;${DIVIDER}">
+          <div role="table" aria-label="${sc.label} 목표가 레벨별 도달 가능성" style="margin-top:8px;padding-top:8px;${DIVIDER}">
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">📊 목표가 레벨별 도달 가능성 · 참고 추정</div>
             <div style="font-size:9px;color:#6e7681;margin-bottom:6px">ATR 거리·추세·거래량·변동성·시장 위험 보정 · 기간은 거래일 기준</div>
+            ${(sc.tp_range && sc.tp_range.length === 2) ? `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:#0d1117;border:1px solid #30363d;border-radius:5px;padding:5px 7px;margin-bottom:5px">
+              <span style="font-size:9px;color:#8b949e">${sc.label} 예측 목표 가격 범위</span>
+              <span style="font-size:10px;font-weight:700;color:#58a6ff;white-space:nowrap">${fmt(sc.tp_range[0], isKrx)} ~ ${fmt(sc.tp_range[1], isKrx)}</span>
+            </div>` : ''}
+            <div class="risk-tp-level risk-tp-head" role="row">
+              <span role="columnheader">단계</span>
+              <span role="columnheader">목표 가격</span>
+              <span role="columnheader">수익률</span>
+              <span role="columnheader">도달 가능성</span>
+              <span role="columnheader">예상 거래일</span>
+            </div>
             ${sc.tp_levels.map((lv, i) => {
               const tpC = lv.prob_pct >= 65 ? '#3fb950' : lv.prob_pct >= 45 ? '#d29922' : '#f97316';
               const probText = lv.prob_low_pct != null && lv.prob_high_pct != null
                 ? `${lv.prob_low_pct}~${lv.prob_high_pct}%` : `${lv.prob_pct}%`;
               const daysText = lv.days_min != null && lv.days_max != null
                 ? `${lv.days_min}~${lv.days_max}일` : `약 ${lv.avg_days}일`;
-              return `<div class="risk-tp-level" style="background:#0d1117;border-radius:5px;padding:5px 7px;margin-bottom:3px">
-                <span style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
-                <span style="font-size:10px;color:#cdd9e5;font-weight:600">${fmt(lv.price, isKrx)}</span>
-                <span style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
-                <span style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
-                <span style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
+              return `<div class="risk-tp-level" role="row" style="background:#0d1117;border-radius:5px;padding:5px 7px;margin-bottom:3px">
+                <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
+                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600">${fmt(lv.price, isKrx)}</span>
+                <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
+                <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
+                <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
               </div>`;
             }).join('')}
           </div>` : ''}

@@ -97,6 +97,7 @@ def test_risk_scenarios_expose_five_ordered_tp_estimate_ranges():
             levels = scenario["tp_levels"]
             assert len(levels) == 5
             assert [level["price"] for level in levels] == sorted(level["price"] for level in levels)
+            assert scenario["tp_range"] == [levels[0]["price"], levels[-1]["price"]]
             probabilities = [level["prob_pct"] for level in levels]
             assert probabilities == sorted(probabilities, reverse=True)
             for level in levels:
@@ -105,12 +106,18 @@ def test_risk_scenarios_expose_five_ordered_tp_estimate_ranges():
             assert "position_plan" not in scenario
             assert "failure_conditions" not in scenario
 
+        assert result["conservative"]["tp_levels"][-1]["price"] < result["balanced"]["tp_levels"][0]["price"]
+        assert result["balanced"]["tp_levels"][-1]["price"] < result["aggressive"]["tp_levels"][0]["price"]
+
 
 def test_removed_risk_card_sections_are_not_rendered():
     assert "분할 비중" not in HTML
     assert "최대 허용 손실" not in HTML
     assert "이 시나리오가 실패할 수 있는 조건" not in HTML
     assert "목표가 레벨별 도달 가능성" in HTML
+    assert "예측 목표 가격 범위" in HTML
+    for column in ("목표 가격", "수익률", "도달 가능성", "예상 거래일"):
+        assert f'role="columnheader">{column}</span>' in HTML
 
 
 def test_prediction_outlook_builds_three_conditional_scenarios():
