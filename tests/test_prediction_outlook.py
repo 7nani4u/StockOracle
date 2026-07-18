@@ -138,6 +138,55 @@ def test_prediction_outlook_builds_three_conditional_scenarios():
     assert any(f["label"] == "외국인·기관" for f in result["market_context"]["facts"])
 
 
+def test_krx_outlook_uses_final_score_flow_and_selected_horizon():
+    bullish = _base_kwargs()
+    bullish["score"] = 78
+    bullish["period"] = "3d"
+    bullish_result = build_prediction_outlook(**bullish)
+
+    bearish = _base_kwargs()
+    bearish["score"] = 32
+    bearish["period"] = "3d"
+    bearish["investor_flow"] = {"ok": True, "외국인": -125_000, "기관": -82_000}
+    bearish["pct_change"] = -3.0
+    bearish_result = build_prediction_outlook(**bearish)
+
+    bullish_up = next(s for s in bullish_result["scenarios"] if s["key"] == "upside")
+    bearish_up = next(s for s in bearish_result["scenarios"] if s["key"] == "upside")
+    assert bullish_up["probability"] > bearish_up["probability"]
+    assert max(bullish_up["expected_days"]) <= 3
+    assert "3거래일 분석 범위" in bullish_result["scenario_note"]
+    assert "최근 20봉 평균" in " ".join(bullish_up["conditions"])
+    assert any(check["label"] == "현재 충족" for check in bullish_up["checks"])
+    assert bullish_result["levels"]["support_gap_pct"] < 0
+    assert bullish_result["levels"]["resistance_gap_pct"] > 0
+
+
+def test_krx_outlook_marks_missing_inputs_instead_of_claiming_normal_state():
+    kwargs = _base_kwargs()
+    kwargs["dd"] = {
+        "Open": [100.0, 101.0],
+        "High": [102.0, 103.0],
+        "Low": [99.0, 100.0],
+        "Close": [101.0, 102.0],
+        "Volume": [],
+    }
+    kwargs["last_price"] = 102.0
+    kwargs["prev_close"] = 101.0
+    kwargs["atr"] = 2.04
+    kwargs["atr_is_observed"] = False
+    kwargs["investor_flow"] = {"ok": False}
+    result = build_prediction_outlook(**kwargs)
+
+    volume = next(item for item in result["status"] if item["key"] == "volume")
+    volatility = next(item for item in result["status"] if item["key"] == "volatility")
+    assert volume["value"] == "거래량 확인 필요"
+    assert "시나리오 가중치에 반영하지 않음" in volume["detail"]
+    assert volatility["detail"].startswith("대체 ATR")
+    assert result["decision"]["confidence"] < 66
+    assert any("기술지표 미확보" in gap for gap in result["market_context"]["data_gaps"])
+
+
 def test_us_prediction_reuses_macro_sector_and_earnings_context():
     confidence = {
         "confidence": 61,

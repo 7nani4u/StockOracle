@@ -7876,6 +7876,8 @@ def build_prediction_outlook(
     candlestick_patterns: list | None, naver: Dict | None,
     us_enriched: Dict | None, toss_industry: Dict | None,
     event_risk: Dict | None,
+    period: str = "1mo",
+    atr_is_observed: bool | None = None,
 ) -> Dict:
     """이미 계산된 분석 결과를 예측 탭용 조건부 구조로 재조합한다.
 
@@ -7902,27 +7904,57 @@ def build_prediction_outlook(
     def _bounded(value: float, low: float, high: float) -> float:
         return max(low, min(high, value))
 
+    def _number(value: Any, default: float = 0.0) -> float:
+        """쉼표가 포함된 수급 값까지 안전하게 숫자로 정규화한다."""
+        try:
+            number = float(str(value).replace(",", ""))
+            return number if np.isfinite(number) else default
+        except (TypeError, ValueError):
+            return default
+
     closes = _arr("Close"); opens = _arr("Open"); highs = _arr("High")
     lows = _arr("Low"); volumes = _arr("Volume")
     ma20 = _last("MA20"); ma60 = _last("MA60"); ma120 = _last("MA120")
-    rsi = float(_last("RSI", 50.0) or 50.0)
-    macd = float(_last("MACD", 0.0) or 0.0)
-    macd_signal = float(_last("Signal_Line", 0.0) or 0.0)
+    rsi_raw = _last("RSI")
+    macd_raw = _last("MACD")
+    macd_signal_raw = _last("Signal_Line")
+    rsi_available = rsi_raw is not None
+    macd_available = macd_raw is not None and macd_signal_raw is not None
+    rsi = float(rsi_raw if rsi_available else 50.0)
+    macd = float(macd_raw if macd_raw is not None else 0.0)
+    macd_signal = float(macd_signal_raw if macd_signal_raw is not None else 0.0)
     bb_upper = _last("BB_Upper"); bb_lower = _last("BB_Lower")
+    atr_observed = bool(atr_is_observed) if atr_is_observed is not None else bool(atr and atr > 0)
     atr_value = float(atr or last_price * 0.02)
     atr_pct = atr_value / last_price * 100.0
     rnd = 2 if market == "US" else 0
+    macd_gap = macd - macd_signal
+    bb_mid = ((bb_upper + bb_lower) / 2.0) if bb_upper and bb_lower else None
+    bb_width_pct = ((bb_upper - bb_lower) / bb_mid * 100.0
+                    if bb_mid and bb_mid > 0 else None)
 
     avg_volume = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else (
         float(np.mean(volumes[:-1])) if len(volumes) >= 2 else 0.0
     )
-    volume_ratio = volumes[-1] / avg_volume if volumes and avg_volume > 0 else 1.0
-    candle_up = bool(closes and len(closes) >= 2 and closes[-1] >= closes[-2])
+    volume_available = bool(volumes and avg_volume > 0)
+    volume_ratio = volumes[-1] / avg_volume if volume_available else 1.0
+    candle_up = bool(last_price >= prev_close) if prev_close > 0 else bool(
+        closes and len(closes) >= 2 and closes[-1] >= closes[-2]
+    )
 
     recent_low = min(lows[-20:]) if lows else last_price - atr_value
     recent_high = max(highs[-20:]) if highs else last_price + atr_value
     range_position = ((last_price - recent_low) / (recent_high - recent_low) * 100.0
                       if recent_high > recent_low else 50.0)
+    if range_position > 100:
+        position_value = f"20봉 고점 돌파 +{(last_price-recent_high)/recent_high*100:.1f}%"
+        position_tone = "positive"
+    elif range_position < 0:
+        position_value = f"20봉 저점 이탈 {(last_price-recent_low)/recent_low*100:.1f}%"
+        position_tone = "negative"
+    else:
+        position_value = f"20봉 범위 {range_position:.0f}%"
+        position_tone = "neutral"
 
     classic = (pivot_points or {}).get("classic") or {}
     zones = (pullback_analysis or {}).get("zones") or {}
@@ -7963,12 +7995,16 @@ def build_prediction_outlook(
     resistance_price, resistance_label = (min(resistance_candidates, key=lambda x: x[0])
                                           if resistance_candidates else (last_price + atr_value, "ATR 1배 상단"))
 
-    trend_points = sum((
-        1 if ma20 and last_price >= ma20 else 0,
-        1 if ma60 and last_price >= ma60 else 0,
-        1 if macd >= macd_signal else 0,
-        1 if rsi >= 50 else 0,
-    ))
+    trend_votes = []
+    if ma20 is not None:
+        trend_votes.append(last_price >= ma20)
+    if ma60 is not None:
+        trend_votes.append(last_price >= ma60)
+    if macd_available:
+        trend_votes.append(macd >= macd_signal)
+    if rsi_available:
+        trend_votes.append(rsi >= 50)
+    trend_points = int(round(sum(trend_votes) / len(trend_votes) * 4)) if trend_votes else 2
     if trend_points >= 3:
         trend_key, trend_label, trend_tone = "up", "단기 상승 우위", "positive"
     elif trend_points <= 1:
@@ -7978,13 +8014,20 @@ def build_prediction_outlook(
 
     ma_detail = []
     if ma20:
-        ma_detail.append(f"MA20 {'위' if last_price >= ma20 else '아래'}")
+        ma20_gap = (last_price - ma20) / ma20 * 100.0
+        ma_detail.append(f"MA20 대비 {ma20_gap:+.1f}%")
     if ma60:
-        ma_detail.append(f"MA60 {'위' if last_price >= ma60 else '아래'}")
-    ma_detail.append(f"RSI {rsi:.1f}")
-    ma_detail.append(f"MACD {'우위' if macd >= macd_signal else '열위'}")
+        ma60_gap = (last_price - ma60) / ma60 * 100.0
+        ma_detail.append(f"MA60 대비 {ma60_gap:+.1f}%")
+    if ma120:
+        ma120_gap = (last_price - ma120) / ma120 * 100.0
+        ma_detail.append(f"MA120 대비 {ma120_gap:+.1f}%")
+    ma_detail.append(f"RSI {rsi:.1f}" if rsi_available else "RSI 미확보")
+    ma_detail.append(f"MACD {'우위' if macd_gap >= 0 else '열위'}({macd_gap:+.2f})" if macd_available else "MACD 미확보")
 
-    if volume_ratio >= 1.5:
+    if not volume_available:
+        volume_key, volume_label, volume_tone = "missing", "거래량 확인 필요", "neutral"
+    elif volume_ratio >= 1.5:
         volume_key, volume_label, volume_tone = "surge", "거래량 급증", "positive" if candle_up else "negative"
     elif volume_ratio >= 1.1:
         volume_key, volume_label, volume_tone = "above", "평균 이상", "positive" if candle_up else "negative"
@@ -8019,38 +8062,122 @@ def build_prediction_outlook(
     flags = (pullback_analysis or {}).get("manipulation_flags") or []
     pattern_names = [str(flag.get("pattern")) for flag in flags if flag.get("pattern")]
     candle_names = [str(p.get("name")) for p in (candlestick_patterns or []) if p.get("name")][:3]
+    pattern_bias = 0.0
+    confirmed_pattern_notes = []
+    for pattern in candlestick_patterns or []:
+        direction = str(pattern.get("direction") or "")
+        status = str(pattern.get("pattern_status") or pattern.get("status") or "")
+        completion = _number(pattern.get("completion_score") or pattern.get("conf"))
+        confirmed = status.lower() in ("confirmed", "breakout", "complete") or completion >= 70
+        if not confirmed:
+            continue
+        if "상승" in direction:
+            pattern_bias += 1.5
+        elif "하락" in direction:
+            pattern_bias -= 1.5
+        name = pattern.get("name")
+        if name:
+            confirmed_pattern_notes.append(f"{name} {completion:.0f}%")
+    pattern_bias = _bounded(pattern_bias, -4.0, 4.0)
     breakdown_count = int((pullback_analysis or {}).get("sl_triggered") or 0)
+    flow = investor_flow or {}
+    foreign = int(round(_number(flow.get("외국인"))))
+    institution = int(round(_number(flow.get("기관"))))
+    flow_bias = 0.0
+    if market == "KRX" and flow.get("ok"):
+        if foreign > 0 and institution > 0:
+            flow_bias = 4.0
+        elif foreign < 0 and institution < 0:
+            flow_bias = -4.0
+        elif foreign + institution > 0:
+            flow_bias = 1.5
+        elif foreign + institution < 0:
+            flow_bias = -1.5
 
-    confidence = float((signal_confidence or {}).get("confidence") or
-                       (target_price or {}).get("reach_probability") or 50.0)
+    base_confidence = float((signal_confidence or {}).get("confidence") or
+                            (target_price or {}).get("reach_probability") or 50.0)
+    data_penalty = ((0.0 if volume_available else 4.0)
+                    + (0.0 if rsi_available else 3.0)
+                    + (0.0 if macd_available else 3.0)
+                    + (0.0 if atr_observed else 2.0)
+                    + (0.0 if market != "KRX" or flow.get("ok") else 2.0))
+    confidence = _bounded(base_confidence - data_penalty, 5.0, 95.0)
     conf_interval = (signal_confidence or {}).get("confidence_interval") or {}
     conf_spread = float(conf_interval.get("spread") or 18.0)
-    conf_lower = float(conf_interval.get("lower") or max(5.0, confidence - conf_spread / 2))
-    conf_upper = float(conf_interval.get("upper") or min(95.0, confidence + conf_spread / 2))
+    conf_lower = _bounded(float(conf_interval.get("lower") or max(5.0, base_confidence - conf_spread / 2)) - data_penalty, 1.0, confidence)
+    conf_upper = _bounded(float(conf_interval.get("upper") or min(95.0, base_confidence + conf_spread / 2)) - data_penalty * 0.35, confidence, 99.0)
 
-    side_prob = int(round(_bounded(22.0 + (conf_spread - 14.0) * 0.35
-                                   + (6.0 if trend_points == 2 else 0.0)
-                                   + (3.0 if flags else 0.0), 15.0, 38.0)))
-    up_share = _bounded(float(prob_up or 50.0), 8.0, 92.0) / 100.0
-    up_prob = int(round((100 - side_prob) * up_share))
+    side_prob = int(round(_bounded(
+        20.0 + (conf_spread - 14.0) * 0.35
+        + (7.0 if trend_points == 2 else 0.0)
+        + (3.0 if flags else 0.0)
+        + (3.0 if volume_ratio <= 0.7 else 0.0),
+        15.0, 40.0,
+    )))
+    directional_total = max(float(prob_up or 0.0) + float(prob_down or 0.0), 1.0)
+    raw_up_share = float(prob_up or 50.0) / directional_total * 100.0
+    direction_adjust = (score - 50.0) * 0.10 + (trend_points - 2) * 1.75 + flow_bias + pattern_bias
+    direction_adjust += 2.5 if regime == "BULL" else -3.5 if regime == "BEAR" else 0.0
+    direction_adjust += _bounded(float(pct_change or 0.0) * 0.8, -4.0, 4.0)
+    if volume_available and volume_ratio >= 1.2:
+        direction_adjust += 3.0 if candle_up else -3.0
+    if rsi_available and rsi >= 72:
+        direction_adjust -= 2.5  # 과열권 추격 신뢰를 낮춘다.
+    elif rsi_available and rsi <= 28:
+        direction_adjust += 2.0  # 과매도 반등 여지는 반영하되 확정 신호로 보지 않는다.
+    direction_adjust -= min(5.0, breakdown_count * 1.5)
+    event_score = _number((event_risk or {}).get("score"))
+    direction_adjust -= min(4.0, event_score / 15.0)
+    adjusted_up_share = _bounded(raw_up_share + direction_adjust, 8.0, 92.0) / 100.0
+    up_prob = int(round((100 - side_prob) * adjusted_up_share))
     down_prob = 100 - side_prob - up_prob
-    if regime == "BULL":
-        shift = min(5, down_prob)
-        up_prob += shift; down_prob -= shift
-    elif regime == "BEAR":
-        shift = min(7, up_prob)
-        down_prob += shift; up_prob -= shift
 
-    target_lo = float((target_price or {}).get("min_price") or resistance_price)
+    target_lo = max(resistance_price, float((target_price or {}).get("min_price") or resistance_price))
     target_hi = float((target_price or {}).get("max_price") or max(target_lo, resistance_price + atr_value))
     if target_lo > target_hi:
         target_lo, target_hi = target_hi, target_lo
+    target_lo = max(target_lo, resistance_price)
+    target_hi = max(target_hi, target_lo)
     side_lo = max(support_price, last_price - atr_value * 0.75)
     side_hi = min(resistance_price, last_price + atr_value * 0.75)
     if side_hi <= side_lo:
         side_lo, side_hi = last_price - atr_value * 0.5, last_price + atr_value * 0.5
-    stop_price = float((pullback_analysis or {}).get("stop_loss") or last_price - atr_value * 1.8)
+    raw_stop = _number((pullback_analysis or {}).get("stop_loss"), last_price - atr_value * 1.8)
+    stop_price = min(raw_stop, support_price - atr_value * 0.25, last_price - atr_value * 0.5)
+    if stop_price <= 0:
+        stop_price = max(0.01, last_price - atr_value * 1.8)
     down_lo, down_hi = sorted((max(0.01, stop_price), support_price))
+
+    horizon_days = {
+        "1d": 1, "3d": 3, "1wk": 5, "2wk": 10, "1mo": 22,
+        "6mo": 126, "1y": 252, "2y": 504, "5y": 1260,
+    }.get(str(period), 22)
+    horizon_label = {
+        "1d": "1거래일", "3d": "3거래일", "1wk": "1주", "2wk": "2주",
+        "1mo": "1개월", "6mo": "6개월", "1y": "1년", "2y": "2년", "5y": "5년",
+    }.get(str(period), "1개월")
+
+    def _price_label(value: float) -> str:
+        return f"{value:,.0f}원" if market == "KRX" else f"${value:,.2f}"
+
+    def _expected_days(lo: float, hi: float) -> list[int]:
+        distance_atr = max(abs(lo - last_price), abs(hi - last_price)) / max(atr_value, last_price * 0.001)
+        center = max(1, int(round(distance_atr * 2.2)))
+        low_days = max(1, int(np.floor(center * 0.6)))
+        high_days = max(low_days, int(np.ceil(center * 1.8)))
+        return [min(low_days, horizon_days), min(max(low_days, high_days), horizon_days)]
+
+    up_days = _expected_days(target_lo, target_hi)
+    side_days = [1, min(max(3, int(round(horizon_days * 0.35))), horizon_days)]
+    down_days = _expected_days(down_lo, down_hi)
+    up_checks_met = sum((last_price > resistance_price, volume_available and volume_ratio >= 1.2,
+                         macd_available and rsi_available and macd_gap >= 0 and rsi >= 50))
+    side_checks_met = sum((side_lo <= last_price <= side_hi, volume_available and 0.7 <= volume_ratio <= 1.2,
+                           rsi_available and 45 <= rsi <= 60))
+    down_checks_met = sum((last_price < support_price, volume_available and volume_ratio >= 1.5 and not candle_up,
+                           (macd_available and macd_gap < 0) or (rsi_available and rsi < 40)))
+    volume_now_text = f"현재 {volume_ratio:.2f}배" if volume_available else "현재 거래량 데이터 미확보"
+    rsi_now_text = f"현재 RSI {rsi:.1f}" if rsi_available else "현재 RSI 데이터 미확보"
 
     manipulation_up = ("세력 흔들림 패턴 감지 시에도 종가가 주요 지지선을 유지해야 반등 시나리오 유효"
                        if flags else "주요 지지선 유지 후 저항 돌파 시 반등 신뢰 상승")
@@ -8061,84 +8188,111 @@ def build_prediction_outlook(
         {
             "key": "upside", "label": "상승 시나리오", "tone": "positive", "probability": up_prob,
             "price_range": [round(target_lo, rnd), round(target_hi, rnd)],
+            "expected_days": up_days,
             "summary": manipulation_up,
             "conditions": [
-                "저항선을 종가 기준으로 상회",
-                "20일 평균 대비 거래량 1.2배 이상 동반",
-                "MACD 우위 유지와 RSI 50 이상 확인",
+                f"{resistance_label} {_price_label(resistance_price)}를 종가 기준으로 상회",
+                f"최근 20봉 평균 대비 거래량 1.2배 이상 동반({volume_now_text})",
+                f"MACD 우위와 RSI 50 이상 확인({rsi_now_text})",
             ],
             "checks": [
                 {"label": "확인 가격", "value": round(resistance_price, rnd), "note": f"{resistance_label} 종가 돌파"},
-                {"label": "거래량", "text": "20일 평균의 1.2배 이상"},
+                {"label": "거래량", "text": "최근 20봉 평균의 1.2배 이상"},
                 {"label": "지표", "text": "MACD 우위 · RSI 50~70"},
+                {"label": "현재 충족", "text": f"3개 조건 중 {up_checks_met}개"},
+                {"label": "예상 확인", "text": f"{up_days[0]}~{up_days[1]}거래일 · {horizon_label} 범위"},
             ],
+            "response": "저항을 종가로 돌파하고 거래량까지 확인될 때만 분할 접근하며, 돌파 전 추격은 보류합니다.",
         },
         {
             "key": "sideways", "label": "중립·횡보 시나리오", "tone": "neutral", "probability": side_prob,
             "price_range": [round(side_lo, rnd), round(side_hi, rnd)],
+            "expected_days": side_days,
             "summary": "지지와 저항 사이에서 거래량이 줄면 방향성보다 박스권 대응이 우선입니다.",
             "conditions": [
-                "지지선과 저항선 사이 종가 유지",
-                "거래량이 평균의 0.7~1.2배 범위",
-                "RSI 45~60 및 MACD 방향성 둔화",
+                f"{_price_label(side_lo)}~{_price_label(side_hi)} 사이 종가 유지",
+                f"거래량이 평균의 0.7~1.2배 범위({volume_now_text})",
+                f"RSI 45~60 및 MACD 방향성 둔화({rsi_now_text})",
             ],
             "checks": [
                 {"label": "하단", "value": round(side_lo, rnd), "note": "박스권 지지 확인"},
                 {"label": "상단", "value": round(side_hi, rnd), "note": "돌파 전 추격 제한"},
                 {"label": "지표", "text": "RSI 중립 · 거래량 감소"},
+                {"label": "현재 충족", "text": f"3개 조건 중 {side_checks_met}개"},
+                {"label": "예상 확인", "text": f"{side_days[0]}~{side_days[1]}거래일 · {horizon_label} 범위"},
             ],
+            "response": "박스권 안에서는 신규 진입을 서두르지 않고 하단 지지 또는 상단 돌파를 확인합니다.",
         },
         {
             "key": "downside", "label": "하락 시나리오", "tone": "negative", "probability": down_prob,
             "price_range": [round(down_lo, rnd), round(down_hi, rnd)],
+            "expected_days": down_days,
             "summary": manipulation_down,
             "conditions": [
-                "주요 지지선을 종가 기준으로 이탈",
-                "하락 거래량이 20일 평균의 1.5배 이상",
-                "MACD 열위 확대 또는 RSI 40 하회",
+                f"{support_label} {_price_label(support_price)}를 종가 기준으로 이탈",
+                f"하락 거래량이 최근 20봉 평균의 1.5배 이상({volume_now_text})",
+                f"MACD 열위 확대 또는 RSI 40 하회({rsi_now_text})",
             ],
             "checks": [
                 {"label": "주의 가격", "value": round(support_price, rnd), "note": f"{support_label} 이탈 여부"},
                 {"label": "손실 제한", "value": round(stop_price, rnd), "note": "ATR·구조 기준 손절가"},
                 {"label": "지표", "text": "MACD 열위 · RSI 40 하회"},
+                {"label": "현재 충족", "text": f"3개 조건 중 {down_checks_met}개"},
+                {"label": "예상 확인", "text": f"{down_days[0]}~{down_days[1]}거래일 · {horizon_label} 범위"},
             ],
+            "response": "지지선 종가 이탈 시 진입 시나리오를 무효화하고 손절·현금 비중 관리를 우선합니다.",
         },
     ]
 
     strategy = (buy_price or {}).get("strategy_rec") or {}
     action_key = str(strategy.get("action_key") or "wait_support")
-    if action_key in ("band_a", "split_buy", "recovery_buy") and breakdown_count == 0:
+    if down_prob >= 48 or breakdown_count >= 2 or event_score >= 60:
+        decision_key, decision_label, decision_tone = "caution", "주의·매수 보류", "negative"
+    elif action_key in ("band_a", "split_buy", "recovery_buy") and breakdown_count == 0:
         decision_key, decision_label, decision_tone = "conditional", "조건부 분할 접근", "positive"
-    elif action_key == "wait_breakdown" or breakdown_count >= 2:
+    elif action_key == "wait_breakdown":
         decision_key, decision_label, decision_tone = "caution", "주의·매수 보류", "negative"
     else:
         decision_key, decision_label, decision_tone = "watch", "관망 우선", "neutral"
     direction_label = "상승 우위" if up_prob >= down_prob + 8 else ("하락 우위" if down_prob >= up_prob + 8 else "중립")
 
+    flow_summary = ""
+    if market == "KRX" and flow.get("ok"):
+        flow_summary = (" 외국인·기관 동반 순매수가 보조 근거입니다."
+                        if flow_bias >= 4 else " 외국인·기관 동반 순매도로 진입 확인 기준을 높입니다."
+                        if flow_bias <= -4 else " 외국인·기관 수급은 혼조입니다.")
     if flags:
         decision_summary = (f"세력 흔들림 패턴 {len(flags)}건이 감지되었습니다. "
-                            f"{support_label} 종가 유지가 확인되고 거래량이 회복될 때만 단기 반등 시나리오를 유효하게 봅니다.")
+                            f"{support_label} {_price_label(support_price)} 종가 유지와 거래량 회복이 함께 확인될 때만 "
+                            f"단기 반등 시나리오를 유효하게 봅니다.{flow_summary}")
     else:
-        decision_summary = (f"현재는 {trend_label}입니다. {support_label} 유지와 거래량 확인 시 단계적 접근이 가능하지만, "
-                            "지지 이탈 시 관망을 우선합니다.")
+        decision_summary = (f"{trend_label}, "
+                            f"거래량은 {f'최근 20봉 평균의 {volume_ratio:.2f}배' if volume_available else '현재 데이터 미확보'}입니다. "
+                            f"{support_label} {_price_label(support_price)} 유지와 거래량 확인 시 단계적 접근을 검토하되, "
+                            f"종가 이탈 시 관망을 우선합니다.{flow_summary}")
 
     macro = (signal_confidence or {}).get("macro_regime") or {}
     macro_components = macro.get("components") or {}
     market_facts = []
     data_gaps = []
+    if not volume_available:
+        data_gaps.append("최근 거래량 또는 20봉 비교 평균 미확보")
+    if not rsi_available or not macd_available:
+        data_gaps.append("일부 기술지표 미확보 — 미확보 지표는 시나리오 가중치에서 제외")
+    if not atr_observed:
+        data_gaps.append("ATR 미확보 — 현재가 2% 대체 변동폭 사용")
     if market == "KRX":
         index_name = "KOSDAQ" if str(symbol).upper().endswith(".KQ") else "KOSPI"
         index_value = {"BULL": "중기 상승", "BEAR": "중기 약세", "NEUTRAL": "중립"}.get(regime, "중립")
-        market_facts.append({"label": index_name, "value": index_value,
-                             "detail": "대표지수 60일·120일 이동평균 구조 기준", "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
+        market_facts.append({"label": "종목 중기 구조", "value": index_value,
+                             "detail": f"{index_name} 상장 종목 · 해당 종목의 60일·120일 가격 구조 기준",
+                             "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
         industry = ((naver or {}).get("industry") or (naver or {}).get("sector") or
                     (toss_industry or {}).get("industry") or (toss_industry or {}).get("sector"))
         if industry:
             market_facts.append({"label": "업종", "value": str(industry),
                                  "detail": "종목 분류 정보이며 실시간 업종 강도는 홈 데이터가 있을 때 보완", "tone": "neutral"})
-        flow = investor_flow or {}
         if flow.get("ok"):
-            foreign = int(flow.get("외국인") or 0); institution = int(flow.get("기관") or 0)
             flow_tone = "positive" if foreign > 0 and institution > 0 else "negative" if foreign < 0 and institution < 0 else "neutral"
             market_facts.append({"label": "외국인·기관", "value": "동반 순매수" if flow_tone == "positive" else "동반 순매도" if flow_tone == "negative" else "수급 혼조",
                                  "detail": f"외국인 {foreign:+,}주 · 기관 {institution:+,}주", "tone": flow_tone})
@@ -8169,9 +8323,15 @@ def build_prediction_outlook(
     if isinstance(ai_strategy, dict):
         ai_lines = [line.strip() for line in str(ai_strategy.get("result") or "").split(" | ") if line.strip()][:4]
     if (indicator_signals or {}).get("summary", {}).get("overall_label"):
-        ai_lines.append(f"기술지표 종합: {indicator_signals['summary']['overall_label']}")
+        indicator_summary = indicator_signals["summary"]
+        ai_lines.append(
+            f"기술지표 종합: {indicator_summary['overall_label']} "
+            f"(매수 {indicator_summary.get('buy', 0)} · 관망 {indicator_summary.get('watch', 0)} · 매도 {indicator_summary.get('sell', 0)})"
+        )
     if flags:
         ai_lines.append("세력 흔들림 점검: " + ", ".join(pattern_names[:3]))
+    if confirmed_pattern_notes:
+        ai_lines.append("확인된 차트 패턴: " + ", ".join(confirmed_pattern_notes[:3]))
 
     risk_triggers = [
         f"{support_label} {support_price:,.{rnd}f} 종가 이탈",
@@ -8191,31 +8351,39 @@ def build_prediction_outlook(
             "direction": direction_label, "summary": decision_summary,
             "confidence": round(confidence, 1),
             "confidence_interval": [round(conf_lower, 1), round(conf_upper, 1)],
-            "confidence_note": "여러 지표의 일치도와 데이터 가용성을 반영한 참고 신뢰도",
+            "confidence_note": f"여러 지표의 일치도와 데이터 가용성을 반영한 참고 신뢰도{f' · 결측 감점 {data_penalty:.0f}p' if data_penalty else ''}",
         },
         "status": [
-            {"key": "position", "label": "현재가 위치", "value": f"20봉 범위 {range_position:.0f}%", "tone": "neutral",
-             "detail": f"전일 대비 {pct_change:+.2f}% · {support_label} 위 {((last_price-support_price)/last_price*100):.1f}%",
+            {"key": "position", "label": "현재가 위치", "value": position_value, "tone": position_tone,
+             "detail": f"저점 {_price_label(recent_low)} · 고점 {_price_label(recent_high)} · 전일 대비 {pct_change:+.2f}%",
              "help": "최근 20개 봉의 저점(0%)과 고점(100%) 사이 위치"},
             {"key": "trend", "label": "단기 추세", "value": trend_label, "tone": trend_tone,
              "detail": " · ".join(ma_detail), "help": "이동평균·RSI·MACD를 함께 본 방향"},
             {"key": "volume", "label": "거래량", "value": volume_label, "tone": volume_tone,
-             "detail": f"20일 평균 대비 {volume_ratio:.2f}배 · {'상승봉' if candle_up else '하락봉'}",
+             "detail": (f"최근 20봉 평균 대비 {volume_ratio:.2f}배 · 전일 종가 대비 {'상승' if candle_up else '하락'} · "
+                        f"{'신뢰 보강' if volume_ratio >= 1.2 else '거래량 확인 필요'}"
+                        if volume_available else "거래량 또는 비교 평균이 없어 시나리오 가중치에 반영하지 않음"),
              "help": "가격 움직임에 실제 거래 참여가 동반됐는지 확인"},
             {"key": "volatility", "label": "변동성", "value": vol_label, "tone": vol_tone,
-             "detail": f"ATR {atr_pct:.2f}% · {vol_detail}", "help": "ATR은 최근 평균 가격 진폭"},
-            {"key": "levels", "label": "주요 가격", "value": f"지지 / 저항", "tone": "neutral",
-             "detail": f"{support_label} {support_price:,.{rnd}f} · {resistance_label} {resistance_price:,.{rnd}f}",
+             "detail": f"{'대체 ' if not atr_observed else ''}ATR {atr_pct:.2f}%{f' · BB 폭 {bb_width_pct:.1f}%' if bb_width_pct is not None else ''} · {vol_detail}", "help": "ATR은 최근 평균 가격 진폭"},
+            {"key": "levels", "label": "주요 가격", "value": "지지 / 저항", "tone": "neutral",
+             "detail": f"{support_label} {_price_label(support_price)}({(support_price-last_price)/last_price*100:+.1f}%) · {resistance_label} {_price_label(resistance_price)}({(resistance_price-last_price)/last_price*100:+.1f}%)",
              "help": "지지는 매수 유입 가능 구간, 저항은 매도 압력 가능 구간"},
         ],
         "levels": {
             "support": round(support_price, rnd), "support_label": support_label,
             "resistance": round(resistance_price, rnd), "resistance_label": resistance_label,
-            "warning_zone": [round(max(stop_price, support_price - atr_value * 0.5), rnd), round(support_price, rnd)],
+            "warning_zone": [
+                round(min(support_price, max(stop_price, support_price - atr_value * 0.5)), rnd),
+                round(max(support_price, max(stop_price, support_price - atr_value * 0.5)), rnd),
+            ],
             "stop": round(stop_price, rnd),
+            "support_gap_pct": round((support_price - last_price) / last_price * 100.0, 2),
+            "resistance_gap_pct": round((resistance_price - last_price) / last_price * 100.0, 2),
+            "stop_gap_pct": round((stop_price - last_price) / last_price * 100.0, 2),
         },
         "scenarios": scenarios,
-        "scenario_note": "시나리오 비중은 현재 앱에서 확보한 데이터 기준의 상대 비교이며 확정 확률이 아닙니다.",
+        "scenario_note": f"{horizon_label} 분석 범위 · 시나리오 비중은 추세·거래량·RSI·MACD·수급·변동성·위험 신호를 종합한 상대 비교이며 확정 확률이 아닙니다.",
         "market_context": {"facts": market_facts, "data_gaps": data_gaps,
                            "basis": "기존 분석 요청과 홈에서 이미 받은 시장 데이터를 재사용"},
         "pattern_context": {
@@ -8588,7 +8756,8 @@ def route(path: str, params: Dict) -> Dict:
             signal_confidence=signal_confidence, investor_flow=investor_flow,
             ai_strategy=ai_strategy, candlestick_patterns=patterns,
             naver=naver, us_enriched=us_enriched, toss_industry=toss_industry,
-            event_risk=event_risk,
+            event_risk=event_risk, period=period,
+            atr_is_observed=bool(atrs and atrs[-1]),
         )
 
         _record_prediction_and_update_outcomes(
@@ -12758,6 +12927,7 @@ async function loadInvestorFlowAsync(symbol) {
       console.log(`[투자자수급] 성공 — 데이터 렌더링`);
       currentData.investor_flow = nd;
       renderInvestorFlow(currentData, true);
+      refreshKrxAnalysisFromCache();
     } else {
       // API 실패(ok:false) — 재시도 버튼 표시
       const reason = (nd && nd.reason) ? nd.reason : '수급 데이터 없음';
@@ -14008,6 +14178,7 @@ function renderMarketCore(d) {
   }).join('');
   if (currentData && currentData.prediction_outlook) {
     renderPredictionSections(currentData, currentData.market === 'KRX');
+    refreshKrxAnalysisFromCache();
   }
 }
 
@@ -14105,6 +14276,7 @@ function renderSectorFlow(d) {
   cardsEl.innerHTML = sorted.map(_buildSectorCardHtml).join('');
   if (currentData && currentData.prediction_outlook) {
     renderPredictionSections(currentData, currentData.market === 'KRX');
+    refreshKrxAnalysisFromCache();
   }
 }
 
@@ -14325,10 +14497,12 @@ function renderFlowTab(d) {
 // ═══════════════════════════════════════════════════════════════
 let eveningModeActive = false;
 let krxLoadToken = 0;
+let krxSupplementCache = null;
 
 function resetEveningTab() {
   eveningModeActive = false;
   krxLoadToken += 1;
+  krxSupplementCache = null;
   ['evening-loading','evening-content','evening-error'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -14359,6 +14533,7 @@ async function loadKrxAnalysis(krxCode, krxBoard) {
     const d = await r.json();
     if (d.error) throw new Error(d.error);
     if (requestToken !== krxLoadToken) return;
+    krxSupplementCache = d;
     renderKrxAnalysis(d, krxCode, market);
     if (loading) loading.style.display = 'none';
   } catch(e) {
@@ -14373,6 +14548,14 @@ async function loadKrxAnalysis(krxCode, krxBoard) {
     console.warn('[krx-tab] 보조 신호 로드 실패:', e.message);
   }
 }
+
+function refreshKrxAnalysisFromCache() {
+  if (!currentData || currentData.market !== 'KRX') return;
+  const code = extractKrxCode(currentData.symbol);
+  if (!code) return;
+  const board = String(currentData.symbol || '').toUpperCase().endsWith('.KQ') ? 'KOSDAQ' : 'KOSPI';
+  renderKrxAnalysis(krxSupplementCache, code, board);
+}
 function _krxSetText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value == null || value === '' ? '—' : String(value);
@@ -14381,6 +14564,18 @@ function _krxSetText(id, value) {
 function _krxBandRange(band) {
   const range = (band || {}).range || [];
   return range.length === 2 ? `${fmtPrice(range[0], true)} ~ ${fmtPrice(range[1], true)}` : '데이터 확인 필요';
+}
+
+function _krxEntryDetail(band, fallback, decision, lastPrice) {
+  const parts = [];
+  const pct = (band || {}).pct || [];
+  if (pct.length === 2) parts.push(`현재가 대비 ${Number(pct[0]).toFixed(1)}%~${Number(pct[1]).toFixed(1)}%`);
+  if (band && band.confirm_note) parts.push(band.confirm_note.replace(/20일 평균/g, '최근 20봉 평균'));
+  else parts.push(fallback);
+  if (band && band.allocation_pct != null) parts.push(`조건 충족 시 참고 비중 ${Number(band.allocation_pct).toFixed(1)}%`);
+  if (band && band.win_prob_pct != null) parts.push(`과거 보정 참고 ${Number(band.win_prob_pct).toFixed(1)}%`);
+  if (decision && decision.key === 'caution') parts.push('현재 판단은 매수 보류 · 가격은 재평가용 대기 구간');
+  return parts.join(' · ');
 }
 
 function _krxFactHtml(items, emptyText) {
@@ -14399,7 +14594,7 @@ function renderKrxAnalysis(supplement, krxCode, krxBoard) {
   const p = d.prediction_outlook || {};
   const decision = p.decision || null;
   const stocks = (supplement && supplement.stocks) || [];
-  const stock = stocks.find(s => String(s.code) === String(krxCode)) || stocks[0] || null;
+  const stock = stocks.find(s => String(s.code) === String(krxCode)) || null;
   const supplementState = document.getElementById('krx-supplement-state');
 
   if (!decision) {
@@ -14470,11 +14665,12 @@ function renderKrxAnalysis(supplement, krxCode, krxBoard) {
   const bp = d.buy_price || {};
   const entryOne = (bp.aggressive_bands || [])[0] || {};
   const entryTwo = (bp.recommended_bands || [])[0] || {};
+  const entryTone = decision.key === 'caution' ? 'negative' : decision.key === 'watch' ? 'neutral' : 'positive';
   const levelCards = [
-    {label:`핵심 지지 · ${levels.support_label || '지지선'}`, value:fmtPrice(levels.support, true), detail:'종가 유지 여부 확인', tone:'positive'},
-    {label:`핵심 저항 · ${levels.resistance_label || '저항선'}`, value:fmtPrice(levels.resistance, true), detail:'거래량 동반 돌파 필요', tone:'negative'},
-    {label:'⚡ 1차 탐색 구간', value:_krxBandRange(entryOne), detail:entryOne.confirm_note || '지지 확인 후 소액 접근', tone:'neutral'},
-    {label:'📍 2차 주 진입 구간', value:_krxBandRange(entryTwo), detail:entryTwo.confirm_note || '구조적 지지 확인 후 분할 접근', tone:'positive'},
+    {label:`최근접 지지 후보 · ${levels.support_label || '지지선'}`, value:fmtPrice(levels.support, true), detail:`현재가 대비 ${Number(levels.support_gap_pct || 0).toFixed(1)}% · 종가 유지 여부 확인`, tone:'positive'},
+    {label:`최근접 저항 후보 · ${levels.resistance_label || '저항선'}`, value:fmtPrice(levels.resistance, true), detail:`현재가 대비 +${Math.abs(Number(levels.resistance_gap_pct || 0)).toFixed(1)}% · 거래량 동반 돌파 필요`, tone:'negative'},
+    {label:'⚡ 1차 탐색 구간', value:_krxBandRange(entryOne), detail:_krxEntryDetail(entryOne, '지지 확인 후 소액 접근', decision, d.last_close), tone:decision.key === 'caution' ? 'negative' : 'neutral'},
+    {label:'📍 2차 주 진입 구간', value:_krxBandRange(entryTwo), detail:_krxEntryDetail(entryTwo, '구조적 지지 확인 후 분할 접근', decision, d.last_close), tone:entryTone},
   ];
   const levelGrid = document.getElementById('krx-level-grid');
   if (levelGrid) levelGrid.innerHTML = levelCards.map(item => `<div class="krx-level-card">
@@ -14493,11 +14689,11 @@ function renderKrxAnalysis(supplement, krxCode, krxBoard) {
       const value = x.value != null ? `${_escPrediction(x.note || '')} ${fmtPrice(x.value, true)}`.trim() : _escPrediction(x.text || x.note || '확인 필요');
       return `<div class="krx-check"><span>${_escPrediction(x.label)}</span><span>${value}</span></div>`;
     }).join('');
-    const response = sc.key === 'upside'
-      ? '대응: 저항을 종가로 돌파하고 거래량이 함께 증가할 때만 분할 접근합니다. 돌파 전 추격은 보류합니다.'
+    const response = `대응: ${sc.response || (sc.key === 'upside'
+      ? '저항을 종가로 돌파하고 거래량이 함께 증가할 때만 분할 접근합니다. 돌파 전 추격은 보류합니다.'
       : sc.key === 'downside'
-        ? '대응: 지지선 종가 이탈 시 진입 시나리오를 무효화하고, 손절·현금 비중 관리를 우선합니다.'
-        : '대응: 지지·저항 사이에서는 신규 진입을 서두르지 않고 하단 지지 또는 상단 돌파를 확인합니다.';
+        ? '지지선 종가 이탈 시 진입 시나리오를 무효화하고 손절·현금 비중 관리를 우선합니다.'
+        : '지지·저항 사이에서는 신규 진입을 서두르지 않고 하단 지지 또는 상단 돌파를 확인합니다.')}`;
     return `<div class="krx-scenario ${_escPrediction(sc.tone || 'neutral')}">
       <div class="krx-scenario-head"><div class="krx-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="krx-scenario-prob" style="color:${color}">상대 비중 ${Number(sc.probability || 0).toFixed(0)}%</div></div>
       <div class="krx-scenario-range">${rangeText}</div>
@@ -14511,17 +14707,38 @@ function renderKrxAnalysis(supplement, krxCode, krxBoard) {
   const factMap = new Map();
   (((p.market_context || {}).facts) || []).forEach(f => factMap.set(f.label, f));
   _predictionLiveFacts(d, true).forEach(f => factMap.set(f.label, f));
+  const liveFlow = d.investor_flow || {};
+  if (liveFlow.ok) {
+    const foreign = Number(String(liveFlow['외국인'] || 0).replace(/,/g, '')) || 0;
+    const institution = Number(String(liveFlow['기관'] || 0).replace(/,/g, '')) || 0;
+    const flowTone = foreign > 0 && institution > 0 ? 'positive' : foreign < 0 && institution < 0 ? 'negative' : 'neutral';
+    const date = String(liveFlow.date || '').replace(/(\d{4})(\d{2})(\d{2})/, '$1.$2.$3');
+    const holding = Number(liveFlow['외국인비율']);
+    factMap.set('외국인·기관', {
+      label:'외국인·기관',
+      value:flowTone === 'positive' ? '동반 순매수' : flowTone === 'negative' ? '동반 순매도' : '수급 혼조',
+      detail:`외국인 ${foreign >= 0 ? '+' : ''}${foreign.toLocaleString()}주 · 기관 ${institution >= 0 ? '+' : ''}${institution.toLocaleString()}주${date ? ` · ${date} 기준` : ''}${Number.isFinite(holding) && holding > 0 ? ` · 외국인 보유 ${holding.toFixed(2)}%` : ''}`,
+      tone:flowTone,
+    });
+  }
   if (stock) {
     const newsValue = {positive:'긍정',negative:'부정',neutral:'중립'}[stock.news_sentiment || 'neutral'] || '중립';
-    const overnightValue = {up:'상승 우위',down:'하락 우위',neutral:'중립'}[stock.overnight_signal_dir || 'neutral'] || '중립';
-    factMap.set('뉴스 감성', {label:'뉴스 감성', value:newsValue, detail:'기존 KRX 보조 응답의 최근 뉴스 분류', tone:stock.news_sentiment || 'neutral'});
-    factMap.set('간밤 영향', {label:'간밤 영향', value:overnightValue, detail:'해외 증시·야간 흐름을 참고한 보조 신호', tone:stock.overnight_signal_dir === 'up' ? 'positive' : stock.overnight_signal_dir === 'down' ? 'negative' : 'neutral'});
+    if ((stock.news || []).length) {
+      factMap.set('뉴스 감성', {label:'뉴스 감성', value:newsValue, detail:`최근 관련 뉴스 ${(stock.news || []).length}건 분류`, tone:stock.news_sentiment || 'neutral'});
+    }
+    const overnight = stock.overnight_signal;
+    if (overnight && typeof overnight === 'object' && overnight.direction) {
+      const overnightValue = {up:'상승 우위',down:'하락 우위',neutral:'중립'}[overnight.direction] || '중립';
+      const overnightPct = Number(overnight.avg_pct);
+      factMap.set('간밤 영향', {label:'간밤 영향', value:overnightValue, detail:`실제 보조 신호${Number.isFinite(overnightPct) ? ` 평균 ${overnightPct >= 0 ? '+' : ''}${overnightPct.toFixed(2)}%` : ''}`, tone:overnight.direction === 'up' ? 'positive' : overnight.direction === 'down' ? 'negative' : 'neutral'});
+    }
   }
   const marketContext = document.getElementById('krx-market-context');
   if (marketContext) marketContext.innerHTML = _krxFactHtml([...factMap.values()], '시장·업종·수급 데이터가 부족합니다.');
 
   const evidence = [];
-  evidence.push({label:'기술 종합', value:`${Number(d.score || 0).toFixed(0)}점`, detail:`RSI ${Number(d.rsi || 0).toFixed(1)} · 상승 ${Number(d.prob_up || 0).toFixed(0)}% / 하락 ${Number(d.prob_down || 0).toFixed(0)}%`, tone:Number(d.score || 0) >= 60 ? 'positive' : Number(d.score || 0) < 40 ? 'negative' : 'neutral'});
+  const indicatorSummary = ((d.indicator_signals || {}).summary) || {};
+  evidence.push({label:'기술 종합', value:`${Number(d.score || 0).toFixed(0)}점`, detail:`${indicatorSummary.overall_label || '종합 신호 확인'} · 매수 ${Number(indicatorSummary.buy || 0)} / 관망 ${Number(indicatorSummary.watch || 0)} / 매도 ${Number(indicatorSummary.sell || 0)} · KRX 시나리오 비중은 최종 점수·수급 보정 반영`, tone:Number(d.score || 0) >= 60 ? 'positive' : Number(d.score || 0) < 40 ? 'negative' : 'neutral'});
   const pattern = p.pattern_context || {};
   if (pattern.manipulation_detected) {
     const names = (pattern.items || []).map(x => x.pattern || x.name).filter(Boolean).slice(0, 3).join(', ');
@@ -14532,8 +14749,15 @@ function renderKrxAnalysis(supplement, krxCode, krxBoard) {
   if ((pattern.candles || []).length) evidence.push({label:'캔들 패턴', value:(pattern.candles || []).join(', '), detail:'패턴 단독보다 지지·거래량 확인을 우선', tone:'neutral'});
   (p.ai_evidence || []).slice(0, 4).forEach((line, idx) => evidence.push({label:`AI 근거 ${idx + 1}`, value:line, detail:'🧠 AI 진단 결과 재사용', tone:'neutral'}));
   if (stock) {
-    evidence.push({label:'52주 가격 위치', value:{high_zone:'고가권 경계',low_zone:'저가권 반등 후보',neutral:'중립 구간'}[stock.price_zone || 'neutral'] || '중립 구간', detail:stock.rationale || '보조 가격 위치 신호', tone:stock.price_zone === 'low_zone' ? 'positive' : stock.price_zone === 'high_zone' ? 'negative' : 'neutral'});
-    evidence.push({label:'거래량 급증 점검', value:stock.volume_spike ? '평균 대비 2배 이상' : '급증 신호 없음', detail:'가격 방향과 함께 해석해야 하는 보조 신호', tone:stock.volume_spike ? (pct >= 0 ? 'positive' : 'negative') : 'neutral'});
+    const history = stock.history || {};
+    const position = Number(history.pos_52w_pct);
+    const fromHigh = Number(history.from_high_pct);
+    const change20 = Number(history.change_20d_pct);
+    evidence.push({label:'52주 가격 위치', value:Number.isFinite(position) ? `${position.toFixed(1)}% 지점` : ({high_zone:'고가권 경계',low_zone:'저가권 반등 후보',neutral:'중립 구간'}[stock.price_zone || 'neutral'] || '중립 구간'), detail:`${Number.isFinite(fromHigh) ? `52주 고점 대비 ${fromHigh.toFixed(1)}%` : '고점 이격 미확보'}${Number.isFinite(change20) ? ` · 최근 20거래일 ${change20 >= 0 ? '+' : ''}${change20.toFixed(1)}%` : ''}${history.as_of ? ` · ${history.as_of} 기준` : ''}`, tone:stock.price_zone === 'low_zone' ? 'positive' : stock.price_zone === 'high_zone' ? 'negative' : 'neutral'});
+    const supplementVolumeRatio = Number(stock.volume_ratio);
+    const quoteChange = Number((stock.quote || {}).change_pct);
+    evidence.push({label:'거래량 급증 점검', value:Number.isFinite(supplementVolumeRatio) ? `20거래일 평균의 ${supplementVolumeRatio.toFixed(2)}배` : (stock.volume_spike ? '평균 대비 2배 이상' : '비율 미확보'), detail:`${stock.volume_spike ? '거래량 급증 감지' : '뚜렷한 급증 없음'} · ${Number.isFinite(quoteChange) ? `보조 시세 ${quoteChange >= 0 ? '+' : ''}${quoteChange.toFixed(2)}%` : '가격 방향과 함께 재확인'}`, tone:stock.volume_spike ? (Number.isFinite(quoteChange) ? (quoteChange >= 0 ? 'positive' : 'negative') : 'neutral') : 'neutral'});
+    if (stock.recommendation_label) evidence.push({label:'보조 3신호', value:`${stock.recommendation_label} · ${stock.confidence_label || '신뢰도 확인'}`, detail:stock.rationale || '뉴스·가격 위치·실제 확보된 간밤 신호 기준', tone:String(stock.recommendation || '').includes('buy') ? 'positive' : String(stock.recommendation || '').includes('sell') ? 'negative' : 'neutral'});
   }
   const signalBreakdown = document.getElementById('krx-signal-breakdown');
   if (signalBreakdown) signalBreakdown.innerHTML = _krxFactHtml(evidence, '기술·패턴 판단 근거가 부족합니다.');
@@ -14546,7 +14770,9 @@ function renderKrxAnalysis(supplement, krxCode, krxBoard) {
 
   const board = krxBoard === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI';
   const generated = supplement && supplement.generated_at ? ` · 보조 신호 ${new Date(supplement.generated_at).toLocaleString('ko-KR')}` : '';
-  _krxSetText('krx-data-scope', `${p.data_scope || '현재 앱에서 확보 가능한 데이터 기준'} · ${board} 종목 · 조건부 참고 분석이며 투자 권유가 아닙니다${generated}`);
+  const gaps = (((p.market_context || {}).data_gaps) || []).filter(Boolean);
+  const gapText = gaps.length ? ` · 미확보 데이터는 확정 판단에서 제외: ${gaps.join(' / ')}` : '';
+  _krxSetText('krx-data-scope', `${p.data_scope || '현재 앱에서 확보 가능한 데이터 기준'} · ${board} 종목 · 조건부 참고 분석이며 투자 권유가 아닙니다${generated}${gapText}`);
   if (supplementState) supplementState.textContent = stock ? '· 보조 신호 반영 완료' : '· 기본 분석 기준';
 }
 

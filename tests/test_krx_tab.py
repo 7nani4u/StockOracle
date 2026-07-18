@@ -60,3 +60,27 @@ def test_krx_layout_has_desktop_and_mobile_grid_breakpoints():
     assert ".krx-scenario-grid{grid-template-columns:1fr}" in HTML
     assert "@media(max-width:600px)" in HTML
     assert ".krx-summary-grid,.krx-state-grid,.krx-level-grid,.krx-context-grid,.krx-risk-list{grid-template-columns:1fr}" in HTML
+
+
+def test_krx_tab_only_merges_observed_supplement_signals_and_refreshes_late_data():
+    renderer = SOURCE.split("function renderKrxAnalysis", 1)[1].split(
+        "// ══════════════════════════════════════════════════════\n// 🔔 알림 시스템", 1
+    )[0]
+
+    assert "stocks.find(s => String(s.code) === String(krxCode)) || null" in renderer
+    assert "if (overnight && typeof overnight === 'object' && overnight.direction)" in renderer
+    assert "20거래일 평균의 ${supplementVolumeRatio.toFixed(2)}배" in renderer
+    assert "history.pos_52w_pct" in renderer
+    assert "미확보 데이터는 확정 판단에서 제외" in renderer
+    assert SOURCE.count("refreshKrxAnalysisFromCache();") >= 3
+
+
+def test_krx_entry_cards_follow_wait_or_caution_decision_without_layout_change():
+    renderer = SOURCE.split("function renderKrxAnalysis", 1)[1].split(
+        "// ══════════════════════════════════════════════════════\n// 🔔 알림 시스템", 1
+    )[0]
+
+    assert "decision.key === 'caution' ? 'negative'" in renderer
+    assert "현재 판단은 매수 보류 · 가격은 재평가용 대기 구간" in SOURCE
+    assert "최근접 지지 후보" in renderer
+    assert "최근접 저항 후보" in renderer
