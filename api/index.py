@@ -8117,7 +8117,7 @@ def build_prediction_outlook(
 
     if flags:
         decision_summary = (f"세력 흔들림 패턴 {len(flags)}건이 감지되었습니다. "
-                            f"{support_label}을 종가로 유지하고 거래량이 회복될 때만 단기 반등 시나리오를 유효하게 봅니다.")
+                            f"{support_label} 종가 유지가 확인되고 거래량이 회복될 때만 단기 반등 시나리오를 유효하게 봅니다.")
     else:
         decision_summary = (f"현재는 {trend_label}입니다. {support_label} 유지와 거래량 확인 시 단계적 접근이 가능하지만, "
                             "지지 이탈 시 관망을 우선합니다.")
@@ -10229,32 +10229,66 @@ input::placeholder{color:#484f58}
   .investor-sub-grid{grid-template-columns:repeat(2,1fr)}
 }
 
-/* ── 🌙 저녁 검증 모드 ── */
-.ev-result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
-.ev-card{border-radius:12px;padding:16px;border:1px solid transparent}
-.ev-hit{background:#0d2d1a;border-color:#1a4730}
-.ev-partial{background:#2d2200;border-color:#4a3800}
-.ev-miss{background:#2d0d0d;border-color:#4d1515}
-.ev-neutral{background:#21262d;border-color:#30363d}
-.ev-label{font-size:11px;color:#8b949e;margin-bottom:6px}
-.ev-val{font-size:20px;font-weight:700}
-.ev-note{font-size:12px;color:#8b949e;margin-top:4px;line-height:1.4}
-.ev-outcome-badge{font-size:12px;font-weight:600;padding:4px 12px;border-radius:12px}
-.ev-hit-badge{background:#0d2d1a;color:#3fb950}
-.ev-partial-badge{background:#2d2200;color:#d29922}
-.ev-miss-badge{background:#2d0d0d;color:#f85149}
-.ev-na-badge{background:#21262d;color:#8b949e}
-.ev-sig-row{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#21262d;border-radius:8px;margin-bottom:6px}
-.ev-sig-row:last-child{margin-bottom:0}
-
+/* ── 📋 KRX 종합 판단 ── */
+.krx-stack{display:flex;flex-direction:column;gap:12px}
+.krx-stack>.card{margin-bottom:0}
+.krx-summary-grid{display:grid;grid-template-columns:1.45fr repeat(3,minmax(0,1fr));gap:10px}
+.krx-summary-card,.krx-state-card,.krx-level-card,.krx-context-panel{background:#21262d;border:1px solid #30363d;border-radius:10px;padding:14px;min-width:0}
+.krx-summary-card.decision{background:#0d1b2a;border-color:#1f4b73}
+.krx-kicker{font-size:10px;color:#8b949e;margin-bottom:6px}
+.krx-summary-value{font-size:18px;font-weight:750;line-height:1.3;overflow-wrap:anywhere}
+.krx-summary-note{font-size:11px;color:#8b949e;line-height:1.55;margin-top:5px}
+.krx-chip-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.krx-chip{font-size:10px;padding:3px 7px;border:1px solid #30363d;border-radius:999px;color:#8b949e;background:#161b22}
+.krx-state-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.krx-state-label{font-size:10px;color:#8b949e;margin-bottom:6px}
+.krx-state-value{font-size:14px;font-weight:700;line-height:1.35}
+.krx-state-detail{font-size:10px;color:#8b949e;line-height:1.5;margin-top:5px;overflow-wrap:anywhere}
+.krx-level-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px}
+.krx-level-card{padding:11px 12px;background:#0d1117}
+.krx-scenario-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.krx-scenario{border:1px solid #30363d;border-radius:11px;padding:14px;background:#161b22;min-width:0}
+.krx-scenario.positive{background:#0d2d1a;border-color:#1a4730}
+.krx-scenario.neutral{background:#2d2200;border-color:#4a3800}
+.krx-scenario.negative{background:#2d0d0d;border-color:#4d1515}
+.krx-scenario-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
+.krx-scenario-title{font-size:14px;font-weight:700}
+.krx-scenario-prob{font-size:10px;font-weight:650;padding:3px 7px;border:1px solid currentColor;border-radius:999px;white-space:nowrap}
+.krx-scenario-range{font-size:16px;font-weight:750;margin-bottom:7px}
+.krx-scenario-summary{font-size:11px;color:#c9d1d9;line-height:1.5;margin-bottom:9px}
+.krx-condition{display:flex;gap:6px;font-size:11px;color:#c9d1d9;line-height:1.45;margin:4px 0}
+.krx-check-list{border-top:1px solid rgba(139,148,158,.22);margin-top:9px;padding-top:7px}
+.krx-check{display:flex;justify-content:space-between;gap:10px;font-size:10px;line-height:1.45;margin:4px 0}
+.krx-check span:first-child{color:#8b949e;white-space:nowrap}
+.krx-check span:last-child{text-align:right;font-weight:600}
+.krx-response{font-size:11px;line-height:1.5;margin-top:9px;padding:8px 9px;background:rgba(13,17,23,.55);border-radius:7px}
+.krx-context-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.krx-context-panel{padding:13px}
+.krx-context-title{font-size:12px;font-weight:700;margin-bottom:9px}
+.krx-fact{padding:9px 10px;background:#161b22;border-radius:7px;margin-bottom:6px}
+.krx-fact:last-child{margin-bottom:0}
+.krx-fact-head{display:flex;justify-content:space-between;gap:8px;font-size:11px}
+.krx-fact-detail{font-size:10px;color:#8b949e;line-height:1.45;margin-top:3px}
+.krx-risk-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:10px}
+.krx-risk-item{font-size:11px;line-height:1.45;padding:8px 10px;border-radius:7px;background:#2d0d0d;color:#f0b4b1}
+.krx-scope{font-size:10px;color:#6e7681;line-height:1.5;padding:1px 2px}
+.krx-inline-loading{font-size:10px;color:#8b949e;margin-left:8px;font-weight:400}
 @media(max-width:900px){
   .core-indices{grid-template-columns:repeat(3,1fr)}
   .signal-matrix{grid-template-columns:1fr}
-  .ev-result-grid{grid-template-columns:1fr}
+  .krx-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .krx-state-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .krx-state-card:last-child{grid-column:1/-1}
+  .krx-level-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .krx-scenario-grid{grid-template-columns:1fr}
 }
 @media(max-width:600px){
   .core-indices{grid-template-columns:repeat(3,1fr)}
   .home-section-title{font-size:13px}
+  .krx-summary-grid,.krx-state-grid,.krx-level-grid,.krx-context-grid,.krx-risk-list{grid-template-columns:1fr}
+  .krx-state-card:last-child{grid-column:auto}
+  .krx-summary-card,.krx-state-card,.krx-level-card,.krx-context-panel,.krx-scenario{padding:12px}
+  .krx-summary-value{font-size:16px}
 }
 @media(max-width:400px){.core-indices{grid-template-columns:repeat(2,1fr)}}
 
@@ -10652,47 +10686,75 @@ input::placeholder{color:#484f58}
 
       <!-- 📋 KRX 전용 탭 -->
       <div id="tab-evening" style="display:none">
-        <div id="evening-loading" style="text-align:center;padding:32px;color:#8b949e;display:none">
-          <div class="spinner" style="margin:0 auto 10px"></div>
-          KRX 검증 데이터 로딩 중...
+        <div id="evening-loading" style="text-align:center;padding:10px;color:#8b949e;display:none;font-size:11px">
+          KRX 보조 시장 신호 확인 중...
         </div>
         <div id="evening-content" style="display:none">
-          <div class="card">
-            <div class="card-title">⚖️ 예측 vs 실제 비교</div>
-            <div class="ev-result-grid">
-              <div class="ev-card ev-neutral">
-                <div class="ev-label">🌅 아침 예측</div>
-                <div class="ev-val" id="ev-pred-rec">—</div>
-                <div class="ev-note" id="ev-pred-conf"></div>
-              </div>
-              <div class="ev-card ev-neutral" id="ev-actual-card">
-                <div class="ev-label">📊 실제 종가 등락</div>
-                <div class="ev-val" id="ev-actual-pct">—</div>
-                <div class="ev-note" id="ev-actual-dir"></div>
-              </div>
-              <div class="ev-card ev-neutral" id="ev-verdict-card">
-                <div class="ev-label">🎯 판정</div>
-                <div style="margin-bottom:6px"><span id="ev-verdict-badge" class="ev-outcome-badge ev-na-badge">대기</span></div>
-                <div class="ev-note" id="ev-verdict-note"></div>
+          <div class="krx-stack">
+            <div class="card">
+              <div class="card-title">🇰🇷 KRX 종합 판단 <span id="krx-supplement-state" class="krx-inline-loading"></span></div>
+              <div class="krx-summary-grid">
+                <div class="krx-summary-card decision" id="krx-decision-card">
+                  <div class="krx-kicker">현재 조건에서의 대응</div>
+                  <div class="krx-summary-value" id="krx-decision">—</div>
+                  <div class="krx-summary-note" id="krx-decision-summary">—</div>
+                  <div class="krx-chip-row" id="krx-decision-chips"></div>
+                </div>
+                <div class="krx-summary-card">
+                  <div class="krx-kicker">현재 가격 · 전일 대비</div>
+                  <div class="krx-summary-value" id="krx-current-price">—</div>
+                  <div class="krx-summary-note" id="krx-current-change">—</div>
+                </div>
+                <div class="krx-summary-card">
+                  <div class="krx-kicker">우세 조건부 시나리오</div>
+                  <div class="krx-summary-value" id="krx-leading-scenario">—</div>
+                  <div class="krx-summary-note" id="krx-scenario-mix">—</div>
+                </div>
+                <div class="krx-summary-card">
+                  <div class="krx-kicker">손절 · 무효화 기준</div>
+                  <div class="krx-summary-value" id="krx-stop-price">—</div>
+                  <div class="krx-summary-note" id="krx-warning-zone">—</div>
+                </div>
               </div>
             </div>
-            <div style="font-size:12px;color:#484f58;border-top:1px solid #21262d;padding-top:10px">
-              💡 장 마감(15:30) 이후 실제 종가 데이터로 아침 예측을 자동 검증합니다.
+
+            <div class="card">
+              <div class="card-title">📍 현재 상태와 핵심 가격</div>
+              <div id="krx-state-grid" class="krx-state-grid"></div>
+              <div id="krx-level-grid" class="krx-level-grid"></div>
             </div>
-          </div>
-          <div class="card">
-            <div class="card-title">🔍 신호 기여 분석</div>
-            <div id="ev-signal-breakdown"></div>
+
+            <div class="card">
+              <div class="card-title">🧭 조건부 KRX 시나리오</div>
+              <div id="krx-scenario-grid" class="krx-scenario-grid"></div>
+              <div id="krx-scenario-note" class="krx-scope" style="margin-top:9px"></div>
+            </div>
+
+            <div class="card">
+              <div class="krx-context-grid">
+                <div class="krx-context-panel">
+                  <div class="krx-context-title">🌐 한국 시장·업종·수급</div>
+                  <div id="krx-market-context"></div>
+                </div>
+                <div class="krx-context-panel">
+                  <div class="krx-context-title">🔍 기술·패턴·AI 판단 근거</div>
+                  <div id="krx-signal-breakdown"></div>
+                </div>
+              </div>
+              <div id="krx-risk-list" class="krx-risk-list"></div>
+            </div>
+
+            <div id="krx-data-scope" class="krx-scope"></div>
           </div>
         </div>
-        <div id="evening-error" style="display:none;text-align:center;padding:24px;color:#484f58;font-size:13px">
-          KRX 검증 데이터 조회 실패 — 장 마감(15:30) 이후 사용 가능합니다
+        <div id="evening-error" style="display:none;margin:0 0 10px;padding:10px 12px;background:#2d2200;border:1px solid #4a3800;border-radius:8px;color:#d29922;font-size:11px;line-height:1.5">
+          보조 KRX 신호를 가져오지 못했습니다. 기본 종목 분석 결과는 계속 표시합니다.
         </div>
         <div id="evening-guide" style="text-align:center;padding:32px;color:#8b949e;font-size:13px">
           <div style="font-size:32px;margin-bottom:12px">📋</div>
-          <div style="font-weight:600;margin-bottom:8px">KRX 종목 전용 분석</div>
-          <div style="line-height:1.6">KRX 종목 검색 시 자동으로 예측 검증 데이터를 불러옵니다.<br>
-            <span style="font-size:11px;color:#484f58">장 마감(15:30) 이후 실제 종가 데이터가 반영됩니다</span></div>
+          <div style="font-weight:600;margin-bottom:8px">KRX 종목 종합 판단</div>
+          <div style="line-height:1.6">한국 종목을 분석하면 가격·기술지표·시장·수급을 종합한 조건부 시나리오가 표시됩니다.<br>
+            <span style="font-size:11px;color:#484f58">확정 예측이나 투자 권유가 아닌 현재 확보 데이터 기준 참고 분석입니다.</span></div>
         </div>
       </div>
 
@@ -11455,7 +11517,8 @@ async function analyze() {
     if (d.market === 'KRX' && krxCode) {
       eveningTabBtn.style.display = '';
       resetEveningTab();
-      loadKrxVerification(krxCode);  // 자동 로드
+      const krxBoard = String(d.symbol || '').toUpperCase().endsWith('.KQ') ? 'KOSDAQ' : 'KOSPI';
+      loadKrxAnalysis(krxCode, krxBoard);  // 기존 분석을 즉시 표시하고 보조 신호만 비동기 보완
     } else {
       eveningTabBtn.style.display = 'none';
       resetEveningTab();
@@ -14261,9 +14324,11 @@ function renderFlowTab(d) {
 // 📋 KRX 전용 탭
 // ═══════════════════════════════════════════════════════════════
 let eveningModeActive = false;
+let krxLoadToken = 0;
 
 function resetEveningTab() {
   eveningModeActive = false;
+  krxLoadToken += 1;
   ['evening-loading','evening-content','evening-error'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -14272,99 +14337,217 @@ function resetEveningTab() {
   if (guide) guide.style.display = '';
 }
 
-async function loadKrxVerification(krxCode) {
+async function loadKrxAnalysis(krxCode, krxBoard) {
   if (!krxCode) return;
   eveningModeActive = true;
+  const requestToken = ++krxLoadToken;
   const guide   = document.getElementById('evening-guide');
   const loading = document.getElementById('evening-loading');
   const content = document.getElementById('evening-content');
   const err     = document.getElementById('evening-error');
   if (guide)   guide.style.display = 'none';
   if (loading) loading.style.display = 'block';
-  if (content) content.style.display = 'none';
+  if (content) content.style.display = 'block';
   if (err)     err.style.display = 'none';
+
+  // 메인 분석 응답을 먼저 사용하므로 보조 요청이 느리거나 실패해도 KRX 탭은 즉시 표시된다.
+  renderKrxAnalysis(null, krxCode, krxBoard);
   try {
-    const r = await fetch(`/api/market/stocks?codes=${krxCode}&markets=KOSPI&evening=1`);
+    const market = krxBoard === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI';
+    const r = await fetch(`/api/market/stocks?codes=${encodeURIComponent(krxCode)}&markets=${market}`);
     if (!r.ok) throw new Error('서버 오류 ' + r.status);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
-    renderEveningVerification(d, krxCode);
+    if (requestToken !== krxLoadToken) return;
+    renderKrxAnalysis(d, krxCode, market);
     if (loading) loading.style.display = 'none';
-    if (content) content.style.display = 'block';
   } catch(e) {
+    if (requestToken !== krxLoadToken) return;
     if (loading) loading.style.display = 'none';
     if (err) {
       err.style.display = 'block';
-      err.textContent = 'KRX 검증 실패: ' + e.message + ' — 장 마감(15:30) 이후 사용 가능합니다';
+      err.textContent = '보조 KRX 신호를 가져오지 못했습니다: ' + e.message + ' · 기본 종목 분석 결과는 계속 표시합니다.';
     }
-    console.warn('[krx-tab] 로드 실패:', e.message);
+    const state = document.getElementById('krx-supplement-state');
+    if (state) state.textContent = '· 기본 분석 기준';
+    console.warn('[krx-tab] 보조 신호 로드 실패:', e.message);
   }
 }
+function _krxSetText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value == null || value === '' ? '—' : String(value);
+}
 
-function renderEveningVerification(d, krxCode) {
-  const stocks = d.stocks || [];
-  const stock = stocks.find(s => s.code === krxCode) || stocks[0];
-  if (!stock) {
-    document.getElementById('evening-error').style.display = 'block';
-    document.getElementById('evening-content').style.display = 'none';
+function _krxBandRange(band) {
+  const range = (band || {}).range || [];
+  return range.length === 2 ? `${fmtPrice(range[0], true)} ~ ${fmtPrice(range[1], true)}` : '데이터 확인 필요';
+}
+
+function _krxFactHtml(items, emptyText) {
+  if (!items.length) return `<div class="krx-scope">${_escPrediction(emptyText)}</div>`;
+  return items.map(item => {
+    const color = _predictionTone(item.tone);
+    return `<div class="krx-fact">
+      <div class="krx-fact-head"><span style="color:#8b949e">${_escPrediction(item.label)}</span><strong style="color:${color}">${_escPrediction(item.value)}</strong></div>
+      ${item.detail ? `<div class="krx-fact-detail">${_escPrediction(item.detail)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function renderKrxAnalysis(supplement, krxCode, krxBoard) {
+  const d = currentData || {};
+  const p = d.prediction_outlook || {};
+  const decision = p.decision || null;
+  const stocks = (supplement && supplement.stocks) || [];
+  const stock = stocks.find(s => String(s.code) === String(krxCode)) || stocks[0] || null;
+  const supplementState = document.getElementById('krx-supplement-state');
+
+  if (!decision) {
+    _krxSetText('krx-decision', '상세 판단 데이터 부족');
+    _krxSetText('krx-decision-summary', '현재 앱에서 확보한 데이터만으로 KRX 조건부 시나리오를 구성할 수 없습니다.');
+    ['krx-state-grid','krx-level-grid','krx-scenario-grid','krx-market-context','krx-signal-breakdown','krx-risk-list'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '<div class="krx-scope">분석 데이터 확인 필요</div>';
+    });
+    if (supplementState) supplementState.textContent = '· 데이터 부족';
     return;
   }
 
-  // 예측
-  const rec = stock.recommendation || 'hold';
-  const recLbl = {strong_buy:'강한 상승 기대',buy:'상승 기대',hold:'관망',sell:'하락 경계',strong_sell:'강한 하락 경계'}[rec] || rec;
-  const conf = stock.confidence || 'medium';
-  const confLbl = {high:'높음',medium:'중간',low:'낮음'}[conf] || conf;
-  document.getElementById('ev-pred-rec').textContent = recLbl;
-  document.getElementById('ev-pred-conf').textContent = '신뢰도: ' + confLbl + ' · 근거: ' + (stock.rationale || '');
+  const decisionColor = _predictionTone(decision.tone);
+  const confidence = Number(decision.confidence || 0);
+  const interval = decision.confidence_interval || [];
+  const decisionCard = document.getElementById('krx-decision-card');
+  if (decisionCard) decisionCard.style.borderColor = decisionColor + '88';
+  const decisionEl = document.getElementById('krx-decision');
+  if (decisionEl) {
+    decisionEl.textContent = decision.label || '관망 우선';
+    decisionEl.style.color = decisionColor;
+  }
+  _krxSetText('krx-decision-summary', decision.summary);
+  const chips = document.getElementById('krx-decision-chips');
+  if (chips) chips.innerHTML = [
+    `<span class="krx-chip" style="color:${decisionColor};border-color:${decisionColor}66">${_escPrediction(decision.direction || '중립')}</span>`,
+    `<span class="krx-chip">신뢰도 ${confidence.toFixed(0)}%${interval.length === 2 ? ` (${interval[0]}~${interval[1]}%)` : ''}</span>`,
+    '<span class="krx-chip">확정 예측 아님</span>',
+  ].join('');
 
-  // 실제 종가
-  const quote = stock.quote || {};
-  const actualPct = quote.change_pct_num;
-  const actualDir = quote.direction || 'flat';
-  if (actualPct != null) {
-    const up = actualPct > 0;
-    const clr = up ? '#f85149' : actualPct < 0 ? '#388bfd' : '#8b949e';
-    document.getElementById('ev-actual-pct').innerHTML =
-      `<span style="color:${clr}">${up?'▲':actualPct<0?'▼':'—'} ${Math.abs(actualPct).toFixed(2)}%</span>`;
-    document.getElementById('ev-actual-dir').textContent = quote.price ? '종가: ' + quote.price : '';
-  } else {
-    document.getElementById('ev-actual-pct').textContent = '—';
-    document.getElementById('ev-actual-dir').textContent = '종가 데이터 없음';
+  _krxSetText('krx-current-price', fmtPrice(d.last_close, true));
+  const pct = Number(d.pct_change);
+  const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '등락률 확인 필요';
+  const pctEl = document.getElementById('krx-current-change');
+  if (pctEl) {
+    pctEl.textContent = `전일 종가 ${fmtPrice(d.prev_close, true)} · ${pctText}`;
+    pctEl.style.color = pct > 0 ? '#f85149' : pct < 0 ? '#388bfd' : '#8b949e';
   }
 
-  // 판정 결과
-  const result = stock.result || {};
-  const outcome = result.outcome || 'n/a';
-  const outcomeMap = {
-    hit:     ['ev-hit-badge',     '적중 ✅'],
-    partial: ['ev-partial-badge', '부분 ⚖️'],
-    miss:    ['ev-miss-badge',    '실패 ❌'],
-    'n/a':   ['ev-na-badge',      '데이터 없음'],
-  };
-  const [outCls, outTxt] = outcomeMap[outcome] || outcomeMap['n/a'];
-  const verdictBadge = document.getElementById('ev-verdict-badge');
-  verdictBadge.className = 'ev-outcome-badge ' + outCls;
-  verdictBadge.textContent = outTxt;
-  document.getElementById('ev-verdict-note').textContent = result.note || '';
+  const scenarios = (p.scenarios || []).slice();
+  const rankedScenarios = scenarios.slice().sort((a, b) => Number(b.probability || 0) - Number(a.probability || 0));
+  const leading = rankedScenarios[0];
+  const leaders = leading ? rankedScenarios.filter(sc => Math.abs(Number(sc.probability || 0) - Number(leading.probability || 0)) <= 1) : [];
+  const leadingText = !leading ? '확인 필요' : leaders.length > 1
+    ? `${leaders.map(sc => String(sc.label || '').replace(' 시나리오','')).join('·')} 경합 ${Number(leading.probability || 0).toFixed(0)}%`
+    : `${leading.label} ${Number(leading.probability || 0).toFixed(0)}%`;
+  _krxSetText('krx-leading-scenario', leadingText);
+  _krxSetText('krx-scenario-mix', scenarios.map(sc => `${String(sc.label || '').replace(' 시나리오','')} ${Number(sc.probability || 0).toFixed(0)}%`).join(' · '));
 
-  // 판정 카드 색상
-  const verdictCard = document.getElementById('ev-verdict-card');
-  const cardCls = {hit:'ev-hit', partial:'ev-partial', miss:'ev-miss', 'n/a':'ev-neutral'};
-  verdictCard.className = 'ev-card ' + (cardCls[outcome] || 'ev-neutral');
+  const levels = p.levels || {};
+  _krxSetText('krx-stop-price', fmtPrice(levels.stop, true));
+  const warning = levels.warning_zone || [];
+  _krxSetText('krx-warning-zone', warning.length === 2
+    ? `주의 구간 ${fmtPrice(warning[0], true)} ~ ${fmtPrice(warning[1], true)} · 종가 기준 확인`
+    : '주요 지지선 종가 이탈 시 매수 시나리오 무효화');
 
-  // 신호 기여 분석
-  const breakdown = document.getElementById('ev-signal-breakdown');
-  const rows = [
-    ['뉴스 감성', {positive:'긍정',negative:'부정',neutral:'중립'}[stock.news_sentiment||'neutral'] || '—'],
-    ['간밤 신호', {up:'상승 강세',down:'하락 약세',neutral:'중립'}[stock.overnight_signal_dir||'neutral'] || '—'],
-    ['52주 위치', {high_zone:'고가권 경계',low_zone:'저가권 반등 기대',neutral:'중립 구간'}[stock.price_zone||'neutral'] || '—'],
-    ['거래량', stock.volume_spike ? '🚨 급증 (2× 이상)' : '정상'],
-    ['기술 점수', currentData ? String(currentData.score) + '점' : '—'],
+  const stateGrid = document.getElementById('krx-state-grid');
+  if (stateGrid) stateGrid.innerHTML = (p.status || []).map(item => {
+    const color = _predictionTone(item.tone);
+    return `<div class="krx-state-card">
+      <div class="krx-state-label">${_escPrediction(item.label)}${item.help ? ` <span class="prediction-help" title="${_escPrediction(item.help)}">?</span>` : ''}</div>
+      <div class="krx-state-value" style="color:${color}">${_escPrediction(item.value)}</div>
+      <div class="krx-state-detail">${_escPrediction(item.detail)}</div>
+    </div>`;
+  }).join('');
+
+  const bp = d.buy_price || {};
+  const entryOne = (bp.aggressive_bands || [])[0] || {};
+  const entryTwo = (bp.recommended_bands || [])[0] || {};
+  const levelCards = [
+    {label:`핵심 지지 · ${levels.support_label || '지지선'}`, value:fmtPrice(levels.support, true), detail:'종가 유지 여부 확인', tone:'positive'},
+    {label:`핵심 저항 · ${levels.resistance_label || '저항선'}`, value:fmtPrice(levels.resistance, true), detail:'거래량 동반 돌파 필요', tone:'negative'},
+    {label:'⚡ 1차 탐색 구간', value:_krxBandRange(entryOne), detail:entryOne.confirm_note || '지지 확인 후 소액 접근', tone:'neutral'},
+    {label:'📍 2차 주 진입 구간', value:_krxBandRange(entryTwo), detail:entryTwo.confirm_note || '구조적 지지 확인 후 분할 접근', tone:'positive'},
   ];
-  breakdown.innerHTML = rows.map(([label, val]) =>
-    `<div class="ev-sig-row"><span style="font-size:12px;color:#8b949e">${label}</span><span style="font-size:13px;font-weight:600">${val}</span></div>`
-  ).join('');
+  const levelGrid = document.getElementById('krx-level-grid');
+  if (levelGrid) levelGrid.innerHTML = levelCards.map(item => `<div class="krx-level-card">
+    <div class="krx-state-label">${_escPrediction(item.label)}</div>
+    <div class="krx-state-value" style="color:${_predictionTone(item.tone)}">${_escPrediction(item.value)}</div>
+    <div class="krx-state-detail">${_escPrediction(item.detail)}</div>
+  </div>`).join('');
+
+  const scenarioGrid = document.getElementById('krx-scenario-grid');
+  if (scenarioGrid) scenarioGrid.innerHTML = scenarios.map(sc => {
+    const color = _predictionTone(sc.tone);
+    const range = sc.price_range || [];
+    const rangeText = range.length === 2 ? `${fmtPrice(range[0], true)} ~ ${fmtPrice(range[1], true)}` : '가격 범위 확인 필요';
+    const conditions = (sc.conditions || []).map(x => `<div class="krx-condition"><span style="color:${color}">•</span><span>${_escPrediction(x)}</span></div>`).join('');
+    const checks = (sc.checks || []).map(x => {
+      const value = x.value != null ? `${_escPrediction(x.note || '')} ${fmtPrice(x.value, true)}`.trim() : _escPrediction(x.text || x.note || '확인 필요');
+      return `<div class="krx-check"><span>${_escPrediction(x.label)}</span><span>${value}</span></div>`;
+    }).join('');
+    const response = sc.key === 'upside'
+      ? '대응: 저항을 종가로 돌파하고 거래량이 함께 증가할 때만 분할 접근합니다. 돌파 전 추격은 보류합니다.'
+      : sc.key === 'downside'
+        ? '대응: 지지선 종가 이탈 시 진입 시나리오를 무효화하고, 손절·현금 비중 관리를 우선합니다.'
+        : '대응: 지지·저항 사이에서는 신규 진입을 서두르지 않고 하단 지지 또는 상단 돌파를 확인합니다.';
+    return `<div class="krx-scenario ${_escPrediction(sc.tone || 'neutral')}">
+      <div class="krx-scenario-head"><div class="krx-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="krx-scenario-prob" style="color:${color}">상대 비중 ${Number(sc.probability || 0).toFixed(0)}%</div></div>
+      <div class="krx-scenario-range">${rangeText}</div>
+      <div class="krx-scenario-summary">${_escPrediction(sc.summary)}</div>
+      ${conditions}<div class="krx-check-list">${checks}</div>
+      <div class="krx-response">${response}</div>
+    </div>`;
+  }).join('');
+  _krxSetText('krx-scenario-note', p.scenario_note);
+
+  const factMap = new Map();
+  (((p.market_context || {}).facts) || []).forEach(f => factMap.set(f.label, f));
+  _predictionLiveFacts(d, true).forEach(f => factMap.set(f.label, f));
+  if (stock) {
+    const newsValue = {positive:'긍정',negative:'부정',neutral:'중립'}[stock.news_sentiment || 'neutral'] || '중립';
+    const overnightValue = {up:'상승 우위',down:'하락 우위',neutral:'중립'}[stock.overnight_signal_dir || 'neutral'] || '중립';
+    factMap.set('뉴스 감성', {label:'뉴스 감성', value:newsValue, detail:'기존 KRX 보조 응답의 최근 뉴스 분류', tone:stock.news_sentiment || 'neutral'});
+    factMap.set('간밤 영향', {label:'간밤 영향', value:overnightValue, detail:'해외 증시·야간 흐름을 참고한 보조 신호', tone:stock.overnight_signal_dir === 'up' ? 'positive' : stock.overnight_signal_dir === 'down' ? 'negative' : 'neutral'});
+  }
+  const marketContext = document.getElementById('krx-market-context');
+  if (marketContext) marketContext.innerHTML = _krxFactHtml([...factMap.values()], '시장·업종·수급 데이터가 부족합니다.');
+
+  const evidence = [];
+  evidence.push({label:'기술 종합', value:`${Number(d.score || 0).toFixed(0)}점`, detail:`RSI ${Number(d.rsi || 0).toFixed(1)} · 상승 ${Number(d.prob_up || 0).toFixed(0)}% / 하락 ${Number(d.prob_down || 0).toFixed(0)}%`, tone:Number(d.score || 0) >= 60 ? 'positive' : Number(d.score || 0) < 40 ? 'negative' : 'neutral'});
+  const pattern = p.pattern_context || {};
+  if (pattern.manipulation_detected) {
+    const names = (pattern.items || []).map(x => x.pattern || x.name).filter(Boolean).slice(0, 3).join(', ');
+    evidence.push({label:'세력 흔들림', value:`${Number(pattern.manipulation_count || 0)}건 감지`, detail:names || pattern.wick_note || '지지 회복 여부 확인', tone:'negative'});
+  } else {
+    evidence.push({label:'세력 흔들림', value:'뚜렷한 신호 없음', detail:pattern.wick_note || '캔들·거래량 변화를 계속 확인', tone:'neutral'});
+  }
+  if ((pattern.candles || []).length) evidence.push({label:'캔들 패턴', value:(pattern.candles || []).join(', '), detail:'패턴 단독보다 지지·거래량 확인을 우선', tone:'neutral'});
+  (p.ai_evidence || []).slice(0, 4).forEach((line, idx) => evidence.push({label:`AI 근거 ${idx + 1}`, value:line, detail:'🧠 AI 진단 결과 재사용', tone:'neutral'}));
+  if (stock) {
+    evidence.push({label:'52주 가격 위치', value:{high_zone:'고가권 경계',low_zone:'저가권 반등 후보',neutral:'중립 구간'}[stock.price_zone || 'neutral'] || '중립 구간', detail:stock.rationale || '보조 가격 위치 신호', tone:stock.price_zone === 'low_zone' ? 'positive' : stock.price_zone === 'high_zone' ? 'negative' : 'neutral'});
+    evidence.push({label:'거래량 급증 점검', value:stock.volume_spike ? '평균 대비 2배 이상' : '급증 신호 없음', detail:'가격 방향과 함께 해석해야 하는 보조 신호', tone:stock.volume_spike ? (pct >= 0 ? 'positive' : 'negative') : 'neutral'});
+  }
+  const signalBreakdown = document.getElementById('krx-signal-breakdown');
+  if (signalBreakdown) signalBreakdown.innerHTML = _krxFactHtml(evidence, '기술·패턴 판단 근거가 부족합니다.');
+
+  const risks = (p.risk_triggers || []).slice(0, 6);
+  const riskList = document.getElementById('krx-risk-list');
+  if (riskList) riskList.innerHTML = risks.length
+    ? risks.map((risk, idx) => `<div class="krx-risk-item">⚠ 위험 ${idx + 1} · ${_escPrediction(risk)}</div>`).join('')
+    : '<div class="krx-risk-item">⚠ 주요 지지선 종가 이탈 시 시나리오 재평가</div>';
+
+  const board = krxBoard === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI';
+  const generated = supplement && supplement.generated_at ? ` · 보조 신호 ${new Date(supplement.generated_at).toLocaleString('ko-KR')}` : '';
+  _krxSetText('krx-data-scope', `${p.data_scope || '현재 앱에서 확보 가능한 데이터 기준'} · ${board} 종목 · 조건부 참고 분석이며 투자 권유가 아닙니다${generated}`);
+  if (supplementState) supplementState.textContent = stock ? '· 보조 신호 반영 완료' : '· 기본 분석 기준';
 }
 
 // ══════════════════════════════════════════════════════
