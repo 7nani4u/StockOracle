@@ -104,6 +104,8 @@ def _derive_market_mood(indices: dict, overnight: list[dict]) -> str:
     """
     scores: list[float] = []
     for idx in indices.values():
+        if idx.get("available") is False:
+            continue
         d = idx.get("direction", "flat")
         scores.append(1.0 if d == "up" else (-1.0 if d == "down" else 0.0))
     # 해외: S&P500 과 나스닥에 가중치
@@ -129,6 +131,8 @@ def _derive_kr_mood(indices: dict) -> str:
     """
     scores: list[float] = []
     for idx in indices.values():
+        if idx.get("available") is False:
+            continue
         d = idx.get("direction", "flat")
         scores.append(1.0 if d == "up" else (-1.0 if d == "down" else 0.0))
     if not scores:
@@ -223,6 +227,9 @@ def build_core_summary(macro_context: dict) -> dict:
     for n in news:
         news_counts[n.get("impact", "neutral")] = news_counts.get(n.get("impact", "neutral"), 0) + 1
 
+    verified_indices = [idx for idx in indices.values() if idx.get("available") is not False]
+    index_basis = verified_indices[0] if verified_indices else {}
+
     return {
         "generated_at": macro_context.get("generated_at", datetime.now(KST).isoformat()),
         "market_mood":  market_mood,
@@ -233,6 +240,13 @@ def build_core_summary(macro_context: dict) -> dict:
         "us_mood_label":  MOOD_LABEL.get(us_mood, us_mood),
         "vix_signal":   vix_signal,
         "indices":      indices,
+        "index_data_status": {
+            "available_count": len(verified_indices),
+            "expected_count": 3,
+            "source": index_basis.get("source") or "미수신",
+            "as_of": index_basis.get("as_of"),
+            "market_status": index_basis.get("market_status") or "확인 불가",
+        },
         "overnight":    overnight,
         "fx":           macro_context.get("fx") or [],
         "crypto_krw":   macro_context.get("crypto_krw") or {},

@@ -9859,11 +9859,10 @@ input::placeholder{color:#484f58}
 .ai-diagnosis-layout{display:flex;flex-direction:column;gap:14px;align-items:stretch}
 .ai-top-grid{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);gap:14px;align-items:stretch}
 .ai-bottom-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
-.ai-score-card,.ai-patterns-card,.ai-report-card,.ai-flow-card{margin-bottom:0;height:100%}
-.ai-flow-card{display:flex;flex-direction:column;gap:8px}
+.ai-score-card,.ai-patterns-card,.ai-report-card{margin-bottom:0;height:100%}
 .ai-score-card .score-bar-bg{max-width:300px}
 .ai-score-card #ai-score-desc{line-height:1.5}
-#steps-list,#flow-sector-content{display:flex;flex-direction:column;gap:10px}
+#steps-list{display:flex;flex-direction:column;gap:10px}
 .flow-rationale-text{font-size:12px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;overflow-wrap:anywhere}
 .empty-note{font-size:13px;color:#484f58;line-height:1.6;text-align:left}
 
@@ -9893,17 +9892,13 @@ input::placeholder{color:#484f58}
 /* 흐름 분석 보조 UI */
 .flow-subtext{font-size:11px;color:#484f58;margin-top:4px;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
 .flow-detail-grid{display:grid;grid-template-columns:minmax(0,1fr) repeat(2,minmax(120px,180px));gap:12px;align-items:stretch}
-.flow-detail-main,.flow-stat-card,.flow-chip{background:#21262d;border:1px solid #30363d;border-radius:12px}
+.flow-detail-main,.flow-stat-card{background:#21262d;border:1px solid #30363d;border-radius:12px}
 .flow-detail-main{padding:14px 16px;display:flex;flex-direction:column;gap:8px}
 .flow-detail-label,.flow-stat-label{font-size:11px;color:#8b949e}
 .flow-range-meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px;color:#484f58}
 .flow-range-meta strong{color:#e6edf3}
 .flow-stat-card{padding:14px 12px;text-align:center;display:flex;flex-direction:column;justify-content:center;gap:6px}
 .flow-stat-value{font-size:16px;font-weight:700;line-height:1.4;word-break:keep-all;overflow-wrap:anywhere}
-.flow-chip-row{display:flex;flex-wrap:wrap;gap:10px}
-.flow-chip{padding:10px 14px;font-size:13px;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
-.flow-chip strong{color:#e6edf3}
-.flow-helper-text{font-size:12px;color:#484f58;line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
 
 /* 차트 */
 #price-chart, #rsi-chart, #macd-chart, #forecast-chart{width:100%;border-radius:8px;overflow:hidden}
@@ -10194,7 +10189,6 @@ input::placeholder{color:#484f58}
   .page-header h2{font-size:16px}
   .step-result{font-size:12px}
   .pattern-item{font-size:12px;padding:12px}
-  .flow-chip{width:100%}
   .flow-range-meta{flex-direction:column;align-items:flex-start}
   .prediction-decision{padding:12px}
   .prediction-status-grid,.prediction-facts{grid-template-columns:1fr}
@@ -10866,11 +10860,6 @@ input::placeholder{color:#484f58}
           <div class="card ai-report-card">
             <div class="card-title">🔬 종목 진단</div>
             <div id="ai-diagnosis-chart"></div>
-          </div>
-          <!-- 섹터 / 업종 정보 -->
-          <div class="card ai-flow-card" id="flow-sector-card" style="display:none">
-            <div class="card-title">🏭 섹터 / 업종 정보</div>
-            <div id="flow-sector-content"></div>
           </div>
         </div>
       </div>
@@ -14294,14 +14283,26 @@ function renderMarketCore(d) {
   const idxOrder  = ['KOSPI', 'KOSDAQ', 'KOSPI200'];
   const idxLabels = { KOSPI: '코스피', KOSDAQ: '코스닥', KOSPI200: 'KOSPI 200' };
   document.getElementById('core-indices').innerHTML = idxOrder.map(k => {
-    const idx = indices[k]; if (!idx) return '';
+    const idx = indices[k] || {};
+    if (idx.available === false || !idx.value) {
+      const reason = _escPrediction(idx.unavailable_reason || '원본 데이터 미수신');
+      return `<div class="core-index-card" title="${reason}">
+        <div class="ci-name">${idxLabels[k] || k}</div>
+        <div class="ci-val" style="color:#8b949e;font-size:13px">데이터 미수신</div>
+        <div class="ci-chg" style="color:#484f58">—</div>
+      </div>`;
+    }
     const up  = idx.direction === 'up';
     const clr = up ? '#f85149' : idx.direction === 'down' ? '#388bfd' : '#8b949e';
     const arrow = up ? '▲' : idx.direction === 'down' ? '▼' : '—';
-    return `<div class="core-index-card">
+    const changes = [idx.change_abs, idx.change_pct ? `(${idx.change_pct})` : ''].filter(Boolean).join(' ');
+    const basis = [idx.source, idx.market_status, idx.as_of ? new Date(idx.as_of).toLocaleString('ko-KR') : '']
+      .filter(Boolean).join(' · ');
+    const prev = idx.prev_close != null ? `전일 종가 ${Number(idx.prev_close).toLocaleString('ko-KR', {minimumFractionDigits:2, maximumFractionDigits:2})}` : '';
+    return `<div class="core-index-card" title="${_escPrediction([basis, prev].filter(Boolean).join(' · '))}">
       <div class="ci-name">${idxLabels[k] || k}</div>
-      <div class="ci-val">${idx.value || '—'}</div>
-      <div class="ci-chg" style="color:${clr}">${arrow} ${idx.change_pct || idx.change_abs || ''}</div>
+      <div class="ci-val">${_escPrediction(idx.value)}</div>
+      <div class="ci-chg" style="color:${clr}">${arrow} ${_escPrediction(changes)}</div>
     </div>`;
   }).join('');
 
@@ -14618,26 +14619,6 @@ function renderFlowTab(d) {
   const flowRationale = document.getElementById('flow-rationale');
   if (flowRationale) flowRationale.textContent = rationale;
 
-  // 섹터 정보 (스크리너 데이터 활용)
-  const sectorCard = document.getElementById('flow-sector-card');
-  const sectorContent = document.getElementById('flow-sector-content');
-  if (sectorCard && sectorContent && (d.naver || d.toss_industry)) {
-    const sector = (d.naver && d.naver.sector) || (d.toss_industry && d.toss_industry.sector) || '';
-    const industry = (d.naver && d.naver.industry) || (d.toss_industry && d.toss_industry.industry) || '';
-    if (sector || industry) {
-      sectorContent.innerHTML = `
-        <div class="flow-chip-row">
-          ${sector ? `<div class="flow-chip">🏭 섹터 <strong>${sector}</strong></div>` : ''}
-          ${industry ? `<div class="flow-chip">🏢 업종 <strong>${industry}</strong></div>` : ''}
-        </div>
-        <p class="flow-helper-text">💡 동일 섹터 종목 비교는 스크리너(📋)에서 확인하세요.</p>`;
-      sectorCard.style.display = 'block';
-    } else {
-      sectorCard.style.display = 'none';
-    }
-  } else if (sectorCard) {
-    sectorCard.style.display = 'none';
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -16358,8 +16339,8 @@ function _renderImmuneFull(d) {
 
 // 시장별 설정 — 한국은 KOSPI 200(^KS200), 미국은 S&P 500(SPY) 기준 데이터
 var MARKET_DRAWER_CFG = {
-  KR: { flag:'🇰🇷', name:'한국 시장',  index:'^KS200', indexLabel:'KOSPI 200 기준' },
-  US: { flag:'🇺🇸', name:'미국 시장',  index:'SPY',    indexLabel:'S&P 500 기준' },
+  KR: { key:'KR', flag:'🇰🇷', name:'한국 시장', index:'^KS200', indexLabel:'KOSPI 200 기준' },
+  US: { key:'US', flag:'🇺🇸', name:'미국 시장', index:'SPY', indexLabel:'S&P 500 기준' },
 };
 
 function openMarketDrawer(market) {
@@ -16394,7 +16375,7 @@ function openMarketDrawer(market) {
         bodyEl.innerHTML = '<div style="text-align:center;padding:32px;color:#f85149;font-size:13px">오류: ' + d.error + '</div>';
         return;
       }
-      bodyEl.innerHTML = _buildImmuneHtml(d, cfg);
+      bodyEl.innerHTML = _buildImmuneHtml(d, cfg, _marketCoreSnapshot || {});
     })
     .catch(function(e){
       if (bodyEl) bodyEl.innerHTML = '<div style="text-align:center;padding:32px;color:#f85149;font-size:13px">네트워크 오류: ' + e.message + '</div>';
@@ -16417,102 +16398,126 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// 면역 데이터 → HTML 문자열 빌더 (드로어 전용, 면역 페이지 렌더와 동일 구성 재사용)
-function _buildImmuneHtml(d, cfg) {
-  var C = { green:'#3fb950', yellow:'#d29922', orange:'#f97316', red:'#f85149', gray:'#8b949e' };
-  var level = d.immune_level || 'CLEAR';
-  var score = d.immune_score || 0;
-
-  var levelCfg = {
-    'CLEAR':   { cls:'immune-clear',   label:'🟢 정상 (CLEAR)',       desc:'신규 진입 허용 · 모든 전략 가동 가능' },
-    'CAUTION': { cls:'immune-caution', label:'🟡 주의 (CAUTION)',     desc:'포지션 사이즈 50% 축소 권고' },
-    'ALERT':   { cls:'immune-alert',   label:'🟠 경보 (ALERT)',       desc:'신규 진입 극도 제한 · 수동 확인 필수' },
-    'IMMUNE':  { cls:'immune-immune',  label:'🔴 면역 발동 (IMMUNE)', desc:'신규 매수 전면 금지 · 현금 비중 확대' },
-  }[level] || { cls:'immune-clear', label:level, desc:'' };
-
-  var html = '';
-
-  // 선택된 시장 헤더 (드로어 본문 상단에도 명확히 표기)
-  if (cfg) {
-    html += '<div style="font-size:13px;font-weight:700;color:#e6edf3;margin-bottom:12px">' +
-            cfg.flag + ' ' + cfg.name +
-            '<span style="font-size:11px;font-weight:400;color:#8b949e;margin-left:6px">(' + cfg.indexLabel + ')</span></div>';
-  }
-
-  // 메인 면역 레벨 카드
-  html += '<div class="' + levelCfg.cls + '" style="border-radius:14px;padding:20px;border:2px solid;text-align:center;margin-bottom:16px">' +
-    '<div style="font-size:24px;font-weight:900;margin-bottom:6px">' + levelCfg.label + '</div>' +
-    '<div style="font-size:34px;font-weight:900;margin:8px 0">' + score + '<span style="font-size:15px;font-weight:400;opacity:.7">/100</span></div>' +
-    '<div style="font-size:12px;opacity:.9">' + levelCfg.desc + '</div>' +
-    '<div style="height:8px;background:rgba(0,0,0,.3);border-radius:4px;overflow:hidden;margin-top:14px;width:80%;margin-left:auto;margin-right:auto">' +
-    '<div style="height:100%;width:' + score + '%;background:currentColor;border-radius:4px;transition:width .7s"></div></div></div>';
-
-  // 지표 그리드
-  var metrics = [
-    { label:'VIX', val: d.vix_level != null ? d.vix_level.toFixed(1) : '—',
-      color: d.vix_level == null ? C.gray : d.vix_level >= 40 ? C.red : d.vix_level >= 30 ? C.orange : d.vix_level >= 20 ? C.yellow : C.green },
-    { label:'MA200 이격도', val: d.ma200_deviation != null ? d.ma200_deviation.toFixed(1) + '%' : '—',
-      color: d.ma200_deviation == null ? C.gray : d.ma200_deviation < -20 ? C.red : d.ma200_deviation < -10 ? C.orange : d.ma200_deviation < 0 ? C.yellow : C.green },
-    { label:'지수 ATR%', val: d.vol_pct != null ? d.vol_pct.toFixed(2) + '%' : '—',
-      color: d.vol_pct == null ? C.gray : d.vol_pct >= 5 ? C.red : d.vol_pct >= 3 ? C.orange : C.green },
-    { label:'위험 점수', val: score + '/100', color: score >= 65 ? C.red : score >= 40 ? C.orange : score >= 20 ? C.yellow : C.green },
-  ];
-  html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px">' +
-    metrics.map(function(m) {
-      return '<div class="immune-metric"><div class="immune-metric-val" style="color:' + m.color + '">' + m.val + '</div><div class="immune-metric-label">' + m.label + '</div></div>';
-    }).join('') + '</div>';
-
-  // 경고 목록
-  var warnings = d.warnings || [];
-  if (warnings.length > 0) {
-    html += '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">⚠️ 감지된 경고</div>' +
-      '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
-      warnings.map(function(w) {
-        return '<div style="background:#2d1515;border:1px solid #4d1515;border-radius:8px;padding:8px 12px;font-size:12px;color:#f85149">' + w + '</div>';
-      }).join('') + '</div>';
+// 시장평가 상세 — 홈에서 이미 받은 거시 데이터와 위험 면역 응답을 결합한다.
+function _buildImmuneHtml(d, cfg, core) {
+  var C = { green:'#3fb950', yellow:'#d29922', red:'#f85149', blue:'#388bfd', gray:'#8b949e' };
+  core = core || {};
+  var isKr = !cfg || cfg.key === 'KR';
+  var mood = (isKr ? core.kr_market_mood : core.us_market_mood) || 'neutral';
+  var moodCfg = {
+    positive:{cls:'immune-clear', label:'우호적', color:C.green, summary:'주요 지수 방향이 우세해 단기 시장 환경이 비교적 우호적입니다.'},
+    neutral: {cls:'immune-caution', label:'중립', color:C.yellow, summary:'상승·하락 근거가 엇갈려 방향 확인이 필요한 구간입니다.'},
+    negative:{cls:'immune-immune', label:'부담적', color:C.red, summary:'주요 지수 약세가 확인돼 신규 진입에는 보수적 대응이 필요합니다.'},
+  }[mood] || {cls:'immune-caution', label:'중립', color:C.yellow, summary:'평가 근거가 부족해 확정적인 방향 판단을 보류합니다.'};
+  var score = Number(d.immune_score || 0);
+  var indices = [];
+  if (isKr) {
+    var labels = {KOSPI:'코스피', KOSDAQ:'코스닥', KOSPI200:'KOSPI 200'};
+    ['KOSPI','KOSDAQ','KOSPI200'].forEach(function(key) {
+      var item = (core.indices || {})[key];
+      if (item && item.available !== false && item.value) indices.push(Object.assign({label:labels[key]}, item));
+    });
   } else {
-    html += '<div style="background:#0d2d1a;border:1px solid #1a4730;border-radius:8px;padding:10px 14px;font-size:12px;color:#3fb950;margin-bottom:16px">✓ 감지된 이상 신호 없음</div>';
+    var usLabels = {'^GSPC':'S&P 500','^IXIC':'나스닥','^DJI':'다우존스'};
+    (core.overnight || []).forEach(function(item) {
+      if (usLabels[item.symbol]) indices.push(Object.assign({label:usLabels[item.symbol]}, item));
+    });
   }
-
-  // Kill 스위치 권고
-  var ks = d.kill_switch || {};
-  var ksItems = [
-    { label:'신규 진입 금지',   val: ks.disable_new_entries },
-    { label:'자동 진입 금지',   val: ks.disable_automated_entries },
-    { label:'포지션 축소 권고', val: ks.reduce_position_size },
-    { label:'수동 확인 필수',   val: ks.require_manual_confirm },
-  ];
-  html += '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">🔐 Kill 스위치 상태</div>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
-    ksItems.map(function(item) {
-      var on = item.val === true;
-      var color = on ? '#f85149' : '#3fb950';
-      var bg    = on ? '#2d0d0d' : '#0d2d1a';
-      var border= on ? '#4d1515' : '#1a4730';
-      return '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;gap:6px">' +
-        '<span style="font-size:11px;color:#cdd9e5">' + item.label + '</span>' +
-        '<span style="font-size:11px;font-weight:700;color:' + color + '">' + (on ? '활성' : '비활성') + '</span></div>';
+  var overnight = core.overnight || [];
+  function findOvernight(symbol) { return overnight.find(function(item){ return item.symbol === symbol; }); }
+  function changeText(item) {
+    if (!item) return '';
+    var pct = item.change_pct;
+    if (typeof pct === 'number') pct = (pct > 0 ? '+' : '') + pct.toFixed(2) + '%';
+    return [item.change_abs, pct ? '(' + pct + ')' : ''].filter(Boolean).join(' ');
+  }
+  function toneColor(direction) { return direction === 'up' ? C.red : direction === 'down' ? C.blue : C.gray; }
+  function sectionTitle(text) {
+    return '<div style="font-size:12px;font-weight:700;color:#8b949e;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.04em">' + text + '</div>';
+  }
+  function rowsHtml(rows) {
+    if (!rows.length) return '<div style="padding:10px 12px;border:1px solid #30363d;border-radius:8px;color:#8b949e;font-size:12px">확인 가능한 데이터가 없습니다.</div>';
+    return '<div style="display:flex;flex-direction:column;gap:6px">' + rows.map(function(row) {
+      return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:9px 11px">' +
+        '<span style="font-size:11px;color:#8b949e">' + _escPrediction(row.label) + '</span>' +
+        '<span style="font-size:12px;font-weight:700;color:' + (row.color || '#e6edf3') + ';text-align:right">' + _escPrediction(row.value) + '</span></div>';
     }).join('') + '</div>';
-
-  // 과거 위기 유사도 (상위 3개)
-  var matches = d.crisis_matches || [];
-  if (matches.length > 0) {
-    html += '<div style="font-size:12px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">📜 과거 위기 유사도 (상위 3개)</div>' +
-      '<div style="display:flex;flex-direction:column;gap:8px">' +
-      matches.slice(0,3).map(function(c) {
-        var sim = c.similarity || 0;
-        var sevColor = c.severity === 'EXTREME' ? C.red : c.severity === 'SEVERE' ? C.orange : c.severity === 'MODERATE' ? C.yellow : C.green;
-        return '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">' +
-          '<div style="display:flex;justify-content:space-between;margin-bottom:6px">' +
-          '<span style="font-size:12px;font-weight:600;color:#cdd9e5">' + c.name + '</span>' +
-          '<span style="font-size:11px;font-weight:700;color:' + sevColor + '">' + c.severity + '</span></div>' +
-          '<div class="crisis-bar"><div class="crisis-bar-fill" style="width:' + sim + '%;background:' + sevColor + '"></div></div>' +
-          '<div style="display:flex;justify-content:space-between;margin-top:4px">' +
-          '<span style="font-size:10px;color:#484f58">유사도 ' + sim.toFixed(1) + '%</span>' +
-          '<span style="font-size:10px;color:#f85149">최대 낙폭 ' + c.drawdown + '%</span></div></div>';
-      }).join('') + '</div>';
+  }
+  function factorHtml(items, positive) {
+    var color = positive ? C.green : C.red;
+    var bg = positive ? '#0d2d1a' : '#2d1515';
+    var border = positive ? '#1a4730' : '#4d1515';
+    if (!items.length) items = [positive ? '확인된 지지 요인이 제한적입니다.' : '추가 부담 요인은 확인되지 않았습니다.'];
+    return '<div style="display:flex;flex-direction:column;gap:6px">' + items.map(function(text) {
+      return '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:8px 11px;font-size:12px;color:' + color + '">' +
+        (positive ? '＋ ' : '－ ') + _escPrediction(text) + '</div>';
+    }).join('') + '</div>';
   }
 
+  var positiveFactors = [];
+  var negativeFactors = [];
+  indices.forEach(function(item) {
+    var text = item.label + ' ' + (changeText(item) || '보합');
+    if (item.direction === 'up') positiveFactors.push(text);
+    if (item.direction === 'down') negativeFactors.push(text);
+  });
+  if (d.ma200_deviation != null) {
+    (d.ma200_deviation >= 0 ? positiveFactors : negativeFactors).push('대표지수 MA200 이격도 ' + Number(d.ma200_deviation).toFixed(1) + '%');
+  }
+  if (d.vix_level != null) {
+    (d.vix_level < 20 ? positiveFactors : negativeFactors).push('VIX ' + Number(d.vix_level).toFixed(1));
+  }
+  if (d.vol_pct != null) {
+    (d.vol_pct < 3 ? positiveFactors : negativeFactors).push('대표지수 ATR ' + Number(d.vol_pct).toFixed(2) + '%');
+  }
+
+  var indexRows = indices.map(function(item) {
+    return {label:item.label, value:[item.value, changeText(item)].filter(Boolean).join(' · '), color:toneColor(item.direction)};
+  });
+  var macroRows = [];
+  var usdKrw = (core.fx || []).find(function(item) {
+    var name = item.name || '';
+    return name.includes('USD') || name.includes('미국');
+  });
+  if (usdKrw) macroRows.push({label:'원/달러 환율', value:[usdKrw.value, usdKrw.change].filter(Boolean).join(' · ')});
+  [
+    ['^VIX','VIX'], ['DX-Y.NYB','달러인덱스'], ['CL=F','WTI 원유'], ['GC=F','금']
+  ].forEach(function(pair) {
+    var item = findOvernight(pair[0]);
+    if (item) macroRows.push({label:pair[1], value:[item.value, changeText(item)].filter(Boolean).join(' · '), color:toneColor(item.direction)});
+  });
+
+  var warnings = (d.warnings || []).slice();
+  var ks = d.kill_switch || {};
+  if (ks.disable_new_entries) warnings.push('위험 면역 기준상 신규 진입 제한 신호가 활성화되었습니다.');
+  else if (ks.reduce_position_size) warnings.push('위험 면역 기준상 포지션 축소 신호가 활성화되었습니다.');
+  warnings.push('채권금리와 시장 전체 투자자별 수급은 현재 요약 응답에서 미수신 상태입니다.');
+
+  var basis = core.index_data_status || {};
+  var updatedAt = basis.as_of || core.generated_at || d.generated_at;
+  var updatedText = updatedAt ? new Date(updatedAt).toLocaleString('ko-KR') : '확인 불가';
+  var sourceText = isKr ? (basis.source || '미수신') : 'Yahoo Finance 기반 간밤 시세';
+  var html = '';
+  html += '<div style="font-size:13px;font-weight:700;color:#e6edf3;margin-bottom:12px">' +
+    _escPrediction(cfg.flag + ' ' + cfg.name) + '<span style="font-size:11px;font-weight:400;color:#8b949e;margin-left:6px">(' + _escPrediction(cfg.indexLabel) + ')</span></div>';
+  html += '<div class="' + moodCfg.cls + '" style="border-radius:14px;padding:18px;border:2px solid;margin-bottom:16px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">' +
+    '<div style="font-size:20px;font-weight:900">' + _escPrediction(cfg.flag + ' ' + moodCfg.label) + '</div>' +
+    '<div style="font-size:12px;font-weight:700">위험 점수 ' + score.toFixed(0) + '/100</div></div>' +
+    '<div style="font-size:12px;line-height:1.65">' + _escPrediction(moodCfg.summary) + '</div></div>';
+  html += sectionTitle('주요 근거') + rowsHtml(indexRows.concat([
+    {label:'MA200 이격도', value:d.ma200_deviation != null ? Number(d.ma200_deviation).toFixed(1) + '%' : '데이터 미수신'},
+    {label:'대표지수 ATR', value:d.vol_pct != null ? Number(d.vol_pct).toFixed(2) + '%' : '데이터 미수신'},
+  ]));
+  html += sectionTitle('거시·자금 흐름') + rowsHtml(macroRows) +
+    '<div style="font-size:11px;color:#484f58;line-height:1.55;margin-top:6px">시장 전체 외국인·기관·개인 수급 및 채권금리는 미수신 시 평가에 반영하지 않습니다.</div>';
+  html += sectionTitle('긍정 요인') + factorHtml(positiveFactors, true);
+  html += sectionTitle('부담 요인') + factorHtml(negativeFactors, false);
+  html += sectionTitle('주의사항') + '<div style="display:flex;flex-direction:column;gap:6px">' + warnings.map(function(text) {
+    return '<div style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 11px;font-size:12px;color:#cdd9e5">• ' + _escPrediction(text) + '</div>';
+  }).join('') + '</div>';
+  html += '<div style="margin-top:14px;padding-top:10px;border-top:1px solid #30363d;font-size:10px;color:#484f58;line-height:1.6">' +
+    '기준: ' + _escPrediction(sourceText) + ' · ' + _escPrediction(basis.market_status || '최근 확인값') + '<br>마지막 갱신: ' + _escPrediction(updatedText) + '</div>';
   return html;
 }
 
