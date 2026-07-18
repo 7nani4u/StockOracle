@@ -754,30 +754,37 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
                         if not title or key in _seen_titles:
                             continue
                         _seen_titles.add(key)
+                        image_url = ""
+                        media = getattr(e, "media_content", None) or getattr(e, "media_thumbnail", None) or []
+                        if media and isinstance(media, list) and isinstance(media[0], dict):
+                            image_url = str(media[0].get("url") or "")
                         news.append({
                             "title": title, "link": getattr(e, "link", ""),
                             "publisher": getattr(getattr(e, "source", None), "title", None) or default_pub,
                             "published": getattr(e, "published", ""),
+                            "published_at": getattr(e, "published", ""),
+                            "summary": "",  # Google/Yahoo RSS 설명은 관련 링크 묶음인 경우가 많아 표시하지 않음
+                            "image_url": image_url,
                             "source_type": source_type,
                         })
                 except Exception:
                     pass
 
-            # ① 야후 파이낸스 RSS — 티커 단위 공식 헤드라인 (KRX 심볼도 야후 형식 그대로 지원)
-            _collect_feed(
-                f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(sym)}&region=US&lang=en-US",
-                "yahoo_rss", "Yahoo Finance")
-            # ② 구글 뉴스 RSS — 폭넓은 커버리지 (기존 쿼리 유지)
+            # ① 한국어 Google News — 뉴스 탭 표시용 헤드라인을 먼저 확보한다.
             if market == "KRX":
                 q = sym.replace(".KS","").replace(".KQ","") + " 주가"
                 _collect_feed(
                     f"https://news.google.com/rss/search?q={quote(q)}&hl=ko&gl=KR&ceid=KR:ko",
-                    "google_news", "Google News")
+                    "google_news_ko", "Google News", limit=8)
             else:
                 _collect_feed(
-                    f"https://news.google.com/rss/search?q={quote(sym + ' stock')}&hl=en-US&gl=US&ceid=US:en",
-                    "google_news", "Google News")
-            news = news[:10]
+                    f"https://news.google.com/rss/search?q={quote(sym + ' 주가')}&hl=ko&gl=KR&ceid=KR:ko",
+                    "google_news_ko", "Google News", limit=8)
+            # ② 야후 파이낸스 RSS — 감정·이벤트 분석용 영문 원문 보완.
+            _collect_feed(
+                f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(sym)}&region=US&lang=en-US",
+                "yahoo_rss", "Yahoo Finance", limit=4)
+            news = news[:12]
 
         df2 = df.reset_index()
         # 분봉 데이터인 경우 인덱스 이름이 "Datetime"일 수 있으므로 "Date"로 통일
@@ -851,6 +858,37 @@ def fetch_naver_realtime(code: str):
             print(f"Naver JSON API Error: {e}")
     return r
 
+def _enrich_naver_news_item(item: Dict, headers: Dict | None = None) -> Dict:
+    """네이버 종목뉴스 한 건에 전체 제목·요약·대표 이미지를 보강한다."""
+    enriched = dict(item or {})
+    link = str(enriched.get("link") or "")
+    if not link.startswith("https://n.news.naver.com/"):
+        return enriched
+    try:
+        response = requests.get(link, headers=headers or {"User-Agent": "Mozilla/5.0"}, timeout=4)
+        response.raise_for_status()
+        article = BeautifulSoup(response.text, "html.parser")
+
+        def _meta(property_name: str) -> str:
+            node = (article.select_one(f'meta[property="{property_name}"]') or
+                    article.select_one(f'meta[name="{property_name}"]'))
+            return re.sub(r"\s+", " ", str(node.get("content") or "")).strip() if node else ""
+
+        full_title = _meta("og:title")
+        summary = _meta("og:description")
+        image_url = _meta("og:image")
+        if full_title:
+            enriched["title"] = full_title
+        if summary and summary != full_title:
+            enriched["summary"] = summary[:280]
+        if image_url.startswith("https://"):
+            enriched["image_url"] = image_url
+        enriched["source_type"] = "naver"
+    except Exception:
+        pass
+    return enriched
+
+
 @ttl_cache(60)  # 1분 캐시
 def fetch_naver(code: str):
     code = str(code).replace(".KS","").replace(".KQ","")
@@ -891,7 +929,26 @@ def fetch_naver(code: str):
                 link = a["href"]
                 if not link.startswith("http"):
                     link = "https://finance.naver.com" + link
-                r["news"].append({"title": title, "link": link})
+                date_node = item.select_one("em")
+                r["news"].append({
+                    "title": title, "link": link,
+                    "date": date_node.get_text(strip=True) if date_node else "",
+                    "source_type": "naver",
+                })
+
+        # 메인 페이지 제목은 이미 말줄임된 경우가 많다. 종목뉴스 목록의 전체 제목·
+        # 언론사·시각을 우선 사용하고, 상위 5건의 OG 메타는 병렬로 보강한다.
+        try:
+            from market_briefing.data_fetcher import fetch_stock_news
+            detailed_news = fetch_stock_news(code, limit=5) or []
+            if detailed_news:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(detailed_news))) as executor:
+                    r["news"] = list(executor.map(
+                        lambda news_item: _enrich_naver_news_item(news_item, hdrs),
+                        detailed_news,
+                    ))
+        except Exception:
+            pass
                 
         # 공시 섹션 (별도 페이지 조회)
         url_notice = f"https://finance.naver.com/item/news_notice.naver?code={code}"
@@ -9869,14 +9926,28 @@ input::placeholder{color:#484f58}
 .risk-tp-head{background:transparent;border-bottom:1px solid #30363d;padding:3px 7px 5px;margin-bottom:4px;color:#6e7681}
 .risk-tp-head span{font-size:9px;font-weight:600;line-height:1.25;white-space:nowrap}
 .risk-tp-head span:last-child{text-align:right}
-
 /* 뉴스 */
-.news-item{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #21262d}
+.news-tab-stack{display:flex;flex-direction:column;gap:12px}
+.news-item{border-bottom:1px solid #21262d}
 .news-item:last-child{border-bottom:none}
-.news-dot{color:#388bfd;margin-top:2px;flex-shrink:0}
-.news-a{color:#8b949e;font-size:13px;text-decoration:none;line-height:1.5}
-.news-a:hover{color:#e6edf3;text-decoration:underline}
-.news-meta{font-size:11px;color:#484f58;margin-top:3px}
+.news-row{display:grid;grid-template-columns:minmax(0,1fr) 80px;gap:14px;align-items:start;padding:14px 2px;color:inherit;text-decoration:none;border-radius:8px;transition:background .16s ease}
+.news-row:hover{background:#1b2027}
+.news-row:focus-visible{outline:2px solid #388bfd;outline-offset:2px}
+.news-body{min-width:0}
+.news-a{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;color:#e6edf3;font-size:14px;font-weight:700;text-decoration:none;line-height:1.45;word-break:keep-all;overflow-wrap:anywhere}
+.news-summary{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;color:#8b949e;font-size:12px;line-height:1.55;margin-top:5px;word-break:keep-all;overflow-wrap:anywhere}
+.news-meta{font-size:11px;color:#6e7681;margin-top:7px;line-height:1.4}
+.news-translation{color:#58a6ff}
+.news-thumb-shell{position:relative;width:80px;height:64px;border-radius:8px;overflow:hidden;background:#21262d;display:flex;align-items:center;justify-content:center;color:#6e7681;font-size:22px}
+.news-thumb{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#21262d}
+.news-thumb.is-error{display:none}
+.news-empty{font-size:13px;color:#484f58;padding:18px 2px}
+@media(max-width:480px){
+  .news-row{grid-template-columns:minmax(0,1fr) 64px;gap:10px;padding:12px 0}
+  .news-thumb-shell{width:64px;height:54px;border-radius:7px}
+  .news-a{font-size:13px}
+  .news-summary{font-size:11px;-webkit-line-clamp:2}
+}
 
 /* 스크리너 */
 .screener-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
@@ -10838,13 +10909,12 @@ input::placeholder{color:#484f58}
           <div class="risk-grid" id="risk-grid"></div>
         </div>
       </div>
-
       <!-- 뉴스 탭 -->
       <div id="tab-news" style="display:none">
-        <div class="two-col-grid">
+        <div class="news-tab-stack">
           <div class="card" id="news-col1">
             <div class="card-title" id="news-col1-title">📰 주요 뉴스</div>
-            <div id="news-list"></div>
+            <div id="news-list" role="list" aria-live="polite"></div>
           </div>
           <div class="card" id="disclosure-col" style="display:none">
             <div class="card-title">📋 최근 공시</div>
@@ -13649,44 +13719,122 @@ function renderPivotPoints(d, isKrx) {
   el.innerHTML = html;
 }
 
+function _safeNewsUrl(value, imageOnly = false) {
+  try {
+    const url = new URL(String(value || ''), window.location.origin);
+    if (imageOnly) return url.protocol === 'https:' ? url.href : '';
+    return (url.protocol === 'http:' || url.protocol === 'https:') ? url.href : '#';
+  } catch (_) {
+    return '';
+  }
+}
+
+function _newsRelativeTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let normalized = raw;
+  if (/^\d{2}[./-]\d{2}$/.test(raw)) {
+    const [month, day] = raw.split(/[./-]/).map(Number);
+    let year = new Date().getFullYear();
+    let candidate = new Date(year, month - 1, day, 12, 0, 0);
+    if (candidate.getTime() - Date.now() > 36 * 60 * 60 * 1000) candidate = new Date(year - 1, month - 1, day, 12, 0, 0);
+    normalized = candidate.toISOString();
+  } else if (/^\d{4}\.\d{2}\.\d{2}/.test(raw)) {
+    normalized = raw.replace(/\./g, '-').replace(' ', 'T');
+  }
+  const parsed = new Date(normalized);
+  if (!Number.isFinite(parsed.getTime())) return raw;
+  const diffMs = Math.max(0, Date.now() - parsed.getTime());
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return '방금 전';
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}일 전`;
+  return parsed.toLocaleDateString('ko-KR', {year:'numeric', month:'2-digit', day:'2-digit'}).replace(/\s/g, '');
+}
+
+function _newsHasHangul(value) {
+  return /[가-힣]/.test(String(value || ''));
+}
+
+function _normalizeNewsItems(d, isKrx) {
+  const naverNews = ((d.naver || {}).news || []);
+  const finnhubNews = (((d.us_enriched || {}).news) || []);
+  const rssNews = (d.news || []);
+  const candidates = isKrx
+    ? [...naverNews, ...rssNews.filter(n => _newsHasHangul(n.title_ko || n.title))]
+    : [
+        ...finnhubNews.filter(n => _newsHasHangul(n.title_ko || n.title)),
+        ...rssNews.filter(n => _newsHasHangul(n.title_ko || n.title)),
+      ];
+  const seen = new Set();
+  return candidates.filter(n => {
+    const displayTitle = String(n.title_ko || n.title || '').replace(/\s+/g, ' ').trim();
+    const key = displayTitle.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+    if (!displayTitle || !key || seen.has(key)) return false;
+    if (!isKrx && !_newsHasHangul(displayTitle)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 10);
+}
+
+function _renderNewsItem(n, fallbackIcon = '📰') {
+  const title = String(n.title_ko || n.title || '').trim();
+  const originalTitle = String(n.original_title || n.title || '').trim();
+  const rawSummary = String(n.summary_ko || n.summary || n.description || '').replace(/\s+/g, ' ').trim();
+  const summary = rawSummary && rawSummary !== title && rawSummary !== originalTitle ? rawSummary : '';
+  const source = String(n.source || n.publisher || '').trim();
+  const dateValue = n.published_at || n.published || n.date || '';
+  const relative = _newsRelativeTime(dateValue);
+  const link = _safeNewsUrl(n.link || n.url || '#');
+  const imageUrl = _safeNewsUrl(n.image_url || n.image || n.thumbnail || '', true);
+  const meta = [source, relative].filter(Boolean).map(_escPrediction).join(' · ');
+  const translated = n.translation_source && originalTitle && originalTitle !== title;
+  return `<article class="news-item" role="listitem">
+    <a class="news-row" href="${_escPrediction(link || '#')}" target="_blank" rel="noopener noreferrer" aria-label="${_escPrediction(title)}">
+      <div class="news-body">
+        <div class="news-a">${_escPrediction(title)}</div>
+        ${summary ? `<div class="news-summary">${_escPrediction(summary)}</div>` : ''}
+        ${(meta || translated) ? `<div class="news-meta">${meta}${meta && translated ? ' · ' : ''}${translated ? '<span class="news-translation">자동 번역</span>' : ''}</div>` : ''}
+      </div>
+      <div class="news-thumb-shell" aria-hidden="true"><span>${fallbackIcon}</span>${imageUrl ? `<img class="news-thumb" src="${_escPrediction(imageUrl)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ''}</div>
+    </a>
+  </article>`;
+}
+
+function _bindNewsImageFallbacks(container) {
+  if (!container) return;
+  container.querySelectorAll('img.news-thumb').forEach(img => {
+    img.addEventListener('error', () => img.classList.add('is-error'), {once:true});
+  });
+}
+
 function renderNews(d, isKrx) {
   const newsList = document.getElementById('news-list');
   const discEl = document.getElementById('disclosure-col');
   const col1Title = document.getElementById('news-col1-title');
 
-  const finnhubNews = !isKrx && d.us_enriched && (d.us_enriched.news || []).length > 0
-    ? d.us_enriched.news : null;
-  const newsArr = d.naver ? d.naver.news : (finnhubNews || d.news);
-  if (isKrx && d.naver) {
-    col1Title.textContent = '📰 주요 뉴스 (네이버)';
+  const newsArr = _normalizeNewsItems(d, isKrx);
+  if (isKrx) {
+    col1Title.textContent = '📰 주요 뉴스';
     discEl.style.display = 'block';
     const discList = document.getElementById('disclosure-list');
-    const discs = d.naver.disclosures || [];
+    const discs = ((d.naver || {}).disclosures) || [];
+    discList.setAttribute('role', 'list');
     discList.innerHTML = discs.length > 0
-      ? discs.map(n => `<div class="news-item">
-          <span class="news-dot">📌</span>
-          <div>
-            <a class="news-a" href="${n.link}" target="_blank">${n.title}</a>
-            ${n.date ? `<div class="news-meta">${n.date}</div>` : ''}
-          </div>
-        </div>`).join('')
-      : '<p style="font-size:13px;color:#484f58">공시 없음</p>';
+      ? discs.map(n => _renderNewsItem({...n, source:n.source || '공시'}, '📌')).join('')
+      : '<p class="news-empty">공시가 없습니다.</p>';
+    _bindNewsImageFallbacks(discList);
   } else {
-    col1Title.textContent = finnhubNews ? '📰 관련 뉴스 (Finnhub)' : '📰 관련 뉴스 (Google RSS)';
+    col1Title.textContent = '📰 주요 뉴스 · 한글 헤드라인';
     discEl.style.display = 'none';
   }
-  const renderNewsItem = (n) => {
-    const link = n.link || n.url || '#';
-    const src  = n.publisher || n.source || '';
-    const dt   = n.date || (n.published ? (n.published+'').slice(0,16) : '');
-    return `<div class="news-item"><span class="news-dot">📄</span><div>
-      <a class="news-a" href="${link}" target="_blank">${n.title||''}</a>
-      ${(src||dt) ? `<div class="news-meta">${src}${src&&dt?' · ':''}${dt}</div>` : ''}
-    </div></div>`;
-  };
-  newsList.innerHTML = (newsArr || []).length > 0
-    ? (newsArr || []).map(renderNewsItem).join('')
-    : '<p style="font-size:13px;color:#484f58">뉴스가 없습니다.</p>';
+  newsList.innerHTML = newsArr.length > 0
+    ? newsArr.map(n => _renderNewsItem(n)).join('')
+    : `<p class="news-empty">${isKrx ? '관련 뉴스를 찾지 못했습니다.' : '한국어로 제공 가능한 관련 뉴스를 찾지 못했습니다.'}</p>`;
+  _bindNewsImageFallbacks(newsList);
 }
 
 // ── 차트 (lightweight-charts) ──

@@ -8,6 +8,7 @@ API 우선순위:
 from __future__ import annotations
 
 import datetime
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -32,6 +33,68 @@ def _get(url: str, headers: dict | None = None) -> Any:
         return None
 
 
+_HANGUL_RE = re.compile(r"[가-힣]")
+_NEWS_ITEM_BREAK = "<<<SO_ITEM_BREAK>>>"
+_NEWS_FIELD_BREAK = "<<<SO_FIELD_BREAK>>>"
+
+
+def _translate_news_batch_ko(items: list[dict]) -> list[dict]:
+    """영문 뉴스 제목·요약을 한 번의 경량 요청으로 한국어 표시문으로 만든다.
+
+    번역 실패는 뉴스 수집 자체를 중단시키지 않는다. 결과는 상위
+    ``fetch_us_enriched`` 5분 캐시에 함께 저장되므로 탭 전환이나 재렌더링 때
+    번역 요청을 반복하지 않는다.
+    """
+    targets: list[tuple[int, str, str]] = []
+    for index, item in enumerate(items):
+        title = str(item.get("title") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        if title and not _HANGUL_RE.search(title):
+            targets.append((index, title, summary))
+        elif title:
+            item["title_ko"] = title
+            if summary and _HANGUL_RE.search(summary):
+                item["summary_ko"] = summary
+    if not targets:
+        return items
+
+    payload = f"\n{_NEWS_ITEM_BREAK}\n".join(
+        f"{title} {_NEWS_FIELD_BREAK} {summary}" for _, title, summary in targets
+    )
+    try:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": "ko", "dt": "t", "q": payload},
+            timeout=4,
+        )
+        response.raise_for_status()
+        data = response.json()
+        translated = "".join(
+            str(part[0]) for part in (data[0] if isinstance(data, list) and data else [])
+            if isinstance(part, list) and part
+        )
+        chunks = re.split(re.escape(_NEWS_ITEM_BREAK), translated, flags=re.IGNORECASE)
+        if len(chunks) != len(targets):
+            return items
+        for (index, _, _), chunk in zip(targets, chunks):
+            fields = re.split(
+                re.escape(_NEWS_FIELD_BREAK),
+                chunk.strip(),
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )
+            title_ko = fields[0].strip()
+            summary_ko = fields[1].strip() if len(fields) > 1 else ""
+            if title_ko and _HANGUL_RE.search(title_ko):
+                items[index]["title_ko"] = title_ko
+                items[index]["translation_source"] = "자동 번역"
+            if summary_ko and _HANGUL_RE.search(summary_ko):
+                items[index]["summary_ko"] = summary_ko[:260]
+    except Exception:
+        pass
+    return items
+
+
 # ── Finnhub ──────────────────────────────────────────────────────────────────
 
 def fetch_finnhub_news(symbol: str, days: int = 7) -> list[dict]:
@@ -49,17 +112,27 @@ def fetch_finnhub_news(symbol: str, days: int = 7) -> list[dict]:
     for item in data[:10]:
         ts = item.get("datetime", 0)
         try:
-            date_str = datetime.datetime.utcfromtimestamp(ts).strftime("%Y.%m.%d %H:%M")
+            published_at = datetime.datetime.fromtimestamp(
+                ts, tz=datetime.timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+            date_str = datetime.datetime.fromtimestamp(
+                ts, tz=datetime.timezone.utc
+            ).strftime("%Y.%m.%d %H:%M")
         except Exception:
+            published_at = ""
             date_str = ""
         out.append({
             "title":   item.get("headline", ""),
+            "original_title": item.get("headline", ""),
             "link":    item.get("url", ""),
             "source":  item.get("source", ""),
             "date":    date_str,
+            "published_at": published_at,
             "summary": (item.get("summary") or "")[:200],
+            "image_url": item.get("image") or "",
+            "source_type": "finnhub",
         })
-    return out
+    return _translate_news_batch_ko(out)
 
 
 def fetch_finnhub_sentiment(symbol: str) -> dict:
