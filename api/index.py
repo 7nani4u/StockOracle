@@ -9844,7 +9844,7 @@ input::placeholder{color:#484f58}
 .page-header p{font-size:12px;color:#484f58;margin-top:4px}
 
 /* 펀더멘털 */
-.fund-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.fund-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .fund-item{background:#21262d;border-radius:10px;padding:12px}
 .fund-label{font-size:11px;color:#8b949e;margin-bottom:4px}
 .fund-val{font-size:14px;font-weight:600}

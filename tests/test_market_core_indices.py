@@ -130,3 +130,8 @@ def test_ai_sector_card_removed_and_market_detail_reuses_home_snapshot():
     assert "_marketCoreSnapshot || {}" in SOURCE
     assert "idx.change_abs" in renderer
     assert "데이터 미수신" in renderer
+
+
+def test_fundamental_cards_use_one_desktop_row_and_keep_mobile_grid():
+    assert ".fund-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}" in SOURCE
+    assert ".fund-grid{grid-template-columns:repeat(2,1fr)}" in SOURCE
