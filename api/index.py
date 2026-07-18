@@ -3979,79 +3979,43 @@ def fetch_us_opening_surge():
 # 분석 엔진
 # =============================================================================
 class ChartPatternAnalyzer:
-    def __init__(self, df):
+    """기존 호출 방식을 보존하는 공통 패턴 엔진 호환 래퍼."""
+
+    def __init__(self, df, timeframe: str = "1D", tolerance_mode: str = "hybrid"):
         self.df = df
-        self.closes = np.array(df['Close'].values, dtype=float)
-        self.highs = np.array(df['High'].values, dtype=float)
-        self.lows = np.array(df['Low'].values, dtype=float)
-        
+        self.timeframe = timeframe
+        self.tolerance_mode = tolerance_mode
+        self._engine = None
+        try:
+            from market_briefing.pattern_engine import PatternEngine
+            mapping = {column: df[column].tolist() for column in
+                       ("Open", "High", "Low", "Close", "Volume", "Date")
+                       if column in df.columns}
+            if "Date" not in mapping:
+                mapping["Date"] = list(df.index)
+            self._engine = PatternEngine.from_mapping(
+                mapping, timeframe=timeframe, tolerance_mode=tolerance_mode,
+                include_forming=True,
+            )
+        except (ImportError, ValueError, TypeError, KeyError):
+            self._engine = None
+
     def find_local_extrema(self, order=5):
-        # scipy.signal.argrelextrema 대체 구현 (Pure Numpy)
-        # order: 양쪽으로 비교할 이웃의 수
-        peaks = []
-        troughs = []
-        
-        # Highs for peaks
-        for i in range(order, len(self.highs) - order):
-            window = self.highs[i-order : i+order+1]
-            if self.highs[i] == np.max(window) and self.highs[i] != self.highs[i-1]:
-                peaks.append(i)
-                
-        # Lows for troughs
-        for i in range(order, len(self.lows) - order):
-            window = self.lows[i-order : i+order+1]
-            if self.lows[i] == np.min(window) and self.lows[i] != self.lows[i-1]:
-                troughs.append(i)
-                
-        return np.array(peaks), np.array(troughs)
+        """호환용 반환값. 실제 피벗은 시간 프레임 설정으로 한 번만 계산된다."""
+        if self._engine is None:
+            return np.array([], dtype=int), np.array([], dtype=int)
+        peaks = [p["index"] for p in self._engine.pivots if p["pivot_type"] == "high"]
+        troughs = [p["index"] for p in self._engine.pivots if p["pivot_type"] == "low"]
+        return np.asarray(peaks, dtype=int), np.asarray(troughs, dtype=int)
 
     def detect_patterns(self):
-        patterns = []
+        if self._engine is None:
+            return []
         try:
-            peaks, troughs = self.find_local_extrema(order=5)
-            if len(peaks) < 3 or len(troughs) < 3:
-                return patterns
-
-            last_peaks = peaks[-3:]
-            last_troughs = troughs[-3:]
-            
-            # Linear regression for slope
-            def get_slope(x, y):
-                if len(x) < 2: return 0
-                return np.polyfit(x, y, 1)[0]
-
-            slope_upper = get_slope(last_peaks, self.highs[last_peaks])
-            slope_lower = get_slope(last_troughs, self.lows[last_troughs])
-            
-            # Triangle Patterns
-            # 주가 수준에 맞는 상대적 flat 임계값 (주가의 0.1% per bar)
-            avg_price = float(np.mean(self.closes[-30:])) if len(self.closes) >= 30 else float(np.mean(self.closes))
-            flat_threshold = avg_price * 0.001
-            if slope_upper < 0 and slope_lower > 0:
-                patterns.append({'name': '대칭 삼각형 (Symmetrical Triangle)', 'signal': '중립/변동성 축소', 'desc': '곧 큰 방향성이 나올 것입니다.'})
-            elif slope_upper < 0 and abs(slope_lower) < flat_threshold:
-                patterns.append({'name': '하락 삼각형 (Descending Triangle)', 'signal': '매도 (하락형)', 'desc': '지지선 붕괴 위험이 있습니다.'})
-            elif abs(slope_upper) < flat_threshold and slope_lower > 0:
-                patterns.append({'name': '상승 삼각형 (Ascending Triangle)', 'signal': '매수 (상승형)', 'desc': '저항선 돌파 시도가 예상됩니다.'})
-                
-            # Wedge Patterns
-            if slope_upper < 0 and slope_lower < 0:
-                if slope_lower < slope_upper:
-                    patterns.append({'name': '하락 쐐기형 (Falling Wedge)', 'signal': '매수 (반전)', 'desc': '하락세가 약화되고 반등할 가능성이 큽니다.'})
-            if slope_upper > 0 and slope_lower > 0:
-                if slope_lower > slope_upper:
-                    patterns.append({'name': '상승 쐐기형 (Rising Wedge)', 'signal': '매도 (반전)', 'desc': '상승세가 약화되고 하락할 가능성이 큽니다.'})
-                    
-            # Double Top/Bottom
-            if len(last_peaks) >= 2:
-                if abs(self.highs[last_peaks[-1]] - self.highs[last_peaks[-2]]) / (self.highs[last_peaks[-1]] or 1) < 0.02:
-                    patterns.append({'name': '이중 천장 (Double Top)', 'signal': '매도', 'desc': '고점 돌파 실패, 하락 전환 가능성.'})
-            if len(troughs) >= 2:
-                if abs(self.lows[last_troughs[-1]] - self.lows[last_troughs[-2]]) / (self.lows[last_troughs[-1]] or 1) < 0.02:
-                    patterns.append({'name': '이중 바닥 (Double Bottom)', 'signal': '매수', 'desc': '바닥 지지 성공, 상승 전환 가능성.'})
-        except Exception:
-            pass
-        return patterns
+            from market_briefing.pattern_engine import compatibility_patterns
+            return compatibility_patterns(self._engine.detect())
+        except (ValueError, TypeError, IndexError, FloatingPointError):
+            return []
 
 def detect_patterns(dd: Dict) -> List[Dict]:
     """
@@ -4356,7 +4320,7 @@ def validate_financial_health(ticker_info: dict) -> bool:
     debt_pct = debt_to_equity * 100 if debt_to_equity < 10 else debt_to_equity
     return debt_pct <= 150.0
 
-def analyze_score(dd: Dict, market: str = "KRX"):
+def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
     """
     가중치 기반 종합 점수 산출 (시장별 동적 가중치 적용)
     """
@@ -4511,9 +4475,12 @@ def analyze_score(dd: Dict, market: str = "KRX"):
     # 기하학적 패턴 (점수 반영 없이 정보 제공)
     geo_patterns = []
     try:
-        df = pd.DataFrame({k: dd[k] for k in ["Open", "High", "Low", "Close"] if k in dd})
+        df = pd.DataFrame({
+            k: dd[k] for k in ["Open", "High", "Low", "Close", "Volume", "Date"]
+            if k in dd
+        })
         if not df.empty and len(df) > 20:
-            geo_patterns = ChartPatternAnalyzer(df).detect_patterns()
+            geo_patterns = ChartPatternAnalyzer(df, timeframe=period).detect_patterns()
     except:
         pass
 
@@ -4523,16 +4490,18 @@ def analyze_score(dd: Dict, market: str = "KRX"):
     bear_patterns = []
 
     for p in patterns + geo_patterns:
-        direction = p.get('direction') or ('상승' if p.get('signal') == '매수' else '하락' if p.get('signal') == '매도' else '중립')
+        raw_signal = str(p.get('signal') or '')
+        direction = p.get('direction') or ('상승' if raw_signal.startswith('매수') else '하락' if raw_signal.startswith('매도') else '중립')
         cp_msgs.append(f"[{direction}] {p.get('name', '')}: {p.get('desc', '')}")
         # ── conf(신뢰도) 기반 차등 가중치 ──────────────────────────
         # 기하학적 패턴(geo)은 conf 키 없음 → 기본값 80 적용
         conf = p.get('conf', 80)
         weight = 3.0 if conf >= 90 else (2.0 if conf >= 80 else 1.0)
-        if direction == '상승':
+        score_eligible = bool(p.get('score_eligible', True))
+        if direction == '상승' and score_eligible:
             cp_score += weight
             bull_patterns.append(p)
-        elif direction == '하락':
+        elif direction == '하락' and score_eligible:
             cp_score -= weight
             bear_patterns.append(p)
 
@@ -5273,7 +5242,8 @@ def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str
     })
 
 def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
-              event_risk: Dict | None = None, learning_adjustment: Dict | None = None) -> Dict:
+              event_risk: Dict | None = None, learning_adjustment: Dict | None = None,
+              chart_patterns: list[Dict] | None = None) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
     rnd = 4 if market == "US" else 2
 
@@ -5638,12 +5608,47 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                 "avg_days":          days,
                 "days_min":          days_min,
                 "days_max":          days_max,
+                "sources": [{
+                    "source": "atr_scenario",
+                    "pattern_name": None,
+                    "weight": 1.0,
+                    "distance_ratio": round(abs(tp_price - price) / price, 6) if price > 0 else None,
+                    "provisional": False,
+                }],
+                "source_count":      1,
             })
         return result
     # 각 시나리오는 직전 시나리오의 TP5 위에서 시작해 가격 범위가 겹치지 않는다.
     cons_tp = _make_tp_from_tgt(cons_tgt_range, "conservative")
     bal_tp  = _make_tp_from_tgt(bal_tgt_range, "balanced", cons_tp[-1]["price"])
     agg_tp  = _make_tp_from_tgt(agg_tgt_range, "aggressive", bal_tp[-1]["price"])
+
+    # 구조 기반 목표가는 기존 TP를 덮지 않는다. 가장 가까운 후보에 근거를
+    # 병합하고, 크게 충돌하는 값은 메타데이터에 남겨 예측 과장을 방지한다.
+    pattern_target_integration = {"accepted": [], "rejected": []}
+    if chart_patterns:
+        try:
+            from market_briefing.pattern_engine import integrate_pattern_targets
+            _integrated = integrate_pattern_targets(
+                {
+                    "conservative": {"tp_levels": cons_tp},
+                    "balanced": {"tp_levels": bal_tp},
+                    "aggressive": {"tp_levels": agg_tp},
+                },
+                chart_patterns,
+                current_price=price,
+                atr_value=atr,
+                direction="bullish",
+            )
+            cons_tp = _integrated["scenarios"]["conservative"]["tp_levels"]
+            bal_tp = _integrated["scenarios"]["balanced"]["tp_levels"]
+            agg_tp = _integrated["scenarios"]["aggressive"]["tp_levels"]
+            pattern_target_integration = {
+                "accepted": _integrated["accepted"],
+                "rejected": _integrated["rejected"],
+            }
+        except (ImportError, ValueError, TypeError, KeyError, IndexError):
+            pattern_target_integration = {"accepted": [], "rejected": [], "error": "integration_failed"}
 
     def _target_zone_confidence(tp_levels: list[Dict], target_low: float) -> float | None:
         return next((level["prob_pct"] for level in tp_levels if level["price"] >= target_low),
@@ -5711,6 +5716,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         "downside_risk_score": min(100, downside_points),
         "event_risk": event_risk or {"score": 0, "level": "low", "reasons": []},
         "learning_adjustment": learning_adjustment or {"sample_n": 0, "depth_extra": 0.0},
+        "pattern_target_integration": pattern_target_integration,
     }
 
 def calc_pivot_points(dd: Dict) -> Dict:
@@ -7365,7 +7371,10 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
     reach_probability = round(min(92.0, max(8.0, _base_prob + _rsi_adj + _vol_adj + _dist_adj + _profile_prob_adj)), 1)
 
     # ── 예상 소요 기간 ─────────────────────────────────────────────────
-    _period_days = {"1d":5, "3d":7, "1wk":10, "2wk":14, "1mo":30, "3mo":65, "6mo":130, "1y":252}.get(period, 20)
+    _period_days = {
+        "1d": 5, "3d": 7, "1wk": 10, "2wk": 14, "1mo": 30,
+        "6mo": 130, "1y": 252, "2y": 504, "5y": 1260,
+    }.get(period, 20)
     _speed = max(0.5, min(1.8, 1.0 + (trend_strength - 2) * 0.2 + (0.1 if macd > sig else -0.1)))
     _min_days = max(3, int(_period_days * 0.4 / _speed))
     _max_days = max(_min_days + 3, int(_period_days * 0.9 / _speed))
@@ -8239,7 +8248,7 @@ def route(path: str, params: Dict) -> Dict:
         last = float(closes[-1]) if closes else 0
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
-        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market)
+        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
         prob_up, prob_down = calc_probability(score, dd)  # 상승/하락 가능성 계산
 
         # Market Regime 필터 적용
@@ -8270,9 +8279,17 @@ def route(path: str, params: Dict) -> Dict:
         
         # ── 기하학적 패턴 → 캔들 패턴 리스트 통합 (UI 표시용) ───────────────
         for gp in geo_patterns:
-            direction = "상승" if gp.get("signal") == "매수" else "하락" if gp.get("signal") == "매도" else "중립"
-            patterns.append({"name": gp.get("name"), "desc": gp.get("desc"),
-                              "direction": direction, "conf": 100})
+            raw_signal = str(gp.get("signal") or "")
+            direction = gp.get("direction") or (
+                "상승" if raw_signal.startswith("매수") else
+                "하락" if raw_signal.startswith("매도") else "중립"
+            )
+            patterns.append({
+                **gp,
+                "name": gp.get("name"), "desc": gp.get("desc"),
+                "direction": direction,
+                "conf": int(round(float(gp.get("completion_score") or gp.get("conf") or 0))),
+            })
 
         # ── Step 1: 외부 데이터 선제 수집 (현재가 보정에 필요) ───────────────
         # Naver 금융 (KRX 현재가·전일가 보정 소스)
@@ -8426,7 +8443,10 @@ def route(path: str, params: Dict) -> Dict:
             _event_news += list(us_enriched.get("news") or [])
         event_risk = calc_event_risk(sym, market, _event_news, _event_disclosures)
         learning_adjustment = calc_learning_adjustment(market)
-        risk             = calc_risk(last, atr_val, market, dd, event_risk, learning_adjustment)
+        risk             = calc_risk(
+            last, atr_val, market, dd, event_risk, learning_adjustment,
+            chart_patterns=geo_patterns,
+        )
         buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period,
                                           event_risk, learning_adjustment, regime, prev, pct)
 
@@ -8575,6 +8595,13 @@ def route(path: str, params: Dict) -> Dict:
             sym, market, period, dd, buy_price, risk, event_risk, learning_adjustment
         )
 
+        pattern_overlays = []
+        try:
+            from market_briefing.pattern_engine import build_pattern_overlays
+            pattern_overlays = build_pattern_overlays(geo_patterns)
+        except (ImportError, ValueError, TypeError, KeyError, IndexError):
+            pattern_overlays = []
+
         _price_rnd = 4 if market == "US" else 2
         return {
             "symbol": sym, "company": company or sym, "market": market,
@@ -8587,6 +8614,7 @@ def route(path: str, params: Dict) -> Dict:
             "score": score, "prob_up": prob_up, "prob_down": prob_down,
             "analysis_steps": steps, "ai_strategy": ai_strategy,
             "candlestick_patterns": patterns,
+            "chart_patterns": geo_patterns,
             "chart_data": {
                 "dates": dd.get("Date", []),
                 "open": dd.get("Open", []),
@@ -8601,6 +8629,14 @@ def route(path: str, params: Dict) -> Dict:
                 "rsi": dd.get("RSI", []),
                 "macd": dd.get("MACD", []),
                 "signal_line": dd.get("Signal_Line", []),
+                "pattern_overlays": pattern_overlays,
+                "pattern_overlay_options": {
+                    "show_pattern_overlay": True,
+                    "show_forming_patterns": True,
+                    "show_pivot_labels": True,
+                    "show_neckline": True,
+                    "show_pattern_targets": True,
+                },
             },
             "risk_scenarios": risk,
             "pivot_points": pivot_points,
@@ -13462,6 +13498,101 @@ function renderCharts(d, isKrx) {
     }
     candleSeries.setData(candleData);
 
+    // 패턴 탐지 좌표를 그대로 사용한다. 형성 중은 점선·낮은 투명도,
+    // 확정 패턴은 실선과 CONF 라벨로 구분하여 색상만으로 상태를 표현하지 않는다.
+    const overlayOptions = cd.pattern_overlay_options || {};
+    const patternOverlays = Array.isArray(cd.pattern_overlays) ? cd.pattern_overlays : [];
+    if (overlayOptions.show_pattern_overlay !== false && patternOverlays.length) {
+      const markers = [];
+      patternOverlays.slice(0, 6).forEach((overlay, overlayIndex) => {
+        const confirmed = overlay.status === 'confirmed';
+        const bullish = overlay.direction === 'bullish';
+        const lineColor = bullish
+          ? (confirmed ? '#3fb950' : 'rgba(63,185,80,0.55)')
+          : (confirmed ? '#f85149' : 'rgba(248,81,73,0.55)');
+        const connectorData = (overlay.connector || []).map(p => ({
+          time: p.timestamp != null ? p.timestamp : cd.dates[p.index],
+          value: p.price,
+        })).filter(p => p.time != null && p.value != null);
+        if (connectorData.length >= 2) {
+          const connector = chart.addLineSeries({
+            color: lineColor,
+            lineWidth: confirmed ? 2 : 1,
+            lineStyle: confirmed ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+            title: `${confirmed ? 'CONF' : overlay.status === 'forming' ? 'FORM' : 'WAIT'} · ${overlay.name || ''}`,
+            lastValueVisible: false,
+            priceLineVisible: false,
+          });
+          connector.setData(connectorData);
+        }
+        if (overlayOptions.show_pivot_labels !== false) {
+          (overlay.points || []).forEach(p => {
+            const markerTime = p.timestamp != null ? p.timestamp : cd.dates[p.index];
+            if (markerTime == null || p.price == null) return;
+            markers.push({
+              time: markerTime,
+              position: p.pivot_type === 'high' ? 'aboveBar' : 'belowBar',
+              color: lineColor,
+              shape: confirmed ? 'circle' : 'square',
+              text: `${p.label || 'E'} · ${confirmed ? 'CONF' : overlay.status === 'forming' ? 'FORM' : 'WAIT'}`,
+            });
+          });
+        }
+        const neck = overlay.neckline || null;
+        if (overlayOptions.show_neckline !== false && neck &&
+            cd.dates[neck.start_index] != null && cd.dates[neck.end_index] != null) {
+          const neckSeries = chart.addLineSeries({
+            color: lineColor, lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            title: `NECK · ${overlay.name || ''}`,
+            lastValueVisible: false, priceLineVisible: false,
+          });
+          neckSeries.setData([
+            { time: cd.dates[neck.start_index], value: neck.start_price },
+            { time: cd.dates[neck.end_index], value: neck.end_price },
+          ]);
+        }
+        const secondaryLine = overlay.secondary_confirmation_line || null;
+        if (overlayOptions.show_neckline !== false && secondaryLine &&
+            cd.dates[secondaryLine.start_index] != null && cd.dates[secondaryLine.end_index] != null) {
+          const secondarySeries = chart.addLineSeries({
+            color: lineColor, lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted,
+            title: `CONFIRM 2 · ${overlay.name || ''}`,
+            lastValueVisible: false, priceLineVisible: false,
+          });
+          secondarySeries.setData([
+            { time: cd.dates[secondaryLine.start_index], value: secondaryLine.start_price },
+            { time: cd.dates[secondaryLine.end_index], value: secondaryLine.end_price },
+          ]);
+        }
+        if (overlay.invalidation_price != null) {
+          candleSeries.createPriceLine({
+            price: overlay.invalidation_price,
+            color: lineColor,
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted,
+            axisLabelVisible: overlayIndex < 2,
+            title: 'INVALID',
+          });
+        }
+        if (overlayOptions.show_pattern_targets !== false && overlay.target && overlay.target.price != null) {
+          candleSeries.createPriceLine({
+            price: overlay.target.price,
+            color: lineColor,
+            lineWidth: confirmed ? 2 : 1,
+            lineStyle: confirmed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Dotted,
+            axisLabelVisible: overlayIndex < 2,
+            title: confirmed ? 'PATTERN TP' : 'PROVISIONAL TP',
+          });
+        }
+      });
+      if (markers.length && typeof candleSeries.setMarkers === 'function') {
+        markers.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+        candleSeries.setMarkers(markers);
+      }
+    }
+
     // MA20
     const ma20 = chart.addLineSeries({ color: '#f97316', lineWidth: 1, title: 'MA20' });
     ma20.setData(cd.ma20.map((v,i) => ({ time: cd.dates[i], value: v })).filter(p => p.value != null));
@@ -15862,7 +15993,7 @@ def replace_nan_with_none(obj):
         return obj.isoformat()
     return obj
 
-VALID_PERIODS = {"1d", "3d", "1wk", "2wk", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"}
+VALID_PERIODS = {"1d", "3d", "1wk", "2wk", "1mo", "6mo", "1y", "2y", "5y"}
 
 def _send(handler_self, data: Any, status: int = 200, content_type: str = "application/json"):
     path = getattr(handler_self, 'path', '/').split('?')[0].rstrip('/') or '/'
