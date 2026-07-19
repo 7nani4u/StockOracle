@@ -4302,6 +4302,26 @@ def detect_patterns(dd: Dict) -> List[Dict]:
 
     return patterns
 
+
+def _deduplicate_pattern_types(patterns: List[Dict]) -> List[Dict]:
+    """UI용 패턴 목록에서 같은 패턴 종류의 최신 항목 하나만 유지한다."""
+    unique_patterns = []
+    seen_ids = set()
+    seen_names = set()
+    for pattern in patterns or []:
+        pattern_id = str(pattern.get("id") or "").strip().casefold()
+        pattern_name = re.sub(r"\s+", " ", str(pattern.get("name") or "")).strip().casefold()
+        if ((pattern_id and pattern_id in seen_ids) or
+                (pattern_name and pattern_name in seen_names)):
+            continue
+        if pattern_id:
+            seen_ids.add(pattern_id)
+        if pattern_name:
+            seen_names.add(pattern_name)
+        unique_patterns.append(pattern)
+    return unique_patterns
+
+
 def classify_market_state(dd: Dict, close: float, rsi: float,
                            adx: float, dip: float, dim: float) -> str:
     """시장 상태 분류 (6단계): 강세추세 / 약세추세 / 누적 / 분배 / 반전가능 / 횡보
@@ -8516,6 +8536,10 @@ def route(path: str, params: Dict) -> Dict:
                 "conf": int(round(float(gp.get("completion_score") or gp.get("conf") or 0))),
             })
 
+        # 패턴 엔진은 서로 다른 시점에 형성된 같은 종류를 여러 건 반환할 수 있다.
+        # UI와 후속 진단에는 엔진 정렬상 가장 최신인 첫 항목만 전달한다.
+        patterns = _deduplicate_pattern_types(patterns)
+
         # ── Step 1: 외부 데이터 선제 수집 (현재가 보정에 필요) ───────────────
         # Naver 금융 (KRX 현재가·전일가 보정 소스)
         naver = fetch_naver(sym) if market == "KRX" else None
@@ -10418,7 +10442,7 @@ input::placeholder{color:#484f58}
 }
 
 /* ── 단계별 리포트 내 캔들 패턴 카드 ── */
-.step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid #21262d}
+.step-patterns{display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:12px;border-top:1px solid #30363d}
 
 /* ── 종목 진단 (AI진단 탭 신규) ── */
 .diag-grade-row{display:flex;align-items:center;gap:16px;padding:14px 16px;background:#0d1117;border-radius:12px;margin-bottom:18px}
