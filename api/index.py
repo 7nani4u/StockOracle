@@ -10362,6 +10362,8 @@ input::placeholder{color:#484f58}
 .signal-confidence-status{font-size:10px;font-weight:700;padding:4px 9px;border:1px solid currentColor;border-radius:999px;white-space:nowrap}
 .signal-confidence-overview{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(300px,1.2fr);gap:10px}
 .signal-confidence-score-panel,.signal-confidence-interpretation{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px}
+.signal-confidence-score-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-height:22px}
+.signal-confidence-score-head .signal-confidence-kicker{margin-bottom:0;flex-shrink:0}
 .signal-confidence-kicker{font-size:10px;color:#8b949e;margin-bottom:5px}
 .signal-confidence-score-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
 .signal-confidence-score{font-size:32px;font-weight:850;line-height:1}
@@ -10373,7 +10375,7 @@ input::placeholder{color:#484f58}
 .signal-confidence-interpretation-title{font-size:14px;font-weight:750;margin-bottom:5px}
 .signal-confidence-interpretation-text{font-size:11px;color:#c9d1d9;line-height:1.6}
 .signal-confidence-definition{font-size:10px;color:#8b949e;line-height:1.55;margin-top:8px;padding-top:8px;border-top:1px solid #21262d}
-.signal-confidence-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.signal-confidence-chips{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin:0 0 3px auto}
 .signal-confidence-chip{font-size:11px;border:1px solid currentColor;border-radius:4px;padding:2px 8px;white-space:nowrap}
 .signal-confidence-section{margin-top:11px}
 .signal-confidence-section-title{font-size:11px;font-weight:700;color:#c9d1d9;margin-bottom:7px}
@@ -10765,6 +10767,8 @@ input::placeholder{color:#484f58}
   .sector-card-pct{font-size:12px}
   .sector-card-mood{font-size:10px;padding:2px 5px}
   .metric-card{padding:10px}
+  .signal-confidence-score-head{flex-wrap:wrap}
+  .signal-confidence-chips{width:100%;justify-content:flex-start;margin-left:0}
   .metric-price-row{justify-content:space-between;gap:10px}
   #r-prob{font-size:10px!important;gap:3px!important}
   .m-label{font-size:10px}
@@ -12615,7 +12619,10 @@ function renderSignalConfidence(d) {
     '</div>' +
     '<div class="signal-confidence-overview">' +
       '<div class="signal-confidence-score-panel">' +
-        '<div class="signal-confidence-kicker">종합 신뢰도</div>' +
+        '<div class="signal-confidence-score-head">' +
+          '<div class="signal-confidence-kicker">종합 신뢰도</div>' +
+          '<div class="signal-confidence-chips">' + regimeChip + sectorChip + earningsChip + sentimentChip + '</div>' +
+        '</div>' +
         '<div class="signal-confidence-score-row">' +
           '<div class="signal-confidence-score" style="color:' + level.color + '">' + conf.toFixed(0) + '<span style="font-size:14px;color:#8b949e">%</span></div>' +
           '<div class="signal-confidence-range">예상 구간 ' + lo.toFixed(0) + '~' + hi.toFixed(0) + '%<br>구간 폭 ' + spread.toFixed(0) + '점</div>' +
@@ -12634,7 +12641,6 @@ function renderSignalConfidence(d) {
         '<div class="signal-confidence-definition">주의: ' + conf.toFixed(0) + '%는 주가의 상승확률이나 적중확률이 아닙니다. AI·기술·뉴스·시장 신호의 일치도와 데이터 불확실성을 종합한 값입니다.</div>' +
       '</div>' +
     '</div>' +
-    '<div class="signal-confidence-chips">' + regimeChip + sectorChip + earningsChip + sentimentChip + '</div>' +
     '<div class="signal-confidence-section"><div class="signal-confidence-section-title">신뢰도 제한·변동 요인</div>' +
       '<div class="signal-confidence-reason-grid">' + reasonHtml + '</div>' + newsMetaHtml + '</div>';
 }

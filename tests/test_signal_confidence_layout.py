@@ -51,10 +51,28 @@ def test_confidence_meter_is_accessible_and_explains_the_neutral_baseline():
     assert "50점은 중립 기준" in renderer
 
 
+def test_context_chips_are_inside_score_card_top_right():
+    renderer = SOURCE.split("function renderSignalConfidence", 1)[1].split(
+        "function renderResult", 1
+    )[0]
+
+    score_panel = renderer.index('<div class="signal-confidence-score-panel">')
+    score_head = renderer.index('<div class="signal-confidence-score-head">')
+    chips = renderer.index('<div class="signal-confidence-chips">')
+    score_row = renderer.index('<div class="signal-confidence-score-row">')
+    interpretation = renderer.index('<div class="signal-confidence-interpretation">')
+
+    assert score_panel < score_head < chips < score_row < interpretation
+    assert renderer.count('<div class="signal-confidence-chips">') == 1
+
+
 def test_confidence_layout_has_desktop_and_mobile_reading_order():
     assert ".signal-confidence-overview{display:grid;grid-template-columns:" in HTML
+    assert ".signal-confidence-score-head{display:flex" in HTML
     assert ".signal-confidence-chips{display:flex;flex-wrap:wrap" in HTML
     assert ".signal-confidence-chip{" in HTML
     assert ".signal-confidence-reason-grid{display:grid;grid-template-columns:repeat(2" in HTML
     assert ".signal-confidence-overview{grid-template-columns:1fr}" in HTML
+    assert ".signal-confidence-score-head{flex-wrap:wrap}" in HTML
+    assert ".signal-confidence-chips{width:100%;justify-content:flex-start" in HTML
     assert ".signal-confidence-reason-grid{grid-template-columns:1fr}" in HTML
