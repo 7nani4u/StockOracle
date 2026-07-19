@@ -135,3 +135,12 @@ def test_ai_sector_card_removed_and_market_detail_reuses_home_snapshot():
 def test_fundamental_cards_use_one_desktop_row_and_keep_mobile_grid():
     assert ".fund-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}" in SOURCE
     assert ".fund-grid{grid-template-columns:repeat(2,1fr)}" in SOURCE
+
+
+def test_mobile_volume_card_stretches_to_match_atr_card_height():
+    mobile_css = SOURCE.split("@media(max-width:480px)", 1)[1].split(
+        "@media(max-width:360px)", 1
+    )[0]
+
+    assert ".metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:stretch}" in mobile_css
+    assert ".metric-volume-card,.metric-atr-card{grid-column:span 2}" in mobile_css

@@ -10191,6 +10191,39 @@ input::placeholder{color:#484f58}
 .rise-us{color:#3fb950}
 .fall-us{color:#f85149}
 
+/* 신호 신뢰도 — 점수 → 해석 → 보정 환경 → 구성 점수 → 제한 요인 순서 */
+.signal-confidence-card{padding:16px}
+.signal-confidence-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+.signal-confidence-title{font-size:13px;font-weight:700;color:#e6edf3}
+.signal-confidence-help{font-size:10px;color:#8b949e;line-height:1.5;margin-top:4px}
+.signal-confidence-status{font-size:10px;font-weight:700;padding:4px 9px;border:1px solid currentColor;border-radius:999px;white-space:nowrap}
+.signal-confidence-overview{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(300px,1.2fr);gap:10px}
+.signal-confidence-score-panel,.signal-confidence-interpretation{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px}
+.signal-confidence-kicker{font-size:10px;color:#8b949e;margin-bottom:5px}
+.signal-confidence-score-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+.signal-confidence-score{font-size:32px;font-weight:850;line-height:1}
+.signal-confidence-range{font-size:10px;color:#8b949e;text-align:right;line-height:1.45}
+.signal-confidence-meter{position:relative;height:10px;background:#21262d;border-radius:999px;margin-top:12px;overflow:hidden}
+.signal-confidence-interval{position:absolute;top:0;height:100%;border-radius:999px}
+.signal-confidence-marker{position:absolute;top:-2px;width:3px;height:14px;border-radius:2px;transform:translateX(-1px)}
+.signal-confidence-axis{display:flex;justify-content:space-between;font-size:9px;color:#484f58;margin-top:4px}
+.signal-confidence-interpretation-title{font-size:14px;font-weight:750;margin-bottom:5px}
+.signal-confidence-interpretation-text{font-size:11px;color:#c9d1d9;line-height:1.6}
+.signal-confidence-definition{font-size:10px;color:#8b949e;line-height:1.55;margin-top:8px;padding-top:8px;border-top:1px solid #21262d}
+.signal-confidence-section{margin-top:11px}
+.signal-confidence-section-title{font-size:11px;font-weight:700;color:#c9d1d9;margin-bottom:7px}
+.signal-confidence-factor-grid,.signal-confidence-source-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+.signal-confidence-factor,.signal-confidence-source{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:9px;min-width:0}
+.signal-confidence-factor-label,.signal-confidence-source-label{font-size:9px;color:#8b949e;margin-bottom:4px}
+.signal-confidence-factor-value,.signal-confidence-source-value{font-size:11px;font-weight:700;line-height:1.4;overflow-wrap:anywhere}
+.signal-confidence-source-track{height:5px;background:#21262d;border-radius:999px;overflow:hidden;margin-top:7px}
+.signal-confidence-source-bar{height:100%;border-radius:999px}
+.signal-confidence-section-note{font-size:9px;color:#6e7681;line-height:1.5;margin-top:6px}
+.signal-confidence-reason-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.signal-confidence-reason{display:flex;gap:7px;align-items:flex-start;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 9px;font-size:10px;color:#c9d1d9;line-height:1.5}
+.signal-confidence-reason-icon{color:#d29922;flex-shrink:0}
+.signal-confidence-news-meta{font-size:9px;color:#6e7681;line-height:1.5;margin-top:8px}
+
 /* 탭 */
 .tabs{display:flex;gap:6px;border-bottom:1px solid #21262d;margin-bottom:16px;padding-bottom:2px}
 .tab-btn{padding:7px 14px;border-radius:8px;border:none;background:none;color:#8b949e;font-size:13px;font-weight:500;cursor:pointer;transition:all .15s;position:relative}
@@ -10500,6 +10533,8 @@ input::placeholder{color:#484f58}
   .prediction-context-grid{grid-template-columns:1fr}
   /* 900px 이하: 3열 */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .signal-confidence-overview{grid-template-columns:1fr}
+  .signal-confidence-factor-grid,.signal-confidence-source-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 /* ── 모바일 (≤ 768px) ── */
@@ -10553,6 +10588,7 @@ input::placeholder{color:#484f58}
 
   /* 메트릭 카드 */
   .m-value{font-size:18px}
+  .signal-confidence-reason-grid{grid-template-columns:1fr}
   /* 768px 이하: 3열 (세로가 짧아도 카드당 여유 확보) */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
 }
@@ -10560,7 +10596,7 @@ input::placeholder{color:#484f58}
 /* ── 소형 모바일 (≤ 480px) ── */
 @media(max-width:480px){
   #main{padding:52px 10px 20px}
-  .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:stretch}
   .metric-price-card{grid-column:1/-1}
   .metric-volume-card,.metric-atr-card{grid-column:span 2}
   .metric-toss-card{grid-column:1/-1}
@@ -11189,7 +11225,6 @@ input::placeholder{color:#484f58}
           <div class="toss-ai-time" id="r-toss-time"></div>
         </div>
       </div>
-      <div id="signal-confidence-card" style="display:none" class="card"></div>
       <div id="r-naver-fund" style="display:none" class="card">
         <div class="card-title">🏢 기업 펀더멘털 (네이버 금융)</div>
         <div class="fund-grid">
@@ -11199,6 +11234,7 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">산업</div><div class="fund-val" id="f-industry" style="font-size:12px"></div></div>
         </div>
       </div>
+      <div id="signal-confidence-card" style="display:none" class="card signal-confidence-card"></div>
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트</button>
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
@@ -12323,94 +12359,164 @@ function renderSignalConfidence(d) {
   if (!sc || sc.confidence == null) { el.style.display = 'none'; return; }
   el.style.display = '';
 
-  const conf = sc.confidence;
-  const ci   = sc.confidence_interval || {};
-  const confColor = conf >= 70 ? '#3fb950' : conf >= 55 ? '#58a6ff' : conf >= 45 ? '#d29922' : '#f85149';
+  const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
+  const conf = clamp(sc.confidence);
+  const ci = sc.confidence_interval || {};
+  const lo = clamp(ci.lower != null ? ci.lower : conf);
+  const hi = clamp(ci.upper != null ? ci.upper : conf);
+  const spread = Number(ci.spread != null ? ci.spread : Math.max(0, hi - lo));
+  const level = conf >= 70
+    ? {label:'높음', color:'#3fb950', description:'여러 분석 근거가 비교적 일관됩니다.'}
+    : conf >= 55
+      ? {label:'보통', color:'#58a6ff', description:'참고할 수 있지만 추가 확인이 필요합니다.'}
+      : conf >= 45
+        ? {label:'제한적', color:'#d29922', description:'근거 간 편차가 있어 단독 판단에 부적합합니다.'}
+        : {label:'낮음', color:'#f85149', description:'신호 일관성이 낮아 관망과 재확인이 우선입니다.'};
 
-  // 거시 체제 배지
-  const regimeKoMap = { 'Risk-On':'위험선호', 'Risk-Off':'위험회피', 'Neutral':'중립', 'Transition':'전환' };
-  const reg = (sc.macro_regime && sc.macro_regime.regime) || 'Neutral';
-  const regColor = reg === 'Risk-On' ? '#3fb950' : reg === 'Risk-Off' ? '#f85149' : reg === 'Transition' ? '#d29922' : '#8b949e';
-  const regChip = '<span style="font-size:11px;font-weight:700;color:' + regColor +
-    ';border:1px solid ' + regColor + '55;border-radius:4px;padding:2px 8px">거시 ' + (regimeKoMap[reg]||reg) + '</span>';
+  const signalKey = String(sc.signal || 'NEUTRAL').toUpperCase();
+  const signalMeta = signalKey === 'BUY'
+    ? {label:'상승', color:'#3fb950'}
+    : signalKey === 'SELL'
+      ? {label:'하락', color:'#f85149'}
+      : {label:'중립', color:'#d29922'};
+  const weighted = Number(sc.weighted_score);
+  const weightedText = Number.isFinite(weighted) ? weighted.toFixed(1) : '—';
 
-  // 섹터 상대
-  let sectorChip = '';
-  const sr = sc.sector_relative;
-  if (sr && sr.sector && sr.sector.pct5d != null) {
-    const aligned = sr.aligned;
-    const sColor = aligned === true ? '#3fb950' : aligned === false ? '#f85149' : '#8b949e';
-    sectorChip = '<span style="font-size:11px;color:' + sColor +
-      ';border:1px solid ' + sColor + '55;border-radius:4px;padding:2px 8px">섹터 ' +
-      (sr.sector.name||sr.sector.etf) + ' ' + (sr.sector.pct5d>=0?'+':'') + sr.sector.pct5d + '%' +
-      (aligned === true ? ' ▲정렬' : aligned === false ? ' ⚠불일치' : '') + '</span>';
+  const regimeKoMap = {'Risk-On':'위험선호', 'Risk-Off':'위험회피', 'Neutral':'중립', 'Transition':'전환'};
+  const macro = sc.macro_regime || {};
+  const regime = macro.regime || 'Neutral';
+  const regimeColor = regime === 'Risk-On' ? '#3fb950' : regime === 'Risk-Off' ? '#f85149' : regime === 'Transition' ? '#d29922' : '#8b949e';
+  const macroWeight = Number(macro.confidence_weight);
+  const macroDetail = Number.isFinite(macroWeight) && macroWeight !== 0
+    ? (macroWeight > 0 ? '+' : '') + macroWeight.toFixed(0) + '점 보정'
+    : '추가 보정 없음';
+
+  const sector = sc.sector_relative || {};
+  let sectorValue = '업종 데이터 없음';
+  let sectorColor = '#8b949e';
+  if (sector.sector) {
+    const sectorName = sector.sector.name || sector.sector.etf || '관련 업종';
+    const sectorPct = Number(sector.sector.pct5d);
+    const pctText = Number.isFinite(sectorPct) ? ' ' + (sectorPct >= 0 ? '+' : '') + sectorPct.toFixed(1) + '%' : '';
+    const alignText = sector.aligned === true ? ' · 신호 일치' : sector.aligned === false ? ' · 신호 불일치' : '';
+    sectorValue = sectorName + pctText + alignText;
+    sectorColor = sector.aligned === true ? '#3fb950' : sector.aligned === false ? '#f85149' : '#8b949e';
   }
 
-  // 실적 임박 경고
-  let earnChip = '';
-  if (sc.earnings_risk && sc.days_to_earnings != null) {
-    earnChip = '<span style="font-size:11px;font-weight:700;color:#f97316;border:1px solid #f9731655;border-radius:4px;padding:2px 8px">⚠️ 실적 D-' + sc.days_to_earnings + '</span>';
-  }
+  const days = Number(sc.days_to_earnings);
+  const hasEarningsDate = sc.days_to_earnings != null && Number.isFinite(days);
+  const earningsValue = hasEarningsDate
+    ? 'D-' + days + (sc.earnings_risk ? ' · 변동성 주의' : ' · 임박 위험 낮음')
+    : '일정 정보 없음';
+  const earningsColor = sc.earnings_risk ? '#f97316' : '#8b949e';
 
-  // 뉴스 감정 (FinBERT/키워드)
-  let sentChip = '';
-  let sentInfo = '';
-  const se = sc.sentiment;
-  if (se && se.sentiment_score != null) {
-    const sentColor = se.overall === 'positive' ? '#3fb950' : se.overall === 'negative' ? '#f85149' : '#8b949e';
-    const srcLbl = se.sentiment_source === 'finbert' ? 'FinBERT' : se.sentiment_source === 'kr-finbert' ? 'KR-FinBERT' : se.sentiment_source === 'keyword' ? '금융사전' : '없음';
-    sentChip = '<span style="font-size:11px;color:' + sentColor +
-      ';border:1px solid ' + sentColor + '55;border-radius:4px;padding:2px 8px">뉴스감정 ' +
-      se.sentiment_score + ' (' + srcLbl + ')</span>';
+  const sentiment = sc.sentiment || {};
+  const sentimentScore = Number(sentiment.sentiment_score);
+  const sentimentSourceMap = {'finbert':'FinBERT', 'kr-finbert':'KR-FinBERT', 'keyword':'금융사전'};
+  const sentimentSource = sentimentSourceMap[sentiment.sentiment_source] || '분류 정보 없음';
+  const sentimentValue = Number.isFinite(sentimentScore)
+    ? sentimentScore.toFixed(0) + '점 · ' + sentimentSource
+    : '뉴스 감정 데이터 없음';
+  const sentimentColor = sentiment.overall === 'positive' ? '#3fb950' : sentiment.overall === 'negative' ? '#f85149' : '#8b949e';
 
-    // 📰 뉴스감정 상세 — 출처 구성 · 품질 · 신뢰도 가중 여부 (보강 내용 가시화)
-    const _parts = [];
-    if (se.source_breakdown) {
-      const _lbl = { dart:'DART', disclosure:'공시', naver:'네이버', yahoo_rss:'야후파이낸스', google_news:'포털뉴스', news:'뉴스', x:'X' };
-      const _segs = Object.keys(se.source_breakdown)
-        .map(k => (_lbl[k] || k) + ' ' + se.source_breakdown[k]);
-      if (_segs.length) _parts.push('출처 ' + _segs.join(' · '));
-    }
-    if (se.quality != null) _parts.push('품질 ' + se.quality + (se.effective_n != null ? ' (유효표본 ' + se.effective_n + ')' : ''));
-    if (se.credibility_weighted) _parts.push('출처 신뢰도 가중 적용');
-    if (_parts.length) {
-      sentInfo = '<div style="margin-top:8px;font-size:10px;color:#8b949e">📰 뉴스감정 — ' + _parts.join(' · ') + '</div>';
-    }
-  }
+  const factors = [
+    {label:'거시 환경', value:regimeKoMap[regime] || regime, detail:macroDetail, color:regimeColor},
+    {label:'업종 상대 흐름', value:sectorValue, detail:'검색 종목 신호와 업종 방향 비교', color:sectorColor},
+    {label:'실적 일정', value:earningsValue, detail:'실적 발표가 가까우면 신뢰도 상한 적용', color:earningsColor},
+    {label:'뉴스 감정', value:sentimentValue, detail:'헤드라인 방향과 출처 신뢰도 반영', color:sentimentColor},
+  ];
+  const factorHtml = factors.map(item =>
+    '<div class="signal-confidence-factor">' +
+      '<div class="signal-confidence-factor-label">' + _escPrediction(item.label) + '</div>' +
+      '<div class="signal-confidence-factor-value" style="color:' + item.color + '">' + _escPrediction(item.value) + '</div>' +
+      '<div class="signal-confidence-section-note">' + _escPrediction(item.detail) + '</div>' +
+    '</div>'
+  ).join('');
 
-  // 신뢰 구간 막대 (lower ~ upper)
-  const lo = ci.lower != null ? ci.lower : conf;
-  const hi = ci.upper != null ? ci.upper : conf;
-  const spread = ci.spread != null ? ci.spread : 0;
-  const spreadWarn = spread >= 20;   // 의미 있는 분산이면 강조
+  const sourceScores = sc.source_scores || {};
+  const weights = sc.weights || {};
+  const sources = [
+    {key:'ai', label:'AI 분석'},
+    {key:'technical', label:'기술 지표'},
+    {key:'sentiment', label:'뉴스 감정'},
+    {key:'market', label:'시장 환경'},
+  ];
+  const sourceHtml = sources.map(item => {
+    const raw = sourceScores[item.key];
+    const available = raw != null && Number.isFinite(Number(raw));
+    const technicalFallback = item.key === 'ai' && !available && sourceScores.technical != null && Number.isFinite(Number(sourceScores.technical));
+    const score = available ? clamp(raw) : technicalFallback ? clamp(sourceScores.technical) : 0;
+    const color = !available && !technicalFallback ? '#484f58' : score >= 60 ? '#3fb950' : score <= 40 ? '#f85149' : '#d29922';
+    const weight = Number(weights[item.key]);
+    const weightText = Number.isFinite(weight) ? ' · 가중치 ' + Math.round(weight * 100) + '%' : '';
+    const scoreText = available ? score.toFixed(1) + '점' : technicalFallback ? '기술 ' + score.toFixed(1) + '점 대체' : '미수신';
+    return '<div class="signal-confidence-source">' +
+      '<div class="signal-confidence-source-label">' + _escPrediction(item.label) + weightText + '</div>' +
+      '<div class="signal-confidence-source-value" style="color:' + color + '">' + scoreText + '</div>' +
+      '<div class="signal-confidence-source-track"><div class="signal-confidence-source-bar" style="width:' + score + '%;background:' + color + '"></div></div>' +
+    '</div>';
+  }).join('');
 
-  // 캡/불일치 사유 + 뉴스감정 사유(한글)
   const reasons = [];
-  (sc.cap_reasons || []).forEach(r => reasons.push(r));
-  if (ci.reason) ci.reason.forEach(r => { if (!reasons.includes(r)) reasons.push(r); });
-  if (se && se.reasons) se.reasons.forEach(r => { if (!reasons.includes(r)) reasons.push(r); });
-  const reasonHtml = reasons.length
-    ? '<div style="margin-top:8px;font-size:11px;color:#8b949e">' +
-      reasons.map(r => '<div style="display:flex;gap:5px"><span style="color:#f97316">•</span><span>' + r + '</span></div>').join('') + '</div>'
+  (sc.cap_reasons || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
+  (ci.reason || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
+  (sentiment.reasons || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
+  if (!reasons.length) reasons.push('분석 지표 간 신호가 대체로 일치하며 별도 제한 요인이 확인되지 않았습니다.');
+  const reasonHtml = reasons.map(reason =>
+    '<div class="signal-confidence-reason"><span class="signal-confidence-reason-icon">•</span><span>' +
+    _escPrediction(reason) + '</span></div>'
+  ).join('');
+
+  const newsMetaParts = [];
+  if (sentiment.source_breakdown) {
+    const sourceLabels = {dart:'DART', disclosure:'공시', naver:'네이버', yahoo_rss:'야후파이낸스', google_news:'구글뉴스', google_news_ko:'구글뉴스(한국어)', news:'뉴스', x:'X'};
+    const parts = Object.keys(sentiment.source_breakdown).map(key =>
+      (sourceLabels[key] || key) + ' ' + sentiment.source_breakdown[key]
+    );
+    if (parts.length) newsMetaParts.push('뉴스 출처: ' + parts.join(' · '));
+  }
+  if (sentiment.quality != null) {
+    newsMetaParts.push('뉴스 품질 ' + sentiment.quality + (sentiment.effective_n != null ? ' · 유효표본 ' + sentiment.effective_n : ''));
+  }
+  if (sentiment.credibility_weighted) newsMetaParts.push('출처 신뢰도 가중 적용');
+  const newsMetaHtml = newsMetaParts.length
+    ? '<div class="signal-confidence-news-meta">📰 ' + _escPrediction(newsMetaParts.join(' · ')) + '</div>'
     : '';
 
   el.innerHTML =
-    '<div class="card-title">🧭 신호 신뢰도 종합' +
-      (spreadWarn ? ' <span style="font-size:10px;color:#d29922">· 불확실성 높음(±' + Math.round(spread/2) + ')</span>' : '') +
+    '<div class="signal-confidence-header">' +
+      '<div><div class="signal-confidence-title">🧭 신호 신뢰도 종합</div>' +
+      '<div class="signal-confidence-help">분석 결과가 서로 얼마나 일치하는지 보여주는 보조 지표입니다.</div></div>' +
+      '<span class="signal-confidence-status" style="color:' + level.color + '">' + level.label + ' 신뢰도</span>' +
     '</div>' +
-    '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">' +
-      '<div style="flex-shrink:0">' +
-        '<div style="font-size:30px;font-weight:800;color:' + confColor + ';line-height:1">' + conf + '<span style="font-size:14px;color:#8b949e">%</span></div>' +
-        '<div style="font-size:11px;color:#8b949e;margin-top:2px">신뢰 구간 ' + lo + '~' + hi + ' (폭 ' + spread + ')</div>' +
-      '</div>' +
-      '<div style="flex:1;min-width:160px">' +
-        '<div style="position:relative;height:8px;background:#21262d;border-radius:4px;overflow:hidden">' +
-          '<div style="position:absolute;left:' + lo + '%;width:' + Math.max(2,(hi-lo)) + '%;height:100%;background:' + confColor + '55"></div>' +
-          '<div style="position:absolute;left:' + Math.min(99,conf) + '%;width:2px;height:100%;background:' + confColor + '"></div>' +
+    '<div class="signal-confidence-overview">' +
+      '<div class="signal-confidence-score-panel">' +
+        '<div class="signal-confidence-kicker">종합 신뢰도</div>' +
+        '<div class="signal-confidence-score-row">' +
+          '<div class="signal-confidence-score" style="color:' + level.color + '">' + conf.toFixed(0) + '<span style="font-size:14px;color:#8b949e">%</span></div>' +
+          '<div class="signal-confidence-range">예상 구간 ' + lo.toFixed(0) + '~' + hi.toFixed(0) + '%<br>구간 폭 ' + spread.toFixed(0) + '점</div>' +
         '</div>' +
-        '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">' + regChip + sectorChip + earnChip + sentChip + '</div>' +
+        '<div class="signal-confidence-meter" role="meter" aria-label="종합 신뢰도" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + conf.toFixed(0) + '">' +
+          '<div class="signal-confidence-interval" style="left:' + lo + '%;width:' + Math.max(2, hi - lo) + '%;background:' + level.color + '44"></div>' +
+          '<div class="signal-confidence-marker" style="left:' + Math.min(99, conf) + '%;background:' + level.color + '"></div>' +
+        '</div>' +
+        '<div class="signal-confidence-axis"><span>0 낮음</span><span>50 제한적</span><span>100 높음</span></div>' +
       '</div>' +
-    '</div>' + sentInfo + reasonHtml;
+      '<div class="signal-confidence-interpretation">' +
+        '<div class="signal-confidence-kicker">현재 해석</div>' +
+        '<div class="signal-confidence-interpretation-title"><span style="color:' + signalMeta.color + '">' + signalMeta.label + ' 신호</span> · ' + level.label + ' 신뢰도</div>' +
+        '<div class="signal-confidence-interpretation-text">' + _escPrediction(level.description) +
+          ' 방향 종합점수는 ' + weightedText + '점이며 50점은 중립 기준입니다.</div>' +
+        '<div class="signal-confidence-definition">주의: ' + conf.toFixed(0) + '%는 주가의 상승확률이나 적중확률이 아닙니다. AI·기술·뉴스·시장 신호의 일치도와 데이터 불확실성을 종합한 값입니다.</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="signal-confidence-section"><div class="signal-confidence-section-title">환경·이벤트 보정</div>' +
+      '<div class="signal-confidence-factor-grid">' + factorHtml + '</div></div>' +
+    '<div class="signal-confidence-section"><div class="signal-confidence-section-title">방향 점수 구성</div>' +
+      '<div class="signal-confidence-source-grid">' + sourceHtml + '</div>' +
+      '<div class="signal-confidence-section-note">각 점수는 50을 중립으로 한 방향 점수입니다. 종합 신뢰도와는 의미가 다릅니다.</div></div>' +
+    '<div class="signal-confidence-section"><div class="signal-confidence-section-title">신뢰도 제한·변동 요인</div>' +
+      '<div class="signal-confidence-reason-grid">' + reasonHtml + '</div>' + newsMetaHtml + '</div>';
 }
 
 function renderResult(d) {
