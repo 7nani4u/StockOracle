@@ -8046,6 +8046,225 @@ _SECTOR_DEFAULT_STOCKS: list = [
 ]
 
 
+_PEER_INDUSTRY_GROUPS: dict = {
+    "KRX": {
+        "반도체": [("005930.KS", "삼성전자"), ("000660.KS", "SK하이닉스"), ("000990.KS", "DB하이텍"), ("042700.KS", "한미반도체"), ("403870.KQ", "HPSP")],
+        "전력기기": [("010120.KS", "LS일렉트릭"), ("267260.KS", "HD현대일렉트릭"), ("298040.KS", "효성중공업"), ("062040.KS", "산일전기")],
+        "조선": [("009540.KS", "HD한국조선해양"), ("010140.KS", "삼성중공업"), ("042660.KS", "한화오션"), ("329180.KS", "HD현대중공업")],
+        "방산": [("012450.KS", "한화에어로스페이스"), ("079550.KS", "LIG넥스원"), ("047810.KS", "한국항공우주"), ("064350.KS", "현대로템"), ("272210.KS", "한화시스템")],
+        "정유": [("096770.KS", "SK이노베이션"), ("010950.KS", "S-Oil"), ("078930.KS", "GS"), ("267250.KS", "HD현대")],
+        "자동차": [("005380.KS", "현대차"), ("000270.KS", "기아"), ("012330.KS", "현대모비스"), ("161390.KS", "한국타이어앤테크놀로지"), ("018880.KS", "한온시스템")],
+        "배터리": [("373220.KS", "LG에너지솔루션"), ("006400.KS", "삼성SDI"), ("247540.KQ", "에코프로비엠"), ("003670.KS", "포스코퓨처엠"), ("066970.KQ", "엘앤에프")],
+        "바이오": [("068270.KS", "셀트리온"), ("207940.KS", "삼성바이오로직스"), ("196170.KQ", "알테오젠"), ("028300.KQ", "HLB"), ("000100.KS", "유한양행")],
+        "금융": [("105560.KS", "KB금융"), ("055550.KS", "신한지주"), ("086790.KS", "하나금융지주"), ("316140.KS", "우리금융지주"), ("024110.KS", "기업은행")],
+        "인터넷·게임": [("035420.KS", "NAVER"), ("035720.KS", "카카오"), ("259960.KS", "크래프톤"), ("036570.KS", "엔씨소프트"), ("251270.KS", "넷마블")],
+        "통신": [("017670.KS", "SK텔레콤"), ("030200.KS", "KT"), ("032640.KS", "LG유플러스")],
+        "화학": [("051910.KS", "LG화학"), ("011170.KS", "롯데케미칼"), ("009830.KS", "한화솔루션"), ("011780.KS", "금호석유"), ("010060.KS", "OCI홀딩스")],
+        "철강": [("005490.KS", "POSCO홀딩스"), ("004020.KS", "현대제철"), ("010130.KS", "고려아연"), ("460860.KS", "동국제강"), ("001430.KS", "세아베스틸지주")],
+        "에너지": [("015760.KS", "한국전력"), ("036460.KS", "한국가스공사"), ("034020.KS", "두산에너빌리티"), ("018670.KS", "SK가스"), ("078930.KS", "GS")],
+    },
+    "US": {
+        "Technology": [("AAPL", "Apple"), ("MSFT", "Microsoft"), ("NVDA", "NVIDIA"), ("AVGO", "Broadcom"), ("ORCL", "Oracle")],
+        "Communication Services": [("GOOGL", "Alphabet"), ("META", "Meta"), ("NFLX", "Netflix"), ("DIS", "Disney"), ("TMUS", "T-Mobile")],
+        "Consumer Cyclical": [("AMZN", "Amazon"), ("TSLA", "Tesla"), ("HD", "Home Depot"), ("NKE", "Nike"), ("SBUX", "Starbucks")],
+        "Consumer Defensive": [("WMT", "Walmart"), ("COST", "Costco"), ("PG", "Procter & Gamble"), ("KO", "Coca-Cola"), ("PEP", "PepsiCo")],
+        "Financial Services": [("JPM", "JPMorgan"), ("BAC", "Bank of America"), ("GS", "Goldman Sachs"), ("MS", "Morgan Stanley"), ("V", "Visa")],
+        "Healthcare": [("LLY", "Eli Lilly"), ("UNH", "UnitedHealth"), ("JNJ", "Johnson & Johnson"), ("MRK", "Merck"), ("ABBV", "AbbVie")],
+        "Energy": [("XOM", "Exxon Mobil"), ("CVX", "Chevron"), ("COP", "ConocoPhillips"), ("EOG", "EOG Resources"), ("SLB", "SLB")],
+        "Industrials": [("GE", "GE Aerospace"), ("CAT", "Caterpillar"), ("HON", "Honeywell"), ("RTX", "RTX"), ("BA", "Boeing")],
+        "Basic Materials": [("LIN", "Linde"), ("FCX", "Freeport-McMoRan"), ("NEM", "Newmont"), ("NUE", "Nucor"), ("DOW", "Dow")],
+        "Utilities": [("NEE", "NextEra Energy"), ("SO", "Southern Company"), ("DUK", "Duke Energy"), ("AEP", "AEP"), ("EXC", "Exelon")],
+        "Real Estate": [("PLD", "Prologis"), ("AMT", "American Tower"), ("EQIX", "Equinix"), ("SPG", "Simon Property"), ("O", "Realty Income")],
+    },
+}
+
+_US_DETAILED_PEER_GROUPS = {
+    "Semiconductors": {
+        "keywords": ("semiconductor",),
+        "members": [("NVDA", "NVIDIA"), ("AVGO", "Broadcom"), ("AMD", "AMD"), ("INTC", "Intel"), ("QCOM", "Qualcomm")],
+    },
+    "Consumer Electronics": {
+        "keywords": ("consumer electronics", "computer hardware"),
+        "members": [("AAPL", "Apple"), ("DELL", "Dell"), ("HPQ", "HP"), ("SONY", "Sony"), ("LOGI", "Logitech")],
+    },
+    "Software": {
+        "keywords": ("software",),
+        "members": [("MSFT", "Microsoft"), ("ORCL", "Oracle"), ("CRM", "Salesforce"), ("ADBE", "Adobe"), ("NOW", "ServiceNow")],
+    },
+    "Internet Content": {
+        "keywords": ("internet content", "interactive media"),
+        "members": [("GOOGL", "Alphabet"), ("META", "Meta"), ("SNAP", "Snap"), ("PINS", "Pinterest"), ("RDDT", "Reddit")],
+    },
+    "Auto Manufacturers": {
+        "keywords": ("auto manufacturer", "automobile manufacturer"),
+        "members": [("TSLA", "Tesla"), ("GM", "General Motors"), ("F", "Ford"), ("STLA", "Stellantis"), ("RIVN", "Rivian")],
+    },
+    "Banks": {
+        "keywords": ("bank",),
+        "members": [("JPM", "JPMorgan"), ("BAC", "Bank of America"), ("WFC", "Wells Fargo"), ("C", "Citigroup"), ("USB", "U.S. Bancorp")],
+    },
+    "Drug Manufacturers": {
+        "keywords": ("drug manufacturer", "biotechnology"),
+        "members": [("LLY", "Eli Lilly"), ("JNJ", "Johnson & Johnson"), ("MRK", "Merck"), ("ABBV", "AbbVie"), ("PFE", "Pfizer")],
+    },
+    "Oil & Gas": {
+        "keywords": ("oil & gas", "oil and gas"),
+        "members": [("XOM", "Exxon Mobil"), ("CVX", "Chevron"), ("COP", "ConocoPhillips"), ("BP", "BP"), ("SHEL", "Shell")],
+    },
+    "Aerospace & Defense": {
+        "keywords": ("aerospace", "defense"),
+        "members": [("RTX", "RTX"), ("LMT", "Lockheed Martin"), ("NOC", "Northrop Grumman"), ("GD", "General Dynamics"), ("BA", "Boeing")],
+    },
+}
+
+_KRX_PEER_KEYWORDS = {
+    "반도체": ("반도체", "semiconductor"), "전력기기": ("전력기기", "전기장비", "electrical equipment"),
+    "조선": ("조선", "shipbuilding"), "방산": ("방산", "항공우주", "aerospace", "defense"),
+    "정유": ("정유", "석유", "oil", "refining"), "자동차": ("자동차", "auto", "vehicle"),
+    "배터리": ("배터리", "이차전지", "battery"), "바이오": ("바이오", "제약", "pharma", "biotech"),
+    "금융": ("금융", "은행", "보험", "financial", "bank"), "인터넷·게임": ("인터넷", "게임", "software", "interactive"),
+    "통신": ("통신", "telecom"), "화학": ("화학", "chemical"), "철강": ("철강", "steel", "metal"),
+    "에너지": ("에너지", "전력", "가스", "energy", "utility"),
+}
+
+
+def _related_symbols_from_yahoo(symbol: str, limit: int = 5) -> list[tuple[str, str]]:
+    """정적 업종군 미분류 시 Yahoo 관련 종목을 제한적으로 보조 사용한다."""
+    try:
+        url = f"https://query1.finance.yahoo.com/v6/finance/recommendationsbysymbol/{quote(symbol)}"
+        payload = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5).json()
+        results = ((payload.get("finance") or {}).get("result") or [])
+        recommended = (results[0].get("recommendedSymbols") or []) if results else []
+        return [(str(item.get("symbol") or "").upper(), str(item.get("symbol") or "").upper())
+                for item in recommended[:limit] if item.get("symbol")]
+    except Exception:
+        return []
+
+
+def _resolve_peer_group(symbol: str, market: str, sector: str = "", industry: str = "") -> tuple[str, list[tuple[str, str]]]:
+    symbol = str(symbol or "").upper()
+    groups = _PEER_INDUSTRY_GROUPS.get(market, {})
+    context = f"{sector} {industry}".casefold().strip()
+    if market == "US" and context:
+        for group_name, group in _US_DETAILED_PEER_GROUPS.items():
+            if any(keyword.casefold() in context for keyword in group["keywords"]):
+                return group_name, group["members"]
+    for group_name, members in groups.items():
+        if any(member_symbol.upper() == symbol for member_symbol, _ in members):
+            return group_name, members
+    if market == "KRX":
+        for group_name, keywords in _KRX_PEER_KEYWORDS.items():
+            if any(keyword.casefold() in context for keyword in keywords):
+                return group_name, groups.get(group_name, [])
+    else:
+        for group_name in groups:
+            if context and (group_name.casefold() in context or context in group_name.casefold()):
+                return group_name, groups[group_name]
+    fallback_name = str(industry or sector or "관련 종목").strip()
+    return fallback_name, _related_symbols_from_yahoo(symbol)
+
+
+def _peer_frame(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    if isinstance(raw.columns, pd.MultiIndex):
+        for level in range(raw.columns.nlevels):
+            if symbol in raw.columns.get_level_values(level):
+                try:
+                    return raw.xs(symbol, axis=1, level=level).dropna(how="all")
+                except Exception:
+                    continue
+        return pd.DataFrame()
+    return raw.copy()
+
+
+def _peer_momentum_signal(df: pd.DataFrame) -> dict | None:
+    if df is None or df.empty or "Close" not in df:
+        return None
+    close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+    if len(close) < 21 or float(close.iloc[-1]) <= 0:
+        return None
+    ret5 = (float(close.iloc[-1]) / float(close.iloc[-6]) - 1) * 100
+    ret20 = (float(close.iloc[-1]) / float(close.iloc[-21]) - 1) * 100
+    ma20 = float(close.iloc[-20:].mean())
+    above_ma20 = float(close.iloc[-1]) >= ma20
+    delta = close.diff().dropna()
+    avg_gain = float(delta.clip(lower=0).iloc[-14:].mean())
+    avg_loss = float((-delta.clip(upper=0)).iloc[-14:].mean())
+    if avg_loss <= 0:
+        rsi = 100.0 if avg_gain > 0 else 50.0
+    elif avg_gain <= 0:
+        rsi = 0.0
+    else:
+        rsi = 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+    score = (50.0 + max(-14.0, min(14.0, ret5 * 1.8)) +
+             max(-14.0, min(14.0, ret20 * 0.65)) + (7.0 if above_ma20 else -7.0) +
+             max(-5.0, min(5.0, (rsi - 50.0) * 0.2)))
+    up_probability = round(max(15.0, min(85.0, score)), 1)
+    return {
+        "last": round(float(close.iloc[-1]), 4), "return_5d": round(ret5, 2),
+        "return_20d": round(ret20, 2), "above_ma20": above_ma20,
+        "rsi": round(rsi, 1), "up_probability": up_probability,
+        "down_probability": round(100.0 - up_probability, 1),
+        "trend": "상승" if up_probability >= 57 else "하락" if up_probability <= 43 else "혼조",
+    }
+
+
+@ttl_cache(300)
+def build_peer_industry_outlook(symbol: str, market: str, company: str = "", sector: str = "", industry: str = "") -> dict:
+    """동종기업 가격 모멘텀을 집계해 업계 상승·하락 가능성과 비교표를 만든다."""
+    symbol = str(symbol or "").upper()
+    market = "KRX" if str(market or "").upper() == "KRX" or symbol.endswith((".KS", ".KQ")) else "US"
+    group_name, members = _resolve_peer_group(symbol, market, sector, industry)
+    peer_members = [(ticker, name) for ticker, name in members if ticker.upper() != symbol][:5]
+    download_symbols = [symbol] + [ticker for ticker, _ in peer_members]
+    if len(download_symbols) < 2:
+        return {"ok": False, "reason": "비교 가능한 동종기업 데이터가 부족합니다.", "symbol": symbol,
+                "company": company or symbol, "market": market, "sector": sector, "industry": industry or group_name}
+    try:
+        raw = yf.download(download_symbols, period="3mo", interval="1d", progress=False,
+                          auto_adjust=True, threads=True, timeout=8)
+    except Exception:
+        raw = pd.DataFrame()
+
+    peers = []
+    for ticker, name in peer_members:
+        signal = _peer_momentum_signal(_peer_frame(raw, ticker))
+        if signal:
+            peers.append({"ticker": ticker, "name": name, **signal})
+    selected = _peer_momentum_signal(_peer_frame(raw, symbol))
+    if not peers:
+        return {"ok": False, "reason": "동종기업 시세를 충분히 확보하지 못했습니다.", "symbol": symbol,
+                "company": company or symbol, "market": market, "sector": sector, "industry": industry or group_name}
+
+    up_probability = round(float(np.mean([peer["up_probability"] for peer in peers])), 1)
+    down_probability = round(100.0 - up_probability, 1)
+    avg_5d = round(float(np.mean([peer["return_5d"] for peer in peers])), 2)
+    avg_20d = round(float(np.mean([peer["return_20d"] for peer in peers])), 2)
+    breadth = round(sum(1 for peer in peers if peer["above_ma20"]) / len(peers) * 100, 1)
+    label = "상승 우위" if up_probability >= 57 else "하락 우위" if up_probability <= 43 else "방향 혼조"
+    reasons = [
+        f"동종기업 {len(peers)}개 평균 5일 수익률 {avg_5d:+.2f}%",
+        f"동종기업 평균 20일 수익률 {avg_20d:+.2f}%",
+        f"MA20 상회 종목 비율 {breadth:.1f}%",
+    ]
+    relative = None
+    if selected:
+        relative = round(selected["up_probability"] - up_probability, 1)
+    peers.sort(key=lambda item: item["up_probability"], reverse=True)
+    return {
+        "ok": True, "symbol": symbol, "company": company or symbol, "market": market,
+        "sector": sector or group_name, "industry": industry or group_name, "group_name": group_name,
+        "up_probability": up_probability, "down_probability": down_probability,
+        "label": label, "avg_return_5d": avg_5d,
+        "avg_return_20d": avg_20d, "breadth_above_ma20": breadth,
+        "peer_count": len(peers), "peers": peers, "selected": selected,
+        "relative_to_industry": relative, "reasons": reasons,
+        "basis": "최근 3개월 일봉 · 5일/20일 모멘텀 · MA20 · RSI 기반 상대 추정",
+        "generated_at": dt.now().isoformat(),
+    }
+
+
 def build_prediction_outlook(
     *, symbol: str, market: str, dd: Dict, last_price: float, prev_close: float,
     pct_change: float, atr: float, regime: str, score: float,
@@ -9160,6 +9379,25 @@ def route(path: str, params: Dict) -> Dict:
         except (TypeError, ValueError):
             limit = 12
         return {"items": search_stock_suggestions(q, limit)}
+
+    if path == "/api/peer-outlook":
+        ticker_raw = params.get("ticker", "").strip()
+        if not ticker_raw:
+            return {"ok": False, "reason": "ticker 파라미터가 필요합니다."}
+        ticker = ticker_raw.upper()
+        market = params.get("market", "").upper()
+        company = params.get("company", "").strip()
+        if not (ticker.endswith((".KS", ".KQ")) or market in {"KRX", "US"}):
+            resolved_ticker, resolved_market, resolved_company = resolve_ticker(ticker_raw)
+            if not resolved_ticker:
+                return {"ok": False, "reason": f"'{ticker_raw}' 종목을 확인하지 못했습니다."}
+            ticker, market = resolved_ticker, resolved_market
+            company = company or resolved_company
+        market = "KRX" if market == "KRX" or ticker.endswith((".KS", ".KQ")) else "US"
+        return build_peer_industry_outlook(
+            ticker, market, company or ticker,
+            params.get("sector", "").strip(), params.get("industry", "").strip(),
+        )
 
     # ── market_briefing 통합 엔드포인트 ─────────────────────────────────────
     # k-ant-daily 로직을 이식한 3가지 분석 모듈
@@ -10612,66 +10850,51 @@ input::placeholder{color:#484f58}
   .investor-sub-grid{grid-template-columns:repeat(2,1fr)}
 }
 
-/* ── 📋 KRX 종합 판단 ── */
-.krx-stack{display:flex;flex-direction:column;gap:12px}
-.krx-stack>.card{margin-bottom:0}
-.krx-summary-grid{display:grid;grid-template-columns:1.45fr repeat(3,minmax(0,1fr));gap:10px}
-.krx-summary-card,.krx-state-card,.krx-level-card,.krx-context-panel{background:#21262d;border:1px solid #30363d;border-radius:10px;padding:14px;min-width:0}
-.krx-summary-card.decision{background:#0d1b2a;border-color:#1f4b73}
-.krx-kicker{font-size:10px;color:#8b949e;margin-bottom:6px}
-.krx-summary-value{font-size:18px;font-weight:750;line-height:1.3;overflow-wrap:anywhere}
-.krx-summary-note{font-size:11px;color:#8b949e;line-height:1.55;margin-top:5px}
-.krx-chip-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:8px}
-.krx-chip{font-size:10px;padding:3px 7px;border:1px solid #30363d;border-radius:999px;color:#8b949e;background:#161b22}
-.krx-state-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
-.krx-state-label{font-size:10px;color:#8b949e;margin-bottom:6px}
-.krx-state-value{font-size:14px;font-weight:700;line-height:1.35}
-.krx-state-detail{font-size:10px;color:#8b949e;line-height:1.5;margin-top:5px;overflow-wrap:anywhere}
-.krx-level-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px}
-.krx-level-card{padding:11px 12px;background:#0d1117}
-.krx-scenario-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.krx-scenario{border:1px solid #30363d;border-radius:11px;padding:14px;background:#161b22;min-width:0}
-.krx-scenario.positive{background:#0d2d1a;border-color:#1a4730}
-.krx-scenario.neutral{background:#2d2200;border-color:#4a3800}
-.krx-scenario.negative{background:#2d0d0d;border-color:#4d1515}
-.krx-scenario-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
-.krx-scenario-title{font-size:14px;font-weight:700}
-.krx-scenario-prob{font-size:10px;font-weight:650;padding:3px 7px;border:1px solid currentColor;border-radius:999px;white-space:nowrap}
-.krx-scenario-range{font-size:16px;font-weight:750;margin-bottom:7px}
-.krx-scenario-summary{font-size:11px;color:#c9d1d9;line-height:1.5;margin-bottom:9px}
-.krx-condition{display:flex;gap:6px;font-size:11px;color:#c9d1d9;line-height:1.45;margin:4px 0}
-.krx-check-list{border-top:1px solid rgba(139,148,158,.22);margin-top:9px;padding-top:7px}
-.krx-check{display:flex;justify-content:space-between;gap:10px;font-size:10px;line-height:1.45;margin:4px 0}
-.krx-check span:first-child{color:#8b949e;white-space:nowrap}
-.krx-check span:last-child{text-align:right;font-weight:600}
-.krx-response{font-size:11px;line-height:1.5;margin-top:9px;padding:8px 9px;background:rgba(13,17,23,.55);border-radius:7px}
-.krx-context-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.krx-context-panel{padding:13px}
-.krx-context-title{font-size:12px;font-weight:700;margin-bottom:9px}
-.krx-fact{padding:9px 10px;background:#161b22;border-radius:7px;margin-bottom:6px}
-.krx-fact:last-child{margin-bottom:0}
-.krx-fact-head{display:flex;justify-content:space-between;gap:8px;font-size:11px}
-.krx-fact-detail{font-size:10px;color:#8b949e;line-height:1.45;margin-top:3px}
-.krx-risk-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:10px}
-.krx-risk-item{font-size:11px;line-height:1.45;padding:8px 10px;border-radius:7px;background:#2d0d0d;color:#f0b4b1}
-.krx-scope{font-size:10px;color:#6e7681;line-height:1.5;padding:1px 2px}
-.krx-inline-loading{font-size:10px;color:#8b949e;margin-left:8px;font-weight:400}
+/* ── 🏭 동종업계 전망 ── */
+.peer-stack{display:flex;flex-direction:column;gap:12px}
+.peer-stack>.card{margin-bottom:0}
+.peer-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.peer-subtitle{font-size:11px;color:#8b949e;line-height:1.5;margin-top:4px}
+.peer-market-badge{font-size:10px;font-weight:700;padding:4px 8px;border:1px solid #30363d;border-radius:999px;color:#8b949e;white-space:nowrap}
+.peer-prob-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.peer-prob-card{border:1px solid #30363d;border-radius:11px;background:#161b22;padding:14px;min-width:0}
+.peer-prob-card.up{background:#0d2d1a;border-color:#1a4730}
+.peer-prob-card.down{background:#2d0d0d;border-color:#4d1515}
+.peer-prob-label{font-size:11px;font-weight:650;color:#c9d1d9}
+.peer-prob-value{font-size:27px;font-weight:800;line-height:1.2;margin:6px 0 10px}
+.peer-prob-track,.peer-mini-track,.peer-balance{height:8px;border-radius:999px;background:#30363d;overflow:hidden}
+.peer-prob-bar,.peer-mini-up,.peer-mini-down,.peer-balance-up,.peer-balance-down{height:100%;transition:width .35s ease}
+.peer-prob-card.up .peer-prob-bar,.peer-mini-up,.peer-balance-up{background:#3fb950}
+.peer-prob-card.down .peer-prob-bar,.peer-mini-down,.peer-balance-down{background:#f85149}
+.peer-balance{display:flex;height:12px;margin-top:11px}
+.peer-balance-labels{display:flex;justify-content:space-between;gap:8px;font-size:10px;color:#8b949e;margin-top:5px}
+.peer-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.peer-metric{padding:11px 12px;background:#0d1117;border:1px solid #30363d;border-radius:9px;min-width:0}
+.peer-metric-label{font-size:10px;color:#8b949e;margin-bottom:5px}
+.peer-metric-value{font-size:15px;font-weight:750;overflow-wrap:anywhere}
+.peer-reasons{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.peer-reason{font-size:10px;line-height:1.45;padding:5px 8px;background:#21262d;border-radius:7px;color:#c9d1d9}
+.peer-list{display:flex;flex-direction:column;gap:6px}
+.peer-row{display:grid;grid-template-columns:minmax(130px,1.35fr) minmax(130px,1fr) 72px 72px;gap:10px;align-items:center;padding:10px 11px;background:#161b22;border:1px solid #30363d;border-radius:8px}
+.peer-name{font-size:12px;font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.peer-ticker{font-size:10px;color:#6e7681;margin-top:2px}
+.peer-mini-labels{display:flex;justify-content:space-between;font-size:9px;color:#8b949e;margin-top:4px}
+.peer-return{text-align:right;font-size:11px;font-weight:650}
+.peer-selected{padding:13px;background:#0d1117;border:1px solid #30363d;border-radius:9px;font-size:12px;line-height:1.65}
+.peer-scope{font-size:10px;color:#6e7681;line-height:1.55;padding:1px 2px}
 @media(max-width:900px){
   .core-indices{grid-template-columns:repeat(3,1fr)}
   .signal-matrix{grid-template-columns:1fr}
-  .krx-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .krx-state-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .krx-state-card:last-child{grid-column:1/-1}
-  .krx-level-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .krx-scenario-grid{grid-template-columns:1fr}
+  .peer-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .peer-row{grid-template-columns:minmax(120px,1.2fr) minmax(120px,1fr) 68px 68px}
 }
 @media(max-width:600px){
   .core-indices{grid-template-columns:repeat(3,1fr)}
   .home-section-title{font-size:13px}
-  .krx-summary-grid,.krx-state-grid,.krx-level-grid,.krx-context-grid,.krx-risk-list{grid-template-columns:1fr}
-  .krx-state-card:last-child{grid-column:auto}
-  .krx-summary-card,.krx-state-card,.krx-level-card,.krx-context-panel,.krx-scenario{padding:12px}
-  .krx-summary-value{font-size:16px}
+  .peer-prob-grid{grid-template-columns:1fr}
+  .peer-row{grid-template-columns:minmax(0,1fr) minmax(105px,.8fr)}
+  .peer-return{display:none}
+  .peer-prob-value{font-size:23px}
 }
 @media(max-width:400px){.core-indices{grid-template-columns:repeat(2,1fr)}}
 
@@ -10977,7 +11200,7 @@ input::placeholder{color:#484f58}
         <button class="tab-btn" onclick="switchTab('report')" style="display:none">📝 단계별 리포트</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 예측</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스</button>
-        <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">📋 KRX</button>
+        <button class="tab-btn" id="tab-evening-btn" onclick="switchTab('evening')" style="display:none">🏭 동종업계 전망</button>
       </div>
 
       <!-- 차트 탭 -->
@@ -11065,77 +11288,64 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
-      <!-- 📋 KRX 전용 탭 -->
+      <!-- 국내·해외 공통 동종업계 전망 탭 -->
       <div id="tab-evening" style="display:none">
         <div id="evening-loading" style="text-align:center;padding:10px;color:#8b949e;display:none;font-size:11px">
-          KRX 보조 시장 신호 확인 중...
+          동종기업 가격 흐름을 비교하는 중...
         </div>
         <div id="evening-content" style="display:none">
-          <div class="krx-stack">
+          <div class="peer-stack">
             <div class="card">
-              <div class="card-title">🇰🇷 KRX 종합 판단 <span id="krx-supplement-state" class="krx-inline-loading"></span></div>
-              <div class="krx-summary-grid">
-                <div class="krx-summary-card decision" id="krx-decision-card">
-                  <div class="krx-kicker">현재 조건에서의 대응</div>
-                  <div class="krx-summary-value" id="krx-decision">—</div>
-                  <div class="krx-summary-note" id="krx-decision-summary">—</div>
-                  <div class="krx-chip-row" id="krx-decision-chips"></div>
+              <div class="peer-heading">
+                <div>
+                  <div class="card-title" id="peer-title">🏭 동종업계 상대 전망</div>
+                  <div class="peer-subtitle" id="peer-subtitle">—</div>
                 </div>
-                <div class="krx-summary-card">
-                  <div class="krx-kicker">현재 가격 · 전일 대비</div>
-                  <div class="krx-summary-value" id="krx-current-price">—</div>
-                  <div class="krx-summary-note" id="krx-current-change">—</div>
+                <span id="peer-market-badge" class="peer-market-badge">—</span>
+              </div>
+              <div class="peer-prob-grid" aria-label="동종업계 상승 및 하락 상대 가능성">
+                <div class="peer-prob-card up">
+                  <div class="peer-prob-label">▲ 상승 가능성</div>
+                  <div class="peer-prob-value" id="peer-up-prob" style="color:#3fb950">—</div>
+                  <div class="peer-prob-track"><div class="peer-prob-bar" id="peer-up-bar" style="width:0%"></div></div>
                 </div>
-                <div class="krx-summary-card">
-                  <div class="krx-kicker">우세 조건부 시나리오</div>
-                  <div class="krx-summary-value" id="krx-leading-scenario">—</div>
-                  <div class="krx-summary-note" id="krx-scenario-mix">—</div>
-                </div>
-                <div class="krx-summary-card">
-                  <div class="krx-kicker">손절 · 무효화 기준</div>
-                  <div class="krx-summary-value" id="krx-stop-price">—</div>
-                  <div class="krx-summary-note" id="krx-warning-zone">—</div>
+                <div class="peer-prob-card down">
+                  <div class="peer-prob-label">▼ 하락 가능성</div>
+                  <div class="peer-prob-value" id="peer-down-prob" style="color:#f85149">—</div>
+                  <div class="peer-prob-track"><div class="peer-prob-bar" id="peer-down-bar" style="width:0%"></div></div>
                 </div>
               </div>
+              <div class="peer-balance" aria-hidden="true"><div id="peer-balance-up" class="peer-balance-up" style="width:50%"></div><div id="peer-balance-down" class="peer-balance-down" style="width:50%"></div></div>
+              <div class="peer-balance-labels"><span id="peer-balance-up-label">상승 —</span><span id="peer-balance-down-label">하락 —</span></div>
             </div>
 
             <div class="card">
-              <div class="card-title">📍 현재 상태와 핵심 가격</div>
-              <div id="krx-state-grid" class="krx-state-grid"></div>
-              <div id="krx-level-grid" class="krx-level-grid"></div>
+              <div class="card-title">📊 업계 모멘텀</div>
+              <div id="peer-metrics" class="peer-metrics"></div>
+              <div id="peer-reasons" class="peer-reasons"></div>
             </div>
 
             <div class="card">
-              <div class="card-title">🧭 조건부 KRX 시나리오</div>
-              <div id="krx-scenario-grid" class="krx-scenario-grid"></div>
-              <div id="krx-scenario-note" class="krx-scope" style="margin-top:9px"></div>
+              <div class="card-title">🏢 동종기업 비교</div>
+              <div id="peer-list" class="peer-list"></div>
             </div>
 
             <div class="card">
-              <div class="krx-context-grid">
-                <div class="krx-context-panel">
-                  <div class="krx-context-title">🌐 한국 시장·업종·수급</div>
-                  <div id="krx-market-context"></div>
-                </div>
-                <div class="krx-context-panel">
-                  <div class="krx-context-title">🔍 기술·패턴·AI 판단 근거</div>
-                  <div id="krx-signal-breakdown"></div>
-                </div>
-              </div>
-              <div id="krx-risk-list" class="krx-risk-list"></div>
+              <div class="card-title">🎯 검색 종목의 업계 대비 위치</div>
+              <div id="peer-selected-comparison" class="peer-selected">—</div>
             </div>
 
-            <div id="krx-data-scope" class="krx-scope"></div>
+            <div id="peer-data-scope" class="peer-scope"></div>
           </div>
         </div>
         <div id="evening-error" style="display:none;margin:0 0 10px;padding:10px 12px;background:#2d2200;border:1px solid #4a3800;border-radius:8px;color:#d29922;font-size:11px;line-height:1.5">
-          보조 KRX 신호를 가져오지 못했습니다. 기본 종목 분석 결과는 계속 표시합니다.
+          동종기업 데이터를 충분히 확보하지 못했습니다. 기본 종목 분석 결과는 계속 표시합니다.
         </div>
         <div id="evening-guide" style="text-align:center;padding:32px;color:#8b949e;font-size:13px">
-          <div style="font-size:32px;margin-bottom:12px">📋</div>
-          <div style="font-weight:600;margin-bottom:8px">KRX 종목 종합 판단</div>
-          <div style="line-height:1.6">한국 종목을 분석하면 가격·기술지표·시장·수급을 종합한 조건부 시나리오가 표시됩니다.<br>
-            <span style="font-size:11px;color:#484f58">확정 예측이나 투자 권유가 아닌 현재 확보 데이터 기준 참고 분석입니다.</span></div>
+          <div style="font-size:32px;margin-bottom:12px">🏭</div>
+          <div style="font-weight:600;margin-bottom:8px">동종업계 상대 전망</div>
+          <div style="line-height:1.6">국내 또는 해외 종목을 분석하면 동종기업의 최근 가격 흐름을 간단한 그래프로 비교합니다.<br>
+            <span style="font-size:11px;color:#484f58">확정 예측이나 투자 권유가 아닌 모멘텀 기반 상대 지표입니다.</span></div>
         </div>
       </div>
 
@@ -12045,18 +12255,11 @@ async function analyze(tickerOverride = '') {
     }
     // 흐름 분석: AI 탭에 통합, 항상 즉시 렌더
     renderFlowTab(d);
-    // KRX 전용 탭: KRX 종목만 표시 + 자동 데이터 로드
-    const krxCode = extractKrxCode(d.symbol);
+    // 국내·해외 공통: 동종기업 모멘텀을 별도 경량 요청으로 비교
     const eveningTabBtn = document.getElementById('tab-evening-btn');
-    if (d.market === 'KRX' && krxCode) {
-      eveningTabBtn.style.display = '';
-      resetEveningTab();
-      const krxBoard = String(d.symbol || '').toUpperCase().endsWith('.KQ') ? 'KOSDAQ' : 'KOSPI';
-      loadKrxAnalysis(krxCode, krxBoard);  // 기존 분석을 즉시 표시하고 보조 신호만 비동기 보완
-    } else {
-      eveningTabBtn.style.display = 'none';
-      resetEveningTab();
-    }
+    if (eveningTabBtn) eveningTabBtn.style.display = '';
+    resetPeerIndustryTab();
+    loadPeerIndustryOutlook(d);
   } catch(e) {
     setState('error');
     document.getElementById('error-msg').textContent = 'API 서버 오류: ' + e.message;
@@ -13292,7 +13495,7 @@ async function loadInvestorFlowAsync(symbol) {
       console.log(`[투자자수급] 성공 — 데이터 렌더링`);
       currentData.investor_flow = nd;
       renderInvestorFlow(currentData, true);
-      refreshKrxAnalysisFromCache();
+      refreshPeerIndustryTabFromCache();
     } else {
       // API 실패(ok:false) — 재시도 버튼 표시
       const reason = (nd && nd.reason) ? nd.reason : '수급 데이터 없음';
@@ -14719,7 +14922,7 @@ function renderMarketCore(d) {
   }).join('');
   if (currentData && currentData.prediction_outlook) {
     renderPredictionSections(currentData, currentData.market === 'KRX');
-    refreshKrxAnalysisFromCache();
+    refreshPeerIndustryTabFromCache();
   }
 }
 
@@ -14817,7 +15020,7 @@ function renderSectorFlow(d) {
   cardsEl.innerHTML = sorted.map(_buildSectorCardHtml).join('');
   if (currentData && currentData.prediction_outlook) {
     renderPredictionSections(currentData, currentData.market === 'KRX');
-    refreshKrxAnalysisFromCache();
+    refreshPeerIndustryTabFromCache();
   }
 }
 
@@ -15014,16 +15217,14 @@ function renderFlowTab(d) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 📋 KRX 전용 탭
+// 🏭 국내·해외 공통 동종업계 전망 탭
 // ═══════════════════════════════════════════════════════════════
-let eveningModeActive = false;
-let krxLoadToken = 0;
-let krxSupplementCache = null;
+let peerOutlookLoadToken = 0;
+let peerOutlookCache = null;
 
-function resetEveningTab() {
-  eveningModeActive = false;
-  krxLoadToken += 1;
-  krxSupplementCache = null;
+function resetPeerIndustryTab() {
+  peerOutlookLoadToken += 1;
+  peerOutlookCache = null;
   ['evening-loading','evening-content','evening-error'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -15032,272 +15233,154 @@ function resetEveningTab() {
   if (guide) guide.style.display = '';
 }
 
-async function loadKrxAnalysis(krxCode, krxBoard) {
-  if (!krxCode) return;
-  eveningModeActive = true;
-  const requestToken = ++krxLoadToken;
-  const guide   = document.getElementById('evening-guide');
+async function loadPeerIndustryOutlook(analysisData) {
+  if (!analysisData || !analysisData.symbol) return;
+  const requestToken = ++peerOutlookLoadToken;
+  const guide = document.getElementById('evening-guide');
   const loading = document.getElementById('evening-loading');
   const content = document.getElementById('evening-content');
-  const err     = document.getElementById('evening-error');
-  if (guide)   guide.style.display = 'none';
+  const errorBox = document.getElementById('evening-error');
+  if (guide) guide.style.display = 'none';
   if (loading) loading.style.display = 'block';
-  if (content) content.style.display = 'block';
-  if (err)     err.style.display = 'none';
+  if (content) content.style.display = 'none';
+  if (errorBox) errorBox.style.display = 'none';
 
-  // 메인 분석 응답을 먼저 사용하므로 보조 요청이 느리거나 실패해도 KRX 탭은 즉시 표시된다.
-  renderKrxAnalysis(null, krxCode, krxBoard);
+  const industryMeta = analysisData.toss_industry || {};
+  const localMeta = analysisData.naver || {};
+  const sector = industryMeta.sector || localMeta.sector || '';
+  const industry = industryMeta.industry || localMeta.industry || sector;
+  const query = [
+    'ticker=' + encodeURIComponent(analysisData.symbol),
+    'market=' + encodeURIComponent(analysisData.market || ''),
+    'company=' + encodeURIComponent(analysisData.company || analysisData.symbol),
+    'sector=' + encodeURIComponent(sector),
+    'industry=' + encodeURIComponent(industry),
+  ].join('&');
+
   try {
-    const market = krxBoard === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI';
-    const r = await fetch(`/api/market/stocks?codes=${encodeURIComponent(krxCode)}&markets=${market}`);
-    if (!r.ok) throw new Error('서버 오류 ' + r.status);
-    const d = await r.json();
-    if (d.error) throw new Error(d.error);
-    if (requestToken !== krxLoadToken) return;
-    krxSupplementCache = d;
-    renderKrxAnalysis(d, krxCode, market);
+    const response = await fetch('/api/peer-outlook?' + query);
+    if (!response.ok) throw new Error('서버 오류 ' + response.status);
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.reason || '비교 데이터가 부족합니다.');
+    if (requestToken !== peerOutlookLoadToken) return;
+    peerOutlookCache = payload;
+    renderPeerIndustryOutlook(payload);
     if (loading) loading.style.display = 'none';
-  } catch(e) {
-    if (requestToken !== krxLoadToken) return;
+    if (content) content.style.display = 'block';
+  } catch (error) {
+    if (requestToken !== peerOutlookLoadToken) return;
     if (loading) loading.style.display = 'none';
-    if (err) {
-      err.style.display = 'block';
-      err.textContent = '보조 KRX 신호를 가져오지 못했습니다: ' + e.message + ' · 기본 종목 분석 결과는 계속 표시합니다.';
+    if (errorBox) {
+      errorBox.style.display = 'block';
+      errorBox.textContent = '동종업계 전망을 계산하지 못했습니다: ' + error.message + ' · 기본 종목 분석 결과는 계속 표시합니다.';
     }
-    const state = document.getElementById('krx-supplement-state');
-    if (state) state.textContent = '· 기본 분석 기준';
-    console.warn('[krx-tab] 보조 신호 로드 실패:', e.message);
+    console.warn('[peer-outlook] 로드 실패:', error.message);
   }
 }
 
-function refreshKrxAnalysisFromCache() {
-  if (!currentData || currentData.market !== 'KRX') return;
-  const code = extractKrxCode(currentData.symbol);
-  if (!code) return;
-  const board = String(currentData.symbol || '').toUpperCase().endsWith('.KQ') ? 'KOSDAQ' : 'KOSPI';
-  renderKrxAnalysis(krxSupplementCache, code, board);
+function refreshPeerIndustryTabFromCache() {
+  if (peerOutlookCache) renderPeerIndustryOutlook(peerOutlookCache);
 }
-function _krxSetText(id, value) {
+
+function _peerClampPct(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
+}
+
+function _peerSignedPct(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  return (number >= 0 ? '+' : '') + number.toFixed(2) + '%';
+}
+
+function _peerSetText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value == null || value === '' ? '—' : String(value);
 }
 
-function _krxBandRange(band) {
-  const range = (band || {}).range || [];
-  return range.length === 2 ? `${fmtPrice(range[0], true)} ~ ${fmtPrice(range[1], true)}` : '데이터 확인 필요';
-}
+function renderPeerIndustryOutlook(payload) {
+  if (!payload || !payload.ok) return;
+  const up = _peerClampPct(payload.up_probability);
+  const down = _peerClampPct(payload.down_probability);
+  const group = payload.group_name || payload.industry || payload.sector || '관련 종목';
+  const marketLabel = payload.market === 'KRX' ? '🇰🇷 한국' : '🇺🇸 해외';
+  const labelColor = up >= 57 ? '#3fb950' : up <= 43 ? '#f85149' : '#d29922';
 
-function _krxEntryDetail(band, fallback, decision, lastPrice) {
-  const parts = [];
-  const pct = (band || {}).pct || [];
-  if (pct.length === 2) parts.push(`현재가 대비 ${Number(pct[0]).toFixed(1)}%~${Number(pct[1]).toFixed(1)}%`);
-  if (band && band.confirm_note) parts.push(band.confirm_note.replace(/20일 평균/g, '최근 20봉 평균'));
-  else parts.push(fallback);
-  if (band && band.allocation_pct != null) parts.push(`조건 충족 시 참고 비중 ${Number(band.allocation_pct).toFixed(1)}%`);
-  if (band && band.win_prob_pct != null) parts.push(`과거 보정 참고 ${Number(band.win_prob_pct).toFixed(1)}%`);
-  if (decision && decision.key === 'caution') parts.push('현재 판단은 매수 보류 · 가격은 재평가용 대기 구간');
-  return parts.join(' · ');
-}
+  _peerSetText('peer-title', '🏭 ' + group + ' 동종업계 전망');
+  _peerSetText('peer-subtitle', (payload.company || payload.symbol) + ' 기준 · ' + payload.peer_count + '개 동종기업 비교 · ' + payload.label);
+  _peerSetText('peer-market-badge', marketLabel);
+  _peerSetText('peer-up-prob', up.toFixed(1) + '%');
+  _peerSetText('peer-down-prob', down.toFixed(1) + '%');
+  _peerSetText('peer-balance-up-label', '상승 ' + up.toFixed(1) + '%');
+  _peerSetText('peer-balance-down-label', '하락 ' + down.toFixed(1) + '%');
+  const upBar = document.getElementById('peer-up-bar');
+  const downBar = document.getElementById('peer-down-bar');
+  const balanceUp = document.getElementById('peer-balance-up');
+  const balanceDown = document.getElementById('peer-balance-down');
+  if (upBar) upBar.style.width = up + '%';
+  if (downBar) downBar.style.width = down + '%';
+  if (balanceUp) balanceUp.style.width = up + '%';
+  if (balanceDown) balanceDown.style.width = down + '%';
 
-function _krxFactHtml(items, emptyText) {
-  if (!items.length) return `<div class="krx-scope">${_escPrediction(emptyText)}</div>`;
-  return items.map(item => {
-    const color = _predictionTone(item.tone);
-    return `<div class="krx-fact">
-      <div class="krx-fact-head"><span style="color:#8b949e">${_escPrediction(item.label)}</span><strong style="color:${color}">${_escPrediction(item.value)}</strong></div>
-      ${item.detail ? `<div class="krx-fact-detail">${_escPrediction(item.detail)}</div>` : ''}
-    </div>`;
-  }).join('');
-}
-
-function renderKrxAnalysis(supplement, krxCode, krxBoard) {
-  const d = currentData || {};
-  const p = d.prediction_outlook || {};
-  const decision = p.decision || null;
-  const stocks = (supplement && supplement.stocks) || [];
-  const stock = stocks.find(s => String(s.code) === String(krxCode)) || null;
-  const supplementState = document.getElementById('krx-supplement-state');
-
-  if (!decision) {
-    _krxSetText('krx-decision', '상세 판단 데이터 부족');
-    _krxSetText('krx-decision-summary', '현재 앱에서 확보한 데이터만으로 KRX 조건부 시나리오를 구성할 수 없습니다.');
-    ['krx-state-grid','krx-level-grid','krx-scenario-grid','krx-market-context','krx-signal-breakdown','krx-risk-list'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.innerHTML = '<div class="krx-scope">분석 데이터 확인 필요</div>';
-    });
-    if (supplementState) supplementState.textContent = '· 데이터 부족';
-    return;
-  }
-
-  const decisionColor = _predictionTone(decision.tone);
-  const confidence = Number(decision.confidence || 0);
-  const interval = decision.confidence_interval || [];
-  const decisionCard = document.getElementById('krx-decision-card');
-  if (decisionCard) decisionCard.style.borderColor = decisionColor + '88';
-  const decisionEl = document.getElementById('krx-decision');
-  if (decisionEl) {
-    decisionEl.textContent = decision.label || '관망 우선';
-    decisionEl.style.color = decisionColor;
-  }
-  _krxSetText('krx-decision-summary', decision.summary);
-  const chips = document.getElementById('krx-decision-chips');
-  if (chips) chips.innerHTML = [
-    `<span class="krx-chip" style="color:${decisionColor};border-color:${decisionColor}66">${_escPrediction(decision.direction || '중립')}</span>`,
-    `<span class="krx-chip">신뢰도 ${confidence.toFixed(0)}%${interval.length === 2 ? ` (${interval[0]}~${interval[1]}%)` : ''}</span>`,
-    '<span class="krx-chip">확정 예측 아님</span>',
-  ].join('');
-
-  _krxSetText('krx-current-price', fmtPrice(d.last_close, true));
-  const pct = Number(d.pct_change);
-  const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '등락률 확인 필요';
-  const pctEl = document.getElementById('krx-current-change');
-  if (pctEl) {
-    pctEl.textContent = `전일 종가 ${fmtPrice(d.prev_close, true)} · ${pctText}`;
-    pctEl.style.color = pct > 0 ? '#f85149' : pct < 0 ? '#388bfd' : '#8b949e';
-  }
-
-  const scenarios = (p.scenarios || []).slice();
-  const rankedScenarios = scenarios.slice().sort((a, b) => Number(b.probability || 0) - Number(a.probability || 0));
-  const leading = rankedScenarios[0];
-  const leaders = leading ? rankedScenarios.filter(sc => Math.abs(Number(sc.probability || 0) - Number(leading.probability || 0)) <= 1) : [];
-  const leadingText = !leading ? '확인 필요' : leaders.length > 1
-    ? `${leaders.map(sc => String(sc.label || '').replace(' 시나리오','')).join('·')} 경합 ${Number(leading.probability || 0).toFixed(0)}%`
-    : `${leading.label} ${Number(leading.probability || 0).toFixed(0)}%`;
-  _krxSetText('krx-leading-scenario', leadingText);
-  _krxSetText('krx-scenario-mix', scenarios.map(sc => `${String(sc.label || '').replace(' 시나리오','')} ${Number(sc.probability || 0).toFixed(0)}%`).join(' · '));
-
-  const levels = p.levels || {};
-  _krxSetText('krx-stop-price', fmtPrice(levels.stop, true));
-  const warning = levels.warning_zone || [];
-  _krxSetText('krx-warning-zone', warning.length === 2
-    ? `주의 구간 ${fmtPrice(warning[0], true)} ~ ${fmtPrice(warning[1], true)} · 종가 기준 확인`
-    : '주요 지지선 종가 이탈 시 매수 시나리오 무효화');
-
-  const stateGrid = document.getElementById('krx-state-grid');
-  if (stateGrid) stateGrid.innerHTML = (p.status || []).map(item => {
-    const color = _predictionTone(item.tone);
-    return `<div class="krx-state-card">
-      <div class="krx-state-label">${_escPrediction(item.label)}${item.help ? ` <span class="prediction-help" title="${_escPrediction(item.help)}">?</span>` : ''}</div>
-      <div class="krx-state-value" style="color:${color}">${_escPrediction(item.value)}</div>
-      <div class="krx-state-detail">${_escPrediction(item.detail)}</div>
-    </div>`;
-  }).join('');
-
-  const bp = d.buy_price || {};
-  const entryOne = (bp.aggressive_bands || [])[0] || {};
-  const entryTwo = (bp.recommended_bands || [])[0] || {};
-  const entryTone = decision.key === 'caution' ? 'negative' : decision.key === 'watch' ? 'neutral' : 'positive';
-  const levelCards = [
-    {label:`최근접 지지 후보 · ${levels.support_label || '지지선'}`, value:fmtPrice(levels.support, true), detail:`현재가 대비 ${Number(levels.support_gap_pct || 0).toFixed(1)}% · 종가 유지 여부 확인`, tone:'positive'},
-    {label:`최근접 저항 후보 · ${levels.resistance_label || '저항선'}`, value:fmtPrice(levels.resistance, true), detail:`현재가 대비 +${Math.abs(Number(levels.resistance_gap_pct || 0)).toFixed(1)}% · 거래량 동반 돌파 필요`, tone:'negative'},
-    {label:'⚡ 1차 탐색 구간', value:_krxBandRange(entryOne), detail:_krxEntryDetail(entryOne, '지지 확인 후 소액 접근', decision, d.last_close), tone:decision.key === 'caution' ? 'negative' : 'neutral'},
-    {label:'📍 2차 주 진입 구간', value:_krxBandRange(entryTwo), detail:_krxEntryDetail(entryTwo, '구조적 지지 확인 후 분할 접근', decision, d.last_close), tone:entryTone},
+  const metrics = [
+    {label:'상대 판단', value:payload.label || '방향 혼조', color:labelColor},
+    {label:'업계 평균 5일', value:_peerSignedPct(payload.avg_return_5d), color:Number(payload.avg_return_5d) >= 0 ? '#3fb950' : '#f85149'},
+    {label:'업계 평균 20일', value:_peerSignedPct(payload.avg_return_20d), color:Number(payload.avg_return_20d) >= 0 ? '#3fb950' : '#f85149'},
+    {label:'MA20 상회 비율', value:_peerClampPct(payload.breadth_above_ma20).toFixed(1) + '%', color:'#58a6ff'},
   ];
-  const levelGrid = document.getElementById('krx-level-grid');
-  if (levelGrid) levelGrid.innerHTML = levelCards.map(item => `<div class="krx-level-card">
-    <div class="krx-state-label">${_escPrediction(item.label)}</div>
-    <div class="krx-state-value" style="color:${_predictionTone(item.tone)}">${_escPrediction(item.value)}</div>
-    <div class="krx-state-detail">${_escPrediction(item.detail)}</div>
-  </div>`).join('');
+  const metricsEl = document.getElementById('peer-metrics');
+  if (metricsEl) metricsEl.innerHTML = metrics.map(item =>
+    '<div class="peer-metric"><div class="peer-metric-label">' + _escPrediction(item.label) +
+    '</div><div class="peer-metric-value" style="color:' + item.color + '">' +
+    _escPrediction(item.value) + '</div></div>'
+  ).join('');
 
-  const scenarioGrid = document.getElementById('krx-scenario-grid');
-  if (scenarioGrid) scenarioGrid.innerHTML = scenarios.map(sc => {
-    const color = _predictionTone(sc.tone);
-    const range = sc.price_range || [];
-    const rangeText = range.length === 2 ? `${fmtPrice(range[0], true)} ~ ${fmtPrice(range[1], true)}` : '가격 범위 확인 필요';
-    const conditions = (sc.conditions || []).map(x => `<div class="krx-condition"><span style="color:${color}">•</span><span>${_escPrediction(x)}</span></div>`).join('');
-    const checks = (sc.checks || []).map(x => {
-      const value = x.value != null ? `${_escPrediction(x.note || '')} ${fmtPrice(x.value, true)}`.trim() : _escPrediction(x.text || x.note || '확인 필요');
-      return `<div class="krx-check"><span>${_escPrediction(x.label)}</span><span>${value}</span></div>`;
-    }).join('');
-    const response = `대응: ${sc.response || (sc.key === 'upside'
-      ? '저항을 종가로 돌파하고 거래량이 함께 증가할 때만 분할 접근합니다. 돌파 전 추격은 보류합니다.'
-      : sc.key === 'downside'
-        ? '지지선 종가 이탈 시 진입 시나리오를 무효화하고 손절·현금 비중 관리를 우선합니다.'
-        : '지지·저항 사이에서는 신규 진입을 서두르지 않고 하단 지지 또는 상단 돌파를 확인합니다.')}`;
-    return `<div class="krx-scenario ${_escPrediction(sc.tone || 'neutral')}">
-      <div class="krx-scenario-head"><div class="krx-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="krx-scenario-prob" style="color:${color}">상대 비중 ${Number(sc.probability || 0).toFixed(0)}%</div></div>
-      <div class="krx-scenario-range">${rangeText}</div>
-      <div class="krx-scenario-summary">${_escPrediction(sc.summary)}</div>
-      ${conditions}<div class="krx-check-list">${checks}</div>
-      <div class="krx-response">${response}</div>
-    </div>`;
-  }).join('');
-  _krxSetText('krx-scenario-note', p.scenario_note);
+  const reasonsEl = document.getElementById('peer-reasons');
+  if (reasonsEl) reasonsEl.innerHTML = (payload.reasons || []).map(reason =>
+    '<span class="peer-reason">' + _escPrediction(reason) + '</span>'
+  ).join('');
 
-  const factMap = new Map();
-  (((p.market_context || {}).facts) || []).forEach(f => factMap.set(f.label, f));
-  _predictionLiveFacts(d, true).forEach(f => factMap.set(f.label, f));
-  const liveFlow = d.investor_flow || {};
-  if (liveFlow.ok) {
-    const foreign = Number(String(liveFlow['외국인'] || 0).replace(/,/g, '')) || 0;
-    const institution = Number(String(liveFlow['기관'] || 0).replace(/,/g, '')) || 0;
-    const flowTone = foreign > 0 && institution > 0 ? 'positive' : foreign < 0 && institution < 0 ? 'negative' : 'neutral';
-    const date = String(liveFlow.date || '').replace(/(\d{4})(\d{2})(\d{2})/, '$1.$2.$3');
-    const holding = Number(liveFlow['외국인비율']);
-    factMap.set('외국인·기관', {
-      label:'외국인·기관',
-      value:flowTone === 'positive' ? '동반 순매수' : flowTone === 'negative' ? '동반 순매도' : '수급 혼조',
-      detail:`외국인 ${foreign >= 0 ? '+' : ''}${foreign.toLocaleString()}주 · 기관 ${institution >= 0 ? '+' : ''}${institution.toLocaleString()}주${date ? ` · ${date} 기준` : ''}${Number.isFinite(holding) && holding > 0 ? ` · 외국인 보유 ${holding.toFixed(2)}%` : ''}`,
-      tone:flowTone,
-    });
+  const listEl = document.getElementById('peer-list');
+  if (listEl) {
+    const peers = payload.peers || [];
+    listEl.innerHTML = peers.length ? peers.map(peer => {
+      const peerUp = _peerClampPct(peer.up_probability);
+      const peerDown = _peerClampPct(peer.down_probability);
+      const trendColor = peer.trend === '상승' ? '#3fb950' : peer.trend === '하락' ? '#f85149' : '#d29922';
+      return '<div class="peer-row">' +
+        '<div><div class="peer-name">' + _escPrediction(peer.name || peer.ticker) + '</div><div class="peer-ticker">' + _escPrediction(peer.ticker) + ' · <span style="color:' + trendColor + '">' + _escPrediction(peer.trend || '혼조') + '</span></div></div>' +
+        '<div><div class="peer-mini-track" style="display:flex"><div class="peer-mini-up" style="width:' + peerUp + '%"></div><div class="peer-mini-down" style="width:' + peerDown + '%"></div></div><div class="peer-mini-labels"><span>▲ ' + peerUp.toFixed(1) + '%</span><span>▼ ' + peerDown.toFixed(1) + '%</span></div></div>' +
+        '<div class="peer-return" style="color:' + (Number(peer.return_5d) >= 0 ? '#3fb950' : '#f85149') + '">5일<br>' + _peerSignedPct(peer.return_5d) + '</div>' +
+        '<div class="peer-return" style="color:' + (Number(peer.return_20d) >= 0 ? '#3fb950' : '#f85149') + '">20일<br>' + _peerSignedPct(peer.return_20d) + '</div>' +
+      '</div>';
+    }).join('') : '<div class="peer-scope">표시 가능한 동종기업이 없습니다.</div>';
   }
-  if (stock) {
-    const newsValue = {positive:'긍정',negative:'부정',neutral:'중립'}[stock.news_sentiment || 'neutral'] || '중립';
-    if ((stock.news || []).length) {
-      factMap.set('뉴스 감성', {label:'뉴스 감성', value:newsValue, detail:`최근 관련 뉴스 ${(stock.news || []).length}건 분류`, tone:stock.news_sentiment || 'neutral'});
-    }
-    const overnight = stock.overnight_signal;
-    if (overnight && typeof overnight === 'object' && overnight.direction) {
-      const overnightValue = {up:'상승 우위',down:'하락 우위',neutral:'중립'}[overnight.direction] || '중립';
-      const overnightPct = Number(overnight.avg_pct);
-      factMap.set('간밤 영향', {label:'간밤 영향', value:overnightValue, detail:`실제 보조 신호${Number.isFinite(overnightPct) ? ` 평균 ${overnightPct >= 0 ? '+' : ''}${overnightPct.toFixed(2)}%` : ''}`, tone:overnight.direction === 'up' ? 'positive' : overnight.direction === 'down' ? 'negative' : 'neutral'});
+
+  const selectedEl = document.getElementById('peer-selected-comparison');
+  if (selectedEl) {
+    const selected = payload.selected;
+    const relative = Number(payload.relative_to_industry);
+    if (selected) {
+      const relation = !Number.isFinite(relative) || Math.abs(relative) < 0.1
+        ? '업계 평균과 유사'
+        : relative > 0 ? '업계 평균보다 ' + relative.toFixed(1) + '%p 강함' : '업계 평균보다 ' + Math.abs(relative).toFixed(1) + '%p 약함';
+      const relationColor = Number.isFinite(relative) && relative > 0 ? '#3fb950' : Number.isFinite(relative) && relative < 0 ? '#f85149' : '#d29922';
+      selectedEl.innerHTML = '<strong>' + _escPrediction(payload.company || payload.symbol) + '</strong>의 상승 상대 가능성은 <strong style="color:#3fb950">' +
+        _peerClampPct(selected.up_probability).toFixed(1) + '%</strong>이며, <span style="color:' + relationColor + '">' + _escPrediction(relation) +
+        '</span>입니다.<br><span style="color:#8b949e">검색 종목 흐름: 5일 ' + _peerSignedPct(selected.return_5d) + ' · 20일 ' +
+        _peerSignedPct(selected.return_20d) + ' · RSI ' + Number(selected.rsi || 0).toFixed(1) + '</span>';
+    } else {
+      selectedEl.textContent = '검색 종목 자체의 충분한 일봉 데이터가 없어 동종기업 평균만 표시합니다.';
     }
   }
-  const marketContext = document.getElementById('krx-market-context');
-  if (marketContext) marketContext.innerHTML = _krxFactHtml([...factMap.values()], '시장·업종·수급 데이터가 부족합니다.');
 
-  const evidence = [];
-  const indicatorSummary = ((d.indicator_signals || {}).summary) || {};
-  evidence.push({label:'기술 종합', value:`${Number(d.score || 0).toFixed(0)}점`, detail:`${indicatorSummary.overall_label || '종합 신호 확인'} · 매수 ${Number(indicatorSummary.buy || 0)} / 관망 ${Number(indicatorSummary.watch || 0)} / 매도 ${Number(indicatorSummary.sell || 0)} · KRX 시나리오 비중은 최종 점수·수급 보정 반영`, tone:Number(d.score || 0) >= 60 ? 'positive' : Number(d.score || 0) < 40 ? 'negative' : 'neutral'});
-  const pattern = p.pattern_context || {};
-  if (pattern.manipulation_detected) {
-    const names = (pattern.items || []).map(x => x.pattern || x.name).filter(Boolean).slice(0, 3).join(', ');
-    evidence.push({label:'세력 흔들림', value:`${Number(pattern.manipulation_count || 0)}건 감지`, detail:names || pattern.wick_note || '지지 회복 여부 확인', tone:'negative'});
-  } else {
-    evidence.push({label:'세력 흔들림', value:'뚜렷한 신호 없음', detail:pattern.wick_note || '캔들·거래량 변화를 계속 확인', tone:'neutral'});
-  }
-  if ((pattern.candles || []).length) evidence.push({label:'캔들 패턴', value:(pattern.candles || []).join(', '), detail:'패턴 단독보다 지지·거래량 확인을 우선', tone:'neutral'});
-  (p.ai_evidence || []).slice(0, 4).forEach((line, idx) => evidence.push({label:`AI 근거 ${idx + 1}`, value:line, detail:'🧠 AI 진단 결과 재사용', tone:'neutral'}));
-  if (stock) {
-    const history = stock.history || {};
-    const position = Number(history.pos_52w_pct);
-    const fromHigh = Number(history.from_high_pct);
-    const change20 = Number(history.change_20d_pct);
-    evidence.push({label:'52주 가격 위치', value:Number.isFinite(position) ? `${position.toFixed(1)}% 지점` : ({high_zone:'고가권 경계',low_zone:'저가권 반등 후보',neutral:'중립 구간'}[stock.price_zone || 'neutral'] || '중립 구간'), detail:`${Number.isFinite(fromHigh) ? `52주 고점 대비 ${fromHigh.toFixed(1)}%` : '고점 이격 미확보'}${Number.isFinite(change20) ? ` · 최근 20거래일 ${change20 >= 0 ? '+' : ''}${change20.toFixed(1)}%` : ''}${history.as_of ? ` · ${history.as_of} 기준` : ''}`, tone:stock.price_zone === 'low_zone' ? 'positive' : stock.price_zone === 'high_zone' ? 'negative' : 'neutral'});
-    const supplementVolumeRatio = Number(stock.volume_ratio);
-    const quoteChange = Number((stock.quote || {}).change_pct);
-    evidence.push({label:'거래량 급증 점검', value:Number.isFinite(supplementVolumeRatio) ? `20거래일 평균의 ${supplementVolumeRatio.toFixed(2)}배` : (stock.volume_spike ? '평균 대비 2배 이상' : '비율 미확보'), detail:`${stock.volume_spike ? '거래량 급증 감지' : '뚜렷한 급증 없음'} · ${Number.isFinite(quoteChange) ? `보조 시세 ${quoteChange >= 0 ? '+' : ''}${quoteChange.toFixed(2)}%` : '가격 방향과 함께 재확인'}`, tone:stock.volume_spike ? (Number.isFinite(quoteChange) ? (quoteChange >= 0 ? 'positive' : 'negative') : 'neutral') : 'neutral'});
-    if (stock.recommendation_label) evidence.push({label:'보조 3신호', value:`${stock.recommendation_label} · ${stock.confidence_label || '신뢰도 확인'}`, detail:stock.rationale || '뉴스·가격 위치·실제 확보된 간밤 신호 기준', tone:String(stock.recommendation || '').includes('buy') ? 'positive' : String(stock.recommendation || '').includes('sell') ? 'negative' : 'neutral'});
-  }
-  const signalBreakdown = document.getElementById('krx-signal-breakdown');
-  if (signalBreakdown) signalBreakdown.innerHTML = _krxFactHtml(evidence, '기술·패턴 판단 근거가 부족합니다.');
-
-  const risks = (p.risk_triggers || []).slice(0, 6);
-  const riskList = document.getElementById('krx-risk-list');
-  if (riskList) riskList.innerHTML = risks.length
-    ? risks.map((risk, idx) => `<div class="krx-risk-item">⚠ 위험 ${idx + 1} · ${_escPrediction(risk)}</div>`).join('')
-    : '<div class="krx-risk-item">⚠ 주요 지지선 종가 이탈 시 시나리오 재평가</div>';
-
-  const board = krxBoard === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI';
-  const generated = supplement && supplement.generated_at ? ` · 보조 신호 ${new Date(supplement.generated_at).toLocaleString('ko-KR')}` : '';
-  const gaps = (((p.market_context || {}).data_gaps) || []).filter(Boolean);
-  const gapText = gaps.length ? ` · 미확보 데이터는 확정 판단에서 제외: ${gaps.join(' / ')}` : '';
-  _krxSetText('krx-data-scope', `${p.data_scope || '현재 앱에서 확보 가능한 데이터 기준'} · ${board} 종목 · 조건부 참고 분석이며 투자 권유가 아닙니다${generated}${gapText}`);
-  if (supplementState) supplementState.textContent = stock ? '· 보조 신호 반영 완료' : '· 기본 분석 기준';
+  const generated = payload.generated_at ? new Date(payload.generated_at).toLocaleString('ko-KR') : '';
+  _peerSetText('peer-data-scope',
+    (payload.basis || '동종기업 가격 모멘텀 기반 상대 추정') + ' · 비교 ' + payload.peer_count + '개' +
+    (generated ? ' · 산출 ' + generated : '') +
+    ' · 확정적인 주가 예측이나 투자 권유가 아니며 업종 분류 및 데이터 제공 범위에 따라 비교군이 달라질 수 있습니다.'
+  );
 }
-
-// ══════════════════════════════════════════════════════
 // 🔔 알림 시스템 — localStorage 기반 (stock-dashboard 이식)
 // ══════════════════════════════════════════════════════
 

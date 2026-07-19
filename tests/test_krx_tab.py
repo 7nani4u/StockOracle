@@ -1,4 +1,4 @@
-"""📋 KRX 탭의 정보 구조와 데이터 재사용 경로 회귀 테스트."""
+"""국내·해외 공통 동종업계 전망 탭의 회귀 테스트."""
 
 from pathlib import Path
 import sys
@@ -10,77 +10,68 @@ from api.index import HTML
 SOURCE = Path(__file__).parents[1].joinpath("api", "index.py").read_text(encoding="utf-8")
 
 
-def test_krx_tab_prioritizes_actionable_conditional_analysis():
-    krx_html = HTML.split('<div id="tab-evening"', 1)[1].split("<!-- 스크리너 페이지 -->", 1)[0]
+def _peer_tab_html():
+    return HTML.split('<div id="tab-evening"', 1)[1].split("<!-- 스크리너 페이지 -->", 1)[0]
 
-    summary = krx_html.index("KRX 종합 판단")
-    state = krx_html.index("현재 상태와 핵심 가격")
-    scenarios = krx_html.index("조건부 KRX 시나리오")
-    context = krx_html.index("한국 시장·업종·수급")
-    assert summary < state < scenarios < context
 
+def test_tab_is_renamed_and_contains_simple_probability_graphs():
+    tab_html = _peer_tab_html()
+
+    assert "🏭 동종업계 전망" in HTML
+    assert "📋 KRX" not in HTML
     for element_id in (
-        "krx-decision",
-        "krx-current-price",
-        "krx-leading-scenario",
-        "krx-stop-price",
-        "krx-state-grid",
-        "krx-level-grid",
-        "krx-scenario-grid",
-        "krx-market-context",
-        "krx-signal-breakdown",
-        "krx-risk-list",
+        "peer-up-prob", "peer-down-prob", "peer-up-bar", "peer-down-bar",
+        "peer-balance-up", "peer-balance-down", "peer-metrics", "peer-list",
+        "peer-selected-comparison", "peer-data-scope",
     ):
-        assert f'id="{element_id}"' in krx_html
+        assert f'id="{element_id}"' in tab_html
 
 
-def test_krx_tab_does_not_present_same_snapshot_as_historical_validation():
-    krx_html = HTML.split('<div id="tab-evening"', 1)[1].split("<!-- 스크리너 페이지 -->", 1)[0]
+def test_tab_is_loaded_for_both_krx_and_foreign_analysis_results():
+    analyze_tail = SOURCE.split("// 국내·해외 공통: 동종기업 모멘텀", 1)[1].split("} catch(e)", 1)[0]
 
-    for removed_label in ("예측 vs 실제 비교", "아침 예측", "실제 종가 등락", "장 마감(15:30)"):
-        assert removed_label not in krx_html
-    assert "확정 예측이나 투자 권유가 아닌" in krx_html
+    assert "eveningTabBtn.style.display = ''" in analyze_tail
+    assert "loadPeerIndustryOutlook(d)" in analyze_tail
+    assert "d.market === 'KRX'" not in analyze_tail
+    assert "style.display = 'none'" not in analyze_tail
 
 
-def test_krx_tab_reuses_main_analysis_and_selects_the_correct_board():
-    loader = SOURCE.split("async function loadKrxAnalysis", 1)[1].split(
-        "function _krxSetText", 1
+def test_peer_data_uses_a_dedicated_lazy_endpoint_and_industry_metadata():
+    loader = SOURCE.split("async function loadPeerIndustryOutlook", 1)[1].split(
+        "function refreshPeerIndustryTabFromCache", 1
     )[0]
 
-    assert loader.index("renderKrxAnalysis(null") < loader.index("await fetch(")
-    assert "markets=${market}" in loader
-    assert "evening=1" not in loader
-    assert "krxBoard === 'KOSDAQ'" in loader
-    assert "endsWith('.KQ') ? 'KOSDAQ' : 'KOSPI'" in SOURCE
+    assert "analysisData.toss_industry" in loader
+    assert "analysisData.naver" in loader
+    assert "fetch('/api/peer-outlook?'" in loader
+    assert "ticker=" in loader and "market=" in loader and "industry=" in loader
+    assert 'if path == "/api/peer-outlook"' in SOURCE
 
 
-def test_krx_layout_has_desktop_and_mobile_grid_breakpoints():
-    assert ".krx-scenario-grid{display:grid;grid-template-columns:repeat(3" in HTML
-    assert "@media(max-width:900px)" in HTML
-    assert ".krx-scenario-grid{grid-template-columns:1fr}" in HTML
+def test_probability_bars_and_peer_rows_have_responsive_styles():
+    assert ".peer-prob-grid{display:grid;grid-template-columns:repeat(2" in HTML
+    assert ".peer-row{display:grid" in HTML
     assert "@media(max-width:600px)" in HTML
-    assert ".krx-summary-grid,.krx-state-grid,.krx-level-grid,.krx-context-grid,.krx-risk-list{grid-template-columns:1fr}" in HTML
+    assert ".peer-prob-grid{grid-template-columns:1fr}" in HTML
+    assert "upBar.style.width = up + '%'" in SOURCE
+    assert "downBar.style.width = down + '%'" in SOURCE
 
 
-def test_krx_tab_only_merges_observed_supplement_signals_and_refreshes_late_data():
-    renderer = SOURCE.split("function renderKrxAnalysis", 1)[1].split(
-        "// ══════════════════════════════════════════════════════\n// 🔔 알림 시스템", 1
+def test_renderer_discloses_relative_estimate_and_data_limitations():
+    renderer = SOURCE.split("function renderPeerIndustryOutlook", 1)[1].split(
+        "// 🔔 알림 시스템", 1
     )[0]
 
-    assert "stocks.find(s => String(s.code) === String(krxCode)) || null" in renderer
-    assert "if (overnight && typeof overnight === 'object' && overnight.direction)" in renderer
-    assert "20거래일 평균의 ${supplementVolumeRatio.toFixed(2)}배" in renderer
-    assert "history.pos_52w_pct" in renderer
-    assert "미확보 데이터는 확정 판단에서 제외" in renderer
-    assert SOURCE.count("refreshKrxAnalysisFromCache();") >= 3
+    assert "상승 상대 가능성" in renderer
+    assert "업계 평균보다" in renderer
+    assert "확정적인 주가 예측이나 투자 권유가 아니며" in renderer
+    assert "업종 분류 및 데이터 제공 범위" in renderer
+    assert SOURCE.count("refreshPeerIndustryTabFromCache();") >= 3
 
 
-def test_krx_entry_cards_follow_wait_or_caution_decision_without_layout_change():
-    renderer = SOURCE.split("function renderKrxAnalysis", 1)[1].split(
-        "// ══════════════════════════════════════════════════════\n// 🔔 알림 시스템", 1
-    )[0]
-
-    assert "decision.key === 'caution' ? 'negative'" in renderer
-    assert "현재 판단은 매수 보류 · 가격은 재평가용 대기 구간" in SOURCE
-    assert "최근접 지지 후보" in renderer
-    assert "최근접 저항 후보" in renderer
+def test_obsolete_krx_scenario_renderer_is_removed():
+    for obsolete in (
+        "loadKrxAnalysis", "renderKrxAnalysis", "refreshKrxAnalysisFromCache",
+        "krx-scenario-grid", "KRX 종합 판단", "조건부 KRX 시나리오",
+    ):
+        assert obsolete not in SOURCE
