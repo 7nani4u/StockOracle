@@ -8985,6 +8985,7 @@ def route(path: str, params: Dict) -> Dict:
                 "pattern_overlays": pattern_overlays,
                 "pattern_overlay_options": {
                     "show_pattern_overlay": True,
+                    "interaction_mode": "hover_touch",
                     "show_forming_patterns": True,
                     "show_pivot_labels": True,
                     "show_neckline": True,
@@ -11412,6 +11413,7 @@ let scrnSort = {key:'price', dir:'desc'};
 let _marketCoreSnapshot = null;   // 홈에서 이미 받은 지수·환율·미국 시장 데이터 재사용
 let _sectorFlowSnapshot = null;   // 홈에서 이미 받은 업종 흐름 데이터 재사용
 let chartInstances = {};
+let chartCleanupHandlers = {};
 
 // ── 페이지 전환 ──
 var _recoMenuOpen = false;
@@ -14132,8 +14134,182 @@ function renderNews(d, isKrx) {
 
 // ── 차트 (lightweight-charts) ──
 function destroyCharts() {
+  Object.values(chartCleanupHandlers).forEach(cleanup => { try { cleanup(); } catch(e){} });
+  chartCleanupHandlers = {};
   Object.values(chartInstances).forEach(c => { try { c.remove(); } catch(e){} });
   chartInstances = {};
+}
+
+function _bindInteractivePatternOverlays(priceEl, chart, candleSeries, cd, overlayOptions, patternOverlays) {
+  const overlays = (Array.isArray(patternOverlays) ? patternOverlays : []).slice(0, 6);
+  if (!priceEl || overlayOptions.show_pattern_overlay === false || !overlays.length) return () => {};
+
+  let patternSeries = [];
+  let patternPriceLines = [];
+  let patternsVisible = false;
+  let activeTouchPointer = null;
+  let touchHideTimer = null;
+
+  const showPatterns = () => {
+    if (patternsVisible) return;
+    patternsVisible = true;
+    priceEl.dataset.patternsVisible = 'true';
+    const markers = [];
+
+    overlays.forEach((overlay, overlayIndex) => {
+      const confirmed = overlay.status === 'confirmed';
+      const bullish = overlay.direction === 'bullish';
+      const lineColor = bullish
+        ? (confirmed ? '#3fb950' : 'rgba(63,185,80,0.55)')
+        : (confirmed ? '#f85149' : 'rgba(248,81,73,0.55)');
+      const connectorData = (overlay.connector || []).map(p => ({
+        time: p.timestamp != null ? p.timestamp : cd.dates[p.index],
+        value: p.price,
+      })).filter(p => p.time != null && p.value != null);
+      if (connectorData.length >= 2) {
+        const connector = chart.addLineSeries({
+          color: lineColor,
+          lineWidth: confirmed ? 2 : 1,
+          lineStyle: confirmed ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+          title: `${confirmed ? 'CONF' : overlay.status === 'forming' ? 'FORM' : 'WAIT'} · ${overlay.name || ''}`,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        connector.setData(connectorData);
+        patternSeries.push(connector);
+      }
+      if (overlayOptions.show_pivot_labels !== false) {
+        (overlay.points || []).forEach(p => {
+          const markerTime = p.timestamp != null ? p.timestamp : cd.dates[p.index];
+          if (markerTime == null || p.price == null) return;
+          markers.push({
+            time: markerTime,
+            position: p.pivot_type === 'high' ? 'aboveBar' : 'belowBar',
+            color: lineColor,
+            shape: confirmed ? 'circle' : 'square',
+            text: `${p.label || 'E'} · ${confirmed ? 'CONF' : overlay.status === 'forming' ? 'FORM' : 'WAIT'}`,
+          });
+        });
+      }
+      const neck = overlay.neckline || null;
+      if (overlayOptions.show_neckline !== false && neck &&
+          cd.dates[neck.start_index] != null && cd.dates[neck.end_index] != null) {
+        const neckSeries = chart.addLineSeries({
+          color: lineColor, lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          title: `NECK · ${overlay.name || ''}`,
+          lastValueVisible: false, priceLineVisible: false,
+        });
+        neckSeries.setData([
+          { time: cd.dates[neck.start_index], value: neck.start_price },
+          { time: cd.dates[neck.end_index], value: neck.end_price },
+        ]);
+        patternSeries.push(neckSeries);
+      }
+      const secondaryLine = overlay.secondary_confirmation_line || null;
+      if (overlayOptions.show_neckline !== false && secondaryLine &&
+          cd.dates[secondaryLine.start_index] != null && cd.dates[secondaryLine.end_index] != null) {
+        const secondarySeries = chart.addLineSeries({
+          color: lineColor, lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: `CONFIRM 2 · ${overlay.name || ''}`,
+          lastValueVisible: false, priceLineVisible: false,
+        });
+        secondarySeries.setData([
+          { time: cd.dates[secondaryLine.start_index], value: secondaryLine.start_price },
+          { time: cd.dates[secondaryLine.end_index], value: secondaryLine.end_price },
+        ]);
+        patternSeries.push(secondarySeries);
+      }
+      if (overlay.invalidation_price != null) {
+        patternPriceLines.push(candleSeries.createPriceLine({
+          price: overlay.invalidation_price,
+          color: lineColor,
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          axisLabelVisible: overlayIndex < 2,
+          title: 'INVALID',
+        }));
+      }
+      if (overlayOptions.show_pattern_targets !== false && overlay.target && overlay.target.price != null) {
+        patternPriceLines.push(candleSeries.createPriceLine({
+          price: overlay.target.price,
+          color: lineColor,
+          lineWidth: confirmed ? 2 : 1,
+          lineStyle: confirmed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Dotted,
+          axisLabelVisible: overlayIndex < 2,
+          title: confirmed ? 'PATTERN TP' : 'PROVISIONAL TP',
+        }));
+      }
+    });
+
+    if (markers.length && typeof candleSeries.setMarkers === 'function') {
+      markers.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+      candleSeries.setMarkers(markers);
+    }
+  };
+
+  const hidePatterns = () => {
+    if (!patternsVisible) return;
+    patternsVisible = false;
+    priceEl.dataset.patternsVisible = 'false';
+    if (typeof candleSeries.setMarkers === 'function') candleSeries.setMarkers([]);
+    patternPriceLines.forEach(line => { try { candleSeries.removePriceLine(line); } catch(e){} });
+    patternSeries.forEach(series => { try { chart.removeSeries(series); } catch(e){} });
+    patternPriceLines = [];
+    patternSeries = [];
+  };
+
+  const onPointerMove = event => {
+    if (event.pointerType === 'mouse') showPatterns();
+  };
+  const onPointerLeave = () => hidePatterns();
+  const onDocumentPointerMove = event => {
+    if (event.pointerType === 'mouse' && patternsVisible && !priceEl.contains(event.target)) {
+      hidePatterns();
+    }
+  };
+  const onPointerDown = event => {
+    if (event.pointerType !== 'mouse') {
+      activeTouchPointer = event.pointerId;
+      clearTimeout(touchHideTimer);
+      showPatterns();
+    }
+  };
+  const onPointerUp = event => {
+    if (activeTouchPointer == null || event.pointerId !== activeTouchPointer) return;
+    activeTouchPointer = null;
+    clearTimeout(touchHideTimer);
+    touchHideTimer = setTimeout(hidePatterns, 450);
+  };
+  const onPointerCancel = event => {
+    if (activeTouchPointer == null || event.pointerId !== activeTouchPointer) return;
+    activeTouchPointer = null;
+    clearTimeout(touchHideTimer);
+    hidePatterns();
+  };
+
+  priceEl.dataset.patternInteraction = 'hover-touch';
+  priceEl.dataset.patternsVisible = 'false';
+  priceEl.addEventListener('pointermove', onPointerMove);
+  priceEl.addEventListener('pointerleave', onPointerLeave);
+  priceEl.addEventListener('pointerdown', onPointerDown);
+  document.addEventListener('pointermove', onDocumentPointerMove);
+  document.addEventListener('pointerup', onPointerUp);
+  document.addEventListener('pointercancel', onPointerCancel);
+
+  return () => {
+    clearTimeout(touchHideTimer);
+    hidePatterns();
+    priceEl.removeEventListener('pointermove', onPointerMove);
+    priceEl.removeEventListener('pointerleave', onPointerLeave);
+    priceEl.removeEventListener('pointerdown', onPointerDown);
+    document.removeEventListener('pointermove', onDocumentPointerMove);
+    document.removeEventListener('pointerup', onPointerUp);
+    document.removeEventListener('pointercancel', onPointerCancel);
+    delete priceEl.dataset.patternInteraction;
+    delete priceEl.dataset.patternsVisible;
+  };
 }
 
 function renderCharts(d, isKrx) {
@@ -14172,100 +14348,12 @@ function renderCharts(d, isKrx) {
     }
     candleSeries.setData(candleData);
 
-    // 패턴 탐지 좌표를 그대로 사용한다. 형성 중은 점선·낮은 투명도,
-    // 확정 패턴은 실선과 CONF 라벨로 구분하여 색상만으로 상태를 표현하지 않는다.
+    // 패턴은 기본적으로 숨기고 차트에 마우스를 올리거나 터치한 동안만 표시한다.
     const overlayOptions = cd.pattern_overlay_options || {};
     const patternOverlays = Array.isArray(cd.pattern_overlays) ? cd.pattern_overlays : [];
-    if (overlayOptions.show_pattern_overlay !== false && patternOverlays.length) {
-      const markers = [];
-      patternOverlays.slice(0, 6).forEach((overlay, overlayIndex) => {
-        const confirmed = overlay.status === 'confirmed';
-        const bullish = overlay.direction === 'bullish';
-        const lineColor = bullish
-          ? (confirmed ? '#3fb950' : 'rgba(63,185,80,0.55)')
-          : (confirmed ? '#f85149' : 'rgba(248,81,73,0.55)');
-        const connectorData = (overlay.connector || []).map(p => ({
-          time: p.timestamp != null ? p.timestamp : cd.dates[p.index],
-          value: p.price,
-        })).filter(p => p.time != null && p.value != null);
-        if (connectorData.length >= 2) {
-          const connector = chart.addLineSeries({
-            color: lineColor,
-            lineWidth: confirmed ? 2 : 1,
-            lineStyle: confirmed ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
-            title: `${confirmed ? 'CONF' : overlay.status === 'forming' ? 'FORM' : 'WAIT'} · ${overlay.name || ''}`,
-            lastValueVisible: false,
-            priceLineVisible: false,
-          });
-          connector.setData(connectorData);
-        }
-        if (overlayOptions.show_pivot_labels !== false) {
-          (overlay.points || []).forEach(p => {
-            const markerTime = p.timestamp != null ? p.timestamp : cd.dates[p.index];
-            if (markerTime == null || p.price == null) return;
-            markers.push({
-              time: markerTime,
-              position: p.pivot_type === 'high' ? 'aboveBar' : 'belowBar',
-              color: lineColor,
-              shape: confirmed ? 'circle' : 'square',
-              text: `${p.label || 'E'} · ${confirmed ? 'CONF' : overlay.status === 'forming' ? 'FORM' : 'WAIT'}`,
-            });
-          });
-        }
-        const neck = overlay.neckline || null;
-        if (overlayOptions.show_neckline !== false && neck &&
-            cd.dates[neck.start_index] != null && cd.dates[neck.end_index] != null) {
-          const neckSeries = chart.addLineSeries({
-            color: lineColor, lineWidth: 1,
-            lineStyle: LightweightCharts.LineStyle.Dashed,
-            title: `NECK · ${overlay.name || ''}`,
-            lastValueVisible: false, priceLineVisible: false,
-          });
-          neckSeries.setData([
-            { time: cd.dates[neck.start_index], value: neck.start_price },
-            { time: cd.dates[neck.end_index], value: neck.end_price },
-          ]);
-        }
-        const secondaryLine = overlay.secondary_confirmation_line || null;
-        if (overlayOptions.show_neckline !== false && secondaryLine &&
-            cd.dates[secondaryLine.start_index] != null && cd.dates[secondaryLine.end_index] != null) {
-          const secondarySeries = chart.addLineSeries({
-            color: lineColor, lineWidth: 1,
-            lineStyle: LightweightCharts.LineStyle.Dotted,
-            title: `CONFIRM 2 · ${overlay.name || ''}`,
-            lastValueVisible: false, priceLineVisible: false,
-          });
-          secondarySeries.setData([
-            { time: cd.dates[secondaryLine.start_index], value: secondaryLine.start_price },
-            { time: cd.dates[secondaryLine.end_index], value: secondaryLine.end_price },
-          ]);
-        }
-        if (overlay.invalidation_price != null) {
-          candleSeries.createPriceLine({
-            price: overlay.invalidation_price,
-            color: lineColor,
-            lineWidth: 1,
-            lineStyle: LightweightCharts.LineStyle.Dotted,
-            axisLabelVisible: overlayIndex < 2,
-            title: 'INVALID',
-          });
-        }
-        if (overlayOptions.show_pattern_targets !== false && overlay.target && overlay.target.price != null) {
-          candleSeries.createPriceLine({
-            price: overlay.target.price,
-            color: lineColor,
-            lineWidth: confirmed ? 2 : 1,
-            lineStyle: confirmed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Dotted,
-            axisLabelVisible: overlayIndex < 2,
-            title: confirmed ? 'PATTERN TP' : 'PROVISIONAL TP',
-          });
-        }
-      });
-      if (markers.length && typeof candleSeries.setMarkers === 'function') {
-        markers.sort((a, b) => String(a.time).localeCompare(String(b.time)));
-        candleSeries.setMarkers(markers);
-      }
-    }
+    chartCleanupHandlers['price-patterns'] = _bindInteractivePatternOverlays(
+      priceEl, chart, candleSeries, cd, overlayOptions, patternOverlays
+    );
 
     // MA20
     const ma20 = chart.addLineSeries({ color: '#f97316', lineWidth: 1, title: 'MA20' });
