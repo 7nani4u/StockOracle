@@ -403,7 +403,7 @@ US_STOCK_MAPPING = {
 
 @ttl_cache(3600)   # 1시간 캐시 — 실패 시 24시간 고착 방지 (기존 86400 → 3600)
 def get_krx_code_map():
-    """KRX 전체 상장 종목 코드↔이름 맵 반환.
+    """KRX 전체 상장 종목 티커↔이름 맵 반환.
     실패 시 빈 dict 반환 — resolve_ticker가 KR_STOCK_MAP 폴백으로 처리함.
     """
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
@@ -424,9 +424,11 @@ def get_krx_code_map():
                     cols = row.select("td")
                     if len(cols) >= 3:
                         name = cols[0].text.strip()
+                        market_name = cols[1].text.strip()
                         code = cols[2].text.strip().zfill(6)
                         if name and code:
-                            n2c[name] = code
+                            suffix = "KQ" if "코스닥" in market_name else "KS"
+                            n2c[name] = f"{code}.{suffix}"
                             c2n[code] = name
             if n2c:          # 파싱 성공 시 반환 (빈 결과면 다음 URL 시도)
                 return n2c, c2n
@@ -471,8 +473,9 @@ def resolve_ticker(q: str):
             if tkr.startswith(q + "."):
                 return tkr, "KRX", name
         # KRX API 폴백 (네트워크 필요)
-        _, c2n = get_krx_code_map()
-        return f"{q}.KS", "KRX", c2n.get(q, q)
+        n2c, c2n = get_krx_code_map()
+        company = c2n.get(q, q)
+        return n2c.get(company, f"{q}.KS"), "KRX", company
 
     # ── 3.5. 한국 시장 접미사(.KS/.KQ) 부착 코드 → KRX 직접 처리 ──────
     #   "041510.KQ" / "000660.KS" 처럼 접미사가 붙은 완전한 KR 티커가
@@ -503,10 +506,10 @@ def resolve_ticker(q: str):
     # ── 6~7. KRX API (전체 상장 종목 조회, 네트워크 필요) ────────────
     n2c, _ = get_krx_code_map()
     if q in n2c:
-        return f"{n2c[q]}.KS", "KRX", q
-    for name, code in n2c.items():
+        return n2c[q], "KRX", q
+    for name, ticker in n2c.items():
         if name.startswith(q):
-            return f"{code}.KS", "KRX", name
+            return ticker, "KRX", name
 
     # ── 8. KR_STOCK_MAP 전방 일치 (KRX API 실패 시 최종 폴백) ────────
     for name, tkr in KR_STOCK_MAP.items():
@@ -514,6 +517,103 @@ def resolve_ticker(q: str):
             return tkr, "KRX", name
 
     return None, None, None
+
+
+def search_stock_suggestions(q: str, limit: int = 12) -> List[Dict]:
+    """국내 종목명·코드와 미국 종목명·티커의 부분일치 자동완성 목록."""
+    query = re.sub(r"\s+", " ", str(q or "")).strip()
+    if not query:
+        return []
+    limit = max(1, min(int(limit or 12), 20))
+    query_fold = query.casefold()
+    query_upper = query.upper()
+    ranked: list[tuple[int, Dict]] = []
+    seen_tickers: set[str] = set()
+
+    def _append(rank: int, *, name: str, ticker: str, market: str, exchange: str):
+        ticker = str(ticker or "").strip().upper()
+        name = str(name or ticker).strip()
+        if not ticker or ticker in seen_tickers:
+            return
+        seen_tickers.add(ticker)
+        code = ticker.split(".", 1)[0] if market == "KRX" else ticker
+        ranked.append((rank, {
+            "name": name,
+            "ticker": ticker,
+            "code": code,
+            "market": market,
+            "exchange": exchange,
+        }))
+
+    # 국내: 정적 핵심 종목을 먼저 반영하고 KRX 전체 상장사 목록으로 보완한다.
+    static_krx = globals().get("KR_STOCK_MAP", {})
+    krx_universe = {}
+    try:
+        krx_universe.update(get_krx_code_map()[0])
+    except Exception:
+        pass
+    krx_universe.update(static_krx)
+    static_order = {name: index for index, name in enumerate(static_krx)}
+    for name, ticker in krx_universe.items():
+        name_fold = str(name).casefold()
+        code = str(ticker).split(".", 1)[0]
+        if query_fold == name_fold or query_upper == code:
+            rank = 0
+        elif name in static_order and (query_fold in name_fold or code.startswith(query_upper)):
+            rank = 10 + static_order[name]
+        elif name_fold.startswith(query_fold):
+            rank = 100
+        elif code.startswith(query_upper):
+            rank = 120
+        elif query_fold in name_fold:
+            rank = 200
+        else:
+            continue
+        exchange = "KOSDAQ" if str(ticker).endswith(".KQ") else "KOSPI"
+        _append(rank, name=name, ticker=ticker, market="KRX", exchange=exchange)
+
+    # 해외: 한글 별칭과 로컬 유니버스로 즉시 응답 가능한 후보를 만든다.
+    ticker_names = {}
+    for name, ticker in US_STOCK_MAPPING.items():
+        ticker_names.setdefault(ticker.upper(), name)
+        if query_fold in name.casefold() or ticker.upper().startswith(query_upper):
+            rank = 20 if name.casefold().startswith(query_fold) else 80
+            _append(rank, name=name, ticker=ticker, market="US", exchange="US")
+
+    us_universe = list(dict.fromkeys(
+        list(globals().get("US_TICKERS", [])) +
+        list(globals().get("TOSS_US_UNIVERSE", []))
+    ))
+    for ticker in us_universe:
+        ticker = str(ticker).upper()
+        if ticker.startswith(query_upper):
+            _append(60, name=ticker_names.get(ticker, ticker), ticker=ticker,
+                    market="US", exchange="US")
+
+    # 영문 회사명 검색은 Yahoo Finance 검색 결과로 보강한다.
+    if query.isascii():
+        try:
+            quotes = yf.Search(query, max_results=max(10, limit * 2), news_count=0).quotes
+            us_exchanges = {"NMS", "NAS", "NYQ", "ASE", "PCX", "BTS", "NGM", "NCM", "NYS"}
+            for quote_index, quote in enumerate(quotes or []):
+                symbol = str(quote.get("symbol") or "").upper()
+                quote_type = str(quote.get("quoteType") or "").upper()
+                exchange_code = str(quote.get("exchange") or "").upper()
+                if (not symbol or symbol.endswith((".KS", ".KQ")) or
+                        quote_type not in {"EQUITY", "ETF"} or
+                        exchange_code not in us_exchanges):
+                    continue
+                name = quote.get("longname") or quote.get("shortname") or symbol
+                exact = symbol == query_upper or str(name).casefold() == query_fold
+                starts = symbol.startswith(query_upper) or str(name).casefold().startswith(query_fold)
+                rank = 1 if exact else (70 + quote_index) if starts else (180 + quote_index)
+                exchange = quote.get("exchDisp") or exchange_code or "US"
+                _append(rank, name=name, ticker=symbol, market="US", exchange=exchange)
+        except Exception:
+            pass
+
+    ranked.sort(key=lambda item: (item[0], item[1]["name"].casefold(), item[1]["ticker"]))
+    return [item for _, item in ranked[:limit]]
 
 # =============================================================================
 # 지표 계산
@@ -1086,7 +1186,10 @@ KR_STOCK_MAP = {
     "SK": "034730.KS", "KT": "030200.KS", "KT&G": "033780.KS", "한국전력": "015760.KS",
     "하나금융지주": "086790.KS", "우리금융지주": "316140.KS", "카카오뱅크": "323410.KS", "카카오페이": "377300.KS",
     "크래프톤": "259960.KS", "엔씨소프트": "036570.KS", "넷마블": "251270.KS", "펄어비스": "263750.KS",
-    "하이브": "352820.KS", "CJ제일제당": "097950.KS", "CJ": "001040.KS", "롯데케미칼": "011170.KS",
+    "하이브": "352820.KS", "DB하이텍": "000990.KS", "하이트진로": "000080.KS",
+    "일진하이솔루스": "271940.KS", "하이트진로홀딩스": "000140.KS",
+    "롯데하이마트": "071840.KS", "하이스틸": "071090.KS",
+    "CJ제일제당": "097950.KS", "CJ": "001040.KS", "롯데케미칼": "011170.KS",
     "한화솔루션": "009830.KS", "한화에어로스페이스": "012450.KS", "한화오션": "042660.KS", "HD현대중공업": "329180.KS",
     "HD한국조선해양": "009540.KS", "두산에너빌리티": "034020.KS", "두산밥캣": "241560.KS", "포스코퓨처엠": "003670.KS",
     "에코프로비엠": "247540.KQ", "에코프로": "086520.KQ", "엘앤에프": "066970.KQ", "HLB": "028300.KQ",
@@ -9049,6 +9152,14 @@ def route(path: str, params: Dict) -> Dict:
         t, m, c = resolve_ticker(q)
         return {"ticker": t, "market": m, "company": c} if t else {"error": f"'{q}' 미발견"}
 
+    if path == "/api/suggestions":
+        q = params.get("q", "")
+        try:
+            limit = int(params.get("limit", 12))
+        except (TypeError, ValueError):
+            limit = 12
+        return {"items": search_stock_suggestions(q, limit)}
+
     # ── market_briefing 통합 엔드포인트 ─────────────────────────────────────
     # k-ant-daily 로직을 이식한 3가지 분석 모듈
     # /api/market/summary  → ⭐ 오늘의 핵심 (거시 지표 + 뉴스 무드)
@@ -9788,6 +9899,19 @@ body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI','Noto Sans KR',sans
 input,select{width:100%;background:#21262d;border:1px solid #30363d;border-radius:8px;padding:9px 12px;color:#e6edf3;font-size:13px;outline:none;transition:border-color .15s}
 input:focus,select:focus{border-color:#1f6feb}
 input::placeholder{color:#484f58}
+.stock-search-wrap{position:relative;margin-bottom:10px}
+#ticker-input{margin-bottom:0}
+.stock-suggestions{display:none;position:absolute;z-index:420;top:calc(100% + 4px);left:0;width:100%;max-height:320px;overflow-y:auto;background:#161b22;border:1px solid #30363d;border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.55);padding:4px}
+.stock-suggestions.open{display:block}
+.stock-suggestion{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;background:transparent;border:0;border-radius:7px;padding:9px 10px;color:#e6edf3;cursor:pointer;text-align:left}
+.stock-suggestion:hover,.stock-suggestion.active{background:#21262d}
+.stock-suggestion-main{display:flex;align-items:center;gap:8px;min-width:0}
+.stock-suggestion-flag{width:18px;height:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px}
+.stock-suggestion-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stock-suggestion-meta{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
+.stock-suggestion-code{font-size:12px;color:#8b949e;font-variant-numeric:tabular-nums}
+.stock-suggestion-exchange{font-size:9px;color:#484f58}
+.stock-suggestion-status{padding:10px 11px;font-size:11px;color:#8b949e}
 #analyze-btn{width:100%;background:#1f6feb;color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s;margin-top:4px}
 #analyze-btn:hover{background:#388bfd}
 #analyze-btn:disabled{background:#21262d;color:#484f58;cursor:not-allowed}
@@ -10718,8 +10842,12 @@ input::placeholder{color:#484f58}
 
   <div class="sb-section" id="analysis-controls">
     <span class="sb-label">종목명 / 코드</span>
-    <input type="text" id="ticker-input" value="삼성전자" placeholder="예: 삼성전자, 005930, TSLA"
-           style="margin-bottom:10px" onkeydown="if(event.key==='Enter')analyze()">
+    <div class="stock-search-wrap" id="stock-search-wrap">
+      <input type="text" id="ticker-input" value="삼성전자" placeholder="예: 삼성전자, 005930, Apple, TSLA"
+             autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="ticker-suggestions"
+             aria-expanded="false" aria-label="국내외 종목명 또는 종목코드 검색">
+      <div id="ticker-suggestions" class="stock-suggestions" role="listbox" aria-label="종목 검색 결과"></div>
+    </div>
     <span class="sb-label">분석 기간</span>
     <select id="period-select" style="margin-bottom:12px">
       <option value="1d">초단기 (1일)</option>
@@ -11616,7 +11744,158 @@ function shareToTelegram() {
     .finally(_restore);
 }
 
+let _stockSuggestionItems = [];
+let _stockSuggestionActive = -1;
+let _stockSuggestionTimer = null;
+let _stockSuggestionRequest = 0;
+let _stockSuggestionAbort = null;
+
+function _escapeStockSuggestion(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function _hideStockSuggestions() {
+  const list = document.getElementById('ticker-suggestions');
+  const input = document.getElementById('ticker-input');
+  if (list) {
+    list.classList.remove('open');
+    list.innerHTML = '';
+  }
+  if (input) {
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+  }
+  _stockSuggestionActive = -1;
+}
+
+function _renderStockSuggestions(items, statusText = '') {
+  const list = document.getElementById('ticker-suggestions');
+  const input = document.getElementById('ticker-input');
+  if (!list || !input) return;
+  _stockSuggestionItems = Array.isArray(items) ? items : [];
+  _stockSuggestionActive = -1;
+  if (!_stockSuggestionItems.length) {
+    list.innerHTML = statusText ? `<div class="stock-suggestion-status">${_escapeStockSuggestion(statusText)}</div>` : '';
+  } else {
+    list.innerHTML = _stockSuggestionItems.map((item, index) => `
+      <button type="button" class="stock-suggestion" id="stock-suggestion-${index}"
+              role="option" aria-selected="false" data-suggestion-index="${index}">
+        <span class="stock-suggestion-main">
+          <span class="stock-suggestion-flag" aria-hidden="true">${item.market === 'KRX' ? '🇰🇷' : '🇺🇸'}</span>
+          <span class="stock-suggestion-name">${_escapeStockSuggestion(item.name || item.ticker)}</span>
+        </span>
+        <span class="stock-suggestion-meta">
+          <span class="stock-suggestion-code">${_escapeStockSuggestion(item.code || item.ticker)}</span>
+          <span class="stock-suggestion-exchange">${_escapeStockSuggestion(item.exchange || item.market)}</span>
+        </span>
+      </button>`).join('');
+    list.querySelectorAll('[data-suggestion-index]').forEach(button => {
+      button.addEventListener('pointerdown', event => {
+        event.preventDefault();
+        _selectStockSuggestion(Number(button.dataset.suggestionIndex));
+      });
+    });
+  }
+  list.classList.add('open');
+  input.setAttribute('aria-expanded', 'true');
+}
+
+function _setStockSuggestionActive(index) {
+  const list = document.getElementById('ticker-suggestions');
+  const input = document.getElementById('ticker-input');
+  if (!list || !_stockSuggestionItems.length) return;
+  _stockSuggestionActive = (index + _stockSuggestionItems.length) % _stockSuggestionItems.length;
+  list.querySelectorAll('[data-suggestion-index]').forEach((button, buttonIndex) => {
+    const active = buttonIndex === _stockSuggestionActive;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    if (active) button.scrollIntoView({block:'nearest'});
+  });
+  input.setAttribute('aria-activedescendant', `stock-suggestion-${_stockSuggestionActive}`);
+}
+
+function _selectStockSuggestion(index) {
+  const item = _stockSuggestionItems[index];
+  const input = document.getElementById('ticker-input');
+  if (!item || !input) return;
+  input.value = item.name || item.ticker;
+  currentMarket = item.market || currentMarket;
+  _hideStockSuggestions();
+  analyze(item.ticker);
+}
+
+async function _loadStockSuggestions(query) {
+  const requestId = ++_stockSuggestionRequest;
+  if (_stockSuggestionAbort) _stockSuggestionAbort.abort();
+  _stockSuggestionAbort = new AbortController();
+  _renderStockSuggestions([], '검색 중…');
+  try {
+    const response = await fetch(`/api/suggestions?q=${encodeURIComponent(query)}&limit=12`, {
+      signal: _stockSuggestionAbort.signal,
+      cache: 'no-store',
+    });
+    const data = await response.json();
+    const input = document.getElementById('ticker-input');
+    if (requestId !== _stockSuggestionRequest || !input || input.value.trim() !== query) return;
+    _renderStockSuggestions(data.items || [], (data.items || []).length ? '' : '일치하는 국내외 종목이 없습니다.');
+  } catch (error) {
+    if (error && error.name === 'AbortError') return;
+    if (requestId === _stockSuggestionRequest) {
+      _renderStockSuggestions([], '검색 결과를 불러오지 못했습니다.');
+    }
+  }
+}
+
+function _scheduleStockSuggestions() {
+  const input = document.getElementById('ticker-input');
+  if (!input) return;
+  const query = input.value.trim();
+  clearTimeout(_stockSuggestionTimer);
+  if (!query) {
+    if (_stockSuggestionAbort) _stockSuggestionAbort.abort();
+    _hideStockSuggestions();
+    return;
+  }
+  _stockSuggestionTimer = setTimeout(() => _loadStockSuggestions(query), 220);
+}
+
+function _initStockAutocomplete() {
+  const input = document.getElementById('ticker-input');
+  const wrap = document.getElementById('stock-search-wrap');
+  if (!input || !wrap) return;
+  input.addEventListener('input', _scheduleStockSuggestions);
+  input.addEventListener('focus', _scheduleStockSuggestions);
+  input.addEventListener('keydown', event => {
+    const list = document.getElementById('ticker-suggestions');
+    const isOpen = list && list.classList.contains('open');
+    if (event.key === 'ArrowDown' && isOpen && _stockSuggestionItems.length) {
+      event.preventDefault();
+      _setStockSuggestionActive(_stockSuggestionActive + 1);
+    } else if (event.key === 'ArrowUp' && isOpen && _stockSuggestionItems.length) {
+      event.preventDefault();
+      _setStockSuggestionActive(_stockSuggestionActive - 1);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (isOpen && _stockSuggestionItems.length) {
+        _selectStockSuggestion(_stockSuggestionActive >= 0 ? _stockSuggestionActive : 0);
+      } else {
+        analyze();
+      }
+    } else if (event.key === 'Escape') {
+      _hideStockSuggestions();
+    }
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!wrap.contains(event.target)) _hideStockSuggestions();
+  });
+}
+
+_initStockAutocomplete();
+
 function quickSearch(name) {
+  _hideStockSuggestions();
   document.getElementById('ticker-input').value = name;
   showPage('analysis');  // 내부에서 closeSidebar() 호출됨
   analyze();
@@ -11712,10 +11991,11 @@ function _applyPriceUpdate(d) {
   }
 }
 
-async function analyze() {
+async function analyze(tickerOverride = '') {
   _stopPricePolling();   // 새 검색 시 이전 폴링 중단
+  _hideStockSuggestions();
   closeSidebar();   // 모바일에서 분석 시작 시 사이드바 자동 닫기
-  const ticker = document.getElementById('ticker-input').value.trim();
+  const ticker = String(tickerOverride || document.getElementById('ticker-input').value).trim();
   const period = document.getElementById('period-select').value;
   if (!ticker) return;
   // 배지 초기화
