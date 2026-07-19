@@ -8195,6 +8195,78 @@ def _related_symbols_from_yahoo(symbol: str, limit: int = 5) -> list[tuple[str, 
         return []
 
 
+def _is_ticker_display_name(name: str, ticker: str) -> bool:
+    """표시명이 비었거나 티커/6자리 코드 자체인지 판별한다."""
+    value = str(name or "").strip().upper()
+    ticker = str(ticker or "").strip().upper()
+    bare_ticker = ticker.split(".", 1)[0]
+    return not value or value in {ticker, bare_ticker} or bool(re.fullmatch(r"\d{6}(?:\.(?:KS|KQ))?", value))
+
+
+@ttl_cache(86400)
+def _yahoo_security_display_name(ticker: str) -> str:
+    """정적 맵에 없는 해외 종목명을 Yahoo 검색 결과에서 보완한다."""
+    try:
+        response = requests.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={"q": ticker, "quotesCount": 8, "newsCount": 0},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5,
+        )
+        response.raise_for_status()
+        for item in response.json().get("quotes") or []:
+            if str(item.get("symbol") or "").upper() != ticker.upper():
+                continue
+            name = str(item.get("longname") or item.get("shortname") or "").strip()
+            if not _is_ticker_display_name(name, ticker):
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_peer_display_name(ticker: str, supplied_name: str, market: str) -> str:
+    """동종기업 티커를 실제 종목명으로 바꾸며, 코드 자체는 반환하지 않는다."""
+    ticker = str(ticker or "").strip().upper()
+    supplied_name = str(supplied_name or "").strip()
+    if not _is_ticker_display_name(supplied_name, ticker):
+        return supplied_name
+
+    # 앱이 관리하는 정적 비교군을 먼저 사용해 외부 호출을 최소화한다.
+    for groups in _PEER_INDUSTRY_GROUPS.values():
+        for members in groups.values():
+            for member_ticker, member_name in members:
+                if member_ticker.upper() == ticker and not _is_ticker_display_name(member_name, ticker):
+                    return member_name
+    for group in _US_DETAILED_PEER_GROUPS.values():
+        for member_ticker, member_name in group["members"]:
+            if member_ticker.upper() == ticker and not _is_ticker_display_name(member_name, ticker):
+                return member_name
+
+    if market == "KRX" or ticker.endswith((".KS", ".KQ")):
+        code = ticker.split(".", 1)[0]
+        for name, mapped_ticker in KR_STOCK_MAP.items():
+            if str(mapped_ticker).upper() == ticker and not _is_ticker_display_name(name, ticker):
+                return name
+        for item in _SECTOR_DEFAULT_STOCKS:
+            if item["code"] == code:
+                return item["name"]
+        try:
+            _, code_to_name = get_krx_code_map()
+            name = str(code_to_name.get(code) or "").strip()
+            if not _is_ticker_display_name(name, ticker):
+                return name
+        except Exception:
+            pass
+        return ""
+
+    # 해외 정적 한글 별칭을 보조하고, 그래도 없을 때만 Yahoo 이름 조회.
+    for name, mapped_ticker in US_STOCK_MAPPING.items():
+        if str(mapped_ticker).upper() == ticker and not _is_ticker_display_name(name, ticker):
+            return name
+    return _yahoo_security_display_name(ticker)
+
+
 def _resolve_peer_group(symbol: str, market: str, sector: str = "", industry: str = "") -> tuple[str, list[tuple[str, str]]]:
     symbol = str(symbol or "").upper()
     groups = _PEER_INDUSTRY_GROUPS.get(market, {})
@@ -8270,7 +8342,16 @@ def build_peer_industry_outlook(symbol: str, market: str, company: str = "", sec
     symbol = str(symbol or "").upper()
     market = "KRX" if str(market or "").upper() == "KRX" or symbol.endswith((".KS", ".KQ")) else "US"
     group_name, members = _resolve_peer_group(symbol, market, sector, industry)
-    peer_members = [(ticker, name) for ticker, name in members if ticker.upper() != symbol][:5]
+    peer_members = []
+    for ticker, supplied_name in members:
+        if ticker.upper() == symbol:
+            continue
+        display_name = _resolve_peer_display_name(ticker, supplied_name, market)
+        # 이름을 확인하지 못한 종목은 코드로 대체하지 않고 비교 목록에서 제외한다.
+        if display_name:
+            peer_members.append((ticker, display_name))
+        if len(peer_members) >= 5:
+            break
     download_symbols = [symbol] + [ticker for ticker, _ in peer_members]
     if len(download_symbols) < 2:
         return {"ok": False, "reason": "비교 가능한 동종기업 데이터가 부족합니다.", "symbol": symbol,
@@ -11000,6 +11081,8 @@ input::placeholder{color:#484f58}
 .peer-list{display:flex;flex-direction:column;gap:6px}
 .peer-row{display:grid;grid-template-columns:minmax(130px,1.35fr) minmax(130px,1fr) 72px 72px;gap:10px;align-items:center;padding:10px 11px;background:#161b22;border:1px solid #30363d;border-radius:8px}
 .peer-name{font-size:12px;font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.peer-name-button{display:block;width:100%;padding:0;border:0;background:none;color:#e6edf3;text-align:left;cursor:pointer}
+.peer-name-button:hover,.peer-name-button:focus-visible{color:#58a6ff;text-decoration:underline;outline:none}
 .peer-ticker{font-size:10px;color:#6e7681;margin-top:2px}
 .peer-mini-labels{display:flex;justify-content:space-between;font-size:9px;color:#8b949e;margin-top:4px}
 .peer-return{text-align:right;font-size:11px;font-weight:650}
@@ -15526,8 +15609,11 @@ function renderPeerIndustryOutlook(payload) {
       const peerUp = _peerClampPct(peer.up_probability);
       const peerDown = _peerClampPct(peer.down_probability);
       const trendColor = peer.trend === '상승' ? '#3fb950' : peer.trend === '하락' ? '#f85149' : '#d29922';
+      const displayName = String(peer.name || '').trim() || '종목명 확인 불가';
+      const encodedTicker = encodeURIComponent(String(peer.ticker || '')).replace(/'/g, '%27');
+      const encodedMarket = encodeURIComponent(String(payload.market || '')).replace(/'/g, '%27');
       return '<div class="peer-row">' +
-        '<div><div class="peer-name">' + _escPrediction(peer.name || peer.ticker) + '</div><div class="peer-ticker">' + _escPrediction(peer.ticker) + ' · <span style="color:' + trendColor + '">' + _escPrediction(peer.trend || '혼조') + '</span></div></div>' +
+        '<div><button type="button" class="peer-name peer-name-button" onclick="event.stopPropagation();openStockDetail(decodeURIComponent(\'' + encodedTicker + '\'),decodeURIComponent(\'' + encodedMarket + '\'))" title="' + _escPrediction(displayName) + ' 분석 시작">' + _escPrediction(displayName) + '</button><div class="peer-ticker">' + _escPrediction(peer.ticker) + ' · <span style="color:' + trendColor + '">' + _escPrediction(peer.trend || '혼조') + '</span></div></div>' +
         '<div><div class="peer-mini-track" style="display:flex"><div class="peer-mini-up" style="width:' + peerUp + '%"></div><div class="peer-mini-down" style="width:' + peerDown + '%"></div></div><div class="peer-mini-labels"><span>▲ ' + peerUp.toFixed(1) + '%</span><span>▼ ' + peerDown.toFixed(1) + '%</span></div></div>' +
         '<div class="peer-return" style="color:' + (Number(peer.return_5d) >= 0 ? '#3fb950' : '#f85149') + '">5일<br>' + _peerSignedPct(peer.return_5d) + '</div>' +
         '<div class="peer-return" style="color:' + (Number(peer.return_20d) >= 0 ? '#3fb950' : '#f85149') + '">20일<br>' + _peerSignedPct(peer.return_20d) + '</div>' +

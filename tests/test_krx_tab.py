@@ -69,6 +69,18 @@ def test_renderer_discloses_relative_estimate_and_data_limitations():
     assert SOURCE.count("refreshPeerIndustryTabFromCache();") >= 3
 
 
+def test_peer_company_names_are_clickable_and_never_fall_back_to_ticker():
+    renderer = SOURCE.split("function renderPeerIndustryOutlook", 1)[1].split(
+        "// 🔔 알림 시스템", 1
+    )[0]
+
+    assert 'class="peer-name peer-name-button"' in renderer
+    assert "openStockDetail(" in renderer
+    assert "displayName" in renderer
+    assert "peer.name || peer.ticker" not in renderer
+    assert ".peer-name-button:hover" in HTML
+
+
 def test_obsolete_krx_scenario_renderer_is_removed():
     for obsolete in (
         "loadKrxAnalysis", "renderKrxAnalysis", "refreshKrxAnalysisFromCache",

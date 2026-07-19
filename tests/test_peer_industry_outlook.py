@@ -25,6 +25,19 @@ def test_peer_group_resolves_known_krx_and_us_symbols():
     assert any(symbol == "DELL" for symbol, _ in detailed_members)
 
 
+def test_krx_ticker_fallback_is_resolved_to_company_name(monkeypatch):
+    monkeypatch.setattr(
+        index,
+        "get_krx_code_map",
+        lambda: ({}, {"000810": "삼성화재", "035250": "강원랜드"}),
+    )
+
+    assert index._resolve_peer_display_name("000810.KS", "000810.KS", "KRX") == "삼성화재"
+    assert index._resolve_peer_display_name("035250.KS", "035250", "KRX") == "강원랜드"
+    assert index._is_ticker_display_name("000810.KS", "000810.KS") is True
+    assert index._is_ticker_display_name("삼성화재", "000810.KS") is False
+
+
 def test_outlook_aggregates_peer_momentum_and_excludes_selected_stock(monkeypatch):
     symbols = ["TEST", "AAA", "BBB"]
     dates = pd.date_range("2026-01-01", periods=45, freq="B")
@@ -55,6 +68,33 @@ def test_outlook_aggregates_peer_momentum_and_excludes_selected_stock(monkeypatc
     assert result["selected"] is not None
     assert result["selected"]["rsi"] > 90
     assert result["relative_to_industry"] is not None
+
+
+def test_outlook_never_returns_ticker_as_peer_display_name(monkeypatch):
+    symbols = ["TEST.KS", "000810.KS", "035250.KS"]
+    dates = pd.date_range("2026-01-01", periods=45, freq="B")
+    raw = pd.DataFrame(
+        np.column_stack([np.linspace(100, 110, len(dates)) for _ in symbols]),
+        index=dates,
+        columns=pd.MultiIndex.from_product([["Close"], symbols]),
+    )
+    monkeypatch.setattr(
+        index, "_resolve_peer_group",
+        lambda *args, **kwargs: ("서비스", [(ticker, ticker) for ticker in symbols]),
+    )
+    monkeypatch.setattr(
+        index, "_resolve_peer_display_name",
+        lambda ticker, supplied, market: {"000810.KS": "삼성화재", "035250.KS": "강원랜드"}.get(ticker, ""),
+    )
+    monkeypatch.setattr(index.yf, "download", lambda *args, **kwargs: raw)
+    cache_key = "build_peer_industry_outlook|('TEST.KS', 'KRX', '테스트', '서비스', '서비스')|[]"
+    index._CACHE.pop(cache_key, None)
+
+    result = index.build_peer_industry_outlook("TEST.KS", "KRX", "테스트", "서비스", "서비스")
+
+    assert result["ok"] is True
+    assert [peer["name"] for peer in result["peers"]] == ["삼성화재", "강원랜드"]
+    assert all(peer["name"] != peer["ticker"] for peer in result["peers"])
 
 
 def test_peer_outlook_route_preserves_krx_and_us_market(monkeypatch):
