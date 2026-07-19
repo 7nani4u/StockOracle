@@ -7999,50 +7999,55 @@ def xgb_forecast(dd: Dict, days: int = 30):
 # 섹터 흐름 기본 종목 목록 (메인 페이지 /api/market/sector-summary 용)
 # =============================================================================
 _SECTOR_DEFAULT_STOCKS: list = [
-    # ── 1행 (7섹터) ──────────────────────────────────────────────────
-    # 🔧 반도체
-    {"code": "005930", "name": "삼성전자",        "market": "KOSPI", "sector": "반도체"},
-    {"code": "000660", "name": "SK하이닉스",      "market": "KOSPI", "sector": "반도체"},
-    # ⚡ 전력기기
-    {"code": "010120", "name": "LS일렉트릭",      "market": "KOSPI", "sector": "전력기기"},
-    {"code": "267260", "name": "HD현대일렉트릭",  "market": "KOSPI", "sector": "전력기기"},
-    # 🚢 조선
-    {"code": "009540", "name": "HD한국조선해양",  "market": "KOSPI", "sector": "조선"},
-    {"code": "010140", "name": "삼성중공업",      "market": "KOSPI", "sector": "조선"},
-    # 🛡️ 방산
-    {"code": "012450", "name": "한화에어로스페이스", "market": "KOSPI", "sector": "방산"},
-    {"code": "079550", "name": "LIG넥스원",       "market": "KOSPI", "sector": "방산"},
-    # ⛽ 정유
-    {"code": "096770", "name": "SK이노베이션",    "market": "KOSPI", "sector": "정유"},
-    {"code": "010950", "name": "S-Oil",           "market": "KOSPI", "sector": "정유"},
-    # 🚗 자동차
-    {"code": "005380", "name": "현대차",          "market": "KOSPI", "sector": "자동차"},
-    {"code": "000270", "name": "기아",            "market": "KOSPI", "sector": "자동차"},
-    # 🔋 배터리
-    {"code": "373220", "name": "LG에너지솔루션",  "market": "KOSPI", "sector": "배터리"},
-    {"code": "006400", "name": "삼성SDI",         "market": "KOSPI", "sector": "배터리"},
-    # ── 2행 (7섹터) ──────────────────────────────────────────────────
-    # 🧬 바이오
-    {"code": "068270", "name": "셀트리온",        "market": "KOSPI", "sector": "바이오"},
-    {"code": "207940", "name": "삼성바이오로직스", "market": "KOSPI", "sector": "바이오"},
-    # 🏦 금융
-    {"code": "105560", "name": "KB금융",          "market": "KOSPI", "sector": "금융"},
-    {"code": "055550", "name": "신한지주",        "market": "KOSPI", "sector": "금융"},
-    # 🌐 인터넷
-    {"code": "035420", "name": "NAVER",           "market": "KOSPI", "sector": "인터넷"},
-    {"code": "035720", "name": "카카오",          "market": "KOSPI", "sector": "인터넷"},
-    # 📡 통신
-    {"code": "017670", "name": "SK텔레콤",        "market": "KOSPI", "sector": "통신"},
-    {"code": "030200", "name": "KT",              "market": "KOSPI", "sector": "통신"},
-    # 🧪 화학
-    {"code": "051910", "name": "LG화학",          "market": "KOSPI", "sector": "화학"},
-    {"code": "011170", "name": "롯데케미칼",      "market": "KOSPI", "sector": "화학"},
-    # 🏭 철강
-    {"code": "005490", "name": "POSCO홀딩스",     "market": "KOSPI", "sector": "철강"},
-    {"code": "004020", "name": "현대제철",        "market": "KOSPI", "sector": "철강"},
-    # 💡 에너지
-    {"code": "015760", "name": "한국전력",        "market": "KOSPI", "sector": "에너지"},
-    {"code": "036460", "name": "한국가스공사",    "market": "KOSPI", "sector": "에너지"},
+    # 24개 업종 · 업종당 대표 종목 2개 (화면에서는 등락률순 정렬)
+    {"code": "005930", "name": "삼성전자",       "market": "KOSPI",  "sector": "제조"},
+    {"code": "000660", "name": "SK하이닉스",     "market": "KOSPI",  "sector": "제조"},
+    {"code": "105560", "name": "KB금융",         "market": "KOSPI",  "sector": "금융"},
+    {"code": "055550", "name": "신한지주",       "market": "KOSPI",  "sector": "금융"},
+    {"code": "051910", "name": "LG화학",         "market": "KOSPI",  "sector": "화학"},
+    {"code": "011170", "name": "롯데케미칼",     "market": "KOSPI",  "sector": "화학"},
+    {"code": "000100", "name": "유한양행",       "market": "KOSPI",  "sector": "제약"},
+    {"code": "128940", "name": "한미약품",       "market": "KOSPI",  "sector": "제약"},
+    {"code": "139480", "name": "이마트",         "market": "KOSPI",  "sector": "유통"},
+    {"code": "023530", "name": "롯데쇼핑",       "market": "KOSPI",  "sector": "유통"},
+    {"code": "005380", "name": "현대차",         "market": "KOSPI",  "sector": "운송장비·부품"},
+    {"code": "000270", "name": "기아",           "market": "KOSPI",  "sector": "운송장비·부품"},
+    {"code": "097950", "name": "CJ제일제당",     "market": "KOSPI",  "sector": "음식료·담배"},
+    {"code": "033780", "name": "KT&G",           "market": "KOSPI",  "sector": "음식료·담배"},
+    {"code": "005490", "name": "POSCO홀딩스",    "market": "KOSPI",  "sector": "금속"},
+    {"code": "004020", "name": "현대제철",       "market": "KOSPI",  "sector": "금속"},
+    {"code": "383220", "name": "F&F",            "market": "KOSPI",  "sector": "섬유·의류"},
+    {"code": "020000", "name": "한섬",           "market": "KOSPI",  "sector": "섬유·의류"},
+    {"code": "012750", "name": "에스원",         "market": "KOSPI",  "sector": "일반서비스"},
+    {"code": "030190", "name": "NICE평가정보",   "market": "KOSDAQ", "sector": "일반서비스"},
+    {"code": "213500", "name": "한솔제지",       "market": "KOSPI",  "sector": "종이·목재"},
+    {"code": "009580", "name": "무림P&P",        "market": "KOSPI",  "sector": "종이·목재"},
+    {"code": "004980", "name": "성신양회",       "market": "KOSPI",  "sector": "비금속"},
+    {"code": "183190", "name": "아세아시멘트",   "market": "KOSPI",  "sector": "비금속"},
+    {"code": "395400", "name": "SK리츠",         "market": "KOSPI",  "sector": "부동산"},
+    {"code": "330590", "name": "롯데리츠",       "market": "KOSPI",  "sector": "부동산"},
+    {"code": "003490", "name": "대한항공",       "market": "KOSPI",  "sector": "운송·창고"},
+    {"code": "011200", "name": "HMM",            "market": "KOSPI",  "sector": "운송·창고"},
+    {"code": "066570", "name": "LG전자",         "market": "KOSPI",  "sector": "전기·전자"},
+    {"code": "009150", "name": "삼성전기",       "market": "KOSPI",  "sector": "전기·전자"},
+    {"code": "032830", "name": "삼성생명",       "market": "KOSPI",  "sector": "보험"},
+    {"code": "005830", "name": "DB손해보험",     "market": "KOSPI",  "sector": "보험"},
+    {"code": "035420", "name": "NAVER",          "market": "KOSPI",  "sector": "IT 서비스"},
+    {"code": "035720", "name": "카카오",         "market": "KOSPI",  "sector": "IT 서비스"},
+    {"code": "000720", "name": "현대건설",       "market": "KOSPI",  "sector": "건설"},
+    {"code": "006360", "name": "GS건설",         "market": "KOSPI",  "sector": "건설"},
+    {"code": "352820", "name": "하이브",         "market": "KOSPI",  "sector": "오락·문화"},
+    {"code": "035900", "name": "JYP Ent.",       "market": "KOSDAQ", "sector": "오락·문화"},
+    {"code": "034020", "name": "두산에너빌리티", "market": "KOSPI",  "sector": "기계·장비"},
+    {"code": "267260", "name": "HD현대일렉트릭", "market": "KOSPI",  "sector": "기계·장비"},
+    {"code": "015760", "name": "한국전력",       "market": "KOSPI",  "sector": "전기·가스"},
+    {"code": "036460", "name": "한국가스공사",   "market": "KOSPI",  "sector": "전기·가스"},
+    {"code": "017670", "name": "SK텔레콤",       "market": "KOSPI",  "sector": "통신"},
+    {"code": "030200", "name": "KT",             "market": "KOSPI",  "sector": "통신"},
+    {"code": "006800", "name": "미래에셋증권",   "market": "KOSPI",  "sector": "증권"},
+    {"code": "039490", "name": "키움증권",       "market": "KOSPI",  "sector": "증권"},
+    {"code": "214150", "name": "클래시스",       "market": "KOSDAQ", "sector": "의료·정밀기기"},
+    {"code": "099190", "name": "아이센스",       "market": "KOSDAQ", "sector": "의료·정밀기기"},
 ]
 
 
@@ -10733,12 +10738,12 @@ input::placeholder{color:#484f58}
 .sector-flow-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .sector-flow-title{font-size:14px;font-weight:700;color:#e6edf3}
 
-/* 7열 그리드 — 데스크탑 기준; 반응형은 하단 @media 참고 */
-.sector-cards{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+/* 8열 × 3행 — 24개 업종의 데스크탑 기준; 반응형은 하단 @media 참고 */
+.sector-cards{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:7px}
 
 /* 카드 기본 스타일 */
 .sector-card{
-  background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;
+  background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 8px;
   cursor:pointer;user-select:none;overflow:hidden;min-width:0;
   transition:border-color .15s,background .15s
 }
@@ -10750,7 +10755,7 @@ input::placeholder{color:#484f58}
 .sector-card-emoji{font-size:15px;flex-shrink:0;line-height:1.3}
 /* flex 자식이 넘치지 않도록 min-width:0 필수 */
 .sector-card-head>div{min-width:0;overflow:hidden}
-.sector-card-name{font-size:12px;font-weight:600;color:#e6edf3;line-height:1.3;
+.sector-card-name{font-size:11px;font-weight:600;color:#e6edf3;line-height:1.3;
   word-break:break-word;overflow-wrap:break-word}
 .sector-card-cnt{font-size:10px;color:#484f58;margin-top:1px;transition:color .15s}
 .sector-card:hover .sector-card-cnt,.sector-card.expanded .sector-card-cnt{color:#388bfd}
@@ -10774,7 +10779,7 @@ input::placeholder{color:#484f58}
 }
 .sector-stock-tag:hover{background:#1f6feb;color:#fff}
 
-/* ── 업종별 흐름 반응형 (base repeat(7) 이후에 선언해야 override 적용됨) ── */
+/* ── 업종별 흐름 반응형 (base repeat(8) 이후에 선언해야 override 적용됨) ── */
 @media(max-width:1100px){
   .sector-cards{grid-template-columns:repeat(4,minmax(0,1fr))}
 }

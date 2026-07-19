@@ -190,9 +190,9 @@ def build_sector_flow(stock_snapshots: list[dict]) -> dict:
             mood = "neutral"
 
         # 이모지 폴백
-        emoji = next(
+        emoji = SECTOR_EMOJI.get(sector_name) or next(
             (emj for key, emj in SECTOR_EMOJI.items() if key in sector_name),
-            "🏭"
+            "🏭",
         )
 
         sectors_out.append({
