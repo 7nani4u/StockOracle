@@ -50,6 +50,31 @@ def test_constituents_are_sorted_by_change_rate_and_limited_to_two(monkeypatch):
         ("첫번째", 29.9),
         ("두번째", 12.3),
     ]
+    assert result["performance"]["cache_hit"] is False
+
+
+def test_repeated_top_stock_request_uses_memory_cache(monkeypatch):
+    _reset_provider_cache(monkeypatch)
+    calls = []
+
+    def fake_get(path):
+        calls.append(path)
+        return [{"shcode": "000001", "shname": "캐시종목", "stock_trader": {"chgrate": 3.2}}]
+
+    monkeypatch.setattr(provider, "_authorized_get_json", fake_get)
+    first = provider.fetch_industry_top_stocks("1027")
+    second = provider.fetch_industry_top_stocks("1027")
+
+    assert first["performance"]["cache_hit"] is False
+    assert second["performance"] == {"cache_hit": True, "total_ms": 0.0}
+    assert len(calls) == 1
+
+
+def test_static_industry_code_map_covers_all_24_sectors():
+    configured = {item["sector"] for item in index._SECTOR_DEFAULT_STOCKS}
+
+    assert provider.KOSPI_INDUSTRY_CODES.keys() == configured
+    assert provider.KOSPI_INDUSTRY_CODES["제조"] == "1027"
 
 
 def test_public_bundle_token_extraction():
@@ -65,8 +90,28 @@ def test_sector_cards_lazy_load_top_two_stocks_on_expand():
     assert "data-loaded=" in html
     assert "상위 2종목" in html
     assert "(data.stocks || []).slice(0, 2)" in html
+    assert "_sectorTopStockRequests = new Map()" in html
+    assert "onpointerenter=\"prefetchSectorTopStocks(this)\"" in html
+    assert "requestIdleCallback" in html
+    assert "업종 구성종목 수신 중" in html
+    assert "등락률 비교 및 상위 2종목 선정 중" in html
+
+
+def test_top_stock_route_does_not_refetch_industry_summary(monkeypatch):
+    monkeypatch.setattr(
+        provider, "fetch_kospi_industry_summary",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("summary must not be called")),
+    )
+    monkeypatch.setattr(
+        provider, "fetch_industry_top_stocks",
+        lambda upcode, limit=2: {"upcode": upcode, "stocks": [{"name": "상위종목"}]},
+    )
+
+    result = index.route("/api/market/sector-top-stocks", {"sector": "제조", "upcode": "1027"})
+
+    assert result["sector"] == "제조"
+    assert result["stocks"] == [{"name": "상위종목"}]
 
 
 def test_all_static_fallback_candidates_are_kospi():
     assert all(item["market"] == "KOSPI" for item in index._SECTOR_DEFAULT_STOCKS)
-

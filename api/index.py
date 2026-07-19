@@ -8052,13 +8052,14 @@ _SECTOR_DEFAULT_STOCKS: list = [
 
 
 def _fallback_sector_summary() -> dict:
-    """한국경제가 일시적으로 응답하지 않을 때 기존 KOSPI 종목으로 대체한다."""
-    from market_briefing.data_fetcher import fetch_stock_list_quote_cached
+    """외부 장애 시 추가 시세 호출 없이 24개 업종 골격을 즉시 반환한다."""
     from market_briefing.sector_flow import build_sector_flow
 
-    result = build_sector_flow(fetch_stock_list_quote_cached(_SECTOR_DEFAULT_STOCKS))
+    snapshots = [{**item, "quote": {}} for item in _SECTOR_DEFAULT_STOCKS]
+    result = build_sector_flow(snapshots)
     result["source"] = "StockOracle KOSPI 대체 데이터"
     result["is_fallback"] = True
+    result["performance"] = {"cache_hit": False, "fallback": True, "total_ms": 0.0}
     for sector in result.get("sectors", []):
         sector["upcode"] = ""
         # 대체 모드도 클릭 시 최신 quote를 다시 비교해 상위 종목을 결정한다.
@@ -8066,6 +8067,7 @@ def _fallback_sector_summary() -> dict:
     return result
 
 
+@ttl_cache(300)
 def _fallback_sector_top_stocks(sector_name: str) -> dict:
     from market_briefing.data_fetcher import fetch_stock_list_quote_only
 
@@ -9608,18 +9610,12 @@ def route(path: str, params: Dict) -> Dict:
             return {"error": "지원하지 않는 코스피 업종입니다."}
         try:
             from market_briefing.hankyung_industry import (
+                KOSPI_INDUSTRY_CODES,
                 fetch_industry_top_stocks,
-                fetch_kospi_industry_summary,
             )
-            summary = fetch_kospi_industry_summary()
-            matched = next(
-                (item for item in summary.get("sectors", [])
-                 if item.get("upcode") == upcode and item.get("name") == sector_name),
-                None,
-            )
-            if not matched:
-                if not upcode:
-                    return _fallback_sector_top_stocks(sector_name)
+            if not upcode:
+                return _fallback_sector_top_stocks(sector_name)
+            if KOSPI_INDUSTRY_CODES.get(sector_name) != upcode:
                 return {"error": "코스피 업종 코드와 업종명이 일치하지 않습니다."}
             result = fetch_industry_top_stocks(upcode, limit=2)
             result["sector"] = sector_name
@@ -15189,6 +15185,44 @@ async function loadSectorFlow() {
   }
 }
 
+// 페이지 수명 동안 hover·touch 선조회와 실제 클릭이 같은 Promise를 공유한다.
+// 동일 업종의 중복 API 호출을 없애고 이미 준비된 결과는 즉시 재사용한다.
+const _sectorTopStockRequests = new Map();
+
+function _sectorTopRequestInfo(el) {
+  const sector = decodeURIComponent(el.dataset.sector || '');
+  const upcode = el.dataset.upcode || '';
+  return {sector, upcode, key:sector + '|' + upcode};
+}
+
+function _fetchSectorTopStocks(el) {
+  const info = _sectorTopRequestInfo(el);
+  if (_sectorTopStockRequests.has(info.key)) return _sectorTopStockRequests.get(info.key);
+  const request = (async () => {
+    const query = new URLSearchParams({sector:info.sector, upcode:info.upcode});
+    const response = await fetch('/api/market/sector-top-stocks?' + query.toString());
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    return data;
+  })();
+  _sectorTopStockRequests.set(info.key, request);
+  request.catch(() => _sectorTopStockRequests.delete(info.key));
+  return request;
+}
+
+function prefetchSectorTopStocks(el) {
+  if (!el || el.dataset.loaded === '1') return;
+  _fetchSectorTopStocks(el).catch(() => null);
+}
+
+function _warmLeadingSectorCards(cardsEl) {
+  const warm = () => Array.from(cardsEl.querySelectorAll('.sector-card')).slice(0, 2)
+    .forEach(prefetchSectorTopStocks);
+  if ('requestIdleCallback' in window) requestIdleCallback(warm, {timeout:1200});
+  else setTimeout(warm, 600);
+}
+
 function _sectorStockRowsHtml(stocks) {
   return (stocks || []).slice(0, 2).map(stock => {
     const name = String(stock.name || stock.code || '');
@@ -15225,6 +15259,8 @@ function _buildSectorCardHtml(s) {
     : '<span class="sector-stock-status">카드를 펼치면 상위 종목을 조회합니다.</span>';
 
   return `<div class="sector-card" onclick="toggleSectorCard(this)"
+    onpointerenter="prefetchSectorTopStocks(this)" onfocusin="prefetchSectorTopStocks(this)"
+    onpointerdown="prefetchSectorTopStocks(this)"
     data-sector="${sectorParam}" data-upcode="${s.upcode || ''}"
     data-loaded="${initialStocks.length ? '1' : '0'}" data-loading="0">
     <div class="sector-card-head">
@@ -15263,6 +15299,8 @@ function renderSectorFlow(d) {
   });
 
   cardsEl.innerHTML = sorted.map(_buildSectorCardHtml).join('');
+  // 최초 렌더를 막지 않고 선두 2개 업종만 유휴 시간에 병렬 선조회한다.
+  _warmLeadingSectorCards(cardsEl);
   if (currentData && currentData.prediction_outlook) {
     renderPredictionSections(currentData, currentData.market === 'KRX');
     refreshPeerIndustryTabFromCache();
@@ -15279,25 +15317,32 @@ async function toggleSectorCard(el) {
   if (!isOpen || el.dataset.loaded === '1' || el.dataset.loading === '1') return;
 
   const listEl = el.querySelector('.sector-stock-list');
-  const sector = decodeURIComponent(el.dataset.sector || '');
-  const upcode = el.dataset.upcode || '';
   el.dataset.loading = '1';
-  if (listEl) listEl.innerHTML = '<span class="sector-stock-status">상위 종목 조회 중…</span>';
+  if (listEl) listEl.innerHTML = '<span class="sector-stock-status">상위 종목 요청 준비 중…</span>';
+  const loadingStages = [
+    [350, '업종 구성종목 수신 중…'],
+    [1200, '등락률 비교 및 상위 2종목 선정 중…'],
+    [2500, '외부 시장 데이터 응답 대기 중…'],
+  ];
+  const loadingTimers = loadingStages.map(([delay, message]) => setTimeout(() => {
+    if (el.dataset.loading === '1' && listEl) {
+      listEl.innerHTML = '<span class="sector-stock-status">' + message + '</span>';
+    }
+  }, delay));
   try {
-    const query = new URLSearchParams({sector, upcode});
-    const response = await fetch('/api/market/sector-top-stocks?' + query.toString());
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    const data = await response.json();
-    if (data.error) throw new Error(data.error);
+    const data = await _fetchSectorTopStocks(el);
     const stocks = (data.stocks || []).slice(0, 2);
     if (!stocks.length) throw new Error('표시할 종목이 없습니다.');
     if (listEl) listEl.innerHTML = _sectorStockRowsHtml(stocks);
     el.dataset.loaded = '1';
-    el.title = `${data.source || '코스피 업종등락'} 기준`;
+    const perf = data.performance || {};
+    const speed = perf.cache_hit ? '캐시 응답' : perf.total_ms != null ? `서버 처리 ${perf.total_ms}ms` : '';
+    el.title = `${data.source || '코스피 업종등락'} 기준${speed ? ' · ' + speed : ''}`;
   } catch (error) {
     if (listEl) listEl.innerHTML = '<span class="sector-stock-status sector-stock-error">조회 실패 · 카드를 닫았다 다시 열어주세요.</span>';
     console.warn('[sector-flow] 상위 종목 조회 실패:', error.message);
   } finally {
+    loadingTimers.forEach(clearTimeout);
     el.dataset.loading = '0';
   }
 }

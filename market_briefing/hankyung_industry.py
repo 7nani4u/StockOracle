@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -21,10 +22,24 @@ _INDUSTRY_PAGE = f"{_BASE_URL}/index-info/industry"
 _TIMEOUT = (4, 15)
 _TOKEN_TTL = 6 * 60 * 60
 _SUMMARY_TTL = 5 * 60
-_STOCKS_TTL = 3 * 60
+_STOCKS_TTL = 5 * 60
 _KST = timezone(timedelta(hours=9))
 
+# 한국경제 코스피 24개 업종 코드. 클릭 API가 업종 목록을 다시 외부 조회하지
+# 않고도 요청값을 즉시 검증할 수 있도록 사용한다.
+KOSPI_INDUSTRY_CODES = {
+    "제조": "1027", "금융": "1021", "화학": "1008", "제약": "1009",
+    "유통": "1016", "운송장비·부품": "1015", "음식료·담배": "1005", "금속": "1011",
+    "섬유·의류": "1006", "일반서비스": "1026", "종이·목재": "1007", "비금속": "1010",
+    "부동산": "1045", "운송·창고": "1019", "전기·전자": "1013", "보험": "1025",
+    "IT 서비스": "1046", "건설": "1018", "오락·문화": "1047", "기계·장비": "1012",
+    "전기·가스": "1017", "통신": "1020", "증권": "1024", "의료·정밀기기": "1014",
+}
+
 _LOCK = threading.RLock()
+_TOKEN_FETCH_LOCK = threading.Lock()
+_SUMMARY_FETCH_LOCK = threading.Lock()
+_TOP_FETCH_LOCKS: dict[str, threading.Lock] = {}
 _TOKEN_CACHE: tuple[str | None, float] = (None, 0.0)
 _SUMMARY_CACHE: tuple[dict | None, float] = (None, 0.0)
 _TOP_STOCKS_CACHE: dict[str, tuple[dict, float]] = {}
@@ -69,29 +84,39 @@ def _extract_public_token(script: str) -> str | None:
 def _discover_public_token(force: bool = False) -> str:
     global _TOKEN_CACHE
     now = time.monotonic()
+    configured = (os.getenv("HANKYUNG_MARKETS_BEARER_TOKEN") or "").strip()
+    if configured and not force:
+        return configured
     with _LOCK:
         if not force and _TOKEN_CACHE[0] and _TOKEN_CACHE[1] > now:
             return _TOKEN_CACHE[0]
 
-    page = _SESSION.get(_INDUSTRY_PAGE, timeout=_TIMEOUT)
-    page.raise_for_status()
-    sources = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', page.text, re.I)
-    # Nuxt 공통 번들은 보통 문서 끝쪽에 있으므로 역순으로 확인한다.
-    nuxt_urls = []
-    for source in reversed(sources):
-        url = urljoin(_BASE_URL, source)
-        parsed = urlparse(url)
-        if parsed.scheme == "https" and parsed.netloc == "markets.hankyung.com" and "/_nuxt/" in parsed.path:
-            nuxt_urls.append(url)
+    # 동시에 들어온 콜드 스타트 요청은 한 스레드만 페이지/번들을 조회한다.
+    with _TOKEN_FETCH_LOCK:
+        now = time.monotonic()
+        with _LOCK:
+            if not force and _TOKEN_CACHE[0] and _TOKEN_CACHE[1] > now:
+                return _TOKEN_CACHE[0]
 
-    for url in nuxt_urls:
-        response = _SESSION.get(url, timeout=_TIMEOUT)
-        response.raise_for_status()
-        token = _extract_public_token(response.text)
-        if token:
-            with _LOCK:
-                _TOKEN_CACHE = (token, now + _TOKEN_TTL)
-            return token
+        page = _SESSION.get(_INDUSTRY_PAGE, timeout=_TIMEOUT)
+        page.raise_for_status()
+        sources = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', page.text, re.I)
+        # Nuxt 공통 번들은 보통 문서 끝쪽에 있으므로 역순으로 확인한다.
+        nuxt_urls = []
+        for source in reversed(sources):
+            url = urljoin(_BASE_URL, source)
+            parsed = urlparse(url)
+            if parsed.scheme == "https" and parsed.netloc == "markets.hankyung.com" and "/_nuxt/" in parsed.path:
+                nuxt_urls.append(url)
+
+        for url in nuxt_urls:
+            response = _SESSION.get(url, timeout=_TIMEOUT)
+            response.raise_for_status()
+            token = _extract_public_token(response.text)
+            if token:
+                with _LOCK:
+                    _TOKEN_CACHE = (token, now + _TOKEN_TTL)
+                return token
     raise RuntimeError("한국경제 공개 데이터 인증 정보를 찾지 못했습니다.")
 
 
@@ -113,9 +138,26 @@ def fetch_kospi_industry_summary(force: bool = False) -> dict:
     with _LOCK:
         cached, expires = _SUMMARY_CACHE
         if not force and cached is not None and expires > now:
-            return cached
+            return {**cached, "performance": {"cache_hit": True, "total_ms": 0.0}}
 
-    rows = _authorized_get_json("/api/v2/index/1/industries")
+    with _SUMMARY_FETCH_LOCK:
+        now = time.monotonic()
+        with _LOCK:
+            cached, expires = _SUMMARY_CACHE
+            if not force and cached is not None and expires > now:
+                return {**cached, "performance": {"cache_hit": True, "total_ms": 0.0}}
+        started = time.perf_counter()
+        try:
+            rows = _authorized_get_json("/api/v2/index/1/industries")
+        except Exception:
+            # 만료 데이터라도 있으면 24개 종목 대체 조회보다 즉시 반환하는 편이 낫다.
+            with _LOCK:
+                stale = _SUMMARY_CACHE[0]
+            if stale is not None:
+                return {**stale, "is_stale": True, "performance": {"cache_hit": True, "stale": True, "total_ms": 0.0}}
+            raise
+        upstream_ms = (time.perf_counter() - started) * 1000
+
     sectors = []
     latest_timestamp = ""
     for row in rows if isinstance(rows, list) else []:
@@ -153,7 +195,9 @@ def fetch_kospi_industry_summary(force: bool = False) -> dict:
     }
     with _LOCK:
         _SUMMARY_CACHE = (result, now + _SUMMARY_TTL)
-    return result
+    total_ms = round((time.perf_counter() - started) * 1000, 1)
+    print(f"[sector-flow] summary upstream={upstream_ms:.1f}ms total={total_ms:.1f}ms sectors={len(sectors)}")
+    return {**result, "performance": {"cache_hit": False, "upstream_ms": round(upstream_ms, 1), "total_ms": total_ms}}
 
 
 def fetch_industry_top_stocks(upcode: str, limit: int = 2, force: bool = False) -> dict:
@@ -166,9 +210,31 @@ def fetch_industry_top_stocks(upcode: str, limit: int = 2, force: bool = False) 
     with _LOCK:
         cached = _TOP_STOCKS_CACHE.get(upcode)
         if not force and cached and cached[1] > now:
-            return {**cached[0], "stocks": cached[0]["stocks"][:limit]}
+            return {**cached[0], "stocks": cached[0]["stocks"][:limit],
+                    "performance": {"cache_hit": True, "total_ms": 0.0}}
 
-    rows = _authorized_get_json(f"/api/v2/index/{upcode}/stocks")
+    with _LOCK:
+        fetch_lock = _TOP_FETCH_LOCKS.setdefault(upcode, threading.Lock())
+    with fetch_lock:
+        now = time.monotonic()
+        with _LOCK:
+            cached = _TOP_STOCKS_CACHE.get(upcode)
+            if not force and cached and cached[1] > now:
+                return {**cached[0], "stocks": cached[0]["stocks"][:limit],
+                        "performance": {"cache_hit": True, "total_ms": 0.0}}
+        started = time.perf_counter()
+        try:
+            rows = _authorized_get_json(f"/api/v2/index/{upcode}/stocks")
+        except Exception:
+            with _LOCK:
+                stale = _TOP_STOCKS_CACHE.get(upcode)
+            if stale:
+                return {**stale[0], "stocks": stale[0]["stocks"][:limit], "is_stale": True,
+                        "performance": {"cache_hit": True, "stale": True, "total_ms": 0.0}}
+            raise
+        upstream_ms = (time.perf_counter() - started) * 1000
+
+    selection_started = time.perf_counter()
     ranked = []
     latest_timestamp = ""
     for row in rows if isinstance(rows, list) else []:
@@ -200,5 +266,10 @@ def fetch_industry_top_stocks(upcode: str, limit: int = 2, force: bool = False) 
     }
     with _LOCK:
         _TOP_STOCKS_CACHE[upcode] = (result, now + _STOCKS_TTL)
-    return {**result, "stocks": ranked[:limit]}
-
+    selection_ms = (time.perf_counter() - selection_started) * 1000
+    total_ms = round((time.perf_counter() - started) * 1000, 1)
+    print(f"[sector-flow] top upcode={upcode} upstream={upstream_ms:.1f}ms selection={selection_ms:.1f}ms total={total_ms:.1f}ms rows={len(rows)}")
+    return {**result, "stocks": ranked[:limit], "performance": {
+        "cache_hit": False, "upstream_ms": round(upstream_ms, 1),
+        "selection_ms": round(selection_ms, 1), "total_ms": total_ms,
+    }}
