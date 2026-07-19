@@ -8019,7 +8019,7 @@ _SECTOR_DEFAULT_STOCKS: list = [
     {"code": "383220", "name": "F&F",            "market": "KOSPI",  "sector": "섬유·의류"},
     {"code": "020000", "name": "한섬",           "market": "KOSPI",  "sector": "섬유·의류"},
     {"code": "012750", "name": "에스원",         "market": "KOSPI",  "sector": "일반서비스"},
-    {"code": "030190", "name": "NICE평가정보",   "market": "KOSDAQ", "sector": "일반서비스"},
+    {"code": "034310", "name": "NICE",           "market": "KOSPI",  "sector": "일반서비스"},
     {"code": "213500", "name": "한솔제지",       "market": "KOSPI",  "sector": "종이·목재"},
     {"code": "009580", "name": "무림P&P",        "market": "KOSPI",  "sector": "종이·목재"},
     {"code": "004980", "name": "성신양회",       "market": "KOSPI",  "sector": "비금속"},
@@ -8037,7 +8037,7 @@ _SECTOR_DEFAULT_STOCKS: list = [
     {"code": "000720", "name": "현대건설",       "market": "KOSPI",  "sector": "건설"},
     {"code": "006360", "name": "GS건설",         "market": "KOSPI",  "sector": "건설"},
     {"code": "352820", "name": "하이브",         "market": "KOSPI",  "sector": "오락·문화"},
-    {"code": "035900", "name": "JYP Ent.",       "market": "KOSDAQ", "sector": "오락·문화"},
+    {"code": "079160", "name": "CJ CGV",         "market": "KOSPI",  "sector": "오락·문화"},
     {"code": "034020", "name": "두산에너빌리티", "market": "KOSPI",  "sector": "기계·장비"},
     {"code": "267260", "name": "HD현대일렉트릭", "market": "KOSPI",  "sector": "기계·장비"},
     {"code": "015760", "name": "한국전력",       "market": "KOSPI",  "sector": "전기·가스"},
@@ -8046,9 +8046,58 @@ _SECTOR_DEFAULT_STOCKS: list = [
     {"code": "030200", "name": "KT",             "market": "KOSPI",  "sector": "통신"},
     {"code": "006800", "name": "미래에셋증권",   "market": "KOSPI",  "sector": "증권"},
     {"code": "039490", "name": "키움증권",       "market": "KOSPI",  "sector": "증권"},
-    {"code": "214150", "name": "클래시스",       "market": "KOSDAQ", "sector": "의료·정밀기기"},
-    {"code": "099190", "name": "아이센스",       "market": "KOSDAQ", "sector": "의료·정밀기기"},
+    {"code": "145720", "name": "덴티움",         "market": "KOSPI",  "sector": "의료·정밀기기"},
+    {"code": "003160", "name": "디아이",         "market": "KOSPI",  "sector": "의료·정밀기기"},
 ]
+
+
+def _fallback_sector_summary() -> dict:
+    """한국경제가 일시적으로 응답하지 않을 때 기존 KOSPI 종목으로 대체한다."""
+    from market_briefing.data_fetcher import fetch_stock_list_quote_cached
+    from market_briefing.sector_flow import build_sector_flow
+
+    result = build_sector_flow(fetch_stock_list_quote_cached(_SECTOR_DEFAULT_STOCKS))
+    result["source"] = "StockOracle KOSPI 대체 데이터"
+    result["is_fallback"] = True
+    for sector in result.get("sectors", []):
+        sector["upcode"] = ""
+        # 대체 모드도 클릭 시 최신 quote를 다시 비교해 상위 종목을 결정한다.
+        sector["top_stocks"] = []
+    return result
+
+
+def _fallback_sector_top_stocks(sector_name: str) -> dict:
+    from market_briefing.data_fetcher import fetch_stock_list_quote_only
+
+    configs = [item for item in _SECTOR_DEFAULT_STOCKS if item.get("sector") == sector_name]
+    if not configs:
+        return {"error": "지원하지 않는 코스피 업종입니다."}
+    snapshots = fetch_stock_list_quote_only(configs, max_workers=2)
+    stocks = []
+    for snapshot in snapshots:
+        quote = snapshot.get("quote") or {}
+        try:
+            pct = float(quote.get("change_pct_num"))
+        except (TypeError, ValueError):
+            pct = None
+        stocks.append({
+            "code": snapshot.get("code", ""),
+            "name": snapshot.get("name") or snapshot.get("code", ""),
+            "change_pct": round(pct, 2) if pct is not None else None,
+            "price": quote.get("price_num"),
+            "direction": "up" if pct is not None and pct > 0 else "down" if pct is not None and pct < 0 else "flat",
+        })
+    stocks.sort(key=lambda item: (
+        item["change_pct"] is None,
+        -(item["change_pct"] or 0),
+        item["name"],
+    ))
+    return {
+        "sector": sector_name,
+        "stocks": stocks[:2],
+        "source": "StockOracle KOSPI 대체 데이터",
+        "is_fallback": True,
+    }
 
 
 _PEER_INDUSTRY_GROUPS: dict = {
@@ -9454,19 +9503,52 @@ def route(path: str, params: Dict) -> Dict:
             return {"error": f"업종별 흐름 조회 실패: {e}"}
 
     if path == "/api/market/sector-summary":
-        # 코드 파라미터 없이 기본 대표 종목으로 섹터 흐름 반환
-        # 메인 페이지 자동 로드용 — 캐시 s-maxage=600 (10분)
-        # quote만 병렬 수집 (history/news 생략) → 대폭 빠름
+        # 한국경제 코스피 업종 자체 등락률만 먼저 조회한다.
+        # 구성종목은 카드 클릭 때 /sector-top-stocks에서 지연 조회한다.
         try:
             import sys as _sys
             import os as _os
             _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-            from market_briefing.data_fetcher import fetch_stock_list_quote_cached
-            from market_briefing.sector_flow import build_sector_flow
-            snapshots = fetch_stock_list_quote_cached(_SECTOR_DEFAULT_STOCKS)
-            return build_sector_flow(snapshots)
+            from market_briefing.hankyung_industry import fetch_kospi_industry_summary
+            return fetch_kospi_industry_summary()
         except Exception as e:
-            return {"error": f"업종별 흐름 조회 실패: {e}"}
+            print(f"[sector-flow] 한국경제 업종 조회 실패, 대체 데이터 사용: {e}")
+            try:
+                return _fallback_sector_summary()
+            except Exception as fallback_error:
+                return {"error": f"업종별 흐름 조회 실패: {fallback_error}"}
+
+    if path == "/api/market/sector-top-stocks":
+        # 요청 업종의 전체 코스피 구성종목 중 당일 등락률 상위 2개만 반환한다.
+        sector_name = (params.get("sector") or "").strip()
+        upcode = (params.get("upcode") or "").strip()
+        allowed_sectors = {item["sector"] for item in _SECTOR_DEFAULT_STOCKS}
+        if sector_name not in allowed_sectors:
+            return {"error": "지원하지 않는 코스피 업종입니다."}
+        try:
+            from market_briefing.hankyung_industry import (
+                fetch_industry_top_stocks,
+                fetch_kospi_industry_summary,
+            )
+            summary = fetch_kospi_industry_summary()
+            matched = next(
+                (item for item in summary.get("sectors", [])
+                 if item.get("upcode") == upcode and item.get("name") == sector_name),
+                None,
+            )
+            if not matched:
+                if not upcode:
+                    return _fallback_sector_top_stocks(sector_name)
+                return {"error": "코스피 업종 코드와 업종명이 일치하지 않습니다."}
+            result = fetch_industry_top_stocks(upcode, limit=2)
+            result["sector"] = sector_name
+            return result
+        except Exception as e:
+            print(f"[sector-flow] {sector_name} 상위 종목 조회 실패, 대체 데이터 사용: {e}")
+            try:
+                return _fallback_sector_top_stocks(sector_name)
+            except Exception as fallback_error:
+                return {"error": f"업종 상위 종목 조회 실패: {fallback_error}"}
 
     if path == "/api/market/stocks":
         # ?codes=005930,000660,...  필수
@@ -10803,17 +10885,23 @@ input::placeholder{color:#484f58}
 
 /* 토글 종목 리스트 — 기본 숨김, expanded 시 노출 */
 .sector-stock-list{
-  display:none;flex-wrap:wrap;gap:4px;
+  display:none;flex-direction:column;gap:4px;
   margin-top:8px;padding-top:8px;
   border-top:1px solid #21262d
 }
 .sector-card.expanded .sector-stock-list{display:flex}
 .sector-stock-tag{
-  font-size:10px;padding:2px 7px;border-radius:6px;
+  width:100%;display:flex;align-items:center;justify-content:space-between;gap:5px;
+  border:0;font:inherit;font-size:10px;padding:4px 6px;border-radius:6px;
   background:#21262d;color:#8b949e;
-  cursor:pointer;transition:background .12s,color .12s
+  cursor:pointer;transition:background .12s,color .12s;text-align:left
 }
 .sector-stock-tag:hover{background:#1f6feb;color:#fff}
+.sector-stock-tag span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sector-stock-tag b{font-size:9px;flex-shrink:0}
+.sector-stock-up{color:#3fb950}.sector-stock-down{color:#f85149}.sector-stock-flat{color:#8b949e}
+.sector-stock-status{font-size:9px;line-height:1.45;color:#8b949e}
+.sector-stock-error{color:#f85149}
 
 /* ── 업종별 흐름 반응형 (base repeat(8) 이후에 선언해야 override 적용됨) ── */
 @media(max-width:1100px){
@@ -15063,6 +15151,24 @@ async function loadSectorFlow() {
   }
 }
 
+function _sectorStockRowsHtml(stocks) {
+  return (stocks || []).slice(0, 2).map(stock => {
+    const name = String(stock.name || stock.code || '');
+    const encodedName = encodeURIComponent(name).replace(/'/g, '%27');
+    const pct = Number(stock.change_pct);
+    const hasPct = stock.change_pct != null && Number.isFinite(pct);
+    const pctText = hasPct ? `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%` : '—';
+    const pctClass = hasPct && pct > 0 ? 'sector-stock-up'
+                   : hasPct && pct < 0 ? 'sector-stock-down'
+                   : 'sector-stock-flat';
+    return `<button type="button" class="sector-stock-tag"
+      onclick="event.stopPropagation();quickSearch(decodeURIComponent('${encodedName}'))"
+      title="${_escPrediction(name)} 분석">
+      <span>${_escPrediction(name)}</span><b class="${pctClass}">${pctText}</b>
+    </button>`;
+  }).join('');
+}
+
 // ── 섹터 카드 단일 렌더 헬퍼 ──────────────────────────────────────────────
 function _buildSectorCardHtml(s) {
   const pct    = s.avg_change_pct;
@@ -15074,35 +15180,25 @@ function _buildSectorCardHtml(s) {
                 : 'sector-mood-neu';
   const moodTxt = s.mood === 'positive' ? '강세' : s.mood === 'negative' ? '약세' : '혼조';
 
-  // 종목명 태그 — 클릭 시 해당 종목 분석으로 이동
-  const names = s.stock_names || [];
-  const stockTagsHtml = names.map(n =>
-    `<span class="sector-stock-tag"
-          onclick="event.stopPropagation();quickSearch('${n.replace(/'/g,"\\'")}')
-          " title="${n} 분석">${n}</span>`
-  ).join('');
+  const initialStocks = (s.top_stocks || []).slice(0, 2);
+  const sectorParam = encodeURIComponent(String(s.name || '')).replace(/'/g, '%27');
+  const initialHtml = initialStocks.length
+    ? _sectorStockRowsHtml(initialStocks)
+    : '<span class="sector-stock-status">카드를 펼치면 상위 종목을 조회합니다.</span>';
 
-  // 개수 표시 + 펼치기 화살표 (종목 있을 때만)
-  const cntHtml = names.length
-    ? `<div class="sector-card-cnt">${names.length}종목 ▾</div>`
-    : '';
-
-  // 종목 리스트 영역 (기본 숨김 — CSS .expanded 시 display:flex)
-  const listHtml = names.length
-    ? `<div class="sector-stock-list">${stockTagsHtml}</div>`
-    : '';
-
-  return `<div class="sector-card" onclick="toggleSectorCard(this)">
+  return `<div class="sector-card" onclick="toggleSectorCard(this)"
+    data-sector="${sectorParam}" data-upcode="${s.upcode || ''}"
+    data-loaded="${initialStocks.length ? '1' : '0'}" data-loading="0">
     <div class="sector-card-head">
       <span class="sector-card-emoji">${s.emoji || '🏭'}</span>
       <div>
-        <div class="sector-card-name">${s.name}</div>
-        ${cntHtml}
+        <div class="sector-card-name">${_escPrediction(s.name || '')}</div>
+        <div class="sector-card-cnt">상위 2종목 ▾</div>
       </div>
     </div>
     <div class="sector-card-pct" style="color:${pctClr}">${pctTxt}</div>
     <span class="sector-card-mood ${moodCls}">${moodTxt}</span>
-    ${listHtml}
+    <div class="sector-stock-list">${initialHtml}</div>
   </div>`;
 }
 
@@ -15135,13 +15231,36 @@ function renderSectorFlow(d) {
   }
 }
 
-// ── 섹터 카드 토글 (펼치기 / 접기) ───────────────────────────────────────
-function toggleSectorCard(el) {
+// ── 섹터 카드 토글: 펼칠 때만 해당 업종의 등락률 상위 2종목 조회 ─────────
+async function toggleSectorCard(el) {
   const isOpen = el.classList.toggle('expanded');
-  // 화살표 방향 갱신 (▾ ↔ ▴)
   const cntEl = el.querySelector('.sector-card-cnt');
   if (cntEl) {
     cntEl.textContent = cntEl.textContent.replace(/[▾▴]/, isOpen ? '▴' : '▾');
+  }
+  if (!isOpen || el.dataset.loaded === '1' || el.dataset.loading === '1') return;
+
+  const listEl = el.querySelector('.sector-stock-list');
+  const sector = decodeURIComponent(el.dataset.sector || '');
+  const upcode = el.dataset.upcode || '';
+  el.dataset.loading = '1';
+  if (listEl) listEl.innerHTML = '<span class="sector-stock-status">상위 종목 조회 중…</span>';
+  try {
+    const query = new URLSearchParams({sector, upcode});
+    const response = await fetch('/api/market/sector-top-stocks?' + query.toString());
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    const stocks = (data.stocks || []).slice(0, 2);
+    if (!stocks.length) throw new Error('표시할 종목이 없습니다.');
+    if (listEl) listEl.innerHTML = _sectorStockRowsHtml(stocks);
+    el.dataset.loaded = '1';
+    el.title = `${data.source || '코스피 업종등락'} 기준`;
+  } catch (error) {
+    if (listEl) listEl.innerHTML = '<span class="sector-stock-status sector-stock-error">조회 실패 · 카드를 닫았다 다시 열어주세요.</span>';
+    console.warn('[sector-flow] 상위 종목 조회 실패:', error.message);
+  } finally {
+    el.dataset.loading = '0';
   }
 }
 
@@ -17196,8 +17315,8 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
                 _smx, _swr = 180, 360              # 계산 실패 시 3분 기본값
             cache_control = f"public, s-maxage={_smx}, stale-while-revalidate={_swr}"
 
-        elif path == "/api/market/sector-summary":
-            # 섹터 흐름 — 장중 5분, 장 외 15분
+        elif path in ("/api/market/sector-summary", "/api/market/sector-top-stocks"):
+            # 업종 흐름/상위 종목 — 장중 5분, 장 외 15분
             try:
                 from datetime import datetime as _dt, timezone as _tz, timedelta as _td
                 _KST = _tz(timedelta(hours=9))
