@@ -1540,7 +1540,11 @@ class AlphaVantageClient(_BaseClient):
         self._cache[key] = (data, time.monotonic())
         return data
 
-    def global_quote(self, ticker: str) -> Optional[Tuple[float, float, Optional[datetime], str]]:
+    def global_quote(
+        self,
+        ticker: str,
+        _session: Optional[MarketSession] = None,
+    ) -> Optional[Tuple[float, float, Optional[datetime], str]]:
         """GLOBAL_QUOTE: 최근 정규장 종가."""
         data = self._avget({"function": "GLOBAL_QUOTE", "symbol": ticker}, f"gq:{ticker}")
         if not data:
@@ -1558,7 +1562,11 @@ class AlphaVantageClient(_BaseClient):
             pass
         return float(price), float(prev or 0), ts, "last_close"
 
-    def daily_close(self, ticker: str) -> Optional[Tuple[float, float, Optional[datetime], str]]:
+    def daily_close(
+        self,
+        ticker: str,
+        _session: Optional[MarketSession] = None,
+    ) -> Optional[Tuple[float, float, Optional[datetime], str]]:
         """TIME_SERIES_DAILY: EOD fallback."""
         data = self._avget(
             {"function": "TIME_SERIES_DAILY", "symbol": ticker, "outputsize": "compact"},

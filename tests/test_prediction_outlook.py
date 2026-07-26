@@ -1,6 +1,19 @@
 """예측 탭 구조화 로직과 미국 급등 추천 가격 경계 검증."""
 
-from api.index import HTML, _is_us_surge_price_eligible, build_prediction_outlook, calc_risk
+from datetime import date, timedelta
+
+import api.index as index_module
+from api.index import (
+    HTML,
+    ARTY_STRATEGY_RULE_VERSION,
+    _arty_atr_values,
+    _confirmed_williams_fractals,
+    _is_us_surge_price_eligible,
+    _smma_values,
+    build_prediction_outlook,
+    calc_arty_smma_fractal,
+    calc_risk,
+)
 
 
 def _sample_dd():
@@ -242,3 +255,210 @@ def test_us_fundamentals_are_not_rendered_in_result_ui():
     assert 'id="r-us-fund"' not in HTML
     assert 'id="f-us-sector"' not in HTML
     assert "기업 펀더멘털 (Alpha Vantage)" not in HTML
+
+
+def _arty_daily_dd(size=260, pivot_offset=3):
+    closes = [100 + 0.03 * i + 0.00025 * i * i for i in range(size)]
+    opens = [value - 0.15 for value in closes]
+    highs = [value + 0.5 for value in closes]
+    lows = [value - 0.5 for value in closes]
+    if size >= 220:
+        smma21 = _smma_values(closes, 21)
+        pivot = size - pivot_offset
+        lows[pivot] = smma21[pivot] - 0.05
+    return {
+        "Open": opens,
+        "High": highs,
+        "Low": lows,
+        "Close": closes,
+        "Volume": [100_000 + (index % 5) * 1_000 for index in range(size)],
+        "Date": [
+            str(date(2025, 1, 1) + timedelta(days=index))
+            for index in range(size)
+        ],
+    }
+
+
+def _set_arty_profile(monkeypatch, market, config, verdict):
+    profile = index_module.ARTY_SMMA_BACKTEST_EVIDENCE["markets"][market]
+    monkeypatch.setitem(profile, "selected", dict(config))
+    monkeypatch.setitem(profile, "verdict", verdict)
+    monkeypatch.setitem(
+        profile,
+        "verdict_label",
+        "검증 통과" if verdict == "accepted" else "검증 실패",
+    )
+    monkeypatch.setitem(profile, "production_applied", verdict == "accepted")
+
+
+def test_smma_uses_sma_seed_then_wilder_recursive_smoothing():
+    values = [float(i) for i in range(1, 9)]
+    result = _smma_values(values, 3)
+
+    assert result[:2] == [None, None]
+    assert result[2] == 2.0
+    assert result[3] == (2.0 * 2 + 4.0) / 3
+    assert result[4] == (result[3] * 2 + 5.0) / 3
+
+
+def test_williams_fractal_never_uses_unconfirmed_last_two_bars():
+    highs = [10, 11, 15, 11, 10, 12, 20]
+    lows = [8, 7, 6, 7, 8, 5, 4]
+    result = _confirmed_williams_fractals(highs, lows)
+
+    assert [item["index"] for item in result["upper"]] == [2]
+    assert all(item["confirmed_index"] <= len(highs) - 1 for item in result["upper"] + result["lower"])
+    assert all(item["index"] <= len(highs) - 3 for item in result["upper"] + result["lower"])
+
+
+def test_arty_daily_atr_is_calculated_from_same_ohlc_series():
+    dd = _arty_daily_dd()
+    values = _arty_atr_values(dd["High"], dd["Low"], dd["Close"])
+
+    assert values[:13] == [None] * 13
+    assert values[-1] is not None
+    assert values[-1] > 0
+
+
+def test_arty_strategy_waits_until_configured_entry_bar(monkeypatch):
+    config = {
+        "retest_line": 21,
+        "entry_delay": 1,
+        "atr_tolerance": 0.35,
+        "pullback_volume_max": None,
+        "rebound_volume_min": None,
+        "smma200_slope_min_pct20": None,
+    }
+    _set_arty_profile(monkeypatch, "US", config, "accepted")
+    dd = _arty_daily_dd(pivot_offset=3)
+    result = calc_arty_smma_fractal(dd, dd["Close"][-1], atr=0.001, market="US")
+
+    assert result["available"] is True
+    assert result["status_key"] == "entry_pending"
+    assert result["entry_timing"]["state"] == "pending"
+    assert result["entry_timing"]["bars_remaining"] == 1
+    assert result["entry"] is None
+    assert result["stop"] is None
+    assert result["target"] is None
+
+
+def test_arty_strategy_uses_delayed_open_and_blocks_rejected_market(monkeypatch):
+    config = {
+        "retest_line": 21,
+        "entry_delay": 1,
+        "atr_tolerance": 0.35,
+        "pullback_volume_max": None,
+        "rebound_volume_min": None,
+        "smma200_slope_min_pct20": None,
+    }
+    dd = _arty_daily_dd(pivot_offset=4)
+
+    _set_arty_profile(monkeypatch, "US", config, "accepted")
+    accepted = calc_arty_smma_fractal(dd, dd["Close"][-1], atr=0.001, market="US")
+    assert accepted["status_key"] == "confirmed"
+    assert accepted["entry_timing"]["state"] == "eligible"
+    assert accepted["entry"] == round(dd["Open"][-1], 4)
+    assert accepted["stop"] < accepted["entry"] < accepted["target"]
+
+    _set_arty_profile(monkeypatch, "US", config, "rejected")
+    rejected = calc_arty_smma_fractal(dd, dd["Close"][-1], atr=9999, market="US")
+    assert rejected["status_key"] == "technical_only"
+    assert rejected["entry_timing"]["state"] == "technical_only"
+    assert rejected["entry"] is None
+    assert "검증 실패" in rejected["status"]
+
+
+def test_arty_strategy_ignores_external_atr_and_matches_daily_rules(monkeypatch):
+    config = {
+        "retest_line": 21,
+        "entry_delay": 1,
+        "atr_tolerance": 0.35,
+        "pullback_volume_max": None,
+        "rebound_volume_min": None,
+        "smma200_slope_min_pct20": None,
+    }
+    _set_arty_profile(monkeypatch, "US", config, "accepted")
+    dd = _arty_daily_dd(pivot_offset=4)
+    low_atr = calc_arty_smma_fractal(dd, dd["Close"][-1], atr=0.001, market="US")
+    high_atr = calc_arty_smma_fractal(dd, dd["Close"][-1], atr=9999, market="US")
+
+    assert low_atr["status_key"] == high_atr["status_key"]
+    assert low_atr["retest"] == high_atr["retest"]
+    assert low_atr["risk_distance"] == high_atr["risk_distance"]
+    assert low_atr["atr_source"] == "동일 일봉 OHLC의 ATR14"
+    assert low_atr["signal_conditions_match_backtest"] is True
+    assert low_atr["strategy_rule_version"] == ARTY_STRATEGY_RULE_VERSION
+
+
+def test_arty_strategy_confirms_fractal_without_lookahead(monkeypatch):
+    config = {
+        "retest_line": 21,
+        "entry_delay": 1,
+        "atr_tolerance": 0.35,
+        "pullback_volume_max": None,
+        "rebound_volume_min": None,
+        "smma200_slope_min_pct20": None,
+    }
+    _set_arty_profile(monkeypatch, "US", config, "accepted")
+    dd = _arty_daily_dd(pivot_offset=4)
+    result = calc_arty_smma_fractal(dd, dd["Close"][-1], market="US")
+
+    assert result["available"] is True
+    assert result["status_key"] == "confirmed"
+    assert result["alignment"] == "정배열"
+    assert result["fan_expanding"] is True
+    assert result["retest"]["confirmed"] is True
+    assert result["retest"]["line"] == "SMMA21"
+    assert result["retest"]["atr_tolerance"] == 0.35
+    assert result["retests"]["21"]["confirmed"] is True
+    assert result["retests"]["50"]["confirmed"] is False
+    assert result["fractals"]["support"]["pivot_index"] == len(dd["Close"]) - 4
+    assert result["fractals"]["support"]["confirmed_index"] == len(dd["Close"]) - 2
+    assert result["stop"] < result["entry"] < result["target"]
+    actual_rr = (result["target"] - result["entry"]) / (result["entry"] - result["stop"])
+    assert abs(actual_rr - 2.0) < 0.001
+    assert result["is_empirical_probability"] is False
+    assert result["risk_distance"]["valid"] is True
+    assert result["sideways_filter"]["filtered"] is False
+    assert result["entry_timing"]["execution_model"] == "확정 후 1봉 시가"
+    assert result["entry_timing"]["auto_order_scheduled"] is False
+    assert result["backtest_validation"]["verdict"] == "accepted"
+
+
+def test_arty_strategy_disables_signal_when_200_day_history_is_missing():
+    dd = _arty_daily_dd(size=120)
+    result = calc_arty_smma_fractal(dd, dd["Close"][-1], atr=1.5, market="KRX")
+
+    assert result["available"] is False
+    assert result["status_key"] == "insufficient"
+    assert result["required_bars"] == 220
+    assert result["observed_bars"] == 120
+
+
+def test_arty_evidence_matches_current_rule_version():
+    evidence = index_module.ARTY_SMMA_BACKTEST_EVIDENCE
+    assert evidence["strategy_rule_version"] == ARTY_STRATEGY_RULE_VERSION
+    assert evidence["strategy_config_hash"]
+
+
+def test_import_does_not_start_toss_prewarm_thread():
+    assert index_module._prewarm_started is False
+
+
+def test_forecast_renders_arty_smma_fractal_strategy_inside_buy_section():
+    assert 'id="arty-smma-fractal-strategy"' in HTML
+    assert 'id="arty-backtest-validation"' in HTML
+    assert "SMMA·프랙탈 기술 조건" in HTML
+    assert "확정 Williams Fractal(2봉 지연)" in HTML
+    assert "① 종가/다음 시가" in HTML
+    assert "② 재시험 분리" in HTML
+    assert "③ 프랙탈 지연" in HTML
+    assert "④ ATR 허용폭" in HTML
+    assert "⑤ 거래량" in HTML
+    assert "⑥ 횡보장" in HTML
+    assert "⑦ 기업행위" in HTML
+    assert "⑧ 분기 워크포워드" in HTML
+    assert "⑨ 시장체제" in HTML
+    assert "⑩ 민감도" in HTML
+    assert "⑪ 데이터 품질" in HTML
+    assert HTML.index('id="buy-price-section"') < HTML.index('id="arty-smma-fractal-strategy"')

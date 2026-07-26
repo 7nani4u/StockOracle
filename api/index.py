@@ -38,6 +38,8 @@ import functools
 import tempfile
 import shutil
 import re
+import hashlib
+from pathlib import Path
 import certifi
 import ssl
 from typing import Optional, Dict, Any, List, Tuple
@@ -909,6 +911,46 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         print(f"[StockOracle Error] fetch_stock_data 예외 발생: {e}")
         return None, None, f"조회 중 예외 발생: {str(e)}"
 
+@ttl_cache(300)
+def fetch_arty_daily_data(ticker: str, market: str) -> Dict | None:
+    """SMMA 21·50·200/프랙탈 전략 전용 일봉 OHLC를 가져온다.
+
+    화면의 단기 기간(예: 1개월)은 분봉으로 조회되므로 그 데이터를 그대로
+    사용하면 200일선이 200분봉선으로 바뀐다. 전략 계산만큼은 선택 기간과
+    무관하게 일봉 2년치를 사용해 지표 의미를 고정한다.
+    """
+    sym = str(ticker or "").strip().upper()
+    if market == "KRX" and sym.isdigit():
+        sym = f"{sym}.KS"
+    try:
+        df = yf.Ticker(sym).history(
+            period="2y", interval="1d", auto_adjust=True, repair=True
+        )
+        if (df is None or df.empty) and market == "KRX" and sym.endswith(".KS"):
+            sym = sym[:-3] + ".KQ"
+            df = yf.Ticker(sym).history(
+                period="2y", interval="1d", auto_adjust=True, repair=True
+            )
+        if df is None or df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+        df.columns = [
+            c.capitalize() if str(c).lower() in ("open", "high", "low", "close", "volume") else c
+            for c in df.columns
+        ]
+        required = ["Open", "High", "Low", "Close", "Volume"]
+        if any(col not in df.columns for col in required):
+            return None
+        df = df.dropna(subset=required).tail(520)
+        if df.empty:
+            return None
+        result = {col: [float(v) for v in df[col].tolist()] for col in required}
+        result["Date"] = [pd.Timestamp(v).strftime("%Y-%m-%d") for v in df.index]
+        return result
+    except Exception:
+        return None
+
 @ttl_cache(10)  # 10초 — 재분석 시 현재가 실시간 반영용 경량 캐시
 def fetch_naver_realtime(code: str):
     """KRX 현재가·전일종가만 조회하는 경량 함수 (HTML 파싱 없음).
@@ -1209,7 +1251,7 @@ US_TICKERS = [
     "MCD", "TMO", "AMD", "DIS", "ABT", "WMT", "CSCO", "INTU", "PFE", "CMCSA", "ORCL", "QCOM", "NKE", "UPS", 
     "TXN", "PM", "GE", "IBM", "AMGN", "HON", "UNP", "SBUX", "BA", "MMM", "CAT", "GS", "MS", "C", "BLK", "SPGI", 
     "AXP", "LOW", "TGT", "TJX", "CVS", "CI", "ELV", "DE", "PLD", "AMT", "NOW", "ISRG", "ZTS", "GILD", "SYK", 
-    "BKNG", "MDT", "ADP", "LRCX", "ADI", "MU", "VRTX", "REGN", "SO", "DUK", "SLB", "EOG", "COP", "MMC", "AON", 
+    "BKNG", "MDT", "ADP", "LRCX", "ADI", "MU", "VRTX", "REGN", "SO", "DUK", "SLB", "EOG", "COP", "MRSH", "AON",
     "PGR", "CB", "CL", "MO", "EMR", "ETN", "ITW", "PH", "USB", "PNC", "TFC", "COF", "MET", "PRU", "ALL", "TRV", 
     "AIG", "HIG", "PLTR", "IONQ", "JOBY", "ACHR", "SOFI", "AFRM", "UPST", "RIVN", "LCID", "NKLA", "DNA", "PATH"
 ]
@@ -1752,7 +1794,7 @@ TOSS_US_UNIVERSE = [
     # 금융주
     "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SPGI", "MCO", "AXP",
     "V", "MA", "COF", "USB", "PNC", "TFC", "MTB", "CFG", "FITB", "RF",
-    "CB", "PGR", "MET", "PRU", "AFL", "AIG", "HIG", "ALL", "TRV", "MMC",
+    "CB", "PGR", "MET", "PRU", "AFL", "AIG", "HIG", "ALL", "TRV", "MRSH",
     "AON", "MSCI", "ICE", "CME", "NDAQ",
     # 헬스케어/제약
     "JNJ", "UNH", "LLY", "ABBV", "MRK", "ABT", "TMO", "DHR", "SYK", "BSX",
@@ -2915,7 +2957,7 @@ _US_RECO_UNIVERSE = [
     "DHR","AMGN","NEE","WFC","RTX","CAT","VZ","CMCSA","INTU","ADBE",
     "IBM","GS","MS","BKNG","HON","SPGI","QCOM","NOW","UNP","ETN",
     "LOW","T","GE","AXP","SYK","BLK","MDT","GILD","ELV","DE",
-    "ADI","PLD","CI","MMC","VRTX","CB","SO","COP","SBUX","PANW",
+    "ADI","PLD","CI","MRSH","VRTX","CB","SO","COP","SBUX","PANW",
     "MO","APD","EOG","BSX","LRCX","TT","ADP","ITW","ANET","REGN",
     "PGR","KLAC","ZTS","CME","ICE","ECL","HUM","MCO","PSA","NOC",
     "MU","INTC","F","GM","BA","LMT","MRNA","PYPL","CRWD","DDOG",
@@ -6189,13 +6231,947 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         },
     }
 
+def _smma_values(values: List[float], length: int) -> List[float | None]:
+    """TradingView의 SMMA(RMA)와 같은 SMA 시드 + alpha=1/length 재귀 계산."""
+    size = len(values)
+    result: List[float | None] = [None] * size
+    if length <= 0 or size < length:
+        return result
+    seed = float(sum(values[:length]) / length)
+    result[length - 1] = seed
+    previous = seed
+    for idx in range(length, size):
+        previous = ((previous * (length - 1)) + float(values[idx])) / length
+        result[idx] = previous
+    return result
+
+
+def _confirmed_williams_fractals(highs: List[float], lows: List[float]) -> Dict[str, List[Dict]]:
+    """5봉 Williams Fractal을 계산한다.
+
+    가운데 봉 뒤의 두 봉이 모두 끝난 경우만 반환하므로 현재 시점에서
+    사용할 수 없는 미래 정보를 참조하지 않는다.
+    """
+    upper: List[Dict] = []
+    lower: List[Dict] = []
+    limit = min(len(highs), len(lows))
+    for idx in range(2, limit - 2):
+        high = float(highs[idx])
+        low = float(lows[idx])
+        if high > max(float(highs[idx - 2]), float(highs[idx - 1]),
+                      float(highs[idx + 1]), float(highs[idx + 2])):
+            upper.append({"index": idx, "price": high, "confirmed_index": idx + 2})
+        if low < min(float(lows[idx - 2]), float(lows[idx - 1]),
+                     float(lows[idx + 1]), float(lows[idx + 2])):
+            lower.append({"index": idx, "price": low, "confirmed_index": idx + 2})
+    return {"upper": upper, "lower": lower}
+
+
+ARTY_STRATEGY_RULE_VERSION = "arty-smma-fractal-v3"
+_ARTY_BACKTEST_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs" / "backtests" / "arty_smma_fractal_backtest_summary.json"
+)
+
+
+def _arty_validation_verdict(
+    test: Dict,
+    walk_forward: Dict | None = None,
+    data_quality_ok: bool = True,
+    stale: bool = False,
+) -> Tuple[str, str]:
+    """최신 홀드아웃·롤링 워크포워드·데이터 품질을 함께 판정한다."""
+    if stale:
+        return "stale", "현재 전략과 결과 불일치"
+    if not data_quality_ok:
+        return "rejected", "데이터 품질 검증 실패"
+    trades = int(test.get("trades") or 0)
+    avg_r = float(test.get("avg_r_multiple") or 0.0)
+    pf = float(test.get("profit_factor") or 0.0)
+    median_return = float(test.get("median_return_pct") or 0.0)
+    ci_low = test.get("avg_r_95ci_low")
+    rolling = dict((walk_forward or {}).get("aggregate") or {})
+    rolling_folds = list((walk_forward or {}).get("folds") or [])
+    rolling_trades = int(rolling.get("trades") or 0)
+    rolling_avg_r = float(rolling.get("avg_r_multiple") or 0.0)
+    rolling_pf = float(rolling.get("profit_factor") or 0.0)
+    rolling_ci_low = rolling.get("avg_r_95ci_low")
+    rolling_available = len(rolling_folds) >= 3
+    positive_fold_ratio = float(
+        (walk_forward or {}).get("positive_avg_r_fold_ratio") or 0.0
+    )
+    rolling_ok = (
+        rolling_available
+        and rolling_trades >= 30
+        and rolling_avg_r > 0
+        and rolling_pf >= 1.10
+        and rolling_ci_low is not None
+        and float(rolling_ci_low) > 0
+        and positive_fold_ratio >= 0.75
+    )
+    latest_ok = (
+        trades >= 30 and avg_r > 0 and pf >= 1.20 and median_return > 0
+        and ci_low is not None and float(ci_low) > 0
+    )
+    if latest_ok and rolling_ok:
+        return "accepted", "검증 통과"
+
+    latest_directionally_positive = (
+        trades >= 10
+        and avg_r > 0
+        and median_return > 0
+        and pf > 1.0
+    )
+    rolling_directionally_positive = (
+        rolling_available
+        and rolling_trades >= 20
+        and rolling_avg_r > 0
+        and rolling_pf > 1.0
+        and positive_fold_ratio >= 0.50
+    )
+
+    if not rolling_available:
+        if latest_directionally_positive:
+            return "provisional", "최신 홀드아웃 양호·롤링 검증 대기"
+        return "inconclusive", "롤링 검증 부족·미확정"
+
+    if latest_directionally_positive and rolling_directionally_positive:
+        return "provisional", "방향성 일치·통계 확정 전"
+
+    if latest_directionally_positive != rolling_directionally_positive:
+        return "inconclusive", "최신·롤링 결과 불일치"
+
+    if trades >= 10 and rolling_trades >= 20:
+        return "rejected", "최신·롤링 성과 기준 미달"
+
+    return "inconclusive", "표본 부족·미확정"
+
+
+def _arty_factor_tests(factors: Dict, factor: str) -> Dict:
+    return {
+        str(key): dict((row or {}).get("test") or {})
+        for key, row in ((factors or {}).get(factor) or {}).items()
+    }
+
+
+def _arty_volume_conclusion(factors: Dict) -> str:
+    tests = _arty_factor_tests(factors, "volume_filter")
+    eligible = [
+        (key, row) for key, row in tests.items()
+        if int(row.get("trades") or 0) >= 30 and row.get("avg_return_pct") is not None
+    ]
+    if not eligible:
+        return "거래량 조건별 검증 표본이 부족해 필터 효과를 판정할 수 없습니다."
+    best_key, best = max(eligible, key=lambda item: float(item[1]["avg_return_pct"]))
+    label = "필터 없음" if best_key == "None|None" else best_key
+    return (
+        f"{label}이 검증 {int(best.get('trades') or 0)}건·평균 "
+        f"{float(best.get('avg_return_pct') or 0):+.2f}%로 가장 높았습니다. "
+        "거래량 조건은 검증 통과 전까지 진단 전용입니다."
+    )
+
+
+def _arty_slope_conclusion(factors: Dict, fine_grid: Dict | None = None) -> str:
+    tests = {
+        str(key): dict((row or {}).get("test") or {})
+        for key, row in (fine_grid or {}).items()
+    } or _arty_factor_tests(factors, "smma200_slope")
+    eligible = [
+        (key, row)
+        for key, row in tests.items()
+        if int(row.get("trades") or 0) >= 30
+        and row.get("avg_return_pct") is not None
+    ]
+    if not eligible:
+        return "미세 기울기 임계값별 검증 표본이 30건 미만이라 필터를 채택하지 않습니다."
+    signatures = {
+        (
+            int(row.get("trades") or 0),
+            row.get("avg_return_pct"),
+            row.get("profit_factor"),
+        )
+        for row in tests.values()
+    }
+    if len(signatures) <= 1:
+        return "기울기 임계값별 검증 거래가 동일해 추가 성과 개선은 확인되지 않았습니다."
+    best_key, best = max(
+        eligible,
+        key=lambda item: float(item[1].get("avg_return_pct") or -999),
+    )
+    return (
+        f"미세 기울기 {best_key}%가 검증 {int(best.get('trades') or 0)}건·"
+        f"평균 {float(best.get('avg_return_pct') or 0):+.2f}%로 가장 높지만 "
+        "전체 검증 통과 전에는 진단 전용입니다."
+    )
+
+
+def _load_arty_backtest_evidence() -> Dict:
+    """백테스트 JSON을 유일한 결과 공급원으로 읽고 현재 규칙 버전을 확인한다."""
+    fallback = {
+        "available": False,
+        "generated_at": None,
+        "window": "백테스트 결과 없음",
+        "universe": {"KRX": "—", "US": "—"},
+        "grid_size": 0,
+        "markets": {
+            market: {
+                "verdict": "unavailable",
+                "verdict_label": "백테스트 결과 없음",
+                "production_applied": False,
+                "selected": {},
+                "train": {},
+                "test": {},
+                "entry_test": {},
+                "retest_test": {},
+                "atr_test": {},
+                "walk_forward": {},
+                "extended_diagnostics": {},
+                "data_quality": {},
+                "volume_conclusion": "백테스트 결과가 없습니다.",
+                "slope_conclusion": "백테스트 결과가 없습니다.",
+                "note": "현재 기술 조건은 연구용 진단으로만 표시합니다.",
+            }
+            for market in ("KRX", "US")
+        },
+        "corporate_actions": {"adjusted_ohlc_used": True},
+    }
+    try:
+        raw = json.loads(_ARTY_BACKTEST_PATH.read_text(encoding="utf-8"))
+        stale = (
+            raw.get("strategy_rule_version") != ARTY_STRATEGY_RULE_VERSION
+            or not raw.get("strategy_config_hash")
+        )
+        download = raw.get("download_status") or {}
+        cross_checks = (
+            ((raw.get("data_provider") or {}).get("cross_provider_checks") or {})
+        )
+        markets = {}
+        for market in ("KRX", "US"):
+            market_raw = dict((raw.get("markets") or {}).get(market) or {})
+            factors = market_raw.get("factor_analysis") or {}
+            test = dict(market_raw.get("test") or {})
+            walk_forward = dict(market_raw.get("walk_forward") or {})
+            extended = dict(market_raw.get("extended_diagnostics") or {})
+            market_download = dict(download.get(market) or {})
+            market_checks = list(cross_checks.get(market) or [])
+            data_quality_ok = (
+                int(market_download.get("requested") or 0) > 0
+                and int(market_download.get("success") or 0)
+                == int(market_download.get("requested") or 0)
+                and bool(market_checks)
+                and all(row.get("status") == "passed" for row in market_checks)
+            )
+            verdict, verdict_label = _arty_validation_verdict(
+                test,
+                walk_forward=walk_forward,
+                data_quality_ok=data_quality_ok,
+                stale=stale,
+            )
+            markets[market] = {
+                "verdict": verdict,
+                "verdict_label": verdict_label,
+                "production_applied": verdict == "accepted",
+                "selected": dict(market_raw.get("best_config") or {}),
+                "train": dict(market_raw.get("train") or {}),
+                "test": test,
+                "entry_test": _arty_factor_tests(factors, "entry_delay"),
+                "retest_test": _arty_factor_tests(factors, "retest_line"),
+                "atr_test": _arty_factor_tests(factors, "atr_tolerance"),
+                "walk_forward": walk_forward,
+                "extended_diagnostics": extended,
+                "data_quality": {
+                    "passed": data_quality_ok,
+                    "download": market_download,
+                    "cross_provider_checks": market_checks,
+                },
+                "volume_conclusion": _arty_volume_conclusion(factors),
+                "slope_conclusion": _arty_slope_conclusion(
+                    factors,
+                    extended.get("smma200_slope_sensitivity") or {},
+                ),
+                "note": (
+                    "전략 규칙 버전이 달라 성과를 적용하지 않습니다."
+                    if stale else
+                    "검증 통과 시에만 진입 계획을 활성화합니다."
+                ),
+            }
+        corporate = dict(raw.get("corporate_action_audit") or {})
+        corporate["adjusted_ohlc_used"] = True
+        return {
+            "available": True,
+            "generated_at": raw.get("generated_at"),
+            "window": raw.get("evaluation_window") or "",
+            "universe": {
+                market: (
+                    f"{int((download.get(market) or {}).get('success') or 0)}/"
+                    f"{int((download.get(market) or {}).get('requested') or 0)}종목"
+                )
+                for market in ("KRX", "US")
+            },
+            "grid_size": int(raw.get("grid_size_per_market") or 0),
+            "strategy_rule_version": raw.get("strategy_rule_version"),
+            "strategy_config_hash": raw.get("strategy_config_hash"),
+            "data_end": raw.get("data_end"),
+            "symbol_lineage": raw.get("symbol_lineage") or {},
+            "earnings_calendar_coverage": (
+                raw.get("earnings_calendar_coverage") or {}
+            ),
+            "markets": markets,
+            "corporate_actions": corporate,
+        }
+    except (OSError, ValueError, TypeError, KeyError):
+        return fallback
+
+
+ARTY_SMMA_BACKTEST_EVIDENCE = _load_arty_backtest_evidence()
+
+
+def _arty_atr_values(
+    highs: List[float], lows: List[float], closes: List[float], length: int = 14
+) -> List[float | None]:
+    """일봉 True Range의 단순 14봉 평균을 반환한다.
+
+    기존 add_indicators의 ATR 계산과 동일한 정의를 사용해 실시간과
+    백테스트의 접촉 허용폭·손절 거리를 일치시킨다.
+    """
+    size = min(len(highs), len(lows), len(closes))
+    result: List[float | None] = [None] * size
+    true_ranges: List[float] = []
+    for index in range(size):
+        high = float(highs[index])
+        low = float(lows[index])
+        previous_close = float(closes[index - 1]) if index else float(closes[index])
+        true_ranges.append(max(high - low, abs(high - previous_close), abs(low - previous_close)))
+        if index >= length - 1:
+            result[index] = sum(true_ranges[index - length + 1:index + 1]) / length
+    return result
+
+
+def _prepare_arty_series(dd: Dict) -> Dict:
+    opens = [float(value) for value in list(dd.get("Open") or [])]
+    highs = [float(value) for value in list(dd.get("High") or [])]
+    lows = [float(value) for value in list(dd.get("Low") or [])]
+    closes = [float(value) for value in list(dd.get("Close") or [])]
+    volumes = list(dd.get("Volume") or [])
+    return {
+        "Open": opens,
+        "High": highs,
+        "Low": lows,
+        "Close": closes,
+        "Volume": volumes,
+        "Date": list(dd.get("Date") or []),
+        "SMMA21": _smma_values(closes, 21),
+        "SMMA50": _smma_values(closes, 50),
+        "SMMA200": _smma_values(closes, 200),
+        "ATR": _arty_atr_values(highs, lows, closes),
+    }
+
+
+def _arty_volume_ratio_at(series: Dict, index: int) -> float | None:
+    volumes = series.get("Volume") or []
+    closes = series.get("Close") or []
+    if len(volumes) != len(closes) or index < 20:
+        return None
+    try:
+        previous = [float(value) for value in volumes[index - 20:index]]
+        average = sum(previous) / len(previous)
+        return float(volumes[index]) / average if average > 0 else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _arty_trend_state_at(series: Dict, index: int) -> Dict:
+    if index < 204:
+        return {
+            "available": False, "bullish": False, "bearish": False,
+            "upward_slopes": False, "fan_expanding": False,
+            "slope21_pct5": None, "slope50_pct5": None,
+            "slope200_pct5": None, "slope200_pct20": None,
+        }
+    smma21 = series["SMMA21"]
+    smma50 = series["SMMA50"]
+    smma200 = series["SMMA200"]
+    required = (
+        smma21[index], smma50[index], smma200[index],
+        smma21[index - 5], smma50[index - 5], smma200[index - 5],
+        smma200[index - 20],
+    )
+    if any(value is None for value in required):
+        return {"available": False}
+    s21, s50, s200 = (float(smma21[index]), float(smma50[index]), float(smma200[index]))
+    old21 = float(smma21[index - 5])
+    old50 = float(smma50[index - 5])
+    old200 = float(smma200[index - 5])
+    slope21 = (s21 / old21 - 1) * 100 if old21 else 0.0
+    slope50 = (s50 / old50 - 1) * 100 if old50 else 0.0
+    slope200 = (s200 / old200 - 1) * 100 if old200 else 0.0
+    slope200_20 = (
+        (s200 / float(smma200[index - 20]) - 1) * 100
+        if float(smma200[index - 20]) else 0.0
+    )
+    gap_now = abs(s21 - s50) + abs(s50 - s200)
+    gap_old = abs(old21 - old50) + abs(old50 - old200)
+    bullish = s21 > s50 > s200
+    return {
+        "available": True,
+        "bullish": bullish,
+        "bearish": s21 < s50 < s200,
+        "upward_slopes": slope21 > 0 and slope50 > 0 and slope200 >= 0,
+        "fan_expanding": gap_now > gap_old,
+        "s21": s21,
+        "s50": s50,
+        "s200": s200,
+        "slope21_pct5": slope21,
+        "slope50_pct5": slope50,
+        "slope200_pct5": slope200,
+        "slope200_pct20": slope200_20,
+    }
+
+
+def _arty_retest_at(series: Dict, pivot_index: int, line: int, atr_tolerance: float) -> Dict:
+    atr = series["ATR"][pivot_index] if 0 <= pivot_index < len(series["ATR"]) else None
+    smma = series[f"SMMA{int(line)}"][pivot_index]
+    if atr is None or smma is None or float(atr) <= 0:
+        return {
+            "confirmed": False, "line": f"SMMA{int(line)}",
+            "line_value": smma, "distance_atr": None, "pivot_atr": atr,
+        }
+    line_value = float(smma)
+    atr_value = float(atr)
+    touched = (
+        float(series["Low"][pivot_index]) <= line_value + atr_value * float(atr_tolerance)
+        and float(series["High"][pivot_index]) >= line_value - atr_value * float(atr_tolerance)
+        and float(series["Close"][pivot_index]) >= line_value
+    )
+    return {
+        "confirmed": bool(touched),
+        "line": f"SMMA{int(line)}",
+        "line_value": line_value,
+        "distance_atr": abs(float(series["Low"][pivot_index]) - line_value) / atr_value,
+        "pivot_atr": atr_value,
+    }
+
+
+def _arty_evaluate_setup(
+    series: Dict,
+    pivot_index: int,
+    confirmed_index: int,
+    config: Dict,
+) -> Dict:
+    """프랙탈 확정 시점의 공통 설정 조건을 평가한다."""
+    trend = _arty_trend_state_at(series, confirmed_index)
+    retest = _arty_retest_at(
+        series,
+        pivot_index,
+        int(config.get("retest_line") or 21),
+        float(config.get("atr_tolerance") or 0.25),
+    )
+    pullback_ratio = _arty_volume_ratio_at(series, pivot_index)
+    rebound_ratio = _arty_volume_ratio_at(series, confirmed_index)
+    pullback_limit = config.get("pullback_volume_max")
+    rebound_minimum = config.get("rebound_volume_min")
+    volume_ok = True
+    if pullback_limit is not None:
+        volume_ok = pullback_ratio is not None and pullback_ratio <= float(pullback_limit)
+    if rebound_minimum is not None:
+        volume_ok = (
+            volume_ok
+            and rebound_ratio is not None
+            and rebound_ratio >= float(rebound_minimum)
+            and float(series["Close"][confirmed_index]) > float(series["Open"][confirmed_index])
+        )
+    slope_minimum = config.get("smma200_slope_min_pct20")
+    slope_ok = (
+        trend.get("available", False)
+        and (
+            slope_minimum is None
+            or float(trend.get("slope200_pct20") or 0) >= float(slope_minimum)
+        )
+    )
+    checks = {
+        "bullish": bool(trend.get("bullish")),
+        "upward_slopes": bool(trend.get("upward_slopes")),
+        "fan_expanding": bool(trend.get("fan_expanding")),
+        "retest": bool(retest.get("confirmed")),
+        "volume": bool(volume_ok),
+        "slope": bool(slope_ok),
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "trend": trend,
+        "retest": retest,
+        "pullback_volume_ratio": pullback_ratio,
+        "rebound_volume_ratio": rebound_ratio,
+    }
+
+
+def _arty_evaluate_entry(
+    series: Dict,
+    pivot_index: int,
+    entry_index: int,
+    entry_price: float,
+    config: Dict,
+) -> Dict:
+    """진입 시점의 공통 추세·추격·손절 거리 조건을 평가한다."""
+    trend = _arty_trend_state_at(series, entry_index)
+    atr = series["ATR"][entry_index] if 0 <= entry_index < len(series["ATR"]) else None
+    stop = float(series["Low"][pivot_index])
+    atr_value = float(atr) if atr is not None else 0.0
+    stop_distance_atr = (
+        (float(entry_price) - stop) / atr_value if atr_value > 0 else None
+    )
+    target = (
+        float(entry_price) + (float(entry_price) - stop) * 2.0
+        if float(entry_price) > stop > 0
+        else None
+    )
+    s21 = float(trend.get("s21") or 0.0)
+    extension_pct = (
+        (float(entry_price) / s21 - 1) * 100 if s21 > 0 else float("inf")
+    )
+    chase_limit_pct = (
+        max(3.0, atr_value / float(entry_price) * 100 * 1.5)
+        if entry_price > 0 and atr_value > 0 else 3.0
+    )
+    slope_minimum = config.get("smma200_slope_min_pct20")
+    checks = {
+        "bullish": bool(trend.get("bullish")),
+        "upward_slopes": bool(trend.get("upward_slopes")),
+        "fan_expanding": bool(trend.get("fan_expanding")),
+        "above_smma21": s21 > 0 and float(entry_price) >= s21,
+        "not_overextended": extension_pct <= chase_limit_pct,
+        "slope": (
+            trend.get("available", False)
+            and (
+                slope_minimum is None
+                or float(trend.get("slope200_pct20") or 0) >= float(slope_minimum)
+            )
+        ),
+        "risk_distance": (
+            stop_distance_atr is not None and 0.50 <= stop_distance_atr <= 4.00
+        ),
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "trend": trend,
+        "atr": atr_value or None,
+        "stop": stop,
+        "target": target,
+        "stop_distance_atr": stop_distance_atr,
+        "extension_pct": extension_pct,
+        "chase_limit_pct": chase_limit_pct,
+    }
+
+
+def _arty_fallback_config(market: str) -> Dict:
+    return {
+        "retest_line": 21,
+        "entry_delay": 1,
+        "atr_tolerance": 0.35 if market == "KRX" else 0.25,
+        "pullback_volume_max": None,
+        "rebound_volume_min": None,
+        "smma200_slope_min_pct20": 0.10 if market == "KRX" else 0.0,
+    }
+
+
+def calc_arty_smma_fractal(
+    dd: Dict,
+    last_price: float,
+    atr: float | None = None,
+    market: str = "KRX",
+) -> Dict:
+    """일봉 SMMA·확정 Fractal의 설정/진입 상태를 공통 규칙으로 산출한다.
+
+    ``atr`` 인자는 이전 호출부 호환용이며 전략 계산에는 사용하지 않는다.
+    ATR은 반드시 ``dd``의 일봉 OHLC에서 내부 계산한다.
+    """
+    del atr
+    rnd = 4 if market == "US" else 2
+    result_base = {
+        "method": "SMMA 21·50·200 + 확정 Williams Fractal",
+        "timeframe": "일봉",
+        "source_url": "https://www.youtube.com/watch?v=OFcvH0_zD-4",
+        "risk_reward": 2.0,
+        "confirmed_lag_bars": 2,
+        "is_empirical_probability": False,
+        "strategy_rule_version": ARTY_STRATEGY_RULE_VERSION,
+        "atr_source": "동일 일봉 OHLC의 ATR14",
+        "signal_conditions_match_backtest": True,
+    }
+    raw = {key: list(dd.get(key) or []) for key in ("Open", "High", "Low", "Close")}
+    lengths = [len(raw[key]) for key in ("Open", "High", "Low", "Close")]
+    if not lengths or min(lengths) < 220 or len(set(lengths)) != 1:
+        return {
+            **result_base,
+            "available": False,
+            "status": "데이터 부족",
+            "status_key": "insufficient",
+            "condition_score_pct": 0,
+            "required_bars": 220,
+            "observed_bars": min(lengths) if lengths else 0,
+            "reasons": ["SMMA200과 20봉 횡보장 기울기 계산에는 최소 220개의 정렬된 일봉이 필요합니다."],
+            "warning": "데이터가 확보될 때까지 이 전략 신호를 매수 판단에 사용하지 않습니다.",
+        }
+    try:
+        series = _prepare_arty_series(dd)
+    except (TypeError, ValueError):
+        return {
+            **result_base,
+            "available": False,
+            "status": "데이터 오류",
+            "status_key": "invalid",
+            "condition_score_pct": 0,
+            "reasons": ["일봉 OHLC에 숫자가 아닌 값이 포함되어 전략을 계산하지 않았습니다."],
+            "warning": "원천 가격 데이터를 확인해야 합니다.",
+        }
+    closes = series["Close"]
+    current_index = len(closes) - 1
+    current_trend = _arty_trend_state_at(series, current_index)
+    s21 = float(current_trend.get("s21") or 0)
+    s50 = float(current_trend.get("s50") or 0)
+    s200 = float(current_trend.get("s200") or 0)
+    bullish = bool(current_trend.get("bullish"))
+    bearish = bool(current_trend.get("bearish"))
+    alignment = "정배열" if bullish else "역배열" if bearish else "혼조"
+    cross_direction = "없음"
+    cross_age = None
+    for idx in range(len(closes) - 1, 49, -1):
+        prev21, prev50 = series["SMMA21"][idx - 1], series["SMMA50"][idx - 1]
+        curr21, curr50 = series["SMMA21"][idx], series["SMMA50"][idx]
+        if None in (prev21, prev50, curr21, curr50):
+            continue
+        if prev21 <= prev50 and curr21 > curr50:
+            cross_direction, cross_age = "골든크로스", len(closes) - 1 - idx
+            break
+        if prev21 >= prev50 and curr21 < curr50:
+            cross_direction, cross_age = "데드크로스", len(closes) - 1 - idx
+            break
+
+    fractals = _confirmed_williams_fractals(series["High"], series["Low"])
+    latest_lower = fractals["lower"][-1] if fractals["lower"] else None
+    latest_upper = fractals["upper"][-1] if fractals["upper"] else None
+    dates = series["Date"]
+
+    def _fractal_payload(item):
+        if not item:
+            return None
+        idx = int(item["index"])
+        confirmed_idx = int(item["confirmed_index"])
+        return {
+            "price": round(float(item["price"]), rnd),
+            "pivot_index": idx,
+            "confirmed_index": confirmed_idx,
+            "pivot_date": str(dates[idx]) if len(dates) == len(closes) else None,
+            "confirmed_date": str(dates[confirmed_idx]) if len(dates) == len(closes) else None,
+            "age_bars": len(closes) - 1 - confirmed_idx,
+        }
+
+    lower_payload = _fractal_payload(latest_lower)
+    upper_payload = _fractal_payload(latest_upper)
+    profile = ARTY_SMMA_BACKTEST_EVIDENCE["markets"].get(
+        market, ARTY_SMMA_BACKTEST_EVIDENCE["markets"]["US"]
+    )
+    selected = dict(profile.get("selected") or {})
+    config = (
+        selected
+        if selected and profile.get("verdict") not in {"stale", "unavailable"}
+        else _arty_fallback_config(market)
+    )
+    effective_atr_tolerance = float(config.get("atr_tolerance") or 0.25)
+    setup = {
+        "passed": False,
+        "checks": {},
+        "trend": {},
+        "retest": {"confirmed": False, "line": f"SMMA{config.get('retest_line', 21)}"},
+        "pullback_volume_ratio": None,
+        "rebound_volume_ratio": None,
+    }
+    retests = {
+        "21": {"confirmed": False, "line_value": round(s21, rnd), "distance_atr": None},
+        "50": {"confirmed": False, "line_value": round(s50, rnd), "distance_atr": None},
+    }
+    if latest_lower:
+        pivot_index = int(latest_lower["index"])
+        confirmed_index = int(latest_lower["confirmed_index"])
+        setup = _arty_evaluate_setup(series, pivot_index, confirmed_index, config)
+        for line in (21, 50):
+            diagnostic = _arty_retest_at(
+                series, pivot_index, line, effective_atr_tolerance
+            )
+            retests[str(line)] = {
+                "confirmed": bool(diagnostic["confirmed"]),
+                "line_value": round(float(diagnostic["line_value"]), rnd)
+                if diagnostic.get("line_value") is not None else None,
+                "distance_atr": round(float(diagnostic["distance_atr"]), 3)
+                if diagnostic.get("distance_atr") is not None else None,
+            }
+
+    delay = max(0, int(config.get("entry_delay") or 0))
+    entry_index = (
+        int(latest_lower["confirmed_index"]) + delay if latest_lower else None
+    )
+    entry_state = "no_setup"
+    entry_evaluation = None
+    evaluated_entry_price = None
+    executable_entry = delay >= 1
+    if latest_lower and setup["passed"]:
+        if entry_index is not None and current_index < entry_index:
+            entry_state = "pending"
+        elif entry_index == current_index:
+            evaluated_entry_price = (
+                float(series["Close"][current_index])
+                if delay == 0 else float(series["Open"][current_index])
+            )
+            entry_evaluation = _arty_evaluate_entry(
+                series,
+                int(latest_lower["index"]),
+                current_index,
+                evaluated_entry_price,
+                config,
+            )
+            if not entry_evaluation["passed"]:
+                entry_state = "cancelled"
+            elif not executable_entry:
+                entry_state = "benchmark_only"
+            elif profile.get("verdict") == "accepted":
+                entry_state = "eligible"
+            else:
+                entry_state = "technical_only"
+        else:
+            entry_state = "expired"
+    elif latest_lower:
+        entry_state = "setup_rejected"
+
+    setup_checks = setup.get("checks") or {}
+    entry_checks = (entry_evaluation or {}).get("checks") or {}
+    score = 15
+    score += 20 if setup_checks.get("bullish") else 0
+    score += 15 if setup_checks.get("upward_slopes") else 0
+    score += 10 if setup_checks.get("fan_expanding") else 0
+    score += 20 if setup_checks.get("retest") else 0
+    score += 10 if setup_checks.get("volume", True) else 0
+    score += 5 if entry_checks.get("risk_distance") else 0
+    score += 5 if cross_direction == "골든크로스" and cross_age is not None and cross_age <= 30 else 0
+    condition_score = int(max(0, min(100, score)))
+
+    if entry_state == "eligible":
+        status, status_key = "검증된 진입 후보", "confirmed"
+    elif entry_state == "technical_only":
+        status = f"기술 조건 충족 · {profile.get('verdict_label', '미검증')}"
+        status_key = "technical_only"
+    elif entry_state == "benchmark_only":
+        status, status_key = "확정 종가 비교값 · 실체결 불가", "benchmark_only"
+    elif entry_state == "pending":
+        remaining = max(0, int(entry_index or current_index) - current_index)
+        status, status_key = f"진입 {remaining}봉 대기", "entry_pending"
+    elif entry_state == "expired":
+        status, status_key = "검증 진입 시점 경과", "missed_entry"
+    elif bearish:
+        status, status_key = "매수 보류", "bearish"
+    elif bullish:
+        status, status_key = "눌림목·프랙탈 대기", "wait_retest"
+    else:
+        status, status_key = "정렬 확인 대기", "mixed"
+
+    current_atr = series["ATR"][current_index]
+    slope_minimum = config.get("smma200_slope_min_pct20")
+    sideways_filtered = (
+        slope_minimum is not None
+        and float(current_trend.get("slope200_pct20") or 0) < float(slope_minimum)
+    )
+    reasons: List[str] = [
+        f"SMMA 정렬: {alignment} (21 {s21:,.{rnd}f} / 50 {s50:,.{rnd}f} / 200 {s200:,.{rnd}f})",
+        (
+            "최근 5봉 기울기: "
+            f"21 {float(current_trend.get('slope21_pct5') or 0):+.2f}% / "
+            f"50 {float(current_trend.get('slope50_pct5') or 0):+.2f}% / "
+            f"200 {float(current_trend.get('slope200_pct5') or 0):+.2f}%"
+        ),
+        (
+            f"SMMA200 최근 20봉 기울기 "
+            f"{float(current_trend.get('slope200_pct20') or 0):+.3f}%"
+            + (
+                f" — {float(slope_minimum):.2f}% 미만 횡보 필터"
+                if sideways_filtered and slope_minimum is not None else ""
+            )
+        ),
+        f"선 간격: {'확대' if current_trend.get('fan_expanding') else '축소'} · 최근 교차: {cross_direction}"
+        + (f"({cross_age}봉 전)" if cross_age is not None else ""),
+        (
+            f"전략 ATR14 {float(current_atr):,.{rnd}f} · "
+            f"피벗 당시 ATR로 {float(config.get('atr_tolerance') or 0):.2f}ATR 접촉 판정"
+            if current_atr is not None else "일봉 ATR 계산 불가"
+        ),
+    ]
+    if latest_lower:
+        reasons.append(
+            f"최근 확정 하단 프랙탈 {float(latest_lower['price']):,.{rnd}f}"
+            + (
+                f" · {setup.get('retest', {}).get('line')} 재시험"
+                if setup.get("retest", {}).get("confirmed")
+                else " · 선택 SMMA 재시험 불충족"
+            )
+        )
+    else:
+        reasons.append("확정된 하단 프랙탈이 없습니다.")
+    if entry_evaluation and not entry_checks.get("not_overextended"):
+        reasons.append(
+            f"진입가는 SMMA21 대비 {float(entry_evaluation['extension_pct']):+.2f}% 이격 — 추격 제한"
+        )
+    if entry_evaluation and not entry_checks.get("risk_distance"):
+        reasons.append(
+            f"프랙탈 손절 거리가 {float(entry_evaluation.get('stop_distance_atr') or 0):.2f}ATR"
+            " — 허용 범위 0.50~4.00ATR 밖"
+        )
+    if profile.get("verdict") != "accepted":
+        reasons.append(
+            f"백테스트 {profile.get('verdict_label', '미검증')} — 진입 계획 비활성화"
+        )
+
+    entry = stop = target = None
+    if entry_state == "eligible" and entry_evaluation:
+        entry = float(evaluated_entry_price)
+        stop = float(entry_evaluation["stop"])
+        if entry > stop > 0:
+            target = float(entry_evaluation["target"])
+        else:
+            entry = stop = None
+
+    def _rounded_retest_payload(payload: Dict) -> Dict:
+        return {
+            "confirmed": bool(payload.get("confirmed")),
+            "line": payload.get("line"),
+            "line_value": (
+                round(float(payload["line_value"]), rnd)
+                if payload.get("line_value") is not None else None
+            ),
+            "distance_atr": (
+                round(float(payload["distance_atr"]), 3)
+                if payload.get("distance_atr") is not None else None
+            ),
+            "atr_tolerance": effective_atr_tolerance,
+        }
+
+    eligible_date = (
+        str(dates[entry_index])
+        if entry_index is not None and len(dates) == len(closes)
+        and 0 <= entry_index < len(dates) else None
+    )
+    pivot_volume_ratio = setup.get("pullback_volume_ratio")
+    rebound_volume_ratio = setup.get("rebound_volume_ratio")
+
+    return {
+        **result_base,
+        "available": True,
+        "status": status,
+        "status_key": status_key,
+        "condition_score_pct": condition_score,
+        "alignment": alignment,
+        "smma": {"21": round(s21, rnd), "50": round(s50, rnd), "200": round(s200, rnd)},
+        "slope_pct_5bars": {
+            "21": round(float(current_trend.get("slope21_pct5") or 0), 3),
+            "50": round(float(current_trend.get("slope50_pct5") or 0), 3),
+            "200": round(float(current_trend.get("slope200_pct5") or 0), 3),
+        },
+        "slope_pct_20bars": {
+            "200": round(float(current_trend.get("slope200_pct20") or 0), 3)
+        },
+        "sideways_filter": {
+            "filtered": sideways_filtered,
+            "minimum_slope_pct20": slope_minimum,
+            "signal_gate_applied": slope_minimum is not None,
+        },
+        "fan_expanding": bool(current_trend.get("fan_expanding")),
+        "cross": {"direction": cross_direction, "age_bars": cross_age},
+        "retest": _rounded_retest_payload(setup.get("retest") or {}),
+        "retests": retests,
+        "volume_confirmation": {
+            "available": pivot_volume_ratio is not None and rebound_volume_ratio is not None,
+            "pullback_ratio": (
+                round(pivot_volume_ratio, 3) if pivot_volume_ratio is not None else None
+            ),
+            "rebound_ratio": (
+                round(rebound_volume_ratio, 3) if rebound_volume_ratio is not None else None
+            ),
+            "pullback_decreased": (
+                pivot_volume_ratio is not None and pivot_volume_ratio <= 0.85
+            ),
+            "rebound_increased": (
+                rebound_volume_ratio is not None and rebound_volume_ratio >= 1.0
+            ),
+            "signal_gate_applied": (
+                config.get("pullback_volume_max") is not None
+                or config.get("rebound_volume_min") is not None
+            ),
+        },
+        "risk_distance": {
+            "atr": (
+                round(float(entry_evaluation["stop_distance_atr"]), 3)
+                if entry_evaluation and entry_evaluation.get("stop_distance_atr") is not None
+                else None
+            ),
+            "valid": bool(entry_checks.get("risk_distance")),
+            "minimum_atr": 0.50,
+            "maximum_atr": 4.00,
+        },
+        "entry_timing": {
+            "state": entry_state,
+            "backtest_selected_delay_bars": delay,
+            "eligible_index": entry_index,
+            "eligible_date": eligible_date,
+            "bars_remaining": (
+                max(0, int(entry_index) - current_index)
+                if entry_index is not None else None
+            ),
+            "execution_model": (
+                "확정 종가 비교 전용" if delay == 0 else f"확정 후 {delay}봉 시가"
+            ),
+            "executable": executable_entry,
+            "auto_order_scheduled": False,
+            "note": (
+                "지연 봉 도달 전에는 진입가를 만들지 않으며 자동 주문을 예약하지 않습니다."
+            ),
+        },
+        "backtest_validation": {
+            "generated_at": ARTY_SMMA_BACKTEST_EVIDENCE["generated_at"],
+            "window": ARTY_SMMA_BACKTEST_EVIDENCE["window"],
+            "universe": ARTY_SMMA_BACKTEST_EVIDENCE["universe"].get(
+                market, ARTY_SMMA_BACKTEST_EVIDENCE["universe"]["US"]
+            ),
+            "grid_size": ARTY_SMMA_BACKTEST_EVIDENCE["grid_size"],
+            "strategy_rule_version": ARTY_SMMA_BACKTEST_EVIDENCE.get(
+                "strategy_rule_version"
+            ),
+            "strategy_config_hash": ARTY_SMMA_BACKTEST_EVIDENCE.get(
+                "strategy_config_hash"
+            ),
+            "data_end": ARTY_SMMA_BACKTEST_EVIDENCE.get("data_end"),
+            **profile,
+        },
+        "corporate_action_audit": ARTY_SMMA_BACKTEST_EVIDENCE["corporate_actions"],
+        "fractals": {"support": lower_payload, "resistance": upper_payload},
+        "entry": round(entry, rnd) if entry is not None else None,
+        "stop": round(stop, rnd) if stop is not None else None,
+        "target": round(target, rnd) if target is not None else None,
+        "reasons": reasons,
+        "warning": (
+            "Williams Fractal은 중심 봉 뒤 2개 봉이 끝난 뒤에만 확정됩니다. "
+            "확정 종가 진입은 비교용이며 다음 봉 이후 시가만 실행 가능 모델입니다. "
+            "검증 통과 전에는 기술 조건이 충족돼도 진입 계획을 제공하지 않습니다."
+        ),
+    }
+
+
 def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indicator_signals: Dict,
                    market: str = "KRX", period: str = "1y",
                    event_risk: Dict | None = None,
                    learning_adjustment: Dict | None = None,
                    market_regime: str = "NEUTRAL",
                    reference_prev_close: float | None = None,
-                   reference_pct_change: float | None = None) -> Dict:
+                   reference_pct_change: float | None = None,
+                   arty_dd: Dict | None = None) -> Dict:
     """매수 적정 가격 예측 — 다중 지표 기반 정밀 구간 산출"""
     lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
     highs    = [float(x) for x in dd.get("High",  []) if x is not None]
@@ -6872,6 +7848,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     except Exception:
         band_distance_warning = None
 
+    arty_smma_fractal = calc_arty_smma_fractal(
+        arty_dd or dd, last_price, market=market
+    )
     r = lambda v: round(v, rnd)
     return {
         "current": r(last_price),
@@ -6926,6 +7905,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         },
         "learning_adjustment": learning_adjustment or {"sample_n": 0, "depth_extra": 0.0, "reason": "학습 표본 부족"},
         "strategy_rec": strategy_rec,
+        "arty_smma_fractal": arty_smma_fractal,
         "current_context": current_context,
         "band_distance_warning": band_distance_warning,
     }
@@ -9155,8 +10135,19 @@ def route(path: str, params: Dict) -> Dict:
             last, atr_val, market, dd, event_risk, learning_adjustment,
             chart_patterns=geo_patterns,
         )
-        buy_price        = calc_buy_price(dd, last, atr_val, score, indicator_signals, market, period,
-                                          event_risk, learning_adjustment, regime, prev, pct)
+        # 단기 화면은 분봉을 사용하더라도 SMMA 21·50·200 전략은 항상 일봉으로 계산한다.
+        # 이미 220개 이상의 일봉이 있으면 재사용하고, 아니면 캐시된 전용 일봉을 조회한다.
+        _dates = dd.get("Date") or []
+        _has_daily_history = (
+            len(dd.get("Close") or []) >= 220
+            and bool(_dates)
+            and isinstance(_dates[-1], str)
+        )
+        arty_dd = dd if _has_daily_history else (fetch_arty_daily_data(sym, market) or dd)
+        buy_price        = calc_buy_price(
+            dd, last, atr_val, score, indicator_signals, market, period,
+            event_risk, learning_adjustment, regime, prev, pct, arty_dd=arty_dd,
+        )
 
         # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) ────────────────────
         hybrid_score = None
@@ -10977,7 +11968,6 @@ input::placeholder{color:#484f58}
 .sector-stock-up{color:#3fb950}.sector-stock-down{color:#f85149}.sector-stock-flat{color:#8b949e}
 .sector-stock-status{font-size:9px;line-height:1.45;color:#8b949e}
 .sector-stock-error{color:#f85149}
-
 /* ── 업종별 흐름 반응형 (base repeat(8) 이후에 선언해야 override 적용됨) ── */
 @media(max-width:1100px){
   .sector-cards{grid-template-columns:repeat(4,minmax(0,1fr))}
@@ -12415,7 +13405,6 @@ function _applyPriceUpdate(d) {
     }
   }
 }
-
 async function analyze(tickerOverride = '') {
   _stopPricePolling();   // 새 검색 시 이전 폴링 중단
   _hideStockSuggestions();
@@ -14016,6 +15005,127 @@ function renderForecast(d, isKrx) {
           </div>` : ''}
         </div>` : '';
 
+      const arty = bp.arty_smma_fractal || null;
+      const artyToneMap = {
+        confirmed: ['#3fb950','#0d2d1a'], wait_retest: ['#d29922','#241a0a'],
+        overextended: ['#f97316','#2b190c'], bearish: ['#f85149','#2d1515'],
+        sideways: ['#d29922','#241a0a'],
+        entry_pending: ['#d29922','#241a0a'], technical_only: ['#f97316','#2b190c'],
+        benchmark_only: ['#8b949e','#161b22'], missed_entry: ['#8b949e','#161b22'],
+        mixed: ['#58a6ff','#0d1b33'], insufficient: ['#8b949e','#161b22'],
+        invalid: ['#f85149','#2d1515'],
+      };
+      const artyPrice = value => Number.isFinite(Number(value)) ? fmt(Number(value), isKrx) : '—';
+      const artyHtml = arty ? (() => {
+        const [tone, bg] = artyToneMap[arty.status_key] || ['#8b949e','#161b22'];
+        const smma = arty.smma || {};
+        const fractals = arty.fractals || {};
+        const support = fractals.support || null;
+        const resistance = fractals.resistance || null;
+        const validation = arty.backtest_validation || {};
+        const selected = validation.selected || {};
+        const train = validation.train || {};
+        const test = validation.test || {};
+        const retests = arty.retests || {};
+        const volumeConfirmation = arty.volume_confirmation || {};
+        const sidewaysFilter = arty.sideways_filter || {};
+        const corporateAudit = arty.corporate_action_audit || {};
+        const walkForward = validation.walk_forward || {};
+        const walkAggregate = walkForward.aggregate || {};
+        const extended = validation.extended_diagnostics || {};
+        const regimes = extended.market_regime || {};
+        const liquidity = extended.liquidity_by_20d_turnover_tercile || {};
+        const earningsAudit = extended.earnings_proximity || {};
+        const costAudit = extended.cost_sensitivity || {};
+        const dataQuality = validation.data_quality || {};
+        const downloadQuality = dataQuality.download || {};
+        const providerChecks = dataQuality.cross_provider_checks || [];
+        const validationTone = ['rejected','stale'].includes(validation.verdict)
+          ? '#f85149'
+          : validation.verdict === 'accepted' ? '#3fb950'
+          : validation.verdict === 'unavailable' ? '#8b949e' : '#d29922';
+        const pctSigned = value => Number.isFinite(Number(value))
+          ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`
+          : '—';
+        const factorMetric = (table, key) => {
+          const row = (table || {})[String(key)] || {};
+          const trades = Number(row.trades || 0);
+          if (trades < 10) {
+            return `표본 부족(${trades}건${row.avg_return_pct != null ? `·참고 ${pctSigned(row.avg_return_pct)}` : ''})`;
+          }
+          return `${pctSigned(row.avg_return_pct)}(${trades}건)`;
+        };
+        const entryLabel = Number(selected.entry_delay) === 0
+          ? '확정 봉 종가(비실행 비교)'
+          : `확정 후 ${Number(selected.entry_delay)}봉 시가`;
+        const auditChecks = [
+          `① 종가/다음 시가: 종가는 비실행 비교값 ${factorMetric(validation.entry_test, 0)} vs 1봉 시가 ${factorMetric(validation.entry_test, 1)} · 시가 갭 ${pctSigned(((validation.entry_test || {})['1'] || {}).avg_open_gap_vs_confirm_close_pct)}`,
+          `② 재시험 분리: 21선 ${factorMetric(validation.retest_test, 21)} / 50선 ${factorMetric(validation.retest_test, 50)} · 현재 ${retests['21'] && retests['21'].confirmed ? '21선 접촉' : retests['50'] && retests['50'].confirmed ? '50선 접촉' : '미접촉'}`,
+          `③ 프랙탈 지연: 0봉 ${factorMetric(validation.entry_test, 0)} / 1봉 ${factorMetric(validation.entry_test, 1)} / 3봉 ${factorMetric(validation.entry_test, 3)} / 5봉 ${factorMetric(validation.entry_test, 5)} · 자동 주문 없음`,
+          `④ ATR 허용폭: 0.15 ${factorMetric(validation.atr_test, 0.15)} / 0.25 ${factorMetric(validation.atr_test, 0.25)} / 0.35 ${factorMetric(validation.atr_test, 0.35)} / 0.50 ${factorMetric(validation.atr_test, 0.50)} · 현재 ${Number((arty.retest || {}).atr_tolerance || 0).toFixed(2)}`,
+          `⑤ 거래량: 눌림 ${volumeConfirmation.pullback_ratio != null ? Number(volumeConfirmation.pullback_ratio).toFixed(2) + '배' : '데이터 없음'} / 반등 ${volumeConfirmation.rebound_ratio != null ? Number(volumeConfirmation.rebound_ratio).toFixed(2) + '배' : '데이터 없음'} · ${validation.volume_conclusion || '진단 전용'}`,
+          `⑥ 횡보장: SMMA200 20봉 ${Number(((arty.slope_pct_20bars || {})['200']) || 0).toFixed(3)}% ${sidewaysFilter.filtered ? '→ 차단' : '→ 통과'} · ${validation.slope_conclusion || ''}`,
+          `⑦ 기업행위: 조정 OHLC · 배당 ${Number(corporateAudit.dividend_events || 0).toLocaleString()}건 / 분할 ${Number(corporateAudit.split_events || 0).toLocaleString()}건 · ${corporateAudit.continuity_verdict || '연속성 결과 확인 필요'}`,
+          `⑧ 분기 워크포워드: ${Number((walkForward.folds || []).length)}개 독립 재최적화 · 합산 ${factorMetric({'all': walkAggregate}, 'all')} · 양(+) R 폴드 ${Number(walkForward.positive_avg_r_folds || 0)}개`,
+          `⑨ 시장체제: 상승장 ${factorMetric(regimes, 'BULL')} / 횡보장 ${factorMetric(regimes, 'SIDEWAYS')} / 하락장 ${factorMetric(regimes, 'BEAR')}`,
+          `⑩ 민감도: 거래대금 하위 ${factorMetric(liquidity, 'low')} / 상위 ${factorMetric(liquidity, 'high')} · 실적 ±5봉 ${factorMetric(earningsAudit, 'within_5_bars')} · 추가비용 0.50% ${factorMetric(costAudit, '0.50')}`,
+          `⑪ 데이터 품질: ${Number(downloadQuality.success || 0)}/${Number(downloadQuality.requested || 0)}종목 · 교차검증 ${providerChecks.filter(row => row.status === 'passed').length}/${providerChecks.length} 통과 · ${dataQuality.passed ? '운영 판정 가능' : '운영 차단'}`,
+        ];
+        const backtestHtml = validation.verdict ? `
+          <div id="arty-backtest-validation" style="margin-top:10px;padding:10px;background:#0d1117;border:1px solid ${validationTone}55;border-radius:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+              <div style="font-size:11px;font-weight:800;color:${validationTone}">1년 홀드아웃·롤링 워크포워드: ${_escPrediction(validation.verdict_label || '미검증')}</div>
+              <div style="font-size:9px;color:#8b949e">${_escPrediction(validation.universe || '')} · ${Number(validation.grid_size || 0).toLocaleString()}개 조합</div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px">
+              <div style="background:#161b22;border-radius:6px;padding:7px"><div style="font-size:9px;color:#8b949e">학습 168일</div><div style="font-size:11px;color:#cdd9e5">평균 ${pctSigned(train.avg_return_pct)} · PF ${Number(train.profit_factor || 0).toFixed(2)} · ${Number(train.trades || 0)}건</div></div>
+              <div style="background:#161b22;border-radius:6px;padding:7px"><div style="font-size:9px;color:#8b949e">검증 84일</div><div style="font-size:11px;color:${validationTone}">평균 ${pctSigned(test.avg_return_pct)} · 중앙 ${pctSigned(test.median_return_pct)} · PF ${Number(test.profit_factor || 0).toFixed(2)} · ${Number(test.trades || 0)}건</div></div>
+            </div>
+            <div style="font-size:10px;color:#8b949e;line-height:1.55;margin-top:8px">
+              ${auditChecks.map(item => `<div>${_escPrediction(item)}</div>`).join('')}
+            </div>
+            <div style="font-size:10px;color:${validationTone};line-height:1.45;margin-top:7px">${_escPrediction(validation.note || '')}</div>
+          </div>` : '';
+        const tradePlan = arty.entry != null && arty.stop != null && arty.target != null
+          ? `<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px">
+               <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">진입 기준</div><div style="font-size:12px;font-weight:800;color:#58a6ff">${artyPrice(arty.entry)}</div></div>
+               <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">프랙탈 손절</div><div style="font-size:12px;font-weight:800;color:#f85149">${artyPrice(arty.stop)}</div></div>
+               <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">1:2 목표</div><div style="font-size:12px;font-weight:800;color:#3fb950">${artyPrice(arty.target)}</div></div>
+             </div>`
+          : '';
+        return `
+          <div id="arty-smma-fractal-strategy" style="background:${bg};border:1px solid ${tone}66;border-radius:10px;padding:13px 14px;margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+              <div>
+                <div style="font-size:13px;font-weight:800;color:${tone}">SMMA·프랙탈 기술 조건: ${_escPrediction(arty.status || '계산 불가')}</div>
+                <div style="font-size:10px;color:#8b949e;margin-top:3px">일봉 SMMA 21·50·200 · 확정 Williams Fractal(2봉 지연)</div>
+              </div>
+              <div style="text-align:right">
+                <div style="font-size:9px;color:#8b949e">조건 충족도</div>
+                <div style="font-size:17px;font-weight:800;color:${tone}">${Number(arty.condition_score_pct || 0)}%</div>
+              </div>
+            </div>
+            ${arty.available ? `
+              <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px">
+                <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">SMMA21</div><div style="font-size:12px;font-weight:800;color:#58a6ff">${artyPrice(smma['21'])}</div></div>
+                <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">SMMA50</div><div style="font-size:12px;font-weight:800;color:#d29922">${artyPrice(smma['50'])}</div></div>
+                <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">SMMA200</div><div style="font-size:12px;font-weight:800;color:#f85149">${artyPrice(smma['200'])}</div></div>
+              </div>
+              <div style="font-size:11px;color:#cdd9e5;line-height:1.55;margin-top:9px">
+                <div>정렬: <strong style="color:${tone}">${_escPrediction(arty.alignment || '—')}</strong> · 선 간격 ${arty.fan_expanding ? '확대' : '축소'} · 재시험 ${arty.retest && arty.retest.confirmed ? _escPrediction(arty.retest.line || '확인') : '대기'}</div>
+                <div>확정 지지 프랙탈: ${support ? `${artyPrice(support.price)}${support.pivot_date ? ` (${_escPrediction(support.pivot_date)})` : ''}` : '없음'} · 저항 프랙탈: ${resistance ? artyPrice(resistance.price) : '없음'}</div>
+                <div>진입 상태: ${_escPrediction(((arty.entry_timing || {}).execution_model) || '—')} · ${_escPrediction(((arty.entry_timing || {}).state) || '—')}${(arty.entry_timing || {}).eligible_date ? ` · 기준일 ${_escPrediction(arty.entry_timing.eligible_date)}` : ''}</div>
+              </div>
+              <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-top:8px">
+                ${(arty.reasons || []).slice(0, 5).map(reason => `<div>• ${_escPrediction(reason)}</div>`).join('')}
+              </div>
+              ${tradePlan}
+              ${backtestHtml}
+            ` : `<div style="font-size:11px;color:#8b949e;line-height:1.55;margin-top:9px">${_escPrediction((arty.reasons || [])[0] || '전략 계산에 필요한 일봉이 부족합니다.')}</div>`}
+            <div style="font-size:10px;color:#8b949e;line-height:1.45;margin-top:9px;padding-top:8px;border-top:1px solid #30363d">${_escPrediction(arty.warning || '')}</div>
+          </div>`;
+      })() : '';
+
       const dr = bp.downside_risk || null;
       const riskTone = dr && (dr.level === 'severe' || dr.level === 'high') ? '#f85149'
                      : dr && dr.level === 'medium' ? '#d29922' : '#3fb950';
@@ -14131,7 +15241,7 @@ function renderForecast(d, isKrx) {
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + artyHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
       if (buyRiskNotesEl) {
         buyRiskNotesEl.innerHTML = bandDistanceHtml + eventRiskHtml + downsideRiskHtml;
       }
@@ -15315,7 +16425,6 @@ function renderSectorFlow(d) {
     refreshPeerIndustryTabFromCache();
   }
 }
-
 // ── 섹터 카드 토글: 펼칠 때만 해당 업종의 등락률 상위 2종목 조회 ─────────
 async function toggleSectorCard(el) {
   const isOpen = el.classList.toggle('expanded');
@@ -17456,9 +18565,8 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
     handler_self.wfile.write(body)
 
 
-# ── 서버 시작 시 랭킹 캐시 예열 (백그라운드) ────────────────────────────────
-# 첫 해외 주식 검색 시 랭킹 API 병렬 호출 대기(~5s)를 없앤다.
-# 모듈 로드 직후 백그라운드 스레드로 캐시를 미리 채운다.
+# ── 첫 실제 요청 시 랭킹 캐시 지연 예열 (백그라운드) ───────────────────────
+# import 시에는 외부 호출이나 스레드를 만들지 않는다.
 def _prewarm_toss_ranking():
     try:
         result = _fetch_toss_us_ranking_productcodes()
@@ -17466,8 +18574,25 @@ def _prewarm_toss_ranking():
     except Exception as e:
         print(f"[Toss Prewarm] 예열 실패 (무시): {e}")
 
-_prewarm_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="toss_prewarm")
-_prewarm_pool.submit(_prewarm_toss_ranking)
+_prewarm_lock = threading.Lock()
+_prewarm_started = False
+
+
+def _start_toss_prewarm_once() -> bool:
+    global _prewarm_started
+    if str(os.getenv("ENABLE_TOSS_PREWARM", "1")).lower() in {"0", "false", "no"}:
+        return False
+    with _prewarm_lock:
+        if _prewarm_started:
+            return False
+        _prewarm_started = True
+        thread = threading.Thread(
+            target=_prewarm_toss_ranking,
+            name="toss_prewarm",
+            daemon=True,
+        )
+        thread.start()
+        return True
 
 
 # ── 텔레그램 Bot API 전송 ────────────────────────────────────────────────
@@ -17580,6 +18705,8 @@ class handler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
             path = parsed.path.rstrip("/") or "/"
+            if path in ("/", "/index.html", "/api/stock"):
+                _start_toss_prewarm_once()
 
             # Input Validation
             if path == "/api/stock":
