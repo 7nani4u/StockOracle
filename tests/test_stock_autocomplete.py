@@ -57,5 +57,16 @@ def test_suggestions_route_and_autocomplete_ui(monkeypatch):
         "/api/suggestions?q=",
         "event.key === 'ArrowDown'",
         "analyze(item.ticker)",
+        "button.addEventListener('click'",
+        "input.blur()",
+        "_selectedStockTicker = item.ticker",
+        "tickerOverride || _selectedStockTicker || inputValue",
     ):
         assert fragment in index.HTML
+
+    assert "button.addEventListener('pointerdown'" not in index.HTML
+
+
+def test_mobile_refresh_reuses_canonical_symbol_instead_of_display_name():
+    """정식 회사명이 입력창에 표시돼도 PTR은 분석 결과의 티커를 재사용해야 한다."""
+    assert "analyze(currentData && currentData.symbol ? currentData.symbol : '')" in index.HTML

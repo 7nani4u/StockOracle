@@ -12167,6 +12167,7 @@ let _stockSuggestionActive = -1;
 let _stockSuggestionTimer = null;
 let _stockSuggestionRequest = 0;
 let _stockSuggestionAbort = null;
+let _selectedStockTicker = '';
 
 function _escapeStockSuggestion(value) {
   return String(value == null ? '' : value)
@@ -12210,8 +12211,7 @@ function _renderStockSuggestions(items, statusText = '') {
         </span>
       </button>`).join('');
     list.querySelectorAll('[data-suggestion-index]').forEach(button => {
-      button.addEventListener('pointerdown', event => {
-        event.preventDefault();
+      button.addEventListener('click', () => {
         _selectStockSuggestion(Number(button.dataset.suggestionIndex));
       });
     });
@@ -12239,8 +12239,10 @@ function _selectStockSuggestion(index) {
   const input = document.getElementById('ticker-input');
   if (!item || !input) return;
   input.value = item.name || item.ticker;
+  _selectedStockTicker = item.ticker;
   currentMarket = item.market || currentMarket;
   _hideStockSuggestions();
+  input.blur();
   analyze(item.ticker);
 }
 
@@ -12283,7 +12285,10 @@ function _initStockAutocomplete() {
   const input = document.getElementById('ticker-input');
   const wrap = document.getElementById('stock-search-wrap');
   if (!input || !wrap) return;
-  input.addEventListener('input', _scheduleStockSuggestions);
+  input.addEventListener('input', () => {
+    _selectedStockTicker = '';
+    _scheduleStockSuggestions();
+  });
   input.addEventListener('focus', _scheduleStockSuggestions);
   input.addEventListener('keydown', event => {
     const list = document.getElementById('ticker-suggestions');
@@ -12314,6 +12319,7 @@ _initStockAutocomplete();
 
 function quickSearch(name) {
   _hideStockSuggestions();
+  _selectedStockTicker = '';
   document.getElementById('ticker-input').value = name;
   showPage('analysis');  // 내부에서 closeSidebar() 호출됨
   analyze();
@@ -12325,6 +12331,7 @@ function quickSearch(name) {
 // 문제를 방지한다. (티커 해석 자체는 백엔드 resolve_ticker가 최종 판정)
 function openStockDetail(ticker, market) {
   if (market) currentMarket = market;
+  _selectedStockTicker = ticker;
   const inp = document.getElementById('ticker-input');
   if (inp) inp.value = ticker;
   showPage('analysis');   // 내부에서 closeSidebar() 호출됨
@@ -12413,7 +12420,8 @@ async function analyze(tickerOverride = '') {
   _stopPricePolling();   // 새 검색 시 이전 폴링 중단
   _hideStockSuggestions();
   closeSidebar();   // 모바일에서 분석 시작 시 사이드바 자동 닫기
-  const ticker = String(tickerOverride || document.getElementById('ticker-input').value).trim();
+  const inputValue = document.getElementById('ticker-input').value;
+  const ticker = String(tickerOverride || _selectedStockTicker || inputValue).trim();
   const period = document.getElementById('period-select').value;
   if (!ticker) return;
   // 배지 초기화
@@ -12436,6 +12444,7 @@ async function analyze(tickerOverride = '') {
     }
     if (d.error) { setState('error'); document.getElementById('error-msg').textContent = d.error; return; }
     currentData = d;
+    _selectedStockTicker = d.symbol || ticker;
     if (d.market) {
       currentMarket = d.market;
       document.getElementById('ticker-input').placeholder = d.market === 'KRX' ? '예: 삼성전자, 005930' : '예: 애플, TSLA, NVDA';
@@ -16601,7 +16610,9 @@ initAlerts();       // 🔔 알림 시스템 초기화
       if (hasResult) {
         // analyze() 완료 후 renderResult() 가 강제로 switchTab('chart') 하므로
         // .then() 에서 저장해 둔 탭으로 즉시 복원
-        p = analyze().then(function(){ switchTab(savedTab); });
+        // 입력창은 표시용 정식 종목명일 수 있으므로 현재 결과의 정규 티커를 사용한다.
+        p = analyze(currentData && currentData.symbol ? currentData.symbol : '')
+          .then(function(){ switchTab(savedTab); });
       }
     }
 
