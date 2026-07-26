@@ -90,6 +90,17 @@ except ImportError:
     pass
 
 import yfinance as yf
+from pandas.tseries.holiday import (
+    AbstractHolidayCalendar,
+    GoodFriday,
+    Holiday,
+    USLaborDay,
+    USMartinLutherKingJr,
+    USMemorialDay,
+    USPresidentsDay,
+    USThanksgivingDay,
+    nearest_workday,
+)
 
 # yfinance 내부에서 curl_cffi.curl이 이미 임포트되었을 수 있으므로 명시적으로 덮어쓰기
 try:
@@ -911,42 +922,446 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         print(f"[StockOracle Error] fetch_stock_data 예외 발생: {e}")
         return None, None, f"조회 중 예외 발생: {str(e)}"
 
+class _NasdaqFullDayHolidayCalendar(AbstractHolidayCalendar):
+    """NASDAQ 정규장 전일 휴장 규칙.
+
+    조기 폐장일은 거래일이므로 제외하지 않는다. 국가 애도일·기상 재난처럼
+    사전에 규칙화할 수 없는 특별 휴장은 예상일 계산 후 실제 일정에서 보정한다.
+    """
+
+    rules = [
+        Holiday("New Year's Day", month=1, day=1, observance=nearest_workday),
+        USMartinLutherKingJr,
+        USPresidentsDay,
+        GoodFriday,
+        USMemorialDay,
+        Holiday(
+            "Juneteenth National Independence Day",
+            month=6,
+            day=19,
+            start_date="2022-06-19",
+            observance=nearest_workday,
+        ),
+        Holiday("Independence Day", month=7, day=4, observance=nearest_workday),
+        USLaborDay,
+        USThanksgivingDay,
+        Holiday("Christmas Day", month=12, day=25, observance=nearest_workday),
+    ]
+
+
+_NASDAQ_HOLIDAY_CALENDAR = _NasdaqFullDayHolidayCalendar()
+_NASDAQ_HOLIDAY_LABELS = {
+    "New Year's Day": "신정",
+    "Birthday of Martin Luther King, Jr.": "마틴 루터 킹 데이",
+    "Washington's Birthday": "대통령의 날",
+    "Good Friday": "성금요일",
+    "Memorial Day": "메모리얼 데이",
+    "Juneteenth National Independence Day": "준틴스",
+    "Independence Day": "독립기념일",
+    "Labor Day": "노동절",
+    "Thanksgiving Day": "추수감사절",
+    "Christmas Day": "성탄절",
+}
+_NASDAQ_TRADING_CALENDAR_URL = "https://www.nasdaqtrader.com/Trader.aspx?id=Calendar"
+_NASDAQ_HOLIDAY_RULES_URL = (
+    "https://listingcenter.nasdaq.com/rulebook/nasdaq/rules/nasdaq-equity-1"
+)
+
+
+def _project_nasdaq_session_date(last_session_date: str, sessions_needed: int) -> Dict:
+    """NASDAQ 예정 전일 휴장을 제외하고 N번째 정규 거래일을 계산한다."""
+    needed = max(0, int(sessions_needed or 0))
+    start = pd.Timestamp(last_session_date).normalize()
+    if needed == 0:
+        return {
+            "date": start.strftime("%Y-%m-%d"),
+            "sessions_needed": 0,
+            "scheduled_holidays_excluded": [],
+            "calendar": "NASDAQ 정규장 예정 전일 휴장",
+            "source_url": _NASDAQ_TRADING_CALENDAR_URL,
+            "rules_source_url": _NASDAQ_HOLIDAY_RULES_URL,
+            "special_closure_warning": True,
+        }
+
+    horizon_days = max(370, needed * 3)
+    while True:
+        end = start + pd.Timedelta(days=horizon_days)
+        holiday_series = _NASDAQ_HOLIDAY_CALENDAR.holidays(
+            start=start + pd.Timedelta(days=1),
+            end=end,
+            return_name=True,
+        )
+        holiday_dates = {pd.Timestamp(value).normalize() for value in holiday_series.index}
+        sessions = [
+            value
+            for value in pd.bdate_range(start + pd.Timedelta(days=1), end)
+            if value.normalize() not in holiday_dates
+        ]
+        if len(sessions) >= needed:
+            target = sessions[needed - 1]
+            skipped = [
+                {
+                    "date": pd.Timestamp(value).strftime("%Y-%m-%d"),
+                    "name": _NASDAQ_HOLIDAY_LABELS.get(str(name), str(name)),
+                }
+                for value, name in holiday_series.items()
+                if pd.Timestamp(value) <= target
+            ]
+            return {
+                "date": target.strftime("%Y-%m-%d"),
+                "sessions_needed": needed,
+                "scheduled_holidays_excluded": skipped,
+                "calendar": "NASDAQ 정규장 예정 전일 휴장",
+                "source_url": _NASDAQ_TRADING_CALENDAR_URL,
+                "rules_source_url": _NASDAQ_HOLIDAY_RULES_URL,
+                "special_closure_warning": True,
+            }
+        horizon_days *= 2
+
+
+_US_IPO_RISK_DISCLOSURES = {
+    "EXYN": {
+        "ipo_date": "2026-05-15",
+        "lockup_start_date": "2026-05-14",
+        "shares_outstanding_reference": 7_707_460,
+        "shares_reference_label": "424B4 기준 IPO 직후 예상 발행주식수",
+        "lockups": [
+            {
+                "days": 90,
+                "holders": "기타 SAFE 보유자·임직원",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926062711/tm2525579-34_424b4.htm"
+                ),
+            },
+            {
+                "days": 180,
+                "holders": "회사·이사·임원·10% 이상 보유자·Neolync",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926062711/tm2525579-34_424b4.htm"
+                ),
+            },
+        ],
+        "registrations": [
+            {
+                "form": "S-1 재판매 등록",
+                "filed_date": "2026-06-29",
+                "effective_date": "2026-07-02",
+                "registered_existing_shares": 3_658_564,
+                "registered_warrants": 189_753,
+                "new_dilution": False,
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926078960/exyn-20260331xs1.htm"
+                ),
+                "effect_source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "999999999526002195/xslEFFECTX01/primary_doc.xml"
+                ),
+            },
+        ],
+        "warrants": [
+            {
+                "label": "IPO 공모 워런트",
+                "shares": 2_875_000,
+                "exercise_price": 9.69,
+                "expiry_date": "2031-05-18",
+                "immediately_exercisable": True,
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926063581/tm2525579d38_8k.htm"
+                ),
+            },
+            {
+                "label": "대표주관사 워런트",
+                "shares": 71_875,
+                "exercise_price": 9.69,
+                "expiry_date": None,
+                "immediately_exercisable": True,
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926063581/tm2525579d38_8k.htm"
+                ),
+            },
+            {
+                "label": "NCH 워런트",
+                "shares": 96_774,
+                "exercise_price": 7.75,
+                "expiry_date": None,
+                "immediately_exercisable": True,
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926078960/exyn-20260331xs1.htm"
+                ),
+            },
+            {
+                "label": "Evergreen 워런트",
+                "shares": 189_753,
+                "exercise_price": 7.75,
+                "expiry_date": None,
+                "immediately_exercisable": True,
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926078960/exyn-20260331xs1.htm"
+                ),
+            },
+            {
+                "label": "WAB 워런트",
+                "shares": 7_902,
+                "exercise_price": 8.75,
+                "expiry_date": "2033-09-27",
+                "immediately_exercisable": True,
+                "source_note": "동일 S-1에 $8.70/$8.75가 혼재하여 보유자 표의 $8.75를 사용",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926078960/exyn-20260331xs1.htm"
+                ),
+            },
+            {
+                "label": "SVB 워런트",
+                "shares": 10_727,
+                "exercise_price": 18.97,
+                "expiry_date": "2030-11-09",
+                "immediately_exercisable": True,
+                "dilution_counted": False,
+                "source_note": "우선주 워런트로 공시되어 보통주 환산 수량은 합계에서 제외",
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926078960/exyn-20260331xs1.htm"
+                ),
+            },
+            {
+                "label": "대표주관사 브리지 워런트",
+                "shares": 1_548,
+                "exercise_price": 9.69,
+                "expiry_date": None,
+                "immediately_exercisable": True,
+                "source_url": (
+                    "https://www.sec.gov/Archives/edgar/data/1960355/"
+                    "000110465926062711/tm2525579-34_424b4.htm"
+                ),
+            },
+        ],
+    },
+}
+
+
+def _build_us_ipo_risk(
+    ticker: str,
+    last_price: float,
+    as_of: str | datetime.date | None = None,
+) -> Dict | None:
+    """검증된 공시 프로필로 락업·재판매·워런트 위험을 분리 산출한다."""
+    symbol = str(ticker or "").upper().strip()
+    profile = _US_IPO_RISK_DISCLOSURES.get(symbol)
+    if not profile:
+        return {
+            "available": False,
+            "ticker": symbol,
+            "status": "검증된 SEC 공시 프로필 미확보",
+            "warning": (
+                "락업 기간·등록 주식·워런트 수량을 공시 원문으로 교차검증하기 전에는 "
+                "희석 위험 수치를 표시하지 않습니다."
+            ),
+        }
+    as_of_date = pd.Timestamp(as_of or dt.now().date()).normalize()
+    ipo_date = pd.Timestamp(profile["ipo_date"]).normalize()
+    lockup_start_date = pd.Timestamp(
+        profile.get("lockup_start_date") or profile["ipo_date"]
+    ).normalize()
+    shares_reference = int(profile.get("shares_outstanding_reference") or 0)
+
+    lockups = []
+    for row in profile.get("lockups") or []:
+        expiry = lockup_start_date + pd.Timedelta(days=int(row["days"]))
+        days_remaining = int((expiry - as_of_date).days)
+        lockups.append({
+            **row,
+            "expiry_date": expiry.strftime("%Y-%m-%d"),
+            "days_remaining": max(0, days_remaining),
+            "status": "upcoming" if days_remaining >= 0 else "expired",
+        })
+
+    registrations = []
+    registered_existing_shares = 0
+    for row in profile.get("registrations") or []:
+        existing = int(row.get("registered_existing_shares") or 0)
+        registered_existing_shares += existing
+        registrations.append({
+            **row,
+            "supply_overhang_pct": round(
+                existing / shares_reference * 100, 1
+            ) if shares_reference else None,
+        })
+
+    warrants = []
+    warrant_shares = 0
+    for row in profile.get("warrants") or []:
+        shares = int(row.get("shares") or 0)
+        strike = float(row.get("exercise_price") or 0)
+        dilution_counted = bool(row.get("dilution_counted", True))
+        if dilution_counted:
+            warrant_shares += shares
+        warrants.append({
+            **row,
+            "dilution_counted": dilution_counted,
+            "in_the_money": bool(last_price > 0 and strike > 0 and last_price >= strike),
+            "price_to_strike_pct": round(
+                (float(last_price) / strike - 1) * 100, 1
+            ) if last_price > 0 and strike > 0 else None,
+        })
+
+    supply_overhang_pct = (
+        round(registered_existing_shares / shares_reference * 100, 1)
+        if shares_reference else None
+    )
+    potential_warrant_dilution_pct = (
+        round(warrant_shares / shares_reference * 100, 1)
+        if shares_reference else None
+    )
+    score = 0
+    active_lockups = [row for row in lockups if row["status"] == "upcoming"]
+    if any(row["days_remaining"] <= 30 for row in active_lockups):
+        score += 30
+    elif active_lockups:
+        score += 20
+    if supply_overhang_pct is not None:
+        score += 35 if supply_overhang_pct >= 30 else 20 if supply_overhang_pct >= 10 else 10
+    if potential_warrant_dilution_pct is not None:
+        score += 30 if potential_warrant_dilution_pct >= 20 else 15
+    if warrants and not any(row["in_the_money"] for row in warrants):
+        score = max(0, score - 5)
+    score = min(100, score)
+    level = "high" if score >= 60 else "medium" if score >= 35 else "low"
+    label = {"high": "높음", "medium": "보통", "low": "낮음"}[level]
+    return {
+        "available": True,
+        "ticker": symbol,
+        "as_of": as_of_date.strftime("%Y-%m-%d"),
+        "ipo_date": profile["ipo_date"],
+        "lockup_start_date": lockup_start_date.strftime("%Y-%m-%d"),
+        "risk_score": score,
+        "risk_level": level,
+        "risk_label": label,
+        "risk_score_is_probability": False,
+        "risk_score_method": "락업 임박도·재판매 공급부담·워런트 잠재희석을 합산한 규칙 기반 경보",
+        "shares_outstanding_reference": shares_reference,
+        "shares_reference_label": profile.get("shares_reference_label"),
+        "lockups": lockups,
+        "registrations": registrations,
+        "warrants": warrants,
+        "registered_existing_shares": registered_existing_shares,
+        "supply_overhang_pct": supply_overhang_pct,
+        "potential_warrant_shares": warrant_shares,
+        "potential_warrant_dilution_pct": potential_warrant_dilution_pct,
+        "warnings": [
+            "재판매 등록 기존주식은 즉시 신주 희석이 아니라 매도 가능 물량 증가 위험입니다.",
+            "워런트 희석률은 모든 확인 워런트가 신주로 행사된다는 상한 시나리오입니다.",
+            "우선주 워런트처럼 보통주 환산 수량이 공시로 확정되지 않은 상품은 희석 합계에서 제외합니다.",
+            "락업은 주관사 동의·예외 조항으로 조기 해제되거나 실제 매도가 발생하지 않을 수 있습니다.",
+        ],
+    }
+
+
 @ttl_cache(300)
 def fetch_arty_daily_data(ticker: str, market: str) -> Dict | None:
     """SMMA 21·50·200/프랙탈 전략 전용 일봉 OHLC를 가져온다.
 
     화면의 단기 기간(예: 1개월)은 분봉으로 조회되므로 그 데이터를 그대로
     사용하면 200일선이 200분봉선으로 바뀐다. 전략 계산만큼은 선택 기간과
-    무관하게 일봉 2년치를 사용해 지표 의미를 고정한다.
+    무관하게 충분한 일봉을 사용해 지표 의미를 고정한다. 2년 조회가 220봉
+    미만이면 전체 이력을 다시 조회해 공급자 제한과 실제 신규상장을 구분한다.
     """
     sym = str(ticker or "").strip().upper()
     if market == "KRX" and sym.isdigit():
         sym = f"{sym}.KS"
+
+    required = ["Open", "High", "Low", "Close", "Volume"]
+
+    def _normalize(frame):
+        if frame is None or frame.empty:
+            return pd.DataFrame()
+        frame = frame.copy()
+        if isinstance(frame.columns, pd.MultiIndex):
+            frame.columns = [
+                col[0] if isinstance(col, tuple) else col for col in frame.columns
+            ]
+        frame.columns = [
+            c.capitalize()
+            if str(c).lower() in ("open", "high", "low", "close", "volume")
+            else c
+            for c in frame.columns
+        ]
+        if any(col not in frame.columns for col in required):
+            return pd.DataFrame()
+        return frame.dropna(subset=required).sort_index()
+
+    symbols = [sym]
+    if market == "KRX" and sym.endswith(".KS"):
+        symbols.append(sym[:-3] + ".KQ")
+    attempts = []
+    best_df = pd.DataFrame()
+    best_symbol = sym
+    history_exhausted = False
+    for candidate in symbols:
+        for period in ("2y", "max"):
+            if period == "max" and len(best_df) >= 220:
+                break
+            try:
+                frame = _normalize(
+                    yf.Ticker(candidate).history(
+                        period=period,
+                        interval="1d",
+                        auto_adjust=True,
+                        repair=True,
+                    )
+                )
+                attempts.append({
+                    "symbol": candidate,
+                    "period": period,
+                    "rows": len(frame),
+                })
+                if len(frame) > len(best_df):
+                    best_df = frame
+                    best_symbol = candidate
+                if len(frame) >= 220:
+                    break
+                if period == "max" and candidate == sym:
+                    history_exhausted = True
+            except Exception as exc:
+                attempts.append({
+                    "symbol": candidate,
+                    "period": period,
+                    "rows": 0,
+                    "error": f"{type(exc).__name__}: {str(exc)[:120]}",
+                })
+        if len(best_df) >= 220:
+            break
+
+    if best_df.empty:
+        return None
     try:
-        df = yf.Ticker(sym).history(
-            period="2y", interval="1d", auto_adjust=True, repair=True
-        )
-        if (df is None or df.empty) and market == "KRX" and sym.endswith(".KS"):
-            sym = sym[:-3] + ".KQ"
-            df = yf.Ticker(sym).history(
-                period="2y", interval="1d", auto_adjust=True, repair=True
-            )
-        if df is None or df.empty:
-            return None
+        total_rows = len(best_df)
+        df = best_df.tail(520)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         df.columns = [
             c.capitalize() if str(c).lower() in ("open", "high", "low", "close", "volume") else c
             for c in df.columns
         ]
-        required = ["Open", "High", "Low", "Close", "Volume"]
-        if any(col not in df.columns for col in required):
-            return None
-        df = df.dropna(subset=required).tail(520)
-        if df.empty:
-            return None
         result = {col: [float(v) for v in df[col].tolist()] for col in required}
         result["Date"] = [pd.Timestamp(v).strftime("%Y-%m-%d") for v in df.index]
+        result["_history_meta"] = {
+            "provider": "Yahoo Finance via yfinance",
+            "requested_symbol": sym,
+            "resolved_symbol": best_symbol,
+            "attempts": attempts,
+            "total_available_bars": total_rows,
+            "first_date": result["Date"][0],
+            "last_date": result["Date"][-1],
+            "history_exhausted": bool(history_exhausted and total_rows < 220),
+        }
         return result
     except Exception:
         return None
@@ -6803,16 +7218,108 @@ def calc_arty_smma_fractal(
     raw = {key: list(dd.get(key) or []) for key in ("Open", "High", "Low", "Close")}
     lengths = [len(raw[key]) for key in ("Open", "High", "Low", "Close")]
     if not lengths or min(lengths) < 220 or len(set(lengths)) != 1:
+        observed_bars = min(lengths) if lengths else 0
+        missing_bars = max(0, 220 - observed_bars)
+        dates = list(dd.get("Date") or [])
+        history_meta = dict(dd.get("_history_meta") or {})
+        first_date = history_meta.get("first_date") or (
+            str(dates[0]) if len(dates) == observed_bars and dates else None
+        )
+        last_date = history_meta.get("last_date") or (
+            str(dates[-1]) if len(dates) == observed_bars and dates else None
+        )
+        history_exhausted = bool(history_meta.get("history_exhausted"))
+        estimated_ready_date = None
+        session_projection = None
+        if last_date and missing_bars:
+            try:
+                if market == "US":
+                    session_projection = _project_nasdaq_session_date(
+                        last_date, missing_bars
+                    )
+                    estimated_ready_date = session_projection["date"]
+                else:
+                    estimated_ready_date = (
+                        pd.Timestamp(last_date) + pd.offsets.BDay(missing_bars)
+                    ).strftime("%Y-%m-%d")
+            except (TypeError, ValueError):
+                pass
+        ipo_risk = None
+        if market == "US" and history_exhausted:
+            ipo_risk = _build_us_ipo_risk(
+                history_meta.get("resolved_symbol")
+                or history_meta.get("requested_symbol")
+                or "",
+                last_price,
+            )
+
+        partial_smma = {"21": None, "50": None, "200": None}
+        partial_fractals = {"support": None, "resistance": None}
+        if observed_bars > 0 and len(set(lengths)) == 1:
+            try:
+                partial_series = _prepare_arty_series(dd)
+                for length in (21, 50, 200):
+                    values = partial_series[f"SMMA{length}"]
+                    if values and values[-1] is not None:
+                        partial_smma[str(length)] = round(float(values[-1]), rnd)
+                confirmed = _confirmed_williams_fractals(
+                    partial_series["High"], partial_series["Low"]
+                )
+                for source_key, target_key in (("lower", "support"), ("upper", "resistance")):
+                    if confirmed[source_key]:
+                        item = confirmed[source_key][-1]
+                        pivot_index = int(item["index"])
+                        partial_fractals[target_key] = {
+                            "price": round(float(item["price"]), rnd),
+                            "pivot_date": (
+                                str(dates[pivot_index])
+                                if len(dates) == observed_bars else None
+                            ),
+                        }
+            except (TypeError, ValueError, IndexError):
+                pass
+
+        reasons = [
+            (
+                f"현재 확인된 일봉은 {observed_bars}개"
+                + (f"({first_date}~{last_date})" if first_date and last_date else "")
+                + "이며, SMMA200과 그 20봉 기울기에는 220개가 필요합니다."
+            ),
+            f"완전한 전략 계산까지 일봉 {missing_bars}개가 더 필요합니다.",
+        ]
+        if history_exhausted:
+            reasons.insert(
+                1,
+                "2년 조회와 전체 이력 재조회를 모두 수행했으며, 현재 티커에는 더 오래된 상장 일봉이 없습니다.",
+            )
+        if partial_smma["21"] is not None:
+            reasons.append("SMMA21과 확정 프랙탈은 관찰용으로만 계산하며 매수 신호로 승격하지 않습니다.")
         return {
             **result_base,
             "available": False,
-            "status": "데이터 부족",
+            "status": "신규상장 관찰 모드" if history_exhausted else "일봉 이력 부족",
             "status_key": "insufficient",
-            "condition_score_pct": 0,
+            "condition_score_pct": None,
             "required_bars": 220,
-            "observed_bars": min(lengths) if lengths else 0,
-            "reasons": ["SMMA200과 20봉 횡보장 기울기 계산에는 최소 220개의 정렬된 일봉이 필요합니다."],
-            "warning": "데이터가 확보될 때까지 이 전략 신호를 매수 판단에 사용하지 않습니다.",
+            "observed_bars": observed_bars,
+            "missing_bars": missing_bars,
+            "history_completion_pct": round(min(100, observed_bars / 220 * 100)),
+            "first_date": first_date,
+            "last_date": last_date,
+            "estimated_ready_date": estimated_ready_date,
+            "estimated_ready_date_is_approximate": bool(estimated_ready_date),
+            "session_projection": session_projection,
+            "history_exhausted": history_exhausted,
+            "history_provider": history_meta.get("provider"),
+            "history_attempts": history_meta.get("attempts") or [],
+            "ipo_risk": ipo_risk,
+            "partial_smma": partial_smma,
+            "partial_fractals": partial_fractals,
+            "reasons": reasons,
+            "warning": (
+                "상장 전 시장가격을 임의 생성하거나 다른 종목을 연결하지 않습니다. "
+                "220개 일봉이 실제로 쌓일 때까지 완전한 SMMA 21·50·200 진입 신호는 비활성화됩니다."
+            ),
         }
     try:
         series = _prepare_arty_series(dd)
@@ -15040,6 +15547,19 @@ function renderForecast(d, isKrx) {
         const dataQuality = validation.data_quality || {};
         const downloadQuality = dataQuality.download || {};
         const providerChecks = dataQuality.cross_provider_checks || [];
+        const historyCompletion = Number(arty.history_completion_pct || 0);
+        const partialSmma = arty.partial_smma || {};
+        const partialFractals = arty.partial_fractals || {};
+        const missingBars = Number(arty.missing_bars || 0);
+        const sessionProjection = arty.session_projection || {};
+        const scheduledHolidays = sessionProjection.scheduled_holidays_excluded || [];
+        const ipoRisk = arty.ipo_risk || null;
+        const historyMetricLabel = arty.available
+          ? '조건 충족도'
+          : '일봉 확보';
+        const historyMetricValue = arty.available
+          ? `${Number(arty.condition_score_pct || 0)}%`
+          : `${Number(arty.observed_bars || 0)}/${Number(arty.required_bars || 220)}봉`;
         const validationTone = ['rejected','stale'].includes(validation.verdict)
           ? '#f85149'
           : validation.verdict === 'accepted' ? '#3fb950'
@@ -15093,6 +15613,51 @@ function renderForecast(d, isKrx) {
                <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">1:2 목표</div><div style="font-size:12px;font-weight:800;color:#3fb950">${artyPrice(arty.target)}</div></div>
              </div>`
           : '';
+        const filingLink = (url, label = 'SEC 원문') => url
+          ? `<a href="${_escPrediction(url)}" target="_blank" rel="noopener noreferrer" style="color:#58a6ff;text-decoration:none">${_escPrediction(label)} ↗</a>`
+          : '';
+        const ipoRiskTone = ipoRisk && ipoRisk.risk_level === 'high' ? '#f85149'
+          : ipoRisk && ipoRisk.risk_level === 'medium' ? '#d29922' : '#3fb950';
+        const ipoRiskHtml = ipoRisk && ipoRisk.available ? `
+          <div id="ipo-supply-dilution-risk" style="margin-top:10px;padding:10px;background:#0d1117;border:1px solid ${ipoRiskTone}66;border-radius:8px">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">
+              <div>
+                <div style="font-size:11px;font-weight:800;color:${ipoRiskTone}">IPO 수급·희석 위험: ${_escPrediction(ipoRisk.risk_label || '확인 필요')}</div>
+                <div style="font-size:9px;color:#8b949e;margin-top:2px">${_escPrediction(ipoRisk.ticker || '')} · 공시 기준일 ${_escPrediction(ipoRisk.as_of || '')}</div>
+              </div>
+              <div style="font-size:13px;font-weight:800;color:${ipoRiskTone};background:${ipoRiskTone}1f;border-radius:4px;padding:2px 8px">${Number(ipoRisk.risk_score || 0)}점</div>
+            </div>
+            <div style="font-size:9px;color:#6e7681;margin-top:4px">${_escPrediction(ipoRisk.risk_score_method || '')} · 상승·하락 확률이 아닙니다.</div>
+            <div style="margin-top:9px">
+              <div style="font-size:10px;font-weight:800;color:#cdd9e5;margin-bottom:4px">락업 해제 예상일</div>
+              ${(ipoRisk.lockups || []).map(row => `
+                <div style="font-size:10px;color:#8b949e;line-height:1.5">
+                  • ${Number(row.days || 0)}일 · ${_escPrediction(row.holders || '')}: <strong style="color:${row.status === 'upcoming' ? '#d29922' : '#8b949e'}">${_escPrediction(row.expiry_date || '')}${row.status === 'upcoming' ? ` (D-${Number(row.days_remaining || 0)})` : ' (경과)'}</strong> · ${filingLink(row.source_url)}
+                </div>`).join('')}
+              <div style="font-size:9px;color:#6e7681;margin-top:3px">기산일 ${_escPrediction(ipoRisk.lockup_start_date || ipoRisk.ipo_date || '')}; 주관사 서면 동의 및 공시상 예외로 조기 해제될 수 있습니다.</div>
+            </div>
+            ${(ipoRisk.registrations || []).map(row => `
+              <div style="margin-top:9px;padding-top:8px;border-top:1px solid #21262d">
+                <div style="font-size:10px;font-weight:800;color:#cdd9e5">추가등록·재판매 물량</div>
+                <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-top:3px">
+                  • ${_escPrediction(row.form || '')}: ${Number(row.registered_existing_shares || 0).toLocaleString()}주 · 기준주식수 대비 ${Number(row.supply_overhang_pct || 0).toFixed(1)}%<br>
+                  • 신고 ${_escPrediction(row.filed_date || '')} · 효력 ${_escPrediction(row.effective_date || '')} · ${filingLink(row.source_url, 'S-1')} · ${filingLink(row.effect_source_url, 'EFFECT')}<br>
+                  <strong style="color:#d29922">기존주식 재판매이므로 그 자체는 신주 희석이 아니며, 유통·매도 가능 물량 증가 위험입니다.</strong>
+                </div>
+              </div>`).join('')}
+            <div style="margin-top:9px;padding-top:8px;border-top:1px solid #21262d">
+              <div style="font-size:10px;font-weight:800;color:#cdd9e5">확인된 워런트 상한 시나리오</div>
+              <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-top:3px">
+                • 보통주 잠재 신주 ${Number(ipoRisk.potential_warrant_shares || 0).toLocaleString()}주 · ${_escPrediction(ipoRisk.shares_reference_label || '기준주식수')} 대비 ${Number(ipoRisk.potential_warrant_dilution_pct || 0).toFixed(1)}%
+                ${(ipoRisk.warrants || []).map(row => `<div style="padding-left:7px">↳ ${_escPrediction(row.label || '')} ${Number(row.shares || 0).toLocaleString()}주 · 행사가 $${Number(row.exercise_price || 0).toFixed(2)} · <span style="color:${row.in_the_money ? '#f85149' : '#3fb950'}">${row.in_the_money ? 'ITM' : 'OTM'}</span>${row.dilution_counted === false ? ' · 보통주 희석 합계 제외' : ''} · ${filingLink(row.source_url)}${row.source_note ? `<div style="padding-left:10px;color:#6e7681">※ ${_escPrediction(row.source_note)}</div>` : ''}</div>`).join('')}
+              </div>
+              <div style="font-size:9px;color:#6e7681;margin-top:4px">모든 워런트가 행사된다는 단순 상한이며, 행사가·현금 없는 행사·보유 한도·만기·조정 조항에 따라 실제 희석은 달라집니다.</div>
+            </div>
+          </div>` : ipoRisk ? `
+          <div id="ipo-supply-dilution-risk-unverified" style="margin-top:10px;padding:10px;background:#241a0a;border:1px solid #d2992255;border-radius:8px">
+            <div style="font-size:11px;font-weight:800;color:#d29922">IPO 공시 위험: 수치 표시 보류</div>
+            <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-top:4px">${_escPrediction(ipoRisk.ticker || '')} · ${_escPrediction(ipoRisk.status || '')}<br>${_escPrediction(ipoRisk.warning || '')}</div>
+          </div>` : '';
         return `
           <div id="arty-smma-fractal-strategy" style="background:${bg};border:1px solid ${tone}66;border-radius:10px;padding:13px 14px;margin-bottom:14px">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
@@ -15101,8 +15666,8 @@ function renderForecast(d, isKrx) {
                 <div style="font-size:10px;color:#8b949e;margin-top:3px">일봉 SMMA 21·50·200 · 확정 Williams Fractal(2봉 지연)</div>
               </div>
               <div style="text-align:right">
-                <div style="font-size:9px;color:#8b949e">조건 충족도</div>
-                <div style="font-size:17px;font-weight:800;color:${tone}">${Number(arty.condition_score_pct || 0)}%</div>
+                <div style="font-size:9px;color:#8b949e">${historyMetricLabel}</div>
+                <div style="font-size:17px;font-weight:800;color:${tone}">${historyMetricValue}</div>
               </div>
             </div>
             ${arty.available ? `
@@ -15121,7 +15686,30 @@ function renderForecast(d, isKrx) {
               </div>
               ${tradePlan}
               ${backtestHtml}
-            ` : `<div style="font-size:11px;color:#8b949e;line-height:1.55;margin-top:9px">${_escPrediction((arty.reasons || [])[0] || '전략 계산에 필요한 일봉이 부족합니다.')}</div>`}
+            ` : `
+              <div style="margin-top:10px">
+                <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#8b949e;margin-bottom:5px">
+                  <span>SMMA200·20봉 기울기 계산 준비</span>
+                  <span>${historyCompletion}% · ${missingBars}봉 남음</span>
+                </div>
+                <div style="height:6px;background:#21262d;border-radius:999px;overflow:hidden">
+                  <div style="height:100%;width:${Math.max(0, Math.min(100, historyCompletion))}%;background:${tone}"></div>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px">
+                  <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">SMMA21 · 관찰용</div><div style="font-size:12px;font-weight:800;color:#58a6ff">${partialSmma['21'] != null ? artyPrice(partialSmma['21']) : `${Math.max(0, 21 - Number(arty.observed_bars || 0))}봉 남음`}</div></div>
+                  <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">SMMA50 · 관찰용</div><div style="font-size:12px;font-weight:800;color:#d29922">${partialSmma['50'] != null ? artyPrice(partialSmma['50']) : `${Math.max(0, 50 - Number(arty.observed_bars || 0))}봉 남음`}</div></div>
+                  <div style="background:#0d1117;border-radius:6px;padding:7px;text-align:center"><div style="font-size:9px;color:#8b949e">SMMA200 · 필수</div><div style="font-size:12px;font-weight:800;color:#f85149">${partialSmma['200'] != null ? artyPrice(partialSmma['200']) : `${Math.max(0, 200 - Number(arty.observed_bars || 0))}봉 남음`}</div></div>
+                </div>
+                <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-top:8px">
+                  <div>확정 지지 프랙탈: ${partialFractals.support ? `${artyPrice(partialFractals.support.price)}${partialFractals.support.pivot_date ? ` (${_escPrediction(partialFractals.support.pivot_date)})` : ''}` : '없음'} · 저항 프랙탈: ${partialFractals.resistance ? artyPrice(partialFractals.resistance.price) : '없음'}</div>
+                  ${(arty.reasons || []).map(reason => `<div>• ${_escPrediction(reason)}</div>`).join('')}
+                  ${arty.estimated_ready_date ? `<div>• ${sessionProjection.date ? '나스닥 예정 전일 휴장 반영' : '평일 기준'} 예상 충족일: ${_escPrediction(arty.estimated_ready_date)}</div>` : ''}
+                  ${scheduledHolidays.length ? `<div>• 계산에서 제외한 휴장 ${scheduledHolidays.length}일: ${scheduledHolidays.map(row => `${_escPrediction(row.date)} ${_escPrediction(row.name)}`).join(' · ')}</div>` : ''}
+                  ${sessionProjection.source_url ? `<div>• ${filingLink(sessionProjection.source_url, 'Nasdaq 거래 달력')}${sessionProjection.rules_source_url ? ` · ${filingLink(sessionProjection.rules_source_url, 'Nasdaq 휴장 규칙')}` : ''}</div>` : ''}
+                  ${sessionProjection.special_closure_warning ? '<div>• 국가 애도일·재난 임시 휴장, 종목 거래정지 및 데이터 지연은 사전 달력에 없어 실제 충족일이 달라질 수 있습니다.</div>' : ''}
+                </div>
+                ${ipoRiskHtml}
+              </div>`}
             <div style="font-size:10px;color:#8b949e;line-height:1.45;margin-top:9px;padding-top:8px;border-top:1px solid #30363d">${_escPrediction(arty.warning || '')}</div>
           </div>`;
       })() : '';

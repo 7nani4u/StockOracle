@@ -7,12 +7,15 @@ from api.index import (
     HTML,
     ARTY_STRATEGY_RULE_VERSION,
     _arty_atr_values,
+    _build_us_ipo_risk,
     _confirmed_williams_fractals,
     _is_us_surge_price_eligible,
+    _project_nasdaq_session_date,
     _smma_values,
     build_prediction_outlook,
     calc_arty_smma_fractal,
     calc_risk,
+    fetch_arty_daily_data,
 )
 
 
@@ -433,6 +436,130 @@ def test_arty_strategy_disables_signal_when_200_day_history_is_missing():
     assert result["status_key"] == "insufficient"
     assert result["required_bars"] == 220
     assert result["observed_bars"] == 120
+    assert result["missing_bars"] == 100
+    assert result["condition_score_pct"] is None
+
+
+def test_arty_recent_ipo_exposes_partial_observation_without_fabricating_smma200():
+    dd = _arty_daily_dd(size=48)
+    dd["_history_meta"] = {
+        "provider": "Yahoo Finance via yfinance",
+        "first_date": dd["Date"][0],
+        "last_date": "2026-07-24",
+        "requested_symbol": "EXYN",
+        "resolved_symbol": "EXYN",
+        "history_exhausted": True,
+        "attempts": [
+            {"symbol": "EXYN", "period": "2y", "rows": 48},
+            {"symbol": "EXYN", "period": "max", "rows": 48},
+        ],
+    }
+
+    result = calc_arty_smma_fractal(dd, dd["Close"][-1], market="US")
+
+    assert result["available"] is False
+    assert result["status"] == "신규상장 관찰 모드"
+    assert result["observed_bars"] == 48
+    assert result["missing_bars"] == 172
+    assert result["history_completion_pct"] == 22
+    assert result["history_exhausted"] is True
+    assert result["partial_smma"]["21"] is not None
+    assert result["partial_smma"]["50"] is None
+    assert result["partial_smma"]["200"] is None
+    assert result["estimated_ready_date"] == "2027-04-01"
+    assert result["session_projection"]["sessions_needed"] == 172
+    assert result["ipo_risk"]["ticker"] == "EXYN"
+
+
+def test_nasdaq_220_bar_projection_excludes_scheduled_full_day_holidays():
+    result = _project_nasdaq_session_date("2026-07-24", 172)
+
+    assert result["date"] == "2027-04-01"
+    assert result["sessions_needed"] == 172
+    assert [row["date"] for row in result["scheduled_holidays_excluded"]] == [
+        "2026-09-07",
+        "2026-11-26",
+        "2026-12-25",
+        "2027-01-01",
+        "2027-01-18",
+        "2027-02-15",
+        "2027-03-26",
+    ]
+    assert "2026-11-27" not in {
+        row["date"] for row in result["scheduled_holidays_excluded"]
+    }
+    assert result["special_closure_warning"] is True
+
+
+def test_exyn_ipo_risk_separates_resale_overhang_from_warrant_dilution():
+    result = _build_us_ipo_risk("EXYN", 2.65, as_of="2026-07-26")
+
+    assert result is not None
+    assert result["risk_level"] == "high"
+    assert result["risk_score_is_probability"] is False
+    assert result["lockup_start_date"] == "2026-05-14"
+    assert [
+        (row["expiry_date"], row["days_remaining"])
+        for row in result["lockups"]
+    ] == [("2026-08-12", 17), ("2026-11-10", 107)]
+    registration = result["registrations"][0]
+    assert registration["effective_date"] == "2026-07-02"
+    assert registration["registered_existing_shares"] == 3_658_564
+    assert registration["new_dilution"] is False
+    assert registration["supply_overhang_pct"] == 47.5
+    assert result["shares_outstanding_reference"] == 7_707_460
+    assert result["potential_warrant_shares"] == 3_242_852
+    assert result["potential_warrant_dilution_pct"] == 42.1
+    svb = next(row for row in result["warrants"] if row["label"] == "SVB 워런트")
+    assert svb["dilution_counted"] is False
+    assert all(row["in_the_money"] is False for row in result["warrants"])
+
+
+def test_unverified_recent_ipo_does_not_fabricate_disclosure_metrics():
+    result = _build_us_ipo_risk("UNVERIFIED", 5.0, as_of="2026-07-26")
+
+    assert result is not None
+    assert result["available"] is False
+    assert "SEC 공시 프로필 미확보" in result["status"]
+    assert "표시하지 않습니다" in result["warning"]
+
+
+def test_arty_daily_fetch_retries_max_history_when_two_year_result_is_short(monkeypatch):
+    short = index_module.pd.DataFrame(
+        {
+            "Open": range(120),
+            "High": range(1, 121),
+            "Low": range(120),
+            "Close": range(1, 121),
+            "Volume": [1000] * 120,
+        },
+        index=index_module.pd.date_range("2026-01-01", periods=120, freq="B"),
+    )
+    full = index_module.pd.DataFrame(
+        {
+            "Open": range(300),
+            "High": range(1, 301),
+            "Low": range(300),
+            "Close": range(1, 301),
+            "Volume": [1000] * 300,
+        },
+        index=index_module.pd.date_range("2025-01-01", periods=300, freq="B"),
+    )
+    calls = []
+
+    class FakeTicker:
+        def history(self, *, period, **_kwargs):
+            calls.append(period)
+            return short if period == "2y" else full
+
+    monkeypatch.setattr(index_module.yf, "Ticker", lambda _symbol: FakeTicker())
+
+    result = fetch_arty_daily_data("SHORT-HISTORY-TEST", "US")
+
+    assert calls == ["2y", "max"]
+    assert result is not None
+    assert len(result["Close"]) == 300
+    assert result["_history_meta"]["history_exhausted"] is False
 
 
 def test_arty_evidence_matches_current_rule_version():
@@ -461,4 +588,10 @@ def test_forecast_renders_arty_smma_fractal_strategy_inside_buy_section():
     assert "⑨ 시장체제" in HTML
     assert "⑩ 민감도" in HTML
     assert "⑪ 데이터 품질" in HTML
+    assert "나스닥 예정 전일 휴장 반영" in HTML
+    assert "Nasdaq 거래 달력" in HTML
+    assert 'id="ipo-supply-dilution-risk"' in HTML
+    assert 'id="ipo-supply-dilution-risk-unverified"' in HTML
+    assert "기존주식 재판매이므로 그 자체는 신주 희석이 아니며" in HTML
+    assert "확인된 워런트 상한 시나리오" in HTML
     assert HTML.index('id="buy-price-section"') < HTML.index('id="arty-smma-fractal-strategy"')
