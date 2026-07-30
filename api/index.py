@@ -7704,8 +7704,14 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     di_minus = float(dd.get("DI_Minus",      [0])[-1] or 0)
     bp       = _last("BUY_PRESSURE") or 50.0
 
-    if not atr or np.isnan(atr):
+    try:
+        _atr_observed = bool(atr is not None and np.isfinite(float(atr)) and float(atr) > 0)
+    except (TypeError, ValueError):
+        _atr_observed = False
+    if not _atr_observed:
         atr = last_price * 0.02
+    else:
+        atr = float(atr)
 
     # ── 밴드 깊이용 ATR 상한 + 밴드 가격 하한 ─────────────────────────
     # 급락 직후에는 ATR이 현재가의 수십~수백%까지 커져 last_price - k×ATR이
@@ -8023,6 +8029,255 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         """백테스트 기저확률 + 모멘텀·RSI 보정 → 최종 확률 (5~95% 클램프)"""
         return round(min(95.0, max(5.0, base_prob + _mom_adj + _rsi_adj2 + _stat_adj - _risk_penalty)), 1)
 
+    # ── 밴드 내부 5단계 매수 가격·도달 확률·예상 기간 ────────────────────
+    # 가격은 기존 밴드의 상·하단을 절대 벗어나지 않는다. 내부 3개 가격은
+    # ATR/추세/위험으로 기울인 가격 밀도와 기술적 앵커의 커널 밀도를 결합한
+    # 가중 분위수로 산출하므로 단순 고정 간격이 아니다.
+    _raw_closes = list(dd.get("Close") or [])
+    _raw_lows = list(dd.get("Low") or [])
+    _raw_highs = list(dd.get("High") or [])
+    _raw_atrs = list(dd.get("ATR") or [])
+    _hist_n = min(len(_raw_closes), len(_raw_lows), len(_raw_highs))
+    _true_ranges: list[float | None] = [None] * _hist_n
+    for _i in range(_hist_n):
+        try:
+            _hc = float(_raw_highs[_i])
+            _lc = float(_raw_lows[_i])
+            _pc = float(_raw_closes[_i - 1]) if _i > 0 else float(_raw_closes[_i])
+            if all(np.isfinite(v) for v in (_hc, _lc, _pc)):
+                _true_ranges[_i] = max(_hc - _lc, abs(_hc - _pc), abs(_lc - _pc))
+        except (TypeError, ValueError, IndexError):
+            pass
+
+    def _historical_atr_at(index: int) -> float | None:
+        if index < len(_raw_atrs):
+            try:
+                value = float(_raw_atrs[index])
+                if np.isfinite(value) and value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
+        window = [v for v in _true_ranges[max(0, index - 13):index + 1] if v is not None]
+        return float(np.mean(window)) if len(window) >= 10 else None
+
+    # 최근 최대 180개 기준일에서 이후 30거래일의 ATR 정규화 최대 하락폭을
+    # 관찰한다. 현재 종목의 실제 경로가 부족하면 확률/기간을 만들지 않는다.
+    _reach_paths: list[list[float]] = []
+    for _i in range(max(0, _hist_n - 181), max(0, _hist_n - 1)):
+        try:
+            _start_close = float(_raw_closes[_i])
+        except (TypeError, ValueError, IndexError):
+            continue
+        _hist_atr = _historical_atr_at(_i)
+        if not np.isfinite(_start_close) or _start_close <= 0 or not _hist_atr:
+            continue
+        _running_drop = 0.0
+        _path: list[float] = []
+        for _j in range(_i + 1, min(_hist_n, _i + 31)):
+            try:
+                _future_low = float(_raw_lows[_j])
+                if np.isfinite(_future_low) and _future_low > 0:
+                    _running_drop = max(_running_drop, (_start_close - _future_low) / _hist_atr)
+            except (TypeError, ValueError, IndexError):
+                pass
+            _path.append(max(0.0, _running_drop))
+        if len(_path) >= 5:
+            _reach_paths.append(_path)
+
+    _technical_data_ready = bool(
+        ma20_raw or ma60_raw or bb_l_raw or bb_m_raw or vwap_approx or len(recent_lows) >= 5
+    )
+    _step_stats_ready = bool(
+        _atr_observed
+        and len(_reach_paths) >= 40
+        and len(volumes) >= 20
+        and _technical_data_ready
+    )
+
+    def _clip(value: float, lower: float, upper: float) -> float:
+        return min(upper, max(lower, value))
+
+    def _step_anchors(is_recommended: bool) -> list[tuple[float, float, str]]:
+        raw = [
+            (ma20_raw, 1.30 if is_recommended else 1.45, "MA20"),
+            (bb_m_raw, 1.00 if is_recommended else 1.25, "BB중간"),
+            (bb_l_raw, 1.35 if is_recommended else 1.05, "BB하단"),
+            (vwap_approx, 1.40 if is_recommended else 0.90, "VWAP"),
+            (strong_support if len(lows20) >= 3 else None, 1.55 if is_recommended else 1.15, "핵심 지지"),
+            (support_zone if len(recent_lows) >= 5 else None, 1.15 if is_recommended else 0.85, "지지 구간"),
+            (ma60_raw, 1.55 if is_recommended else 0.70, "MA60"),
+            (fib_382 if last_price * 0.70 < fib_382 < last_price else None,
+             1.15 if is_recommended else 0.65, "Fib 38.2%"),
+            (fib_500 if last_price * 0.70 < fib_500 < last_price else None,
+             1.05 if is_recommended else 0.55, "Fib 50%"),
+        ]
+        result = []
+        for value, weight, label in raw:
+            try:
+                value = float(value)
+                if np.isfinite(value) and value > 0:
+                    result.append((value, weight, label))
+            except (TypeError, ValueError):
+                pass
+        return result
+
+    def _build_buy_steps(lo: float, hi: float, is_recommended: bool,
+                         band_allocation_pct: float) -> list[Dict]:
+        lo, hi = float(min(lo, hi)), float(max(lo, hi))
+        width = max(hi - lo, max(atr_d * 0.01, last_price * 0.00001))
+        depths = np.linspace(0.0, 1.0, 161)
+        grid_prices = hi - depths * width
+
+        # 하락 위험·약한 추세·거래량 확대일수록 밀도의 무게중심을 깊게 이동한다.
+        risk_tilt = _clip(
+            (downside_score - 35.0) / 120.0
+            + (2.0 - _trend) * 0.07
+            + (vol_ratio - 1.0) * 0.08
+            + (0.08 if vol_trend == "expanding" else -0.04 if vol_trend == "contracting" else 0.0),
+            -0.35, 0.45,
+        )
+        density = np.exp(risk_tilt * (depths - 0.5) * 2.0)
+        anchors = _step_anchors(is_recommended)
+        kernel_sigma = _clip((atr_d / width) * 0.10, 0.065, 0.24)
+        for anchor_price, weight, _label in anchors:
+            anchor_depth = (hi - anchor_price) / width
+            if -0.35 <= anchor_depth <= 1.35:
+                density += weight * np.exp(-0.5 * ((depths - anchor_depth) / kernel_sigma) ** 2)
+
+        cumulative = np.concatenate((
+            np.array([0.0]),
+            np.cumsum((density[:-1] + density[1:]) * 0.5),
+        ))
+        cumulative /= cumulative[-1] if cumulative[-1] > 0 else 1.0
+        quantiles = np.linspace(0.0, 1.0, 5)
+        prices = [float(np.interp(q, cumulative, grid_prices)) for q in quantiles]
+        prices[0], prices[-1] = hi, lo
+
+        # 반올림 뒤에도 상단→하단 순서를 보존하고 기존 밴드 범위에 고정한다.
+        rounded_prices = [round(_clip(price, lo, hi), rnd) for price in prices]
+        rounded_prices[0], rounded_prices[-1] = round(hi, rnd), round(lo, rnd)
+        price_epsilon = 10 ** (-rnd)
+        for _idx in range(1, len(rounded_prices)):
+            rounded_prices[_idx] = min(
+                rounded_prices[_idx],
+                round(rounded_prices[_idx - 1] - price_epsilon, rnd),
+            )
+        rounded_prices[-1] = round(lo, rnd)
+
+        allocation_curve = _clip(
+            0.65 + downside_score / 180.0 + (0.12 if is_recommended else 0.0),
+            0.55, 1.25,
+        )
+        allocation_weights = np.exp(np.linspace(0.0, allocation_curve, 5))
+        allocations = [
+            round(band_allocation_pct * float(weight / allocation_weights.sum()), 1)
+            for weight in allocation_weights
+        ]
+        allocations[-1] = round(max(
+            allocations[-1],
+            band_allocation_pct - sum(allocations[:-1]),
+        ), 1)
+
+        model_adjustment = (
+            (2.0 - _trend) * 1.8
+            + downside_score * 0.065
+            + (vol_ratio - 1.0) * (4.0 if heavy_sell_volume else 1.8)
+            + (2.5 if vol_trend == "expanding" else -1.0 if vol_trend == "contracting" else 0.0)
+            + (4.0 if market_regime == "BEAR" else -2.5 if market_regime == "BULL" else 0.0)
+            + event_points * 0.035
+            + (2.0 if vwap_approx and last_price < vwap_approx else -1.0 if vwap_approx else 0.0)
+        )
+        recent_moves = [
+            abs(closes[_idx] - closes[_idx - 1]) / atr_d
+            for _idx in range(max(1, len(closes) - 10), len(closes))
+            if atr_d > 0
+        ]
+        recent_speed = float(np.mean(recent_moves)) if recent_moves else 1.0
+        speed_factor = _clip(
+            (1.0 / max(0.35, recent_speed)) ** 0.35
+            * (0.90 if vol_ratio >= 1.25 else 1.10 if vol_ratio < 0.70 else 1.0)
+            * (0.90 if _trend <= 1 else 1.08 if _trend >= 3 else 1.0),
+            0.65, 1.55,
+        )
+
+        result = []
+        previous_prob_mid = previous_prob_low = previous_prob_high = 100.0
+        previous_days_min = previous_days_max = 0
+        for _idx, price in enumerate(rounded_prices):
+            distance_atr = max(0.0, (last_price - price) / max(atr_d, 1e-9))
+            probability_mid = probability_low = probability_high = None
+            days_min = days_max = None
+            if _step_stats_ready:
+                hit_days = []
+                for path in _reach_paths:
+                    first_hit = next(
+                        (day for day, adverse in enumerate(path, start=1) if adverse >= distance_atr),
+                        None,
+                    )
+                    if first_hit is not None:
+                        hit_days.append(first_hit)
+                empirical_probability = len(hit_days) / len(_reach_paths) * 100.0
+                probability_mid = _clip(empirical_probability + model_adjustment, 0.0, 100.0)
+                probability_mid = min(previous_prob_mid, probability_mid)
+                p_ratio = probability_mid / 100.0
+                sample_margin = 1.96 * math.sqrt(
+                    max(0.0001, p_ratio * (1.0 - p_ratio)) / len(_reach_paths)
+                ) * 100.0
+                model_margin = (
+                    2.0
+                    + (2.0 if vol_trend == "expanding" else 0.0)
+                    + min(3.0, event_points * 0.05)
+                    + min(2.5, downside_score * 0.02)
+                )
+                total_margin = min(18.0, sample_margin + model_margin)
+                probability_low = min(
+                    previous_prob_low,
+                    _clip(probability_mid - total_margin, 0.0, 100.0),
+                )
+                probability_high = min(
+                    previous_prob_high,
+                    _clip(probability_mid + total_margin, 0.0, 100.0),
+                )
+                probability_mid = _clip(probability_mid, probability_low, probability_high)
+                previous_prob_mid = probability_mid
+                previous_prob_low = probability_low
+                previous_prob_high = probability_high
+
+                min_hits = max(5, math.ceil(len(_reach_paths) * 0.05))
+                if len(hit_days) >= min_hits:
+                    raw_days_min = max(1, math.floor(float(np.percentile(hit_days, 25)) * speed_factor))
+                    raw_days_max = max(raw_days_min, math.ceil(float(np.percentile(hit_days, 75)) * speed_factor))
+                    days_min = max(previous_days_min, raw_days_min)
+                    days_max = max(previous_days_max, raw_days_max, days_min)
+                    previous_days_min, previous_days_max = days_min, days_max
+
+            nearest_anchor = min(
+                anchors,
+                key=lambda item: abs(item[0] - price),
+                default=None,
+            )
+            anchor_label = (
+                nearest_anchor[2]
+                if nearest_anchor and abs(nearest_anchor[0] - price) <= max(width * 0.45, atr_d * 0.30)
+                else "ATR·위험 분포"
+            )
+            result.append({
+                "stage": _idx + 1,
+                "label": f"{_idx + 1}단계",
+                "price": price,
+                "decline_pct": round((price - last_price) / last_price * 100.0, 1),
+                "reach_probability_pct": round(probability_mid, 1) if probability_mid is not None else None,
+                "probability_low_pct": round(probability_low, 1) if probability_low is not None else None,
+                "probability_high_pct": round(probability_high, 1) if probability_high is not None else None,
+                "probability_label": None if probability_mid is not None else "분석 데이터 부족",
+                "days_min": days_min,
+                "days_max": days_max,
+                "period_label": None if days_min is not None else "기간 산정 불가",
+                "allocation_pct": allocations[_idx],
+                "basis": anchor_label,
+            })
+        return result
+
     # ── 공격적 매수 밴드 A/B/C ────────────────────────────────────────
     # 개념: ATR 눌림목 깊이를 3단계로 세분 → 각 단계별 진입 근거·기대수익·손실확률
     _agg_tech = {
@@ -8055,16 +8310,18 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             _lo = min(_lo, _hi - _min_width)
         _lo, _hi = _floor_band(_lo, _hi)
         _win = _ap(_z["win"]); _los = round(100.0 - _win, 1)
+        _band_allocation = round((6 if _zn == "A" else 4 if _zn == "B" else 3) * _allocation_scale, 1)
         aggressive_bands.append({
             "band": _zn,
             "range": [round(_lo, rnd), round(_hi, rnd)],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
+            "steps": _build_buy_steps(_lo, _hi, False, _band_allocation),
             "atr_basis": f"ATR×{_k1:.2f}~{_k2:.2f} 보수 눌림 (기본 {_z['k1']:.2f}~{_z['k2']:.2f} + 시장/위험 보정 {(_base_depth_offset + depth_shift):.2f})",
             "tech_note": _agg_tech[_zn],
             "risk_note": f"{downside_label}: 확률 -{_risk_penalty:.1f}pp 반영",
             "entry_role": "소액 탐색 진입",
-            "allocation_pct": round((6 if _zn == "A" else 4 if _zn == "B" else 3) * _allocation_scale, 1),
+            "allocation_pct": _band_allocation,
             "confirm_note": (f"종가가 밴드 상단을 회복하고 거래량이 20일 평균 이상일 때만 소액 확인"
                              if vol_ratio < 1.0 else
                              f"종가 지지 + 현재 거래량 {vol_ratio:.1f}배 유지 시 소액 확인"),
@@ -8163,16 +8420,18 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 _lo = max(_band_floor, _hi - _width)
         _lo, _hi = _floor_band(_lo, _hi)
         _win = _ap(_z["win"])
+        _band_allocation = round((22 if _zn == "A" else 35 if _zn == "B" else 18) * _allocation_scale, 1)
         recommended_bands.append({
             "band": _zn,
             "range": [round(_lo, rnd), round(_hi, rnd)],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
+            "steps": _build_buy_steps(_lo, _hi, True, _band_allocation),
             "basis":         _rec_basis[_zn],
             "hold_note":     _rec_hold[_zn],
             "risk_note":     f"{downside_label}: 지지선 확인 전 상단 추격 제한",
             "entry_role":     "주 진입",
-            "allocation_pct": round((22 if _zn == "A" else 35 if _zn == "B" else 18) * _allocation_scale, 1),
+            "allocation_pct": _band_allocation,
             "confirm_note":   (f"밴드 내 종가 지지·하락 거래량 {vol_ratio:.1f}배 이하 둔화·RSI 재상승 확인 후 주 진입"
                                if not _price_up_reference else
                                f"밴드 재테스트 후 종가 지지·거래량 {max(1.0, vol_ratio):.1f}배 이상 회복 시 주 진입"),
@@ -12077,6 +12336,31 @@ input::placeholder{color:#484f58}
 .buy-bands-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
 @media(max-width:900px){.buy-bands-row{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.buy-bands-row{grid-template-columns:1fr}}
+.buy-band-card{background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;min-width:0}
+.buy-band-head{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:8px}
+.buy-band-title{font-size:12px;font-weight:700;display:flex;align-items:center;min-width:0}
+.buy-band-badges{display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.buy-stage-table{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.buy-stage-row{display:grid;grid-template-columns:36px minmax(68px,1fr) 44px minmax(90px,1.2fr) 46px;gap:3px;align-items:center;min-width:0;padding:5px 4px;background:#101820;border:1px solid #1f2b36;border-radius:5px}
+.buy-stage-row>span{min-width:0}
+.buy-stage-header{background:transparent;border:0;border-bottom:1px solid #21262d;border-radius:0;padding:0 6px 4px;color:#6e7681;font-size:8px;line-height:1.2;text-align:right}
+.buy-stage-header span:first-child{text-align:left}
+.buy-stage-name{font-size:9px;font-weight:800;white-space:nowrap}
+.buy-stage-price{font-size:11px;font-weight:900;color:#e6edf3;white-space:nowrap;text-align:right}
+.buy-stage-drop{font-size:9px;font-weight:700;color:#f85149;white-space:nowrap;text-align:right}
+.buy-stage-prob{font-size:9px;font-weight:700;white-space:nowrap;text-align:right}
+.buy-stage-days{font-size:9px;color:#8b949e;white-space:nowrap;text-align:right}
+.buy-stage-unavailable{color:#6e7681;font-weight:500}
+.buy-band-meta{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:5px}
+.buy-band-detail{font-size:10px;color:#8b949e;line-height:1.45;margin-top:2px;word-break:keep-all;overflow-wrap:anywhere}
+.buy-band-detail.positive{color:#3fb950}.buy-band-detail.warning{color:#d29922}.buy-band-detail.negative{color:#f97316}
+@media(max-width:480px){
+  .buy-band-card{padding:9px 8px}
+  .buy-stage-row{grid-template-columns:30px minmax(58px,1fr) 38px minmax(74px,1.1fr) 40px;gap:2px;padding:5px 2px}
+  .buy-stage-header{padding:0 2px 4px;font-size:7px}
+  .buy-stage-name,.buy-stage-drop,.buy-stage-prob,.buy-stage-days{font-size:8px}
+  .buy-stage-price{font-size:10px}
+}
 .buy-label{font-size:10px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
 .buy-price-val{font-size:18px;font-weight:800;margin-bottom:4px;word-break:break-all}
 .buy-basis-box{font-size:11px;color:#8b949e;line-height:1.5;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
@@ -15769,40 +16053,61 @@ function renderForecast(d, isKrx) {
           ? `<span style="font-size:9px;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px">권장 ${b.allocation_pct || 0}%</span>`
           : `<span style="font-size:9px;color:#8b949e;background:#21262d;border-radius:3px;padding:1px 5px">대기</span>`;
         const priTag   = isPriority ? `<span style="font-size:9px;background:${bc}33;color:${bc};border:1px solid ${bc};border-radius:3px;padding:1px 5px;margin-left:4px">권장</span>` : '';
-        if (isRec) {
-          return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-              <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}${priTag}</span>
-              <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}</span>
-            </div>
-            <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
-            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">
-              <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || '주 진입'}</span>
+        const steps = Array.isArray(b.steps) ? b.steps : [];
+        const stepRows = steps.map(s => {
+          const hasProbability = s.probability_low_pct != null && s.probability_high_pct != null;
+          const probabilityMid = s.reach_probability_pct != null ? Number(s.reach_probability_pct) : null;
+          const probabilityText = hasProbability
+            ? `${Number(s.probability_low_pct).toFixed(1)}~${Number(s.probability_high_pct).toFixed(1)}%`
+            : (s.probability_label || '분석 데이터 부족');
+          const probabilityColor = probabilityMid == null
+            ? '#6e7681'
+            : probabilityMid >= 60 ? '#3fb950' : probabilityMid >= 40 ? '#d29922' : '#f97316';
+          const periodText = s.days_min != null && s.days_max != null
+            ? `${s.days_min}~${s.days_max}일`
+            : (s.period_label || '기간 산정 불가');
+          const decline = Number(s.decline_pct);
+          const declineText = Number.isFinite(decline) ? `${decline.toFixed(1)}%` : '-';
+          const stepTitle = `${s.basis || 'ATR·기술 지표'} · 단계 배분 ${s.allocation_pct || 0}%`;
+          return `<div class="buy-stage-row" role="row" title="${stepTitle}" aria-label="${s.label}, ${fmt(s.price, isKrx)}, 현재가 대비 ${declineText}, 도달 확률 ${probabilityText}, 예상 ${periodText}, 단계 배분 ${s.allocation_pct || 0}%">
+            <span class="buy-stage-name" role="cell" style="color:${bc}">${s.label}</span>
+            <span class="buy-stage-price" role="cell" style="color:${bc}">${fmt(s.price, isKrx)}</span>
+            <span class="buy-stage-drop" role="cell">${declineText}</span>
+            <span class="buy-stage-prob ${hasProbability ? '' : 'buy-stage-unavailable'}" role="cell" style="color:${probabilityColor}">${probabilityText}</span>
+            <span class="buy-stage-days ${s.days_min == null ? 'buy-stage-unavailable' : ''}" role="cell">${periodText}</span>
+          </div>`;
+        }).join('');
+        const stageTable = `<div class="buy-stage-table" role="table" aria-label="밴드 ${b.band} 5단계 매수 가격">
+          <div class="buy-stage-row buy-stage-header" role="row">
+            <span role="columnheader">단계</span>
+            <span role="columnheader">매수 가격</span>
+            <span role="columnheader">하락률</span>
+            <span role="columnheader">도달 확률</span>
+            <span role="columnheader">예상 기간</span>
+          </div>
+          ${stepRows || '<div class="buy-stage-unavailable">분석 데이터 부족</div>'}
+        </div>`;
+        const detailHtml = isRec
+          ? `<div class="buy-band-detail">• ${b.basis}</div>
+             <div class="buy-band-detail positive">→ ${b.hold_note}</div>
+             <div class="buy-band-detail">• ${b.confirm_note || '지지 확인 후 진입'}</div>
+             <div class="buy-band-detail warning">승률 ${b.win_prob_pct}% · ${b.risk_note || '위험 보정 반영'}</div>`
+          : `<div class="buy-band-detail">• ${b.atr_basis}</div>
+             <div class="buy-band-detail">• ${b.tech_note}</div>
+             <div class="buy-band-detail">• ${b.confirm_note || '반등 확인 전 소액만 테스트'}</div>
+             <div class="buy-band-detail warning">승률 ${b.win_prob_pct}% · 손실확률 ${b.loss_prob_pct}%</div>
+             <div class="buy-band-detail negative">• ${b.risk_note || '시장 위험 보정 반영'}</div>`;
+        return `<div class="buy-band-card" style="${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
+          <div class="buy-band-head">
+            <div class="buy-band-title" style="color:${bc}">밴드 ${b.band}${priTag}</div>
+            <div class="buy-band-badges">
+              <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || (isRec ? '주 진입' : '소액 탐색 진입')}</span>
               ${allocationTag}
             </div>
-            <div style="font-size:10px;color:#8b949e;margin-bottom:2px">• ${b.basis}</div>
-            <div style="font-size:10px;color:#3fb950">→ ${b.hold_note}</div>
-            <div style="font-size:10px;color:#8b949e;margin-top:1px">• ${b.confirm_note || '지지 확인 후 진입'}</div>
-            <div style="font-size:10px;color:#d29922;margin-top:2px">승률 ${b.win_prob_pct}% · ${b.risk_note || '위험 보정 반영'}</div>
-          </div>`;
-        } else {
-          return `<div style="background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-              <span style="font-size:12px;font-weight:700;color:${bc}">밴드 ${b.band}${priTag}</span>
-              <span style="font-size:10px;color:#8b949e;background:#161b22;border-radius:4px;padding:2px 6px">${fmtPct(b.pct[0])} ~ ${fmtPct(b.pct[1])}</span>
-            </div>
-            <div style="font-size:14px;font-weight:800;color:${bc};margin-bottom:5px">${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}</div>
-            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:4px">
-              <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || '소액 탐색 진입'}</span>
-              ${allocationTag}
-            </div>
-            <div style="font-size:10px;color:#8b949e">• ${b.atr_basis}</div>
-            <div style="font-size:10px;color:#8b949e">• ${b.tech_note}</div>
-            <div style="font-size:10px;color:#8b949e;margin-top:1px">• ${b.confirm_note || '반등 확인 전 소액만 테스트'}</div>
-            <div style="font-size:10px;color:#d29922;margin-top:2px">승률 ${b.win_prob_pct}% · 손실확률 ${b.loss_prob_pct}%</div>
-            <div style="font-size:10px;color:#f97316;margin-top:1px">• ${b.risk_note || '시장 위험 보정 반영'}</div>
-          </div>`;
-        }
+          </div>
+          ${stageTable}
+          ${detailHtml}
+        </div>`;
       };
 
       const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
