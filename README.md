@@ -151,10 +151,12 @@ Vercel 서버리스 및 로컬 환경에서 발생하는 `yfinance` 고질적 �
 | `/` | GET | HTML 프론트엔드 |
 | `/api/stock?ticker=삼성전자&period=1y` | GET | 종목 상세 분석 |
 | `/api/screener?sort_by=price&sort_order=desc` | GET | 종목 스크리닝 |
+| `/api/kr/opening-surge` | GET | 국내 개장 급등 후보·VI/시장경보·장중 수급 통합 분석 |
+| `/api/kr/opening-surge/performance` | GET | 추천 후 30분·1시간·종가 성과 갱신 및 조회 |
 | `/api/toss-overseas` | GET | 토스증권 해외 종목 필터 |
 | `/api/sentiment?market=KRX` | GET | 시장 심리 지수 |
 | `/api/resolve?q=삼성` | GET | 종목명·코드 검색 |
-| `/api/cron` | GET | 캐시 워밍 (매시간 자동 실행) |
+| `/api/cron` | GET | 캐시 워밍 + 국내 급등 성과 체크포인트 백업 갱신 (매시간) |
 
 ---
 
@@ -212,6 +214,17 @@ vercel
 ```
 
 GitHub 리포지토리 연동 시 `push` → 자동 배포됩니다.
+
+### 국내 개장 급등 연동 환경변수
+
+| 환경변수 | 용도 | 기본 동작 |
+|---|---|---|
+| `KR_SURGE_SHORT_OVERHEAT_URL` | 현재 단기과열 지정 종목을 반환하는 공식/증권사 JSON 피드 | `items`, `content`, `data`, `stocks` 배열과 주요 종목코드 필드 자동 인식 |
+| `KR_SURGE_SHORT_OVERHEAT_TOKEN` | 위 JSON 피드의 Bearer 인증 토큰 | 미설정 시 무인증 GET |
+| `KR_SURGE_SHORT_OVERHEAT_CODES` | 공식/증권사 피드에서 받은 단기과열 6자리 코드를 쉼표로 전달 | 미설정 시 공급자 응답 필드만 검사하며 UI에 커버리지 미연동 표시 |
+| `KR_SURGE_TRACKING_PATH` | 추천 성과 이벤트 JSON 저널 경로 | 로컬은 OS 임시 폴더, Vercel은 `/tmp`를 사용하므로 인스턴스 교체 시 유실 가능 |
+
+성과를 배포 환경에서 장기간 보존하려면 `KR_SURGE_TRACKING_PATH`를 지속 볼륨에 연결하거나 별도 DB 어댑터로 교체해야 합니다. 30분·1시간 성과는 예정시각 이후 처음 관측된 서버 가격이며, API 폴링이 중단되면 해당 체크포인트는 관측 불가로 표시됩니다.
 
 ### Vercel 설정 (`vercel.json`)
 
