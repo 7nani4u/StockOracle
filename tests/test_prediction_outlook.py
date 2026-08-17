@@ -254,6 +254,19 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     assert '<div class="buy-card forecast-scenario-group">' in forecast_html
 
 
+def test_forecast_overview_does_not_render_aggregate_confidence_card():
+    renderer = HTML.split("function renderPredictionSections", 1)[1].split(
+        "function renderForecast", 1
+    )[0]
+
+    assert 'class="prediction-confidence"' not in renderer
+    assert 'class="prediction-confidence-head"' not in renderer
+    assert 'class="prediction-confidence-value"' not in renderer
+    assert 'class="prediction-confidence-range"' not in renderer
+    assert "종합 신뢰도" not in renderer
+    assert ".prediction-confidence{" not in HTML
+
+
 def test_us_fundamentals_are_not_rendered_in_result_ui():
     assert 'id="r-us-fund"' not in HTML
     assert 'id="f-us-sector"' not in HTML

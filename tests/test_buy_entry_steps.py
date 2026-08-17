@@ -134,6 +134,42 @@ def test_insufficient_history_never_fabricates_probability_or_period():
                 assert step["days_min"] is None
                 assert step["days_max"] is None
                 assert step["period_label"] == "기간 산정 불가"
+                assert step["period_source"] is None
+                assert step["period_note"] is None
+
+
+def test_sparse_empirical_hits_use_dynamic_model_period_instead_of_unavailable():
+    dd = _sample_buy_dd()
+    # 최근 변동성이 과거보다 급격히 확대된 종목을 재현한다. 깊은 밴드는
+    # 과거 도달 사례가 최소 표본 수보다 적지만 가격·ATR·거래량 데이터는 충분하다.
+    dd["ATR"][-1] = 25.0
+    result = _calculate(dd)
+    all_steps = [
+        step
+        for family in ("aggressive_bands", "recommended_bands")
+        for band in result[family]
+        for step in band["steps"]
+    ]
+
+    assert any(step["period_source"] == "model" for step in all_steps)
+    assert all(step["days_min"] is not None for step in all_steps)
+    assert all(step["days_max"] is not None for step in all_steps)
+    assert all(1 <= step["days_min"] <= step["days_max"] <= 30 for step in all_steps)
+    assert all(step["period_label"] is None for step in all_steps)
+    assert all(
+        step["period_note"] and "ATR 거리" in step["period_note"]
+        for step in all_steps
+        if step["period_source"] == "model"
+    )
+
+    for family in ("aggressive_bands", "recommended_bands"):
+        for band in result[family]:
+            assert [step["days_min"] for step in band["steps"]] == sorted(
+                step["days_min"] for step in band["steps"]
+            )
+            assert [step["days_max"] for step in band["steps"]] == sorted(
+                step["days_max"] for step in band["steps"]
+            )
 
 
 def test_forecast_band_ui_uses_aligned_five_column_stage_rows():

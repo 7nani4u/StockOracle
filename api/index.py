@@ -9219,6 +9219,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             distance_atr = max(0.0, (last_price - price) / max(atr_d, 1e-9))
             probability_mid = probability_low = probability_high = None
             days_min = days_max = None
+            period_source = None
+            period_note = None
             if _step_stats_ready:
                 hit_days = []
                 for path in _reach_paths:
@@ -9261,7 +9263,32 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                     raw_days_max = max(raw_days_min, math.ceil(float(np.percentile(hit_days, 75)) * speed_factor))
                     days_min = max(previous_days_min, raw_days_min)
                     days_max = max(previous_days_max, raw_days_max, days_min)
-                    previous_days_min, previous_days_max = days_min, days_max
+                    period_source = "empirical"
+                    period_note = f"과거 도달 사례 {len(hit_days)}건의 25~75백분위"
+                else:
+                    # 가격·ATR·거래량 데이터는 충분하지만 해당 깊이의 과거 도달 사례가
+                    # 희소한 경우, 기간만 비워 두면 확률과 기간의 데이터 상태가 서로
+                    # 모순된다. ATR 거리÷최근 변동 속도를 중심값으로 삼고 거래량·추세
+                    # 보정(speed_factor)과 도달 희소도를 반영해 조건부 기간을 추정한다.
+                    effective_speed = _clip(recent_speed, 0.12, 1.80)
+                    base_days = max(1.0, distance_atr / effective_speed) * speed_factor
+                    rarity_factor = 1.0 + _clip(
+                        (50.0 - float(probability_mid or 0.0)) / 100.0,
+                        0.0, 0.50,
+                    )
+                    raw_days_min = max(1, math.floor(base_days * 0.70 * rarity_factor))
+                    raw_days_max = max(
+                        raw_days_min,
+                        math.ceil(base_days * 1.80 * rarity_factor),
+                    )
+                    days_min = min(30, max(previous_days_min, raw_days_min))
+                    days_max = min(30, max(previous_days_max, raw_days_max, days_min))
+                    period_source = "model"
+                    period_note = (
+                        f"과거 도달 사례 {len(hit_days)}건(<{min_hits}) · "
+                        "ATR 거리·최근 변동 속도·거래량·추세 기반 추정"
+                    )
+                previous_days_min, previous_days_max = days_min, days_max
 
             nearest_anchor = min(
                 anchors,
@@ -9285,6 +9312,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 "days_min": days_min,
                 "days_max": days_max,
                 "period_label": None if days_min is not None else "기간 산정 불가",
+                "period_source": period_source,
+                "period_note": period_note,
                 "allocation_pct": allocations[_idx],
                 "basis": anchor_label,
             })
@@ -13396,16 +13425,12 @@ input::placeholder{color:#484f58}
 .forecast-scenario-title{font-size:13px;margin-bottom:9px;color:#cdd9e5}
 .prediction-scenario-action{font-size:11px;line-height:1.55;color:#e6edf3;background:#0d1117;border-radius:7px;padding:7px 8px;margin-top:8px}
 .prediction-stack{display:flex;flex-direction:column;gap:14px}
-.prediction-decision{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:16px;background:linear-gradient(135deg,#161b22,#111820);border:1px solid #30363d;border-radius:12px;padding:18px}
+.prediction-decision{background:linear-gradient(135deg,#161b22,#111820);border:1px solid #30363d;border-radius:12px;padding:18px}
 .prediction-kicker{font-size:10px;color:#8b949e;letter-spacing:.06em;text-transform:uppercase;margin-bottom:7px}
 .prediction-badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:9px}
 .prediction-action{font-size:23px;font-weight:900;line-height:1.25;color:#e6edf3}
 .prediction-chip{font-size:10px;font-weight:800;border-radius:999px;padding:3px 8px;border:1px solid #30363d;background:#0d1117;white-space:nowrap}
 .prediction-summary{font-size:12px;color:#cdd9e5;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}
-.prediction-confidence{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px;display:flex;flex-direction:column;justify-content:center;min-width:0}
-.prediction-confidence-head{display:flex;justify-content:space-between;gap:8px;align-items:end}
-.prediction-confidence-value{font-size:25px;font-weight:900;line-height:1}
-.prediction-confidence-range{font-size:10px;color:#8b949e;margin-top:5px}
 .prediction-status-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
 .prediction-status-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:11px;min-width:0}
 .prediction-status-label{font-size:10px;color:#8b949e;margin-bottom:4px;display:flex;gap:4px;align-items:center}
@@ -13488,7 +13513,6 @@ input::placeholder{color:#484f58}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
   .two-col-grid{grid-template-columns:1fr}
-  .prediction-decision{grid-template-columns:1fr}
   .prediction-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prediction-scenario-grid{grid-template-columns:1fr}
   .prediction-context-grid{grid-template-columns:1fr}
@@ -16761,9 +16785,6 @@ function renderPredictionSections(d, isKrx) {
 
   const decision = p.decision;
   const decisionColor = _predictionTone(decision.tone);
-  const confidence = Number(decision.confidence || 0);
-  const confidenceColor = confidence >= 70 ? '#3fb950' : confidence >= 50 ? '#d29922' : '#f85149';
-  const interval = decision.confidence_interval || [];
   const statusHtml = (p.status || []).map(item => {
     const color = _predictionTone(item.tone);
     return `<div class="prediction-status-card">
@@ -16782,11 +16803,6 @@ function renderPredictionSections(d, isKrx) {
           <span class="prediction-chip" style="color:#8b949e">확정 예측 아님</span>
         </div>
         <div class="prediction-summary">${_escPrediction(decision.summary)}</div>
-      </div>
-      <div class="prediction-confidence">
-        <div class="prediction-confidence-head"><span style="font-size:10px;color:#8b949e">종합 신뢰도</span><span class="prediction-confidence-value" style="color:${confidenceColor}">${confidence.toFixed(0)}%</span></div>
-        <div class="forecast-prob-bar"><div class="forecast-prob-fill" style="width:${Math.max(0,Math.min(100,confidence))}%;background:${confidenceColor}"></div></div>
-        <div class="prediction-confidence-range">${interval.length === 2 ? `신뢰 구간 ${interval[0]}~${interval[1]}% · ` : ''}${_escPrediction(decision.confidence_note || '')}</div>
       </div>
     </div>
     <div class="prediction-status-grid">${statusHtml}</div>
@@ -17199,7 +17215,10 @@ function renderForecast(d, isKrx) {
             : (s.period_label || '기간 산정 불가');
           const decline = Number(s.decline_pct);
           const declineText = Number.isFinite(decline) ? `${decline.toFixed(1)}%` : '-';
-          const stepTitle = `${s.basis || 'ATR·기술 지표'} · 단계 배분 ${s.allocation_pct || 0}%`;
+          const periodBasis = s.period_note
+            ? ` · 예상 기간: ${s.period_note}`
+            : '';
+          const stepTitle = `${s.basis || 'ATR·기술 지표'}${periodBasis} · 단계 배분 ${s.allocation_pct || 0}%`;
           return `<div class="buy-stage-row" role="row" title="${stepTitle}" aria-label="${s.label}, ${fmt(s.price, isKrx)}, 현재가 대비 ${declineText}, 도달 확률 ${probabilityText}, 예상 ${periodText}, 단계 배분 ${s.allocation_pct || 0}%">
             <span class="buy-stage-name" role="cell" style="color:${bc}">${s.label}</span>
             <span class="buy-stage-price" role="cell" style="color:${bc}">${fmt(s.price, isKrx)}</span>
