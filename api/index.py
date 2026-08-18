@@ -414,7 +414,9 @@ US_STOCK_MAPPING = {
     "이더리움": "ETH-USD",
 }
 
-_KRX_UNIVERSE_CACHE: Dict[str, Any] = {"records": (), "updated_at": 0.0}
+_KRX_UNIVERSE_CACHE: Dict[str, Any] = {
+    "records": (), "updated_at": 0.0, "session_date": ""
+}
 _KRX_UNIVERSE_LOCK = threading.Lock()
 _KRX_SEARCH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0",
@@ -440,13 +442,22 @@ def _krx_product_flags(name: str) -> Tuple[bool, bool]:
     return leveraged, inverse
 
 
+def _krx_session_date() -> str:
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        return dt.now(_ZI("Asia/Seoul")).strftime("%Y-%m-%d")
+    except Exception:
+        return dt.now().strftime("%Y-%m-%d")
+
+
 def _is_krx_short_code(value: str) -> bool:
     """숫자 또는 최근 도입된 영문 혼합 6자리 KRX 단축코드인지 확인한다."""
     return bool(re.fullmatch(r"[0-9A-Z]{6}", str(value or "").strip().upper()))
 
 
 def _build_krx_security_record(
-        code: str, name: str, market_name: str, security_type: str) -> Optional[Dict]:
+        code: str, name: str, market_name: str, security_type: str,
+        listed_date: str = "") -> Optional[Dict]:
     code = re.sub(r"[^0-9A-Z]", "", str(code or "").strip().upper())
     if code.isdigit():
         code = code.zfill(6)
@@ -456,6 +467,9 @@ def _build_krx_security_record(
     suffix, exchange = _krx_market_meta(market_name)
     security_type = str(security_type or "STOCK").upper()
     leveraged, inverse = _krx_product_flags(name)
+    listed_date = str(listed_date or "").strip().replace(".", "-").replace("/", "-")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", listed_date):
+        listed_date = ""
     return {
         "code": code,
         "name": name,
@@ -465,6 +479,8 @@ def _build_krx_security_record(
         "security_type": security_type,
         "is_leveraged": leveraged,
         "is_inverse": inverse,
+        "listed_date": listed_date,
+        "is_new_listing": bool(listed_date and listed_date == _krx_session_date()),
     }
 
 
@@ -491,6 +507,7 @@ def _download_krx_corporations() -> List[Dict]:
                         cols[0].get_text(strip=True),
                         cols[1].get_text(strip=True),
                         "STOCK",
+                        cols[5].get_text(strip=True) if len(cols) > 5 else "",
                     )
                     if record:
                         records.append(record)
@@ -536,12 +553,17 @@ def _fetch_krx_security_universe() -> Tuple[Dict, ...]:
 def get_krx_security_universe() -> Tuple[Dict, ...]:
     """국내 상장 주식·ETF·ETN 검색 마스터를 stale-if-error 방식으로 반환한다."""
     now = time.time()
+    session_date = _krx_session_date()
     cached = _KRX_UNIVERSE_CACHE.get("records") or ()
-    if cached and now - float(_KRX_UNIVERSE_CACHE.get("updated_at") or 0) < 3600:
+    same_session_date = _KRX_UNIVERSE_CACHE.get("session_date") == session_date
+    if (cached and same_session_date and
+            now - float(_KRX_UNIVERSE_CACHE.get("updated_at") or 0) < 3600):
         return cached
     with _KRX_UNIVERSE_LOCK:
         cached = _KRX_UNIVERSE_CACHE.get("records") or ()
-        if cached and now - float(_KRX_UNIVERSE_CACHE.get("updated_at") or 0) < 3600:
+        same_session_date = _KRX_UNIVERSE_CACHE.get("session_date") == session_date
+        if (cached and same_session_date and
+                now - float(_KRX_UNIVERSE_CACHE.get("updated_at") or 0) < 3600):
             return cached
         fresh = _fetch_krx_security_universe()
         if fresh:
@@ -552,6 +574,7 @@ def get_krx_security_universe() -> Tuple[Dict, ...]:
                 merged.values(), key=lambda item: (item["name"].casefold(), item["code"])
             ))
             _KRX_UNIVERSE_CACHE["records"] = records
+            _KRX_UNIVERSE_CACHE["session_date"] = session_date
             source_types = {record["security_type"] for record in fresh}
             # 주식·ETF·ETN 중 하나라도 빠졌다면 1분 후 재시도한다.
             _KRX_UNIVERSE_CACHE["updated_at"] = (
@@ -560,6 +583,26 @@ def get_krx_security_universe() -> Tuple[Dict, ...]:
             return records
         # 일시 장애 때 빈 결과로 정상 캐시를 덮어쓰지 않는다.
         return cached
+
+
+def _promote_new_krx_listing(record: Dict) -> None:
+    """자동완성에서 당일 신규 상장을 발견하면 전체 TTL 만료 전 즉시 캐시에 넣는다."""
+    if not record or not record.get("code"):
+        return
+    promoted = dict(record)
+    promoted["listed_date"] = promoted.get("listed_date") or _krx_session_date()
+    promoted["is_new_listing"] = True
+    with _KRX_UNIVERSE_LOCK:
+        merged = {
+            item["code"]: item for item in (_KRX_UNIVERSE_CACHE.get("records") or ())
+        }
+        merged[promoted["code"]] = promoted
+        _KRX_UNIVERSE_CACHE["records"] = tuple(sorted(
+            merged.values(), key=lambda item: (item["name"].casefold(), item["code"])
+        ))
+        _KRX_UNIVERSE_CACHE["session_date"] = _krx_session_date()
+        # 발견 종목은 즉시 사용하고, 다음 검색에서 전체 마스터도 다시 동기화한다.
+        _KRX_UNIVERSE_CACHE["updated_at"] = 0.0
 
 
 def get_krx_code_map():
@@ -607,6 +650,694 @@ def _exact_krx_remote_match(q: str) -> Optional[Dict]:
         if record["code"] == query or record["name"].casefold() == query_fold:
             return record
     return None
+
+
+def _krx_status_directory() -> Dict[str, Any]:
+    """개장 급등 모듈의 전체 관리·거래정지 스냅샷을 검색에서도 재사용한다."""
+    fetcher = globals().get("_fetch_kr_surge_risk_flags")
+    if not callable(fetcher):
+        return {"flags": {}, "details": {}, "coverage": {}, "errors": ["상태 피드 미초기화"]}
+    try:
+        snapshot = fetcher() or {}
+        return {
+            "flags": snapshot.get("flags") or {},
+            "details": snapshot.get("details") or {},
+            "coverage": snapshot.get("coverage") or {},
+            "errors": snapshot.get("errors") or [],
+            "as_of": snapshot.get("as_of"),
+        }
+    except Exception as exc:
+        return {"flags": {}, "details": {}, "coverage": {}, "errors": [str(exc)]}
+
+
+def _parse_krx_delisting_notice(html: str) -> Dict[str, Any]:
+    """최신 공시에서 확정 상장폐지 공시와 이후 상장유지 결정을 시간순으로 판별한다."""
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    cutoff = dt.now() - timedelta(days=730)
+    events = []
+    for row in soup.select("table tr"):
+        cols = row.select("td")
+        if len(cols) < 3:
+            continue
+        title = re.sub(r"\s+", " ", cols[0].get_text(" ", strip=True)).strip()
+        date_text = cols[-1].get_text(strip=True)
+        try:
+            disclosed_at = dt.strptime(date_text, "%Y.%m.%d")
+        except (TypeError, ValueError):
+            continue
+        if disclosed_at < cutoff:
+            continue
+        events.append((disclosed_at, title))
+    events.sort(key=lambda item: item[0], reverse=True)
+    for disclosed_at, title in events:
+        normalized = re.sub(r"\s+", "", title)
+        if any(term in normalized for term in (
+                "상장유지결정", "상장폐지결정취소", "상장폐지사유해소")):
+            return {"scheduled": False, "title": title, "date": disclosed_at.strftime("%Y-%m-%d")}
+        formal_decision = bool(re.search(r"(?:\(정정\))?상장폐지$", normalized))
+        committee_decision = "상장폐지결정" in normalized and "여부결정" not in normalized
+        if formal_decision or committee_decision:
+            return {"scheduled": True, "title": title, "date": disclosed_at.strftime("%Y-%m-%d")}
+    return {"scheduled": False, "title": "", "date": ""}
+
+
+def _krx_notice_rows(html: str) -> List[Dict[str, str]]:
+    """네이버/KOSCOM 종목 공시 목록을 제목·공시일·본문 번호로 정규화한다."""
+    rows: List[Dict[str, str]] = []
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    for row in soup.select("table tr"):
+        anchor = row.select_one("a[href*='news_notice_read']")
+        if not anchor:
+            continue
+        href = str(anchor.get("href") or "")
+        number = re.search(r"(?:[?&]no=)(\d+)", href)
+        if not number:
+            continue
+        title = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True)).strip()
+        date_match = re.search(r"20\d{2}[.]\d{1,2}[.]\d{1,2}", row.get_text(" ", strip=True))
+        rows.append({
+            "notice_no": number.group(1),
+            "title": title,
+            "date": date_match.group(0).replace(".", "-") if date_match else "",
+        })
+    return rows
+
+
+def _parse_krx_halt_release_content(
+        content: str, today: Optional[str] = None) -> Dict[str, str]:
+    """거래정지 공시의 명시 해제일 또는 조건부 종료 사유를 추출한다.
+
+    현재도 거래정지인 종목에 과거 해제일을 잘못 노출하지 않도록 오늘 이전
+    날짜는 폐기한다. 공시에 날짜가 없으면 임의 추정 대신 조건과 '미정'을 반환한다.
+    """
+    text_value = BeautifulSoup(str(content or ""), "html.parser").get_text(" ", strip=True)
+    text_value = re.sub(r"\s+", " ", text_value).strip()
+    result = {
+        "halt_release_date": "", "halt_release_time": "",
+        "halt_release_label": "해제일 미정", "halt_release_condition": "",
+        "halt_release_basis": "정보 없음",
+    }
+    if not text_value:
+        return result
+    today_value = str(today or _krx_session_date())
+    field_pattern = re.compile(r"(?:매매거래정지해제일|정지해제일|해제일시|만료일시)\s*[:：]?\s*", re.I)
+    fields = list(field_pattern.finditer(text_value))
+    for field in fields:
+        segment = text_value[field.end():field.end() + 320]
+        # 다음 번호 항목이나 표의 다음 주요 필드가 시작되기 전까지만 사용한다.
+        segment = re.split(
+            r"\s+(?:\d+[.]\s*|근거규정|정지사유|매매거래정지일|기타 투자판단에 참고할 사항)",
+            segment, maxsplit=1,
+        )[0]
+        date_match = re.search(
+            r"(20\d{2})\s*(?:년|[./-])\s*(\d{1,2})\s*(?:월|[./-])\s*(\d{1,2})\s*일?"
+            r"(?:\s*(\d{1,2})\s*(?::|시)\s*(\d{1,2})?\s*분?)?",
+            segment,
+        )
+        if date_match:
+            year, month, day = (int(date_match.group(i)) for i in range(1, 4))
+            try:
+                release_date = datetime.date(year, month, day).isoformat()
+            except ValueError:
+                release_date = ""
+            if release_date and release_date >= today_value:
+                hour = date_match.group(4)
+                minute = date_match.group(5)
+                release_time = ""
+                if hour is not None:
+                    release_time = f"{int(hour):02d}:{int(minute or 0):02d}"
+                result.update({
+                    "halt_release_date": release_date,
+                    "halt_release_time": release_time,
+                    "halt_release_label": f"{release_date}{' ' + release_time if release_time else ''}",
+                    "halt_release_basis": "공시 명시",
+                })
+                return result
+        condition_match = re.search(
+            r"([^.;]{0,180}?(?:확인|결정|해소|종료|해제)[^.;]{0,100}?(?:시까지|때까지))",
+            segment,
+        )
+        if condition_match:
+            condition = re.sub(r"^[\s\-–—:]+|[\s\-–—:]+$", "", condition_match.group(1))
+            result.update({
+                "halt_release_condition": condition,
+                "halt_release_basis": "조건부·미정",
+            })
+            return result
+    return result
+
+
+def _fetch_krx_halt_release_guidance(
+        code: str, first_notice_html: str = "") -> Dict[str, str]:
+    """최근 거래정지 공시를 역순으로 확인해 해제일 안내를 구성한다."""
+    candidates: List[Dict[str, str]] = []
+    for page in range(1, 4):
+        html = first_notice_html if page == 1 else ""
+        if not html:
+            try:
+                response = requests.get(
+                    "https://finance.naver.com/item/news_notice.naver",
+                    params={"code": code, "page": page},
+                    headers=_KRX_SEARCH_HEADERS, timeout=6,
+                )
+                response.raise_for_status()
+                response.encoding = "euc-kr"
+                html = response.text
+            except Exception:
+                continue
+        for notice in _krx_notice_rows(html):
+            normalized = re.sub(r"\s+", "", notice.get("title") or "")
+            if "거래정지" not in normalized:
+                continue
+            # 이미 끝난 순수 해제 공시는 현재 거래정지의 예상 해제 근거가 아니다.
+            if "정지해제" in normalized and "정지및정지해제" not in normalized:
+                continue
+            candidates.append(notice)
+    for notice in candidates[:10]:
+        try:
+            response = requests.get(
+                "https://finance.naver.com/item/news_notice_read_content.naver",
+                params={"no": notice["notice_no"]},
+                headers=_KRX_SEARCH_HEADERS, timeout=6,
+            )
+            response.raise_for_status()
+            response.encoding = "euc-kr"
+            guidance = _parse_krx_halt_release_content(response.text)
+        except Exception:
+            continue
+        if guidance.get("halt_release_date") or guidance.get("halt_release_condition"):
+            guidance.update({
+                "halt_release_source_title": notice.get("title") or "",
+                "halt_release_notice_date": notice.get("date") or "",
+            })
+            return guidance
+    return {
+        "halt_release_date": "", "halt_release_time": "",
+        "halt_release_label": "해제일 미정", "halt_release_condition": "",
+        "halt_release_basis": "정보 없음", "halt_release_source_title": "",
+        "halt_release_notice_date": "",
+    }
+
+
+@ttl_cache(120)
+def _fetch_krx_security_detail_status(code: str) -> Dict[str, Any]:
+    """종목별 실시간 거래상태·신규상장·최근 상장폐지 공시를 확인한다."""
+    code = str(code or "").strip().upper()
+    result: Dict[str, Any] = {
+        "code": code, "available": False, "management": False,
+        "trading_halt": False, "delisting_scheduled": False,
+        "newly_listed": False, "listed_date": "", "errors": [],
+    }
+    if not _is_krx_short_code(code):
+        result["errors"].append("KRX 단축코드 형식 오류")
+        return result
+    notice_html = ""
+    try:
+        response = requests.get(
+            f"https://m.stock.naver.com/api/stock/{quote(code)}/basic",
+            headers=_KRX_SEARCH_HEADERS, timeout=6,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        trade_stop = payload.get("tradeStopType") or {}
+        trade_name = str(trade_stop.get("name") or "").upper()
+        tradable = str(payload.get("tradableStatus") or "").lower()
+        result.update({
+            "available": True,
+            "name": payload.get("stockName") or "",
+            "trade_status": trade_name,
+            "tradable_status": payload.get("tradableStatus"),
+            "tradable_status_code": payload.get("tradableStatusCode"),
+            "trading_halt": (
+                trade_name not in {"", "TRADING", "NORMAL"}
+                or tradable not in {"", "tradable"}
+            ),
+            "newly_listed": bool(payload.get("newlyListed")),
+        })
+    except Exception as exc:
+        result["errors"].append(f"basic: {exc}")
+
+    try:
+        response = requests.get(
+            "https://finance.naver.com/item/main.naver",
+            params={"code": code}, headers=_KRX_SEARCH_HEADERS, timeout=6,
+        )
+        response.raise_for_status()
+        response.encoding = "euc-kr"
+        result["management"] = bool(
+            BeautifulSoup(response.text, "html.parser").select_one("em.manage")
+        )
+        result["available"] = True
+    except Exception as exc:
+        result["errors"].append(f"management: {exc}")
+
+    try:
+        response = requests.get(
+            "https://finance.naver.com/item/news_notice.naver",
+            params={"code": code, "page": 1}, headers=_KRX_SEARCH_HEADERS, timeout=6,
+        )
+        response.raise_for_status()
+        response.encoding = "euc-kr"
+        notice_html = response.text
+        delisting = _parse_krx_delisting_notice(notice_html)
+        result.update({
+            "delisting_scheduled": bool(delisting.get("scheduled")),
+            "delisting_notice_title": delisting.get("title") or "",
+            "delisting_notice_date": delisting.get("date") or "",
+            "available": True,
+        })
+    except Exception as exc:
+        result["errors"].append(f"notice: {exc}")
+    if result.get("trading_halt"):
+        try:
+            result.update(_fetch_krx_halt_release_guidance(code, notice_html))
+        except Exception as exc:
+            result["errors"].append(f"halt_release: {exc}")
+    if result.get("newly_listed") and not result.get("listed_date"):
+        result["listed_date"] = _krx_session_date()
+    result["as_of"] = dt.now().isoformat()
+    return result
+
+
+def _extract_unique_trading_dates(data: Any) -> List[str]:
+    """DataFrame 또는 기존 분석 dict에서 중복 없는 실제 거래일을 추출한다."""
+    values: Any = []
+    if isinstance(data, pd.DataFrame):
+        values = list(data.index)
+    elif isinstance(data, dict):
+        values = data.get("Date")
+        if values is None:
+            values = data.get("Dates")
+        if values is None:
+            values = []
+    elif isinstance(data, (list, tuple, set, pd.Index, pd.Series)):
+        values = data
+    unique = set()
+    for value in values:
+        try:
+            parsed = pd.Timestamp(value)
+            if pd.isna(parsed):
+                continue
+            unique.add(parsed.date().isoformat())
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return sorted(unique)
+
+
+@ttl_cache(600)
+def _fetch_krx_listing_daily_history(
+        ticker: str, listed_date: str) -> Tuple[Tuple[str, float], ...]:
+    """상장일부터 현재까지의 일봉 날짜·종가를 단기 화면 기간과 분리해 조회한다."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(listed_date or "")):
+        return ()
+    try:
+        age_days = (datetime.date.fromisoformat(_krx_session_date()) -
+                    datetime.date.fromisoformat(listed_date)).days
+    except ValueError:
+        return ()
+    # 120거래일을 넉넉히 지난 종목은 별도 네트워크 조회가 필요 없다.
+    if age_days > 250:
+        return ()
+    symbol = str(ticker or "").strip().upper()
+    candidates = [symbol]
+    if symbol.endswith(".KS"):
+        candidates.append(symbol[:-3] + ".KQ")
+    elif symbol.endswith(".KQ"):
+        candidates.append(symbol[:-3] + ".KS")
+    for candidate in candidates:
+        try:
+            end_date = (
+                datetime.date.fromisoformat(_krx_session_date()) + timedelta(days=1)
+            ).isoformat()
+            frame = yf.Ticker(candidate).history(
+                start=listed_date, end=end_date, interval="1d", auto_adjust=True
+            )
+            rows = []
+            if frame is not None and not frame.empty and "Close" in frame:
+                for index_value, close_value in frame["Close"].items():
+                    try:
+                        date_value = pd.Timestamp(index_value).date().isoformat()
+                        close_number = float(close_value)
+                        if date_value >= listed_date and math.isfinite(close_number) and close_number > 0:
+                            rows.append((date_value, close_number))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+            if rows:
+                # 공급자 데이터 중복 시 해당 거래일의 마지막 종가를 사용한다.
+                return tuple(sorted(dict(rows).items()))
+        except Exception:
+            continue
+    return ()
+
+
+def _fetch_krx_listing_trading_dates(ticker: str, listed_date: str) -> Tuple[str, ...]:
+    """기존 호출부 호환용: 신규 상장 일봉 이력에서 거래일만 반환한다."""
+    return tuple(date for date, _close in _fetch_krx_listing_daily_history(ticker, listed_date))
+
+
+def _extract_daily_close_series(data: Any) -> List[float]:
+    """일봉·분봉 입력을 거래일별 마지막 유효 종가 시계열로 정규화한다."""
+    rows: Dict[str, float] = {}
+    if isinstance(data, pd.DataFrame) and "Close" in data:
+        iterator = data["Close"].items()
+    elif isinstance(data, dict):
+        dates = data.get("Date")
+        if dates is None:
+            dates = data.get("Dates")
+        closes = data.get("Close")
+        if dates is None or closes is None:
+            return []
+        iterator = zip(dates, closes)
+    elif isinstance(data, (list, tuple)) and data and isinstance(data[0], (list, tuple)):
+        iterator = data
+    else:
+        return []
+    for date_value, close_value in iterator:
+        try:
+            date_key = pd.Timestamp(date_value).date().isoformat()
+            close_number = float(close_value)
+            if math.isfinite(close_number) and close_number > 0:
+                rows[date_key] = close_number
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return [rows[key] for key in sorted(rows)]
+
+
+def _prediction_history_confidence_profile(
+        close_prices: Any, available_trading_days: Optional[int] = None) -> Dict[str, Any]:
+    """거래일 단계 상한과 워크포워드 검증 기반 최적 관측 일수를 계산한다.
+
+    후보 관측 구간은 20일부터 5거래일 간격으로 탐색한다. 각 과거 시점에서
+    해당 구간의 로그가격 추세만 사용해 다음 거래일 방향을 예측하므로 미래
+    데이터를 현재 예측에 섞지 않는다. 표본이 적은 적중률은 50%로 축소한다.
+    """
+    if isinstance(close_prices, np.ndarray):
+        raw_prices = close_prices.tolist()
+    else:
+        raw_prices = list(close_prices or [])
+    prices = []
+    for value in raw_prices:
+        try:
+            number = float(value)
+            if math.isfinite(number) and number > 0:
+                prices.append(number)
+        except (TypeError, ValueError):
+            continue
+    count = int(available_trading_days if available_trading_days is not None else len(prices))
+    count = max(0, count)
+    if count < 20:
+        stage, stage_cap = "under_20", 45
+    elif count < 60:
+        stage, stage_cap = "under_60", 60
+    elif count < 120:
+        stage, stage_cap = "under_120", 75
+    else:
+        stage, stage_cap = "sufficient", 90
+    result: Dict[str, Any] = {
+        "available_trading_days": count,
+        "stage": stage,
+        "stage_confidence_cap": stage_cap,
+        "optimal_lookback_days": None,
+        "validation_points": 0,
+        "validation_hit_rate": None,
+        "validation_score": None,
+        "validation_confidence_cap": None,
+        "confidence_cap": stage_cap,
+        "method": "워크포워드 로그가격 추세 검증 · 5거래일 간격 후보 · 소표본 축소",
+    }
+    n_prices = len(prices)
+    # 후보 하나당 최소 12회의 다음 거래일 검증을 남겨 극소 표본 최적화를 막는다.
+    max_window = min(250, n_prices - 12)
+    if max_window < 20:
+        result["cap_reason"] = (
+            f"가격 이력 {count}거래일로 20거래일 최소 검증 구간을 충족하지 못해 "
+            f"신뢰도 상한을 {stage_cap}%로 제한"
+        )
+        return result
+
+    candidates = set(range(20, max_window + 1, 5))
+    candidates.update(window for window in (20, 60, 120) if window <= max_window)
+    candidate_results = []
+    log_prices = np.log(np.asarray(prices, dtype=float))
+    for window in sorted(candidates):
+        predicted: List[int] = []
+        actual: List[int] = []
+        evaluation_start = max(window - 1, n_prices - 121)
+        for end in range(evaluation_start, n_prices - 1):
+            sample = log_prices[end - window + 1:end + 1]
+            if len(sample) != window:
+                continue
+            x_axis = np.arange(window, dtype=float)
+            try:
+                slope = float(np.polyfit(x_axis, sample, 1)[0])
+            except (TypeError, ValueError, np.linalg.LinAlgError):
+                continue
+            next_return = float(log_prices[end + 1] - log_prices[end])
+            if not math.isfinite(slope) or not math.isfinite(next_return) or next_return == 0:
+                continue
+            predicted.append(1 if slope >= 0 else -1)
+            actual.append(1 if next_return > 0 else -1)
+        points = len(actual)
+        if points < 12:
+            continue
+        hits = [1.0 if pred == observed else 0.0 for pred, observed in zip(predicted, actual)]
+        hit_rate = float(np.mean(hits))
+        recent_hits = hits[-min(20, points):]
+        recent_rate = float(np.mean(recent_hits))
+        midpoint = max(1, points // 2)
+        first_rate = float(np.mean(hits[:midpoint]))
+        second_rate = float(np.mean(hits[midpoint:])) if hits[midpoint:] else first_rate
+        stability = max(0.0, 1.0 - abs(first_rate - second_rate))
+        shrink = points / (points + 20.0)
+        shrunk_hit = 0.5 + (hit_rate - 0.5) * shrink
+        recent_shrink = len(recent_hits) / (len(recent_hits) + 20.0)
+        shrunk_recent = 0.5 + (recent_rate - 0.5) * recent_shrink
+        score = 0.55 * shrunk_hit + 0.30 * shrunk_recent + 0.15 * stability
+        candidate_results.append({
+            "window": window, "points": points, "hit_rate": hit_rate,
+            "recent_hit_rate": recent_rate, "stability": stability, "score": score,
+        })
+    if not candidate_results:
+        result["cap_reason"] = (
+            f"가격 이력 {count}거래일의 검증 표본이 부족해 단계 상한 {stage_cap}%를 적용"
+        )
+        return result
+    # 동점이면 검증 표본이 많고 관측 일수가 짧은 후보를 선택해 과적합을 억제한다.
+    best = max(candidate_results, key=lambda item: (
+        round(item["score"], 8), item["points"], -item["window"]
+    ))
+    selection_penalty = min(
+        0.10,
+        math.sqrt(math.log(max(2, len(candidate_results))) / max(2.0, 2.0 * best["points"])) * 0.25,
+    )
+    adjusted_score = max(0.0, best["score"] - selection_penalty)
+    validation_cap = int(round(max(50.0, min(95.0, 50.0 + adjusted_score * 45.0))))
+    final_cap = min(stage_cap, validation_cap)
+    result.update({
+        "optimal_lookback_days": int(best["window"]),
+        "validation_points": int(best["points"]),
+        "validation_hit_rate": round(best["hit_rate"] * 100.0, 1),
+        "validation_score": round(adjusted_score * 100.0, 1),
+        "selection_penalty": round(selection_penalty * 100.0, 1),
+        "validation_confidence_cap": validation_cap,
+        "confidence_cap": final_cap,
+        "candidate_count": len(candidate_results),
+        "cap_reason": (
+            f"신규 상장 데이터 {count}거래일 · 단계 상한 {stage_cap}% · "
+            f"워크포워드 최적 관측 {best['window']}거래일"
+            f"(검증 {best['points']}회, 방향 일치 {best['hit_rate'] * 100.0:.1f}%) → "
+            f"최종 신뢰도 상한 {final_cap}%"
+        ),
+    })
+    return result
+
+
+def _build_listing_history_status(
+        data: Any, listed_date: str, today: Optional[str] = None) -> Dict[str, Any]:
+    """신규 상장 분석 데이터의 20·60·120거래일 충족 단계를 계산한다."""
+    listed_date = str(listed_date or "").strip()
+    today_value = str(today or _krx_session_date())
+    base = {
+        "applicable": False, "listed_date": listed_date,
+        "available_trading_days": 0, "stage": "unknown", "stage_label": "",
+        "next_threshold": None, "remaining_trading_days": None,
+        "data_sufficient": False, "warning": "",
+    }
+    try:
+        listed_day = datetime.date.fromisoformat(listed_date)
+        today_day = datetime.date.fromisoformat(today_value)
+    except ValueError:
+        return base
+    if listed_day > today_day:
+        return base
+    dates = [date for date in _extract_unique_trading_dates(data)
+             if listed_date <= date <= today_value]
+    count = len(dates)
+    base.update({"applicable": True, "available_trading_days": count})
+    if count < 20:
+        threshold, stage, label = 20, "under_20", "20거래일 미만"
+        limitation = "MA20·MA60·MA120과 단기·중기·장기 패턴의 신뢰도가 제한됩니다."
+    elif count < 60:
+        threshold, stage, label = 60, "under_60", "20~59거래일"
+        limitation = "MA20은 계산 가능하지만 MA60·MA120과 중기·장기 패턴의 신뢰도가 제한됩니다."
+    elif count < 120:
+        threshold, stage, label = 120, "under_120", "60~119거래일"
+        limitation = "MA20·MA60은 계산 가능하지만 MA120과 장기 추세 판단의 신뢰도가 제한됩니다."
+    else:
+        base.update({
+            "stage": "sufficient", "stage_label": "120거래일 이상",
+            "data_sufficient": True,
+        })
+        return base
+    remaining = threshold - count
+    base.update({
+        "stage": stage, "stage_label": label,
+        "next_threshold": threshold, "remaining_trading_days": remaining,
+        "warning": (
+            f"신규 상장 후 확보 데이터 {count}거래일 · {label} 단계: {limitation} "
+            f"다음 기준({threshold}거래일)까지 {remaining}거래일이 더 필요합니다."
+        ),
+    })
+    return base
+
+
+def _compose_krx_security_status(
+        code: str, record: Optional[Dict] = None, flags: Optional[Dict] = None,
+        directory_detail: Optional[Dict] = None,
+        live_detail: Optional[Dict] = None) -> Dict[str, Any]:
+    record = record or {}
+    flags = flags or {}
+    directory_detail = directory_detail or {}
+    live_detail = live_detail or {}
+    management = bool(flags.get("management") or live_detail.get("management"))
+    trading_halt = bool(flags.get("trading_halt") or live_detail.get("trading_halt"))
+    delisting = bool(live_detail.get("delisting_scheduled"))
+    newly_listed = bool(record.get("is_new_listing") or live_detail.get("newly_listed"))
+    listed_date = str(record.get("listed_date") or live_detail.get("listed_date") or "")
+    release_date = str(live_detail.get("halt_release_date") or "")
+    release_time = str(live_detail.get("halt_release_time") or "")
+    release_label = str(live_detail.get("halt_release_label") or "해제일 미정")
+    release_condition = str(live_detail.get("halt_release_condition") or "")
+    release_basis = str(live_detail.get("halt_release_basis") or "정보 없음")
+    warnings_list = []
+    labels = []
+    if delisting:
+        labels.append("상장폐지 예정")
+        warnings_list.append("상장폐지 결정 또는 절차 진행 공시가 확인되어 분석을 차단했습니다.")
+    if trading_halt:
+        labels.append("거래정지")
+        warnings_list.append("현재 거래정지 또는 주문 불가 상태로 분석을 차단했습니다.")
+        if release_date:
+            warnings_list.append(f"거래정지 예상 해제일: {release_label} (공시 명시).")
+        elif release_condition:
+            warnings_list.append(f"거래정지 예상 해제일: 미정 · {release_condition}.")
+        else:
+            warnings_list.append("거래정지 예상 해제일: 미정 · 후속 거래소 공시 확인이 필요합니다.")
+    if management:
+        labels.append("관리종목")
+        warnings_list.append("관리종목입니다. 정보 조회는 가능하지만 신규 진입 판단에는 각별한 주의가 필요합니다.")
+    if newly_listed:
+        labels.append("신규상장")
+        warnings_list.append("당일 신규 상장 종목으로 과거 데이터가 부족할 수 있습니다.")
+    blocked = delisting or trading_halt
+    block_reason = " · ".join(label for label in labels if label in {"상장폐지 예정", "거래정지"})
+    return {
+        "code": str(code or "").upper(),
+        "management": management,
+        "trading_halt": trading_halt,
+        "delisting_scheduled": delisting,
+        "newly_listed": newly_listed,
+        "listed_date": listed_date,
+        "analysis_blocked": blocked,
+        "block_reason": block_reason,
+        "status_labels": labels,
+        "warnings": warnings_list,
+        "management_date": directory_detail.get("management_date") or "",
+        "trading_halt_date": directory_detail.get("trading_halt_date") or "",
+        "halt_release_date": release_date,
+        "halt_release_time": release_time,
+        "halt_release_label": release_label if trading_halt else "",
+        "halt_release_condition": release_condition,
+        "halt_release_basis": release_basis,
+        "halt_release_source_title": live_detail.get("halt_release_source_title") or "",
+        "halt_release_notice_date": live_detail.get("halt_release_notice_date") or "",
+        "delisting_notice_title": live_detail.get("delisting_notice_title") or "",
+        "delisting_notice_date": live_detail.get("delisting_notice_date") or "",
+        "status_available": bool(flags or live_detail.get("available")),
+        "as_of": live_detail.get("as_of") or "",
+    }
+
+
+def get_krx_security_status(code: str) -> Dict[str, Any]:
+    code = str(code or "").split(".", 1)[0].strip().upper()
+    directory = _krx_status_directory()
+    record = next((item for item in get_krx_security_universe()
+                   if item.get("code") == code), {})
+    live_detail = _fetch_krx_security_detail_status(code)
+    status = _compose_krx_security_status(
+        code, record, (directory.get("flags") or {}).get(code),
+        (directory.get("details") or {}).get(code), live_detail,
+    )
+    if status["newly_listed"] and not record:
+        remote = _exact_krx_remote_match(code)
+        if remote:
+            _promote_new_krx_listing(remote)
+    return status
+
+
+def _enrich_krx_suggestion_status(items: List[Dict], query: str) -> List[Dict]:
+    krx_items = [item for item in items if item.get("market") == "KRX"]
+    if not krx_items:
+        return items
+    directory = _krx_status_directory()
+    flags_by_code = directory.get("flags") or {}
+    directory_details = directory.get("details") or {}
+    universe = {record["code"]: record for record in get_krx_security_universe()}
+    query_fold = str(query or "").strip().casefold()
+    need_detail = []
+    for item in krx_items:
+        code = item.get("code") or ""
+        flags = flags_by_code.get(code) or {}
+        exact = query_fold in {str(code).casefold(), str(item.get("name") or "").casefold()}
+        if flags.get("management") or flags.get("trading_halt") or exact or code not in universe:
+            need_detail.append(code)
+    detail_by_code: Dict[str, Dict] = {}
+    if need_detail:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(need_detail))) as executor:
+            for code, detail in zip(need_detail, executor.map(
+                    _fetch_krx_security_detail_status, need_detail)):
+                detail_by_code[code] = detail
+    for item in krx_items:
+        code = item.get("code") or ""
+        record = universe.get(code) or {}
+        status = _compose_krx_security_status(
+            code, record, flags_by_code.get(code), directory_details.get(code),
+            detail_by_code.get(code),
+        )
+        item.update({
+            "management": status["management"],
+            "trading_halt": status["trading_halt"],
+            "delisting_scheduled": status["delisting_scheduled"],
+            "newly_listed": status["newly_listed"],
+            "analysis_blocked": status["analysis_blocked"],
+            "block_reason": status["block_reason"],
+            "status_labels": status["status_labels"],
+            "status_warnings": status["warnings"],
+            "halt_release_date": status["halt_release_date"],
+            "halt_release_time": status["halt_release_time"],
+            "halt_release_label": status["halt_release_label"],
+            "halt_release_condition": status["halt_release_condition"],
+            "halt_release_basis": status["halt_release_basis"],
+        })
+        if status["newly_listed"] and not record:
+            promoted = _build_krx_security_record(
+                code, item.get("name"),
+                "KOSDAQ" if str(item.get("ticker") or "").endswith(".KQ") else "KOSPI",
+                item.get("security_type") or "STOCK", _krx_session_date(),
+            )
+            if promoted:
+                _promote_new_krx_listing(promoted)
+    return items
 
 def resolve_ticker(q: str):
     """종목명 / 코드 / 별칭 → (yfinance_ticker, market, display_name)
@@ -881,7 +1612,9 @@ def search_stock_suggestions(q: str, limit: int = 12) -> List[Dict]:
             pass
 
     ranked.sort(key=lambda item: (item[0], item[1]["name"].casefold(), item[1]["ticker"]))
-    return [item for _, item in ranked[:limit]]
+    return _enrich_krx_suggestion_status(
+        [item for _, item in ranked[:limit]], query
+    )
 
 # =============================================================================
 # 지표 계산
@@ -4159,13 +4892,15 @@ def _kr_surge_vi_state(code: str, row: Dict[str, Any]) -> Dict[str, Any]:
 def _fetch_kr_surge_risk_flags() -> Dict[str, Any]:
     """관리·시장경보 목록을 결합한다. 단기과열은 공급자 필드/연동 코드가 있을 때만 확정한다."""
     flags: Dict[str, Dict[str, bool]] = {}
+    details: Dict[str, Dict[str, Any]] = {}
     coverage = {"management": False, "caution": False, "warning": False,
                 "risk": False, "short_overheat": False}
     errors: List[str] = []
 
     def _flag(code: Any, key: str) -> None:
-        normalized = str(code or "").zfill(6)
-        if normalized.strip("0"):
+        raw = str(code or "").strip().upper()
+        normalized = raw.zfill(6) if raw.isdigit() else raw
+        if _is_krx_short_code(normalized):
             flags.setdefault(normalized, {})[key] = True
 
     jobs = [
@@ -4204,6 +4939,18 @@ def _fetch_kr_surge_risk_flags() -> Dict[str, Any]:
                         _flag(code, "management")
                     if _kr_surge_bool(row.get("tradeStopYn")):
                         _flag(code, "trading_halt")
+                    raw_code = str(code or "").strip().upper()
+                    normalized_code = raw_code.zfill(6) if raw_code.isdigit() else raw_code
+                    if _is_krx_short_code(normalized_code):
+                        details[normalized_code] = {
+                            "management_status_code": str(row.get("manageStatusGb") or ""),
+                            "management_date": str(row.get("managementDate") or ""),
+                            "management_reason_code": str(row.get("managementReasonCode") or ""),
+                            "trading_halt_date": str(row.get("tradingHaltDate") or ""),
+                            "trading_halt_reason_code": str(row.get("tradingHaltReasonCode") or ""),
+                            "tradable_status": row.get("tradableStatus"),
+                            "tradable_status_code": row.get("tradableStatusCode"),
+                        }
                 else:
                     _flag(code, key)
                 for field in ("shortTermOverheatYn", "overheatYn", "shortTermOverheated",
@@ -4251,7 +4998,7 @@ def _fetch_kr_surge_risk_flags() -> Dict[str, Any]:
         coverage["short_overheat"] = True
         for code in configured:
             _flag(code, "short_overheat")
-    return {"flags": flags, "coverage": coverage, "errors": errors,
+    return {"flags": flags, "details": details, "coverage": coverage, "errors": errors,
             "as_of": _kr_surge_now().isoformat(),
             "short_overheat_source": ("외부 JSON 피드" if short_overheat_url and coverage["short_overheat"] else
                                       "공급자 필드/연동 코드" if coverage["short_overheat"] else "미연동")}
@@ -12023,9 +12770,78 @@ def route(path: str, params: Dict) -> Dict:
         ticker, market, company = resolve_ticker(raw)
         if not ticker:
             return {"error": f"'{raw}' 종목을 찾을 수 없습니다."}
+        security_status = None
+        if market == "KRX":
+            security_status = get_krx_security_status(ticker)
+            if security_status.get("analysis_blocked"):
+                reason = security_status.get("block_reason") or "거래 제한 상태"
+                release_note = ""
+                if security_status.get("trading_halt"):
+                    release_label = security_status.get("halt_release_label") or "해제일 미정"
+                    release_condition = security_status.get("halt_release_condition") or ""
+                    release_note = f" 거래정지 예상 해제일: {release_label}"
+                    if release_condition:
+                        release_note += f" ({release_condition})"
+                    release_note += "."
+                return {
+                    "error": (
+                        f"{company or ticker}은(는) {reason} 종목이므로 분석을 차단했습니다."
+                        f"{release_note}"
+                    ),
+                    "error_code": "KRX_SECURITY_BLOCKED",
+                    "ticker": ticker,
+                    "market": market,
+                    "company": company,
+                    "security_status": security_status,
+                }
         dd, news, err_or_sym = fetch_stock_data(ticker, market, period)
         if dd is None:
             return {"error": f"데이터 조회 실패: {err_or_sym}"}
+        listing_confidence_profile = None
+        if market == "KRX" and security_status:
+            listed_date = str(security_status.get("listed_date") or "")
+            history_status = None
+            try:
+                listing_age = (
+                    datetime.date.fromisoformat(_krx_session_date()) -
+                    datetime.date.fromisoformat(listed_date)
+                ).days
+            except ValueError:
+                listing_age = None
+            if listing_age is not None and 0 <= listing_age <= 250:
+                daily_history = _fetch_krx_listing_daily_history(ticker, listed_date)
+                daily_dates = tuple(date for date, _close in daily_history)
+                history_status = _build_listing_history_status(
+                    daily_dates if daily_dates else dd, listed_date
+                )
+            if history_status and history_status.get("applicable"):
+                close_history = (
+                    [close for _date, close in daily_history]
+                    if daily_history else _extract_daily_close_series(dd)
+                )
+                listing_confidence_profile = _prediction_history_confidence_profile(
+                    close_history, history_status.get("available_trading_days")
+                )
+                history_status["prediction_confidence"] = listing_confidence_profile
+                security_status["listing_history"] = history_status
+                if not history_status.get("data_sufficient"):
+                    stage_label = history_status.get("stage_label") or "데이터 부족"
+                    status_label = f"상장 데이터 {stage_label}"
+                    if status_label not in security_status["status_labels"]:
+                        security_status["status_labels"].append(status_label)
+                    warning = history_status.get("warning") or ""
+                    if warning and warning not in security_status["warnings"]:
+                        security_status["warnings"].append(warning)
+                confidence_cap = listing_confidence_profile.get("confidence_cap")
+                optimal_days = listing_confidence_profile.get("optimal_lookback_days")
+                confidence_label = f"예측 신뢰도 상한 {confidence_cap}%"
+                if optimal_days:
+                    confidence_label += f" · 최적 {optimal_days}일"
+                if confidence_label not in security_status["status_labels"]:
+                    security_status["status_labels"].append(confidence_label)
+                cap_reason = listing_confidence_profile.get("cap_reason") or ""
+                if cap_reason and cap_reason not in security_status["warnings"]:
+                    security_status["warnings"].append(cap_reason)
         sym = err_or_sym
         closes = dd.get("Close", [])
         last = float(closes[-1]) if closes else 0
@@ -12360,6 +13176,7 @@ def route(path: str, params: Dict) -> Dict:
                 market          = market,
                 stock_pct5d     = _pct5,
                 news_items      = _news_in or None,
+                history_confidence = listing_confidence_profile,
                 # 거시/섹터/실적은 미국 종목에서 의미가 크나, KRX도 거시·실적은 적용.
                 include_sector  = (market == "US"),   # 섹터 ETF는 US 한정
             )
@@ -12453,6 +13270,7 @@ def route(path: str, params: Dict) -> Dict:
             "signal_confidence": signal_confidence,  # 신뢰도 종합(거시·섹터·실적·불일치·뉴스감정·신뢰구간)
             "event_risk": event_risk,
             "learning_adjustment": learning_adjustment,
+            "security_status": security_status,
         }
 
     if path == "/api/screener":
@@ -13409,9 +14227,16 @@ input::placeholder{color:#484f58}
 .stock-suggestions.open{display:block}
 .stock-suggestion{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;background:transparent;border:0;border-radius:7px;padding:9px 10px;color:#e6edf3;cursor:pointer;text-align:left}
 .stock-suggestion:hover,.stock-suggestion.active{background:#21262d}
+.stock-suggestion.blocked{border-left:3px solid #f85149;background:#2d1117}
 .stock-suggestion-main{display:flex;align-items:center;gap:8px;min-width:0}
 .stock-suggestion-flag{width:18px;height:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px}
+.stock-suggestion-copy{display:flex;flex-direction:column;gap:3px;min-width:0}
 .stock-suggestion-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stock-suggestion-tags{display:flex;flex-wrap:wrap;gap:3px}
+.stock-suggestion-tag{font-size:9px;font-weight:700;line-height:1;padding:3px 5px;border-radius:4px;background:#21262d;color:#8b949e}
+.stock-suggestion-tag.manage{background:#d2992222;color:#d29922}
+.stock-suggestion-tag.halt,.stock-suggestion-tag.delist{background:#f8514922;color:#ff7b72}
+.stock-suggestion-tag.new{background:#1f6feb22;color:#58a6ff}
 .stock-suggestion-meta{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
 .stock-suggestion-code{font-size:12px;color:#8b949e;font-variant-numeric:tabular-nums}
 .stock-suggestion-exchange{font-size:9px;color:#484f58}
@@ -13427,6 +14252,9 @@ input::placeholder{color:#484f58}
 .center-state .icon{font-size:56px}
 .center-state h2{font-size:22px;font-weight:700}
 .center-state p{color:#8b949e;font-size:14px;line-height:1.6;max-width:380px}
+.security-status-banner{display:none;margin:0 0 14px;padding:11px 13px;border:1px solid #d2992266;border-radius:10px;background:#2d220d;color:#e3b341;font-size:12px;line-height:1.55}
+.security-status-banner.visible{display:block}
+.security-status-banner strong{color:#f0c85a}
 .spinner{width:40px;height:40px;border:4px solid #21262d;border-top-color:#1f6feb;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -14549,6 +15377,7 @@ input::placeholder{color:#484f58}
         </div>
         <p id="r-subtitle"></p>
       </div>
+      <div id="security-status-banner" class="security-status-banner" role="status" aria-live="polite"></div>
       <div class="metrics-grid">
         <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
         <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
@@ -15417,6 +16246,19 @@ function _hideStockSuggestions() {
   _stockSuggestionActive = -1;
 }
 
+function _stockSuggestionStatusTags(item) {
+  const tags = [];
+  if (item.delisting_scheduled) tags.push('<span class="stock-suggestion-tag delist">상장폐지 예정</span>');
+  if (item.trading_halt) {
+    const release = item.halt_release_label && item.halt_release_label !== '해제일 미정'
+      ? `해제 ${item.halt_release_label}` : '해제일 미정';
+    tags.push(`<span class="stock-suggestion-tag halt">거래정지 · ${_escapeStockSuggestion(release)}</span>`);
+  }
+  if (item.management) tags.push('<span class="stock-suggestion-tag manage">관리종목</span>');
+  if (item.newly_listed) tags.push('<span class="stock-suggestion-tag new">신규상장</span>');
+  return tags.length ? `<span class="stock-suggestion-tags">${tags.join('')}</span>` : '';
+}
+
 function _renderStockSuggestions(items, statusText = '') {
   const list = document.getElementById('ticker-suggestions');
   const input = document.getElementById('ticker-input');
@@ -15427,11 +16269,15 @@ function _renderStockSuggestions(items, statusText = '') {
     list.innerHTML = statusText ? `<div class="stock-suggestion-status">${_escapeStockSuggestion(statusText)}</div>` : '';
   } else {
     list.innerHTML = _stockSuggestionItems.map((item, index) => `
-      <button type="button" class="stock-suggestion" id="stock-suggestion-${index}"
-              role="option" aria-selected="false" data-suggestion-index="${index}">
+      <button type="button" class="stock-suggestion${item.analysis_blocked ? ' blocked' : ''}" id="stock-suggestion-${index}"
+              role="option" aria-selected="false" aria-disabled="${item.analysis_blocked ? 'true' : 'false'}"
+              data-suggestion-index="${index}">
         <span class="stock-suggestion-main">
           <span class="stock-suggestion-flag" aria-hidden="true">${item.market === 'KRX' ? '🇰🇷' : '🇺🇸'}</span>
-          <span class="stock-suggestion-name">${_escapeStockSuggestion(item.name || item.ticker)}</span>
+          <span class="stock-suggestion-copy">
+            <span class="stock-suggestion-name">${_escapeStockSuggestion(item.name || item.ticker)}</span>
+            ${_stockSuggestionStatusTags(item)}
+          </span>
         </span>
         <span class="stock-suggestion-meta">
           <span class="stock-suggestion-code">${_escapeStockSuggestion(item.code || item.ticker)}</span>
@@ -15471,6 +16317,13 @@ function _selectStockSuggestion(index) {
   currentMarket = item.market || currentMarket;
   _hideStockSuggestions();
   input.blur();
+  if (item.analysis_blocked) {
+    setState('error');
+    const reason = item.block_reason || '거래 제한 상태';
+    document.getElementById('error-msg').textContent =
+      `${item.name || item.ticker}은(는) ${reason} 종목이므로 분석을 차단했습니다.`;
+    return;
+  }
   analyze(item.ticker);
 }
 
@@ -15817,6 +16670,17 @@ function renderSignalConfidence(d) {
       sentimentScore.toFixed(0) + ' (' + _escPrediction(sentimentSource) + ')</span>'
     : '';
 
+  const historyConfidence = sc.history_confidence || {};
+  const historyDays = Number(historyConfidence.available_trading_days);
+  const historyCap = Number(historyConfidence.confidence_cap);
+  const optimalDays = Number(historyConfidence.optimal_lookback_days);
+  const historyChip = Number.isFinite(historyDays) && Number.isFinite(historyCap)
+    ? '<span class="signal-confidence-chip" style="color:#d29922">데이터 ' + historyDays.toFixed(0) +
+      '일 · 상한 ' + historyCap.toFixed(0) + '%' +
+      (Number.isFinite(optimalDays) && optimalDays > 0 ? ' · 최적 ' + optimalDays.toFixed(0) + '일' : '') +
+      '</span>'
+    : '';
+
   const reasons = [];
   (sc.cap_reasons || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
   (ci.reason || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
@@ -15853,7 +16717,7 @@ function renderSignalConfidence(d) {
       '<div class="signal-confidence-score-panel">' +
         '<div class="signal-confidence-score-head">' +
           '<div class="signal-confidence-kicker">종합 신뢰도</div>' +
-          '<div class="signal-confidence-chips">' + regimeChip + sectorChip + earningsChip + sentimentChip + '</div>' +
+          '<div class="signal-confidence-chips">' + regimeChip + sectorChip + earningsChip + sentimentChip + historyChip + '</div>' +
         '</div>' +
         '<div class="signal-confidence-score-row">' +
           '<div class="signal-confidence-score" style="color:' + level.color + '">' + conf.toFixed(0) + '<span style="font-size:14px;color:#8b949e">%</span></div>' +
@@ -15895,6 +16759,21 @@ function renderResult(d) {
     `${d.company || fmtSymbol(d.symbol, isKrx)} <span class="ticker-badge">${fmtSymbol(d.symbol, isKrx)}</span>`;
   document.getElementById('r-subtitle').textContent =
     `기준일: ${new Date().toLocaleDateString('ko-KR')} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'}`;
+  const securityBanner = document.getElementById('security-status-banner');
+  const securityStatus = d.security_status || {};
+  if (securityBanner) {
+    const labels = Array.isArray(securityStatus.status_labels) ? securityStatus.status_labels : [];
+    const warnings = Array.isArray(securityStatus.warnings) ? securityStatus.warnings : [];
+    if (isKrx && (labels.length || warnings.length)) {
+      securityBanner.innerHTML =
+        `<strong>${_escapeStockSuggestion(labels.join(' · ') || '종목 상태 안내')}</strong>` +
+        (warnings.length ? `<br>${_escapeStockSuggestion(warnings.join(' '))}` : '');
+      securityBanner.classList.add('visible');
+    } else {
+      securityBanner.classList.remove('visible');
+      securityBanner.textContent = '';
+    }
+  }
   document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
   document.getElementById('r-pct').innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
 

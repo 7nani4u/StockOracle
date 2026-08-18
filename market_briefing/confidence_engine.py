@@ -928,6 +928,7 @@ def build_signal_confidence(
     include_macro: bool = True,
     include_sector: bool = True,
     include_earnings: bool = True,
+    history_confidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """신호 신뢰도 종합 — 6개 보정 요소를 한 곳에서 적용해 단일 confidence 반환.
 
@@ -990,18 +991,36 @@ def build_signal_confidence(
             cap_reasons.append(ecap["reason"])
             earnings["confidence_cap_reason"] = ecap["reason"]
 
+    # ── 6) 신규 상장 가격 이력 상한 ─────────────────────────────────────
+    history_block = dict(history_confidence or {})
+    history_cap = _num(history_block.get("confidence_cap"), 100)
+    if history_block and history_cap < 100:
+        history_cap = int(round(_clamp(history_cap, 5, 95)))
+        caps.append(history_cap)
+        cap_reasons.append(
+            history_block.get("cap_reason")
+            or f"가격 이력 데이터 제한으로 신뢰도 상한 {history_cap}% 적용"
+        )
+
     # ── 캡 적용 + 클램프 ─────────────────────────────────────────────────
     confidence = _clamp(confidence, 5, 95)
     if caps:
         confidence = min(confidence, min(caps))
     confidence = int(round(_clamp(confidence, 5, 95)))
 
-    # ── 6) 신뢰 구간 ─────────────────────────────────────────────────────
+    # ── 7) 신뢰 구간 ─────────────────────────────────────────────────────
     interval = confidence_interval(
         confidence, src_scores,
         macro_regime=macro.get("regime", "Neutral"),
         days_to_earnings=earnings.get("days_to_earnings"),
     )
+    if history_block and history_cap < 100:
+        interval["upper"] = min(int(interval.get("upper", history_cap)), int(history_cap))
+        interval["lower"] = min(int(interval.get("lower", confidence)), confidence)
+        interval["spread"] = max(0, interval["upper"] - interval["lower"])
+        history_reason = history_block.get("cap_reason")
+        if history_reason and history_reason not in interval["reason"]:
+            interval["reason"].append(history_reason)
 
     return {
         "confidence": confidence,
@@ -1019,6 +1038,7 @@ def build_signal_confidence(
         "days_to_earnings": earnings.get("days_to_earnings"),
         "disagreement": disagreement,
         "sentiment": sentiment_block,        # news_items 분석 시에만 채워짐
+        "history_confidence": history_block or None,
         "cap_reasons": [r for r in cap_reasons if r],
         "weights": _W,
     }

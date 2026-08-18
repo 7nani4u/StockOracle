@@ -27,11 +27,13 @@ def test_signal_confidence_layout_restores_compact_context_chips():
     for text in (
         "종합 신뢰도", "현재 해석", "거시 ", "뉴스감정 ",
         "신뢰도 제한·변동 요인", "상승확률이나 적중확률이 아닙니다",
+        "데이터 ", "상한 ", "최적 ",
     ):
         assert text in renderer
     for data_key in (
         "macro_regime", "sector_relative",
         "days_to_earnings", "sentiment", "cap_reasons", "confidence_interval",
+        "history_confidence", "optimal_lookback_days",
     ):
         assert data_key in renderer
     assert "환경·이벤트 보정" not in renderer
