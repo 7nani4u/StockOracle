@@ -9211,6 +9211,34 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             * (0.90 if _trend <= 1 else 1.08 if _trend >= 3 else 1.0),
             0.65, 1.55,
         )
+        # 도달 확률은 충분한 과거 경로 표본이 필요하지만, 예상 기간은 현재 ATR과
+        # 최근 실제 이동속도만으로도 조건부 추정이 가능하다. 두 준비 조건을 분리해
+        # 확률 표본이 희소한 종목에서 기간만 불필요하게 비는 현상을 방지한다.
+        _period_model_ready = bool(
+            _atr_observed
+            and np.isfinite(atr_d) and atr_d > 0
+            and len(closes) >= 40
+            and len(_raw_lows) >= 40
+            and len(_raw_highs) >= 40
+            and np.isfinite(recent_speed) and recent_speed > 0
+        )
+
+        def _model_period(distance_atr: float, probability: float | None,
+                          prev_min: int, prev_max: int) -> tuple[int, int]:
+            """ATR 거리·최근 속도·거래량·추세로 30거래일 이내 조건부 기간을 계산한다."""
+            effective_speed = _clip(recent_speed, 0.12, 1.80)
+            base_days = max(1.0, distance_atr / effective_speed) * speed_factor
+            # 확률이 있으면 희소 도달일수록 기간을 늘리고, 없으면 중립 보정만 적용한다.
+            rarity_factor = 1.0 + _clip(
+                (50.0 - float(probability)) / 100.0 if probability is not None else 0.18,
+                0.0, 0.50,
+            )
+            raw_min = max(1, math.floor(base_days * 0.70 * rarity_factor))
+            raw_max = max(raw_min, math.ceil(base_days * 1.80 * rarity_factor))
+            return (
+                min(30, max(prev_min, raw_min)),
+                min(30, max(prev_max, raw_max, raw_min)),
+            )
 
         result = []
         previous_prob_mid = previous_prob_low = previous_prob_high = 100.0
@@ -9270,24 +9298,31 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                     # 희소한 경우, 기간만 비워 두면 확률과 기간의 데이터 상태가 서로
                     # 모순된다. ATR 거리÷최근 변동 속도를 중심값으로 삼고 거래량·추세
                     # 보정(speed_factor)과 도달 희소도를 반영해 조건부 기간을 추정한다.
-                    effective_speed = _clip(recent_speed, 0.12, 1.80)
-                    base_days = max(1.0, distance_atr / effective_speed) * speed_factor
-                    rarity_factor = 1.0 + _clip(
-                        (50.0 - float(probability_mid or 0.0)) / 100.0,
-                        0.0, 0.50,
+                    days_min, days_max = _model_period(
+                        distance_atr, probability_mid,
+                        previous_days_min, previous_days_max,
                     )
-                    raw_days_min = max(1, math.floor(base_days * 0.70 * rarity_factor))
-                    raw_days_max = max(
-                        raw_days_min,
-                        math.ceil(base_days * 1.80 * rarity_factor),
-                    )
-                    days_min = min(30, max(previous_days_min, raw_days_min))
-                    days_max = min(30, max(previous_days_max, raw_days_max, days_min))
                     period_source = "model"
                     period_note = (
                         f"과거 도달 사례 {len(hit_days)}건(<{min_hits}) · "
                         "ATR 거리·최근 변동 속도·거래량·추세 기반 추정"
                     )
+                previous_days_min, previous_days_max = days_min, days_max
+
+            # 경험 경로 기반 확률 산정 조건을 통과하지 못해도, 가격·ATR·최근 속도
+            # 데이터가 충분하면 기간은 독립적으로 계산한다. 데이터 부족과 희소 표본을
+            # 같은 상태로 취급하지 않기 위한 최종 정합성 보정이다.
+            if days_min is None and _period_model_ready:
+                days_min, days_max = _model_period(
+                    distance_atr, probability_mid,
+                    previous_days_min, previous_days_max,
+                )
+                period_source = "model"
+                period_note = (
+                    "과거 경로 표본 부족 · ATR 거리·최근 변동 속도·거래량·추세 기반 추정"
+                    if probability_mid is None else
+                    "과거 도달 기간 표본 부족 · ATR 거리·최근 변동 속도·거래량·추세 기반 추정"
+                )
                 previous_days_min, previous_days_max = days_min, days_max
 
             nearest_anchor = min(

@@ -99,6 +99,9 @@ def test_reach_probability_and_period_are_bounded_and_monotonic():
             probability_steps = [
                 step for step in steps if step["reach_probability_pct"] is not None
             ]
+            assert all(step["days_min"] is not None for step in probability_steps)
+            assert all(step["days_max"] is not None for step in probability_steps)
+            assert all(step["period_label"] is None for step in probability_steps)
             assert [step["probability_low_pct"] for step in probability_steps] == sorted(
                 (step["probability_low_pct"] for step in probability_steps), reverse=True
             )
@@ -136,6 +139,28 @@ def test_insufficient_history_never_fabricates_probability_or_period():
                 assert step["period_label"] == "기간 산정 불가"
                 assert step["period_source"] is None
                 assert step["period_note"] is None
+
+
+def test_period_uses_atr_speed_model_when_probability_path_sample_is_short():
+    # 44개 봉은 확률용 과거 경로 40건 기준에는 미달하지만, ATR·최근 속도 기반
+    # 기간 추정에는 충분하다. 이 경우 확률은 보류해도 기간까지 비우지 않는다.
+    result = _calculate(_sample_buy_dd(size=44))
+
+    for family in ("aggressive_bands", "recommended_bands"):
+        for band in result[family]:
+            steps = band["steps"]
+            assert all(step["reach_probability_pct"] is None for step in steps)
+            assert all(step["probability_label"] == "분석 데이터 부족" for step in steps)
+            assert all(step["period_source"] == "model" for step in steps)
+            assert all(step["period_label"] is None for step in steps)
+            assert all(1 <= step["days_min"] <= step["days_max"] <= 30 for step in steps)
+            assert [step["days_min"] for step in steps] == sorted(
+                step["days_min"] for step in steps
+            )
+            assert [step["days_max"] for step in steps] == sorted(
+                step["days_max"] for step in steps
+            )
+            assert all("ATR 거리" in step["period_note"] for step in steps)
 
 
 def test_sparse_empirical_hits_use_dynamic_model_period_instead_of_unavailable():
