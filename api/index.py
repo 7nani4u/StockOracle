@@ -414,48 +414,207 @@ US_STOCK_MAPPING = {
     "이더리움": "ETH-USD",
 }
 
-@ttl_cache(3600)   # 1시간 캐시 — 실패 시 24시간 고착 방지 (기존 86400 → 3600)
-def get_krx_code_map():
-    """KRX 전체 상장 종목 티커↔이름 맵 반환.
-    실패 시 빈 dict 반환 — resolve_ticker가 KR_STOCK_MAP 폴백으로 처리함.
-    """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
-    urls = [
-        # HTTPS 우선, HTTP 폴백
+_KRX_UNIVERSE_CACHE: Dict[str, Any] = {"records": (), "updated_at": 0.0}
+_KRX_UNIVERSE_LOCK = threading.Lock()
+_KRX_SEARCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0",
+    "Accept": "application/json,text/html,*/*",
+}
+
+
+def _krx_market_meta(market_name: str) -> Tuple[str, str]:
+    """시장 문자열을 yfinance 접미사와 표시용 시장명으로 정규화한다."""
+    market = re.sub(r"\s+", "", str(market_name or "")).upper()
+    if "KOSDAQ" in market or "코스닥" in market:
+        return "KQ", "KOSDAQ"
+    if "KONEX" in market or "코넥스" in market:
+        # Yahoo Finance에는 별도 KONEX 접미사가 없어 KRX 유가증권 접미사를 사용한다.
+        return "KS", "KONEX"
+    return "KS", "KOSPI"
+
+
+def _krx_product_flags(name: str) -> Tuple[bool, bool]:
+    normalized = re.sub(r"\s+", "", str(name or "")).upper()
+    leveraged = any(token in normalized for token in ("레버리지", "LEVERAGE", "2X", "3X"))
+    inverse = "인버스" in normalized or "INVERSE" in normalized
+    return leveraged, inverse
+
+
+def _is_krx_short_code(value: str) -> bool:
+    """숫자 또는 최근 도입된 영문 혼합 6자리 KRX 단축코드인지 확인한다."""
+    return bool(re.fullmatch(r"[0-9A-Z]{6}", str(value or "").strip().upper()))
+
+
+def _build_krx_security_record(
+        code: str, name: str, market_name: str, security_type: str) -> Optional[Dict]:
+    code = re.sub(r"[^0-9A-Z]", "", str(code or "").strip().upper())
+    if code.isdigit():
+        code = code.zfill(6)
+    name = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not _is_krx_short_code(code) or not name:
+        return None
+    suffix, exchange = _krx_market_meta(market_name)
+    security_type = str(security_type or "STOCK").upper()
+    leveraged, inverse = _krx_product_flags(name)
+    return {
+        "code": code,
+        "name": name,
+        "ticker": f"{code}.{suffix}",
+        "market": "KRX",
+        "exchange": exchange,
+        "security_type": security_type,
+        "is_leveraged": leveraged,
+        "is_inverse": inverse,
+    }
+
+
+def _download_krx_corporations() -> List[Dict]:
+    """KIND 상장법인목록에서 KOSPI·KOSDAQ·KONEX 보통/우선주 등을 읽는다."""
+    urls = (
         "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13",
         "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13",
-    ]
+    )
     for url in urls:
         try:
-            res = requests.get(url, headers=headers, timeout=8, verify=False)
+            res = requests.get(url, headers=_KRX_SEARCH_HEADERS, timeout=8, verify=False)
+            res.raise_for_status()
             res.encoding = "euc-kr"
-            soup = BeautifulSoup(res.text, "html.parser")
-            table = soup.select_one("table")
-            n2c, c2n = {}, {}
+            table = BeautifulSoup(res.text, "html.parser").select_one("table")
+            records = []
             if table:
                 for row in table.select("tr")[1:]:
                     cols = row.select("td")
-                    if len(cols) >= 3:
-                        name = cols[0].text.strip()
-                        market_name = cols[1].text.strip()
-                        code = cols[2].text.strip().zfill(6)
-                        if name and code:
-                            suffix = "KQ" if "코스닥" in market_name else "KS"
-                            n2c[name] = f"{code}.{suffix}"
-                            c2n[code] = name
-            if n2c:          # 파싱 성공 시 반환 (빈 결과면 다음 URL 시도)
-                return n2c, c2n
+                    if len(cols) < 3:
+                        continue
+                    record = _build_krx_security_record(
+                        cols[2].get_text(strip=True),
+                        cols[0].get_text(strip=True),
+                        cols[1].get_text(strip=True),
+                        "STOCK",
+                    )
+                    if record:
+                        records.append(record)
+            if records:
+                return records
         except Exception:
             continue
-    return {}, {}            # 모두 실패 → resolve_ticker가 KR_STOCK_MAP 폴백 사용
+    return []
+
+
+def _download_krx_exchange_products() -> List[Dict]:
+    """상장법인목록에 없는 ETF·ETN(레버리지/인버스 포함)을 보완한다."""
+    sources = (
+        ("https://finance.naver.com/api/sise/etfItemList.nhn", "etfItemList", "ETF"),
+        ("https://finance.naver.com/api/sise/etnItemList.nhn", "etnItemList", "ETN"),
+    )
+    records = []
+    for url, list_key, security_type in sources:
+        try:
+            res = requests.get(url, headers=_KRX_SEARCH_HEADERS, timeout=8)
+            res.raise_for_status()
+            items = (res.json().get("result") or {}).get(list_key) or []
+            for item in items:
+                record = _build_krx_security_record(
+                    item.get("itemcode"), item.get("itemname"), "KOSPI", security_type
+                )
+                if record:
+                    records.append(record)
+        except Exception:
+            # ETF와 ETN 중 한 소스만 실패해도 성공한 소스의 상품은 유지한다.
+            continue
+    return records
+
+
+def _fetch_krx_security_universe() -> Tuple[Dict, ...]:
+    """복수 소스 결과를 종목코드 기준으로 병합한다."""
+    by_code: Dict[str, Dict] = {}
+    for record in _download_krx_corporations() + _download_krx_exchange_products():
+        by_code[record["code"]] = record
+    return tuple(sorted(by_code.values(), key=lambda item: (item["name"].casefold(), item["code"])))
+
+
+def get_krx_security_universe() -> Tuple[Dict, ...]:
+    """국내 상장 주식·ETF·ETN 검색 마스터를 stale-if-error 방식으로 반환한다."""
+    now = time.time()
+    cached = _KRX_UNIVERSE_CACHE.get("records") or ()
+    if cached and now - float(_KRX_UNIVERSE_CACHE.get("updated_at") or 0) < 3600:
+        return cached
+    with _KRX_UNIVERSE_LOCK:
+        cached = _KRX_UNIVERSE_CACHE.get("records") or ()
+        if cached and now - float(_KRX_UNIVERSE_CACHE.get("updated_at") or 0) < 3600:
+            return cached
+        fresh = _fetch_krx_security_universe()
+        if fresh:
+            # 일부 소스만 일시 실패한 경우 기존 정상 항목을 보존한다.
+            merged = {record["code"]: record for record in cached}
+            merged.update({record["code"]: record for record in fresh})
+            records = tuple(sorted(
+                merged.values(), key=lambda item: (item["name"].casefold(), item["code"])
+            ))
+            _KRX_UNIVERSE_CACHE["records"] = records
+            source_types = {record["security_type"] for record in fresh}
+            # 주식·ETF·ETN 중 하나라도 빠졌다면 1분 후 재시도한다.
+            _KRX_UNIVERSE_CACHE["updated_at"] = (
+                now if {"STOCK", "ETF", "ETN"}.issubset(source_types) else now - 3540
+            )
+            return records
+        # 일시 장애 때 빈 결과로 정상 캐시를 덮어쓰지 않는다.
+        return cached
+
+
+def get_krx_code_map():
+    """호환용 종목명↔코드 맵. 전체 주식·ETF·ETN 유니버스를 포함한다."""
+    name_to_ticker: Dict[str, str] = {}
+    code_to_name: Dict[str, str] = {}
+    for record in get_krx_security_universe():
+        name_to_ticker[record["name"]] = record["ticker"]
+        code_to_name[record["code"]] = record["name"]
+    return name_to_ticker, code_to_name
+
+
+@ttl_cache(300)
+def search_krx_security_remote(q: str) -> Tuple[Dict, ...]:
+    """전체 마스터 장애 시 자동완성 단건 API로 시장 접미사를 복구한다."""
+    query = re.sub(r"\s+", " ", str(q or "")).strip()
+    if not query:
+        return ()
+    try:
+        res = requests.get(
+            "https://ac.stock.naver.com/ac",
+            params={"q": query, "target": "stock,index,marketindicator"},
+            headers=_KRX_SEARCH_HEADERS,
+            timeout=5,
+        )
+        res.raise_for_status()
+        records = []
+        for item in res.json().get("items") or []:
+            if str(item.get("nationCode") or "").upper() != "KOR":
+                continue
+            record = _build_krx_security_record(
+                item.get("code"), item.get("name"), item.get("typeCode"), "STOCK"
+            )
+            if record:
+                records.append(record)
+        return tuple(records)
+    except Exception:
+        return ()
+
+
+def _exact_krx_remote_match(q: str) -> Optional[Dict]:
+    query = re.sub(r"\s+", " ", str(q or "")).strip()
+    query_fold = query.casefold()
+    for record in search_krx_security_remote(query):
+        if record["code"] == query or record["name"].casefold() == query_fold:
+            return record
+    return None
 
 def resolve_ticker(q: str):
     """종목명 / 코드 / 별칭 → (yfinance_ticker, market, display_name)
 
-    우선순위 (빠른 오프라인 조회 우선, 외부 API는 최후 수단):
-    1. COMMON_ALIASES  — 별칭·줄임말 (KR_STOCK_MAP으로 올바른 시장접미사 검증)
+    우선순위 (빠른 오프라인 조회 우선, 단건 외부 API는 장애 복구용):
+    1. COMMON_ALIASES  — 별칭·줄임말
     2. US_STOCK_MAPPING — 한국어 미국 종목명
-    3. 6자리 숫자 코드 — KR_STOCK_MAP 역조회 → KRX API 폴백
+    3. 6자리 KRX 코드 — 정적 목록 → 전체 KRX 마스터 → 단건 조회
     4. 전체 ASCII    — US ticker 직접 입력
     5. KR_STOCK_MAP 완전 일치 (오프라인, KQ/KS 올바름)  ← 핵심 추가
     6. KRX API 완전 일치 (전체 상장 종목, 네트워크 필요)
@@ -469,11 +628,18 @@ def resolve_ticker(q: str):
     # ── 1. 별칭 / 줄임말 ─────────────────────────────────────────────
     if q in COMMON_ALIASES:
         code = COMMON_ALIASES[q]
-        # KR_STOCK_MAP에서 시장접미사 확인 — KOSDAQ 종목(.KQ) 오분류 방지
         for name, tkr in KR_STOCK_MAP.items():
             if tkr.startswith(code + "."):
                 return tkr, "KRX", q
-        return f"{code}.KS", "KRX", q   # KR_STOCK_MAP 미적재면 KS 기본값
+        try:
+            n2c, c2n = get_krx_code_map()
+            company = c2n.get(code)
+            if company and company in n2c:
+                return n2c[company], "KRX", q
+        except Exception:
+            pass
+        remote = _exact_krx_remote_match(code)
+        return ((remote["ticker"], "KRX", q) if remote else (None, None, None))
 
     # ── 2. 한국어 미국 종목명 ─────────────────────────────────────────
     if q in US_STOCK_MAPPING:
@@ -485,19 +651,44 @@ def resolve_ticker(q: str):
         for name, tkr in KR_STOCK_MAP.items():
             if tkr.startswith(q + "."):
                 return tkr, "KRX", name
-        # KRX API 폴백 (네트워크 필요)
-        n2c, c2n = get_krx_code_map()
-        company = c2n.get(q, q)
-        return n2c.get(company, f"{q}.KS"), "KRX", company
+        # 전체 KRX 마스터(주식·ETF·ETN) 조회
+        try:
+            n2c, c2n = get_krx_code_map()
+        except Exception:
+            n2c, c2n = {}, {}
+        company = c2n.get(q)
+        if company and company in n2c:
+            return n2c[company], "KRX", company
+        # 전체 목록 수집 실패 시에도 코스닥 코드를 임의로 .KS 처리하지 않는다.
+        remote = _exact_krx_remote_match(q)
+        if remote:
+            return remote["ticker"], "KRX", remote["name"]
+        return None, None, None
+
+    # 최근 KRX 단축코드에는 영문자가 포함될 수 있다(ETF 등).
+    qu = q.upper()
+    if _is_krx_short_code(qu) and any(char.isdigit() for char in qu):
+        for name, tkr in KR_STOCK_MAP.items():
+            if tkr.upper().startswith(qu + "."):
+                return tkr, "KRX", name
+        try:
+            n2c, c2n = get_krx_code_map()
+        except Exception:
+            n2c, c2n = {}, {}
+        company = c2n.get(qu)
+        if company and company in n2c:
+            return n2c[company], "KRX", company
+        remote = _exact_krx_remote_match(qu)
+        if remote:
+            return remote["ticker"], "KRX", remote["name"]
 
     # ── 3.5. 한국 시장 접미사(.KS/.KQ) 부착 코드 → KRX 직접 처리 ──────
     #   "041510.KQ" / "000660.KS" 처럼 접미사가 붙은 완전한 KR 티커가
     #   규칙 4(전체 ASCII → US)로 US 종목으로 오분류되는 것을 방지한다.
     #   (🔬 스캔 엔진 결과 클릭 시 전달되는 형식 — 직접 검색과 동일 동작 보장)
-    qu = q.upper()
     if qu.endswith((".KS", ".KQ")):
         code = qu[:-3]
-        if code.isdigit() and len(code) == 6:
+        if _is_krx_short_code(code):
             # 표시용 한글 종목명: KR_STOCK_MAP 역조회 → KRX API 폴백 (없으면 코드)
             for nm, tkr in KR_STOCK_MAP.items():
                 if tkr.upper() == qu or tkr.startswith(code + "."):
@@ -506,7 +697,11 @@ def resolve_ticker(q: str):
                 _, c2n = get_krx_code_map()
             except Exception:
                 c2n = {}
-            return qu, "KRX", c2n.get(code, code)
+            company = c2n.get(code)
+            if not company:
+                remote = _exact_krx_remote_match(code)
+                company = remote["name"] if remote else code
+            return qu, "KRX", company
 
     # ── 4. 전체 ASCII → US ticker 직접 입력 ──────────────────────────
     if all(ord(c) < 128 for c in q):
@@ -516,8 +711,11 @@ def resolve_ticker(q: str):
     if q in KR_STOCK_MAP:
         return KR_STOCK_MAP[q], "KRX", q
 
-    # ── 6~7. KRX API (전체 상장 종목 조회, 네트워크 필요) ────────────
-    n2c, _ = get_krx_code_map()
+    # ── 6~7. KRX 마스터 (전체 상장 주식·ETF·ETN) ───────────────────
+    try:
+        n2c, _ = get_krx_code_map()
+    except Exception:
+        n2c = {}
     if q in n2c:
         return n2c[q], "KRX", q
     for name, ticker in n2c.items():
@@ -528,6 +726,14 @@ def resolve_ticker(q: str):
     for name, tkr in KR_STOCK_MAP.items():
         if name.startswith(q):
             return tkr, "KRX", name
+
+    # 전체 마스터가 비었거나 신규 상장 직후인 경우 단건 자동완성으로 복구한다.
+    remote = _exact_krx_remote_match(q)
+    if remote:
+        return remote["ticker"], "KRX", remote["name"]
+    for remote in search_krx_security_remote(q):
+        if remote["name"].casefold().startswith(q.casefold()):
+            return remote["ticker"], "KRX", remote["name"]
 
     return None, None, None
 
@@ -543,20 +749,29 @@ def search_stock_suggestions(q: str, limit: int = 12) -> List[Dict]:
     ranked: list[tuple[int, Dict]] = []
     seen_tickers: set[str] = set()
 
-    def _append(rank: int, *, name: str, ticker: str, market: str, exchange: str):
+    def _append(rank: int, *, name: str, ticker: str, market: str, exchange: str,
+                security_type: str = "", is_leveraged: bool = False,
+                is_inverse: bool = False):
         ticker = str(ticker or "").strip().upper()
         name = str(name or ticker).strip()
         if not ticker or ticker in seen_tickers:
             return
         seen_tickers.add(ticker)
         code = ticker.split(".", 1)[0] if market == "KRX" else ticker
-        ranked.append((rank, {
+        item = {
             "name": name,
             "ticker": ticker,
             "code": code,
             "market": market,
             "exchange": exchange,
-        }))
+        }
+        if market == "KRX":
+            item.update({
+                "security_type": security_type or "STOCK",
+                "is_leveraged": bool(is_leveraged),
+                "is_inverse": bool(is_inverse),
+            })
+        ranked.append((rank, item))
 
     # 국내: 정적 핵심 종목을 먼저 반영하고 KRX 전체 상장사 목록으로 보완한다.
     static_krx = globals().get("KR_STOCK_MAP", {})
@@ -566,7 +781,14 @@ def search_stock_suggestions(q: str, limit: int = 12) -> List[Dict]:
     except Exception:
         pass
     krx_universe.update(static_krx)
+    try:
+        krx_metadata = {
+            record["ticker"]: record for record in get_krx_security_universe()
+        }
+    except Exception:
+        krx_metadata = {}
     static_order = {name: index for index, name in enumerate(static_krx)}
+    local_krx_matches = 0
     for name, ticker in krx_universe.items():
         name_fold = str(name).casefold()
         code = str(ticker).split(".", 1)[0]
@@ -582,8 +804,41 @@ def search_stock_suggestions(q: str, limit: int = 12) -> List[Dict]:
             rank = 200
         else:
             continue
-        exchange = "KOSDAQ" if str(ticker).endswith(".KQ") else "KOSPI"
-        _append(rank, name=name, ticker=ticker, market="KRX", exchange=exchange)
+        metadata = krx_metadata.get(str(ticker).upper(), {})
+        exchange = metadata.get("exchange") or (
+            "KOSDAQ" if str(ticker).endswith(".KQ") else "KOSPI"
+        )
+        security_type = metadata.get("security_type") or "STOCK"
+        exchange_label = (
+            f"{security_type} · {exchange}" if security_type in {"ETF", "ETN"} else exchange
+        )
+        _append(
+            rank, name=name, ticker=ticker, market="KRX", exchange=exchange_label,
+            security_type=security_type,
+            is_leveraged=metadata.get("is_leveraged", False),
+            is_inverse=metadata.get("is_inverse", False),
+        )
+        local_krx_matches += 1
+
+    # 전체 마스터 장애·신규 상장 지연 때도 입력한 코드/이름 후보는 단건으로 보완한다.
+    if local_krx_matches == 0 or _is_krx_short_code(query) or not query.isascii():
+        for remote_index, record in enumerate(search_krx_security_remote(query)):
+            name_fold = record["name"].casefold()
+            if query == record["code"] or query_fold == name_fold:
+                rank = 0
+            elif name_fold.startswith(query_fold):
+                rank = 105 + remote_index
+            elif record["code"].startswith(query_upper):
+                rank = 125 + remote_index
+            elif query_fold in name_fold:
+                rank = 205 + remote_index
+            else:
+                continue
+            _append(
+                rank, name=record["name"], ticker=record["ticker"], market="KRX",
+                exchange=record["exchange"], security_type=record["security_type"],
+                is_leveraged=record["is_leveraged"], is_inverse=record["is_inverse"],
+            )
 
     # 해외: 한글 별칭과 로컬 유니버스로 즉시 응답 가능한 후보를 만든다.
     ticker_names = {}
@@ -1862,7 +2117,7 @@ def fetch_investor_flow(ticker: str) -> dict:
         실패: {"ok": False, "reason": "<상세 원인>"}
     """
     code = str(ticker).replace(".KS", "").replace(".KQ", "").strip()
-    if not code.isdigit() or len(code) != 6:
+    if not _is_krx_short_code(code):
         return {"ok": False, "reason": "KRX 6자리 코드 아님"}
 
     # ── 공통 파서: 다양한 응답 구조에서 행 리스트 추출 ────────────────────
@@ -11024,7 +11279,9 @@ def _is_ticker_display_name(name: str, ticker: str) -> bool:
     value = str(name or "").strip().upper()
     ticker = str(ticker or "").strip().upper()
     bare_ticker = ticker.split(".", 1)[0]
-    return not value or value in {ticker, bare_ticker} or bool(re.fullmatch(r"\d{6}(?:\.(?:KS|KQ))?", value))
+    return not value or value in {ticker, bare_ticker} or bool(
+        re.fullmatch(r"[0-9A-Z]{6}(?:\.(?:KS|KQ))?", value)
+    )
 
 
 @ttl_cache(86400)
@@ -12326,8 +12583,8 @@ def route(path: str, params: Dict) -> Dict:
         # resolve_ticker 우회: "005930.KS" 같은 ASCII 심볼이 US로 오분류되는 문제 방지
         # (resolve_ticker 규칙 4 — 전체 ASCII → US ticker 직접 처리)
         code = ticker_raw.replace(".KS", "").replace(".KQ", "").strip()
-        if code.isdigit() and len(code) == 6:
-            # yfinance KRX 형식(005930.KS / 005930.KQ) 또는 6자리 코드 → 직접 전달
+        if _is_krx_short_code(code):
+            # yfinance KRX 형식 또는 6자리 KRX 단축코드 → 직접 전달
             return fetch_investor_flow(ticker_raw)
         # 종목명 입력(예: 삼성전자) → resolve_ticker 경유
         ticker, market, _ = resolve_ticker(ticker_raw)
@@ -12579,7 +12836,7 @@ def route(path: str, params: Dict) -> Dict:
                 # 2. resolve_ticker() — KR_STOCK_MAP + KRX API 활용
                 try:
                     code = tkr.replace(".KS", "").replace(".KQ", "").strip()
-                    if code.isdigit() and len(code) == 6:
+                    if _is_krx_short_code(code):
                         _, _, cname = resolve_ticker(code)
                         if cname and cname != code:
                             return cname
@@ -18548,7 +18805,7 @@ async function toggleSectorCard(el) {
 // ═══════════════════════════════════════════════════════════════
 function extractKrxCode(symbol) {
   if (!symbol) return null;
-  const m = String(symbol).match(/^(\d{6})\.(KS|KQ)$/);
+  const m = String(symbol).toUpperCase().match(/^([0-9A-Z]{6})\.(KS|KQ)$/);
   return m ? m[1] : null;
 }
 
