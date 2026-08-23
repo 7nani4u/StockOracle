@@ -39,6 +39,7 @@ import tempfile
 import shutil
 import re
 import hashlib
+import gzip
 from pathlib import Path
 import certifi
 import ssl
@@ -145,6 +146,12 @@ import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
+from market_briefing.dynamic_rsi import (
+    add_dynamic_rsi_features,
+    dynamic_rsi_daily_snapshot,
+    dynamic_rsi_signal_card,
+    dynamic_rsi_snapshot,
+)
 
 # yfinance 타임아웃 및 차단 방지를 위한 전역 설정 (session 래핑 제거)
 import yfinance.utils
@@ -1619,7 +1626,7 @@ def search_stock_suggestions(q: str, limit: int = 12) -> List[Dict]:
 # =============================================================================
 # 지표 계산
 # =============================================================================
-def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def add_indicators(df: pd.DataFrame, market: str = "US") -> pd.DataFrame:
     c = df["Close"]
     
     # 핵심 추세 지표
@@ -1709,6 +1716,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["PSAR"]     = _sv_p
     df["PSAR_DIR"] = _sd_p   # 1.0=상승 추세, -1.0=하락 추세
 
+    # 동적 RSI는 기존 Wilder RSI를 재사용하는 연구용 보조 지표다.
+    # 현재 봉을 밴드 학습에서 제외해 인과성을 유지하며 기존 점수는 변경하지 않는다.
+    df = add_dynamic_rsi_features(df, market=market)
     return df
 
 @ttl_cache(120)   # 2분
@@ -1728,9 +1738,6 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
     elif period == "1wk":
         yf_period = "5d"
         interval = "30m"
-    elif period == "2wk":
-        yf_period = "1mo"
-        interval = "1h"
     elif period == "1mo":
         yf_period = "1mo"
         interval = "1h"
@@ -1738,7 +1745,7 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
     # 지표 계산(MA60, MA120 등)을 위해 항상 요청 기간보다 충분히 긴 과거 데이터를 가져오도록 매핑
     fetch_period = yf_period
     if interval == "1d":
-        if period in ["1d", "3d", "1wk", "2wk", "1mo", "3mo", "6mo"]:
+        if period in ["1d", "3d", "1wk", "1mo", "3mo", "6mo"]:
             fetch_period = "1y"
         elif period == "1y":
             fetch_period = "2y"
@@ -1755,7 +1762,7 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         elif interval == "30m":
             fetch_period = "1mo" # 1주 요청 시 1달치
         elif interval == "1h":
-            fetch_period = "3mo" # 2주, 1달 요청 시 3달치
+            fetch_period = "3mo" # 1달 요청 시 지표 계산용 3달치
 
     try:
         obj = yf.Ticker(sym)
@@ -1807,7 +1814,7 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         if missing:
             return None, None, f"컬럼 누락: {missing}"
             
-        df = add_indicators(df)
+        df = add_indicators(df, market=market)
         df = df.dropna(subset=["Close"])
         
         # 원래 요청한 기간(period)에 맞게 데이터 자르기 (지표 계산 후)
@@ -1815,7 +1822,7 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         if interval == "1d":
             if period == "1d": df = df.tail(5)
             elif period == "3d" or period == "1wk": df = df.tail(10)
-            elif period == "2wk" or period == "1mo": df = df.tail(25)
+            elif period == "1mo": df = df.tail(25)
             elif period == "3mo": df = df.tail(65)
             elif period == "6mo": df = df.tail(130)
             elif period == "1y": df = df.tail(252)
@@ -1830,8 +1837,6 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
                 target_dates = unique_dates[-3:]
             elif period == "1wk":
                 target_dates = unique_dates[-5:] # 1주는 약 5영업일
-            elif period == "2wk":
-                target_dates = unique_dates[-10:] # 2주는 약 10영업일
             elif period == "1mo":
                 target_dates = unique_dates[-21:] # 1달은 약 21영업일
             else:
@@ -2291,7 +2296,8 @@ def fetch_arty_daily_data(ticker: str, market: str) -> Dict | None:
     attempts = []
     best_df = pd.DataFrame()
     best_symbol = sym
-    history_exhausted = False
+    best_provider = None
+    max_history_checked = False
     for candidate in symbols:
         for period in ("2y", "max"):
             if period == "max" and len(best_df) >= 220:
@@ -2303,22 +2309,26 @@ def fetch_arty_daily_data(ticker: str, market: str) -> Dict | None:
                         interval="1d",
                         auto_adjust=True,
                         repair=True,
+                        timeout=12,
                     )
                 )
                 attempts.append({
+                    "provider": "Yahoo Finance via yfinance",
                     "symbol": candidate,
                     "period": period,
                     "rows": len(frame),
                 })
+                if period == "max" and candidate == sym:
+                    max_history_checked = True
                 if len(frame) > len(best_df):
                     best_df = frame
                     best_symbol = candidate
+                    best_provider = "Yahoo Finance via yfinance"
                 if len(frame) >= 220:
                     break
-                if period == "max" and candidate == sym:
-                    history_exhausted = True
             except Exception as exc:
                 attempts.append({
+                    "provider": "Yahoo Finance via yfinance",
                     "symbol": candidate,
                     "period": period,
                     "rows": 0,
@@ -2327,8 +2337,57 @@ def fetch_arty_daily_data(ticker: str, market: str) -> Dict | None:
         if len(best_df) >= 220:
             break
 
+    # Yahoo가 차단·부분 응답을 반환하면 백테스트에서 교차 검증한
+    # FinanceDataReader를 두 번째 공급자로 사용한다. 호출은 daemon thread에서
+    # 제한 시간만 기다려 모바일 요청 전체가 외부 공급자에 묶이지 않게 한다.
+    if len(best_df) < 220:
+        for candidate in symbols:
+            provider_symbol = candidate.split(".", 1)[0] if market == "KRX" else candidate
+            holder: Dict[str, Any] = {}
+
+            def _load_fdr() -> None:
+                try:
+                    import FinanceDataReader as fdr
+                    start = str((pd.Timestamp.now() - pd.DateOffset(years=3, days=10)).date())
+                    holder["frame"] = fdr.DataReader(provider_symbol, start)
+                except Exception as exc:
+                    holder["error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+
+            worker = threading.Thread(target=_load_fdr, daemon=True)
+            worker.start()
+            worker.join(12)
+            if worker.is_alive():
+                attempts.append({
+                    "provider": "FinanceDataReader", "symbol": provider_symbol,
+                    "period": "3y", "rows": 0, "error": "timeout after 12s",
+                })
+                continue
+            frame = _normalize(holder.get("frame"))
+            attempts.append({
+                "provider": "FinanceDataReader", "symbol": provider_symbol,
+                "period": "3y", "rows": len(frame),
+                **({"error": holder["error"]} if holder.get("error") else {}),
+            })
+            if len(frame) > len(best_df):
+                best_df = frame
+                best_symbol = candidate
+                best_provider = "FinanceDataReader"
+            if len(best_df) >= 220:
+                break
+
     if best_df.empty:
-        return None
+        return {
+            "Open": [], "High": [], "Low": [], "Close": [], "Volume": [], "Date": [],
+            "_history_meta": {
+                "provider": None,
+                "requested_symbol": sym,
+                "resolved_symbol": best_symbol,
+                "attempts": attempts,
+                "total_available_bars": 0,
+                "history_exhausted": False,
+                "failure_reason": "daily_providers_unavailable",
+            },
+        }
     try:
         total_rows = len(best_df)
         df = best_df.tail(520)
@@ -2341,14 +2400,15 @@ def fetch_arty_daily_data(ticker: str, market: str) -> Dict | None:
         result = {col: [float(v) for v in df[col].tolist()] for col in required}
         result["Date"] = [pd.Timestamp(v).strftime("%Y-%m-%d") for v in df.index]
         result["_history_meta"] = {
-            "provider": "Yahoo Finance via yfinance",
+            "provider": best_provider,
             "requested_symbol": sym,
             "resolved_symbol": best_symbol,
             "attempts": attempts,
             "total_available_bars": total_rows,
             "first_date": result["Date"][0],
             "last_date": result["Date"][-1],
-            "history_exhausted": bool(history_exhausted and total_rows < 220),
+            "history_exhausted": bool(max_history_checked and total_rows < 220),
+            "failure_reason": None,
         }
         return result
     except Exception:
@@ -8408,7 +8468,7 @@ def calc_pivot_points(dd: Dict) -> Dict:
 
     return {"classic": classic, "fibonacci": fibonacci, "camarilla": camarilla}
 
-def calc_indicator_signals(dd: Dict) -> Dict:
+def calc_indicator_signals(dd: Dict, market: str = "US") -> Dict:
     """
     각 기술적 지표별 현재 상태·매매 시그널·핵심 해석 계산.
 
@@ -8448,6 +8508,12 @@ def calc_indicator_signals(dd: Dict) -> Dict:
         else:          st,sig,desc,sc = "극도 과매수", "매도",f"RSI {rsi:.1f} — 강한 과열, 조정 가능성 높음",     -1.0
         signals["rsi"] = {"name":"RSI (14)", "state":st, "signal":sig, "desc":desc, "value":f"{rsi:.1f}"}
         weighted.append((sc, 1.5, "RSI"))
+
+    # 영상 아이디어를 직접 복제했다고 주장하지 않는 실험용 동적 RSI.
+    # 워크포워드 검증 전에는 종합 가중점수에서 제외한다.
+    dynamic_card = dynamic_rsi_signal_card(dd, market=market)
+    if dynamic_card:
+        signals["dynamic_rsi"] = dynamic_card
 
     # ── 2. MACD (12,26,9) ────────────────────────────────────────────────────
     macd_val  = v("MACD"); macd_sig_val = v("Signal_Line")
@@ -9243,6 +9309,7 @@ def calc_arty_smma_fractal(
             str(dates[-1]) if len(dates) == observed_bars and dates else None
         )
         history_exhausted = bool(history_meta.get("history_exhausted"))
+        provider_failure = history_meta.get("failure_reason") == "daily_providers_unavailable"
         estimated_ready_date = None
         session_projection = None
         if last_date and missing_bars:
@@ -9306,13 +9373,22 @@ def calc_arty_smma_fractal(
                 1,
                 "2년 조회와 전체 이력 재조회를 모두 수행했으며, 현재 티커에는 더 오래된 상장 일봉이 없습니다.",
             )
+        elif provider_failure:
+            reasons.insert(
+                0,
+                "Yahoo Finance와 FinanceDataReader 일봉 조회가 모두 제한 시간 안에 완료되지 않았습니다.",
+            )
         if partial_smma["21"] is not None:
             reasons.append("SMMA21과 확정 프랙탈은 관찰용으로만 계산하며 매수 신호로 승격하지 않습니다.")
         return {
             **result_base,
             "available": False,
-            "status": "신규상장 관찰 모드" if history_exhausted else "일봉 이력 부족",
-            "status_key": "insufficient",
+            "status": (
+                "신규상장 관찰 모드" if history_exhausted
+                else "일봉 공급자 연결 실패" if provider_failure
+                else "일봉 이력 부족"
+            ),
+            "status_key": "provider_error" if provider_failure else "insufficient",
             "condition_score_pct": None,
             "required_bars": 220,
             "observed_bars": observed_bars,
@@ -9325,6 +9401,7 @@ def calc_arty_smma_fractal(
             "session_projection": session_projection,
             "history_exhausted": history_exhausted,
             "history_provider": history_meta.get("provider"),
+            "history_failure_reason": history_meta.get("failure_reason"),
             "history_attempts": history_meta.get("attempts") or [],
             "ipo_risk": ipo_risk,
             "partial_smma": partial_smma,
@@ -9465,6 +9542,9 @@ def calc_arty_smma_fractal(
     elif latest_lower:
         entry_state = "setup_rejected"
 
+    if entry_state == "pending" and profile.get("verdict") != "accepted":
+        entry_state = "technical_pending"
+
     setup_checks = setup.get("checks") or {}
     entry_checks = (entry_evaluation or {}).get("checks") or {}
     score = 15
@@ -9487,6 +9567,10 @@ def calc_arty_smma_fractal(
     elif entry_state == "pending":
         remaining = max(0, int(entry_index or current_index) - current_index)
         status, status_key = f"진입 {remaining}봉 대기", "entry_pending"
+    elif entry_state == "technical_pending":
+        remaining = max(0, int(entry_index or current_index) - current_index)
+        status = f"기술 관찰 {remaining}봉 · {profile.get('verdict_label', '미검증')}"
+        status_key = "technical_only"
     elif entry_state == "expired":
         status, status_key = "검증 진입 시점 경과", "missed_entry"
     elif bearish:
@@ -9649,7 +9733,7 @@ def calc_arty_smma_fractal(
             "execution_model": (
                 "확정 종가 비교 전용" if delay == 0 else f"확정 후 {delay}봉 시가"
             ),
-            "executable": executable_entry,
+            "executable": bool(executable_entry and profile.get("verdict") == "accepted"),
             "auto_order_scheduled": False,
             "note": (
                 "지연 봉 도달 전에는 진입가를 만들지 않으며 자동 주문을 예약하지 않습니다."
@@ -9771,12 +9855,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
 
     # 피보나치 되돌림 — 선택한 분석 기간 기준으로 동적 계산
     _fib_bars_map = {
-        '1d': 5,  '3d': 10, '1wk': 10, '2wk': 14,
+        '1d': 5,  '3d': 10, '1wk': 10,
         '1mo': 25, '3mo': 65, '6mo': 130,
         '1y': 252, '2y': 504, '5y': 1260,
     }
     _fib_lbl_map = {
-        '1d': '초단기·1일',  '3d': '초단기·3일', '1wk': '초단기·1주', '2wk': '단기·2주',
+        '1d': '초단기·1일',  '3d': '초단기·3일', '1wk': '초단기·1주',
         '1mo': '단기·1개월', '3mo': '중기·3개월', '6mo': '장기·6개월',
         '1y': '장기·1년',   '2y': '장기·2년',   '5y': '장기·5년',
     }
@@ -11320,7 +11404,7 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         # 볼린저 상단이 유효한 저항선일 경우 반영
         if bb_u > last_price:
             base_target = max(base_target, bb_u)
-    elif period in ("2wk", "1mo", "3mo"):
+    elif period in ("1mo", "3mo"):
         pred_period = "중기 (1개월 ~ 3개월)"
         base_target = last_price + atr * 4
     else:
@@ -11376,7 +11460,7 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
 
     # ── 예상 소요 기간 ─────────────────────────────────────────────────
     _period_days = {
-        "1d": 5, "3d": 7, "1wk": 10, "2wk": 14, "1mo": 30,
+        "1d": 5, "3d": 7, "1wk": 10, "1mo": 30, "3mo": 65,
         "6mo": 130, "1y": 252, "2y": 504, "5y": 1260,
     }.get(period, 20)
     _speed = max(0.5, min(1.8, 1.0 + (trend_strength - 2) * 0.2 + (0.1 if macd > sig else -0.1)))
@@ -12240,6 +12324,7 @@ def build_prediction_outlook(
     event_risk: Dict | None,
     period: str = "1mo",
     atr_is_observed: bool | None = None,
+    dynamic_rsi: Dict | None = None,
 ) -> Dict:
     """이미 계산된 분석 결과를 예측 탭용 조건부 구조로 재조합한다.
 
@@ -12511,12 +12596,12 @@ def build_prediction_outlook(
     down_lo, down_hi = sorted((max(0.01, stop_price), support_price))
 
     horizon_days = {
-        "1d": 1, "3d": 3, "1wk": 5, "2wk": 10, "1mo": 22,
+        "1d": 1, "3d": 3, "1wk": 5, "1mo": 22, "3mo": 63,
         "6mo": 126, "1y": 252, "2y": 504, "5y": 1260,
     }.get(str(period), 22)
     horizon_label = {
-        "1d": "1거래일", "3d": "3거래일", "1wk": "1주", "2wk": "2주",
-        "1mo": "1개월", "6mo": "6개월", "1y": "1년", "2y": "2년", "5y": "5년",
+        "1d": "1거래일", "3d": "3거래일", "1wk": "1주",
+        "1mo": "1개월", "3mo": "3개월", "6mo": "6개월", "1y": "1년", "2y": "2년", "5y": "5년",
     }.get(str(period), "1개월")
 
     def _price_label(value: float) -> str:
@@ -12755,8 +12840,242 @@ def build_prediction_outlook(
         },
         "ai_evidence": ai_lines[:6],
         "risk_triggers": risk_triggers[:6],
+        "dynamic_rsi": dynamic_rsi or dynamic_rsi_snapshot(dd, market=market),
         "data_scope": "현재 앱에서 확보 가능한 가격·거래량·기술지표·수급·시장 데이터 기준",
     }
+
+
+def recommend_scalp_analysis_period(
+    market: str,
+    daily_data: Dict | None,
+    last_price: float,
+    atr: float,
+    selected_period: str = "3d",
+    session_name: str = "",
+    now: dt | None = None,
+) -> Dict:
+    """장 경과시간·20일 평균 거래대금·ATR로 단타용 1일/3일을 추천한다.
+
+    추천은 분석 해상도 선택용 휴리스틱이며 매수 승인 신호가 아니다. 휴장일과
+    조기 폐장은 외부 거래소 달력을 호출하지 않으므로 실제 세션 응답을 함께
+    확인하게 하고, 불명확한 경우에는 보수적으로 3일·15분봉을 반환한다.
+    """
+    from zoneinfo import ZoneInfo
+
+    market_key = "US" if str(market).upper() == "US" else "KRX"
+    config = {
+        "KRX": {
+            "tz": "Asia/Seoul", "open": (9, 0), "close": (15, 30),
+            "warmup": 30, "close_buffer": 10,
+            "turnover_min": 10_000_000_000.0, "currency": "KRW",
+            "atr_min": 1.0, "atr_max": 4.0,
+            "market_label": "KRX",
+        },
+        "US": {
+            "tz": "America/New_York", "open": (9, 30), "close": (16, 0),
+            "warmup": 45, "close_buffer": 10,
+            "turnover_min": 50_000_000.0, "currency": "USD",
+            "atr_min": 0.8, "atr_max": 3.2,
+            "market_label": "미국 정규장",
+        },
+    }[market_key]
+    timezone = ZoneInfo(config["tz"])
+    local_now = now or dt.now(timezone)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=timezone)
+    else:
+        local_now = local_now.astimezone(timezone)
+
+    minute_of_day = local_now.hour * 60 + local_now.minute
+    open_minute = config["open"][0] * 60 + config["open"][1]
+    close_minute = config["close"][0] * 60 + config["close"][1]
+    elapsed = minute_of_day - open_minute
+    weekday = local_now.weekday() < 5
+    in_regular_clock = weekday and open_minute <= minute_of_day < close_minute
+
+    if not weekday:
+        phase_key, phase_label = "closed", "주말·휴장 가능 시간"
+    elif minute_of_day < open_minute:
+        phase_key, phase_label = "pre_open", "정규장 시작 전"
+    elif minute_of_day >= close_minute:
+        phase_key, phase_label = "after_close", "정규장 종료 후"
+    elif elapsed < config["warmup"]:
+        phase_key, phase_label = "opening_noise", f"개장 후 {elapsed}분 · 초기 변동 구간"
+    elif close_minute - minute_of_day <= config["close_buffer"]:
+        phase_key, phase_label = "closing_auction", "마감 직전 체결 집중 구간"
+    else:
+        phase_key, phase_label = "active", f"개장 후 {elapsed}분 · 연속매매 구간"
+
+    reported_session = str(session_name or "").strip()
+    non_regular_sessions = {
+        "프리마켓", "애프터마켓", "오버나이트", "데이마켓", "시간외",
+        "장마감", "장 시작 전", "휴장",
+    }
+    if reported_session in non_regular_sessions:
+        in_regular_clock = False
+        phase_key = "reported_non_regular"
+        phase_label = f"실제 세션 응답: {reported_session}"
+
+    closes = list((daily_data or {}).get("Close") or [])
+    volumes = list((daily_data or {}).get("Volume") or [])
+    turnovers: list[float] = []
+    for close_value, volume_value in zip(closes[-20:], volumes[-20:]):
+        try:
+            close_num = float(close_value)
+            volume_num = float(volume_value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(close_num) and np.isfinite(volume_num) and close_num > 0 and volume_num > 0:
+            turnovers.append(close_num * volume_num)
+    average_turnover = float(np.mean(turnovers)) if turnovers else 0.0
+    liquidity_ok = average_turnover >= config["turnover_min"]
+    atr_pct = float(atr) / float(last_price) * 100.0 if last_price and atr else 0.0
+    atr_ok = config["atr_min"] <= atr_pct <= config["atr_max"]
+
+    blockers: list[str] = []
+    if phase_key != "active":
+        blockers.append(f"{phase_label}: 3일 흐름으로 개장·마감 노이즈 완충")
+    if not turnovers:
+        blockers.append("최근 20일 거래대금 데이터 미확보")
+    elif not liquidity_ok:
+        blockers.append(
+            f"20일 평균 거래대금이 {config['currency']} 기준 유동성 하한 미만"
+        )
+    if atr_pct <= 0:
+        blockers.append("ATR 데이터 미확보")
+    elif atr_pct < config["atr_min"]:
+        blockers.append(f"ATR {atr_pct:.2f}%로 단타 변동폭이 작음")
+    elif atr_pct > config["atr_max"]:
+        blockers.append(f"ATR {atr_pct:.2f}%로 {market_key} 단타 노이즈 위험이 큼")
+
+    recommend_one_day = in_regular_clock and phase_key == "active" and liquidity_ok and atr_ok
+    recommended_period = "1d" if recommend_one_day else "3d"
+    recommended_interval = "5분봉" if recommend_one_day else "15분봉"
+    if recommend_one_day:
+        reason = (
+            f"{phase_label}, 거래대금과 ATR가 {market_key} 단타 기준을 충족해 "
+            "1일·5분봉으로 진입 시점을 세밀하게 확인할 수 있습니다."
+        )
+    else:
+        reason = " · ".join(blockers) or "불확실한 단타 환경이므로 3일·15분봉을 유지합니다."
+
+    return {
+        "market": market_key,
+        "market_label": config["market_label"],
+        "selected_period": str(selected_period),
+        "recommended_period": recommended_period,
+        "recommended_label": "1일" if recommend_one_day else "3일",
+        "recommended_interval": recommended_interval,
+        "period_match": str(selected_period) == recommended_period,
+        "phase_key": phase_key,
+        "phase_label": phase_label,
+        "elapsed_minutes": elapsed if in_regular_clock else None,
+        "average_daily_turnover": round(average_turnover, 2),
+        "turnover_threshold": config["turnover_min"],
+        "turnover_currency": config["currency"],
+        "liquidity_ok": liquidity_ok,
+        "atr_pct": round(atr_pct, 3),
+        "atr_range_pct": [config["atr_min"], config["atr_max"]],
+        "atr_ok": atr_ok,
+        "reason": reason,
+        "blockers": blockers,
+        "entry_permission": False,
+        "entry_note": "분석 기간 추천은 매수 승인이 아닙니다. 가격 지지·거래량 회복·손절 기준을 별도로 확인하세요.",
+        "calendar_limit": "주말만 직접 판별하며 거래소 휴장·조기 폐장은 실제 세션 상태 확인이 필요합니다.",
+    }
+
+
+def _compact_metric_row(row: Dict | None) -> Dict:
+    row = row or {}
+    keys = (
+        "trades", "avg_return_pct", "median_return_pct", "profit_factor",
+        "avg_r_multiple", "avg_r_95ci_low", "avg_r_95ci_high",
+        "avg_open_gap_vs_confirm_close_pct",
+    )
+    return {key: row.get(key) for key in keys if key in row}
+
+
+def _compact_metric_table(table: Dict | None) -> Dict:
+    return {
+        str(key): _compact_metric_row(value)
+        for key, value in (table or {}).items()
+        if isinstance(value, dict)
+    }
+
+
+def _compact_stock_response(payload: Dict, max_chart_points: int = 160) -> Dict:
+    """저속 연결용 응답에서 표시 결과는 유지하고 원시 진단 배열만 축약한다."""
+    chart = dict(payload.get("chart_data") or {})
+    dates = list(chart.get("dates") or [])
+    original_points = len(dates)
+    if original_points > max_chart_points:
+        step = max(1, int(np.ceil(original_points / max_chart_points)))
+        indices = list(range(0, original_points, step))
+        if indices[-1] != original_points - 1:
+            indices.append(original_points - 1)
+        for key, values in list(chart.items()):
+            if isinstance(values, list) and len(values) == original_points:
+                chart[key] = [values[index] for index in indices]
+        # 패턴 좌표는 원래 배열 인덱스를 사용하므로 축약 차트에서는 비활성화한다.
+        chart["pattern_overlays"] = []
+        options = dict(chart.get("pattern_overlay_options") or {})
+        options["show_pattern_overlay"] = False
+        chart["pattern_overlay_options"] = options
+    chart["downsampled"] = original_points > len(chart.get("dates") or [])
+    chart["original_points"] = original_points
+    payload["chart_data"] = chart
+
+    payload["chart_patterns"] = list(payload.get("chart_patterns") or [])[:6]
+    payload["candlestick_patterns"] = list(payload.get("candlestick_patterns") or [])[:6]
+    payload["news"] = list(payload.get("news") or [])[:8]
+
+    buy_price = dict(payload.get("buy_price") or {})
+    arty = dict(buy_price.get("arty_smma_fractal") or {})
+    validation = dict(arty.get("backtest_validation") or {})
+    if validation:
+        walk = dict(validation.get("walk_forward") or {})
+        extended = dict(validation.get("extended_diagnostics") or {})
+        quality = dict(validation.get("data_quality") or {})
+        download = dict(quality.get("download") or {})
+        validation["train"] = _compact_metric_row(validation.get("train"))
+        validation["test"] = _compact_metric_row(validation.get("test"))
+        for key in ("entry_test", "retest_test", "atr_test"):
+            validation[key] = _compact_metric_table(validation.get(key))
+        validation["walk_forward"] = {
+            "folds": [{"fold": row.get("fold")} for row in (walk.get("folds") or [])],
+            "aggregate": _compact_metric_row(walk.get("aggregate")),
+            "positive_avg_r_folds": walk.get("positive_avg_r_folds"),
+            "positive_avg_r_fold_ratio": walk.get("positive_avg_r_fold_ratio"),
+        }
+        validation["extended_diagnostics"] = {
+            key: _compact_metric_table(extended.get(key))
+            for key in (
+                "market_regime", "liquidity_by_20d_turnover_tercile",
+                "earnings_proximity", "cost_sensitivity",
+            )
+        }
+        validation["data_quality"] = {
+            "passed": quality.get("passed"),
+            "download": {
+                "requested": download.get("requested"),
+                "success": download.get("success"),
+            },
+            "cross_provider_checks": [
+                {"status": row.get("status")}
+                for row in (quality.get("cross_provider_checks") or [])
+            ],
+        }
+        arty["backtest_validation"] = validation
+        buy_price["arty_smma_fractal"] = arty
+        payload["buy_price"] = buy_price
+
+    payload["response_meta"] = {
+        "lite_mode": True,
+        "chart_points": len(chart.get("dates") or []),
+        "original_chart_points": original_points,
+        "omitted": ["full_pattern_overlays", "full_backtest_diagnostics"],
+    }
+    return payload
 
 # =============================================================================
 # 라우팅
@@ -12766,7 +13085,7 @@ def route(path: str, params: Dict) -> Dict:
     # path는 항상 /api/stock 형식 (슬래시 없음)
     if path == "/api/stock":
         raw = params.get("ticker", "삼성전자")
-        period = params.get("period", "1y")
+        period = params.get("period", "3d")
         ticker, market, company = resolve_ticker(raw)
         if not ticker:
             return {"error": f"'{raw}' 종목을 찾을 수 없습니다."}
@@ -13035,7 +13354,7 @@ def route(path: str, params: Dict) -> Dict:
         atrs = dd.get("ATR", [])
         atr_val          = float(atrs[-1]) if atrs and atrs[-1] else last * 0.02
         pivot_points     = calc_pivot_points(dd)
-        indicator_signals= calc_indicator_signals(dd)
+        indicator_signals= calc_indicator_signals(dd, market=market)
         # 이벤트 위험: 실적 발표, FDA/임상, 소송/조사, 공시, 가이던스 하향을 매수 위험 점수에 반영
         _event_news = list(news or [])
         _event_disclosures = []
@@ -13059,6 +13378,13 @@ def route(path: str, params: Dict) -> Dict:
             and isinstance(_dates[-1], str)
         )
         arty_dd = dd if _has_daily_history else (fetch_arty_daily_data(sym, market) or dd)
+        # 예측 탭의 동적 RSI 매수 타이밍은 선택한 차트가 분봉이어도 항상 일봉으로 고정한다.
+        # SMMA 전략이 이미 확보한 일봉을 재사용하므로 별도 네트워크 호출은 추가하지 않는다.
+        dynamic_rsi = dynamic_rsi_daily_snapshot(arty_dd, market=market)
+        scalp_period_recommendation = recommend_scalp_analysis_period(
+            market, arty_dd, last, atr_val, selected_period=period,
+            session_name=session_name,
+        )
         buy_price        = calc_buy_price(
             dd, last, atr_val, score, indicator_signals, market, period,
             event_risk, learning_adjustment, regime, prev, pct, arty_dd=arty_dd,
@@ -13205,6 +13531,7 @@ def route(path: str, params: Dict) -> Dict:
             naver=naver, us_enriched=us_enriched, toss_industry=toss_industry,
             event_risk=event_risk, period=period,
             atr_is_observed=bool(atrs and atrs[-1]),
+            dynamic_rsi=dynamic_rsi,
         )
 
         _record_prediction_and_update_outcomes(
@@ -13219,8 +13546,9 @@ def route(path: str, params: Dict) -> Dict:
             pattern_overlays = []
 
         _price_rnd = 4 if market == "US" else 2
-        return {
+        response = {
             "symbol": sym, "company": company or sym, "market": market,
+            "period": period,
             "last_close": round(last, _price_rnd), "prev_close": round(prev, _price_rnd),
             "pct_change": round(pct, 2),
             "session_name": session_name,
@@ -13243,6 +13571,9 @@ def route(path: str, params: Dict) -> Dict:
                 "bb_upper": dd.get("BB_Upper", []),
                 "bb_lower": dd.get("BB_Lower", []),
                 "rsi": dd.get("RSI", []),
+                "dynamic_rsi_lower": dd.get("DRSI_Lower", []),
+                "dynamic_rsi_upper": dd.get("DRSI_Upper", []),
+                "dynamic_rsi_signal": dd.get("DRSI_Signal", []),
                 "macd": dd.get("MACD", []),
                 "signal_line": dd.get("Signal_Line", []),
                 "pattern_overlays": pattern_overlays,
@@ -13258,6 +13589,8 @@ def route(path: str, params: Dict) -> Dict:
             "risk_scenarios": risk,
             "pivot_points": pivot_points,
             "indicator_signals": indicator_signals,
+            "dynamic_rsi": dynamic_rsi,
+            "scalp_period_recommendation": scalp_period_recommendation,
             "buy_price": buy_price,
             "target_price": target_price,
             "pullback_analysis": pullback_analysis,
@@ -13272,6 +13605,14 @@ def route(path: str, params: Dict) -> Dict:
             "learning_adjustment": learning_adjustment,
             "security_status": security_status,
         }
+        if str(params.get("lite") or "").lower() in {"1", "true", "yes"}:
+            response = _compact_stock_response(response)
+        else:
+            response["response_meta"] = {
+                "lite_mode": False,
+                "chart_points": len((response.get("chart_data") or {}).get("dates") or []),
+            }
+        return response
 
     if path == "/api/screener":
         sort_by    = params.get("sort_by",    "price")
@@ -14551,6 +14892,22 @@ input::placeholder{color:#484f58}
 .prediction-action{font-size:23px;font-weight:900;line-height:1.25;color:#e6edf3}
 .prediction-chip{font-size:10px;font-weight:800;border-radius:999px;padding:3px 8px;border:1px solid #30363d;background:#0d1117;white-space:nowrap}
 .prediction-summary{font-size:12px;color:#cdd9e5;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}
+.dynamic-rsi-timing{background:linear-gradient(135deg,#111b2c,#161b22);border:1px solid #388bfd55;border-radius:12px;padding:14px;min-width:0}
+.dynamic-rsi-timing-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.dynamic-rsi-timing-title{font-size:13px;font-weight:900;color:#e6edf3;margin-bottom:3px}
+.dynamic-rsi-timing-sub{font-size:10px;color:#8b949e;line-height:1.45}
+.dynamic-rsi-state{font-size:11px;font-weight:900;border-radius:999px;padding:4px 9px;border:1px solid currentColor;background:#0d1117;white-space:nowrap}
+.dynamic-rsi-window{font-size:15px;font-weight:900;color:#e6edf3;line-height:1.4;margin-bottom:5px;word-break:keep-all}
+.dynamic-rsi-action{font-size:11px;color:#cdd9e5;line-height:1.6;margin-bottom:10px;word-break:keep-all}
+.dynamic-rsi-condition-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.dynamic-rsi-condition{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:8px;min-width:0}
+.dynamic-rsi-condition.met{border-color:#3fb95066;background:#0d2d1a55}
+.dynamic-rsi-condition-name{font-size:10px;font-weight:800;color:#cdd9e5;line-height:1.4;margin-bottom:3px}
+.dynamic-rsi-condition-detail{font-size:9px;color:#8b949e;line-height:1.45;word-break:keep-all}
+.dynamic-rsi-execution{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:9px}
+.dynamic-rsi-execution>div{background:#0d1117;border-radius:7px;padding:7px 8px;min-width:0}
+.dynamic-rsi-execution-label{font-size:9px;color:#8b949e;margin-bottom:2px}.dynamic-rsi-execution-value{font-size:11px;font-weight:800;color:#e6edf3;overflow-wrap:anywhere}
+.dynamic-rsi-footnote{font-size:9px;color:#6e7681;line-height:1.5;margin-top:8px}
 .prediction-status-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
 .prediction-status-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:11px;min-width:0}
 .prediction-status-label{font-size:10px;color:#8b949e;margin-bottom:4px;display:flex;gap:4px;align-items:center}
@@ -14636,6 +14993,7 @@ input::placeholder{color:#484f58}
   .prediction-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prediction-scenario-grid{grid-template-columns:1fr}
   .prediction-context-grid{grid-template-columns:1fr}
+  .dynamic-rsi-condition-grid,.dynamic-rsi-execution{grid-template-columns:1fr}
   /* 900px 이하: 3열 */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
   .signal-confidence-overview{grid-template-columns:1fr}
@@ -15276,17 +15634,19 @@ input::placeholder{color:#484f58}
       <div id="ticker-suggestions" class="stock-suggestions" role="listbox" aria-label="종목 검색 결과"></div>
     </div>
     <span class="sb-label">분석 기간</span>
-    <select id="period-select" style="margin-bottom:12px">
+    <select id="period-select" style="margin-bottom:6px" onchange="updatePeriodGuide()">
       <option value="1d">초단기 (1일)</option>
-      <option value="3d">초단기 (3일)</option>
+      <option value="3d" selected>초단기 (3일·단타 권장)</option>
       <option value="1wk">초단기 (1주)</option>
-      <option value="2wk">단기 (2주)</option>
-      <option value="1mo" selected>단기 (1개월)</option>
+      <option value="1mo">단기 (1개월)</option>
+      <option value="3mo">중단기 (3개월)</option>
       <option value="6mo">6개월</option>
       <option value="1y">1년</option>
       <option value="2y">2년</option>
       <option value="5y">5년</option>
     </select>
+    <div id="period-guide" style="font-size:10px;color:#8b949e;line-height:1.45;margin-bottom:10px"></div>
+    <div id="scalp-period-recommendation" role="status" aria-live="polite" style="font-size:10px;line-height:1.5;margin:-2px 0 10px;padding:8px;border:1px solid #30363d;border-radius:7px;background:#0d1117;color:#8b949e"></div>
     <button id="analyze-btn" onclick="analyze()">🔍 분석 시작</button>
   </div>
 
@@ -15362,6 +15722,7 @@ input::placeholder{color:#484f58}
       <div class="icon">⚠️</div>
       <h2 style="color:#f85149">분석 오류</h2>
       <p id="error-msg" style="color:#8b949e"></p>
+      <button id="analysis-retry-btn" onclick="retryLastAnalysis()" style="margin-top:10px;background:#1f6feb;border:0;border-radius:8px;padding:9px 15px;color:#fff;font-weight:700;cursor:pointer">다시 분석</button>
     </div>
     <div id="state-result" style="display:none">
       <div class="page-header">
@@ -15419,7 +15780,7 @@ input::placeholder{color:#484f58}
         </div>
         <div class="two-col-grid" style="gap:12px">
           <div class="card">
-            <div class="card-title">RSI (14)</div>
+            <div class="card-title">RSI (14) · 동적 밴드(실험, 점수 미반영)</div>
             <div id="rsi-chart" style="height:150px"></div>
           </div>
           <div class="card">
@@ -15456,6 +15817,7 @@ input::placeholder{color:#484f58}
       <div id="tab-forecast" style="display:none">
         <div class="card">
           <div class="card-title">🔮 핵심 판단과 현재 상태</div>
+          <div id="scalp-entry-gate-section"></div>
           <div id="prediction-overview-section"></div>
           <div class="prediction-context-inline">
             <div id="prediction-context-section"></div>
@@ -16427,9 +16789,87 @@ const _LOADING_MSGS = [
   ['AI 종합 진단 중...', '패턴 탐지 · 점수 산출 · 전략 생성 중입니다'],
   ['거의 완료됩니다...', '결과 화면을 준비하고 있습니다'],
 ];
+const _PERIOD_GUIDES = {
+  '1d':['5분봉','당일 진입 미세 타이밍 확인용 · 3일 추세와 함께 사용'],
+  '3d':['15분봉','단타 기본값 · 최근 3거래일 방향·변동성 확인'],
+  '1wk':['30분봉','주간 타이밍 확인 · 중기 추세 판단에는 짧음'],
+  '1mo':['1시간봉','월간 단기 흐름 · SMMA·동적 RSI는 별도 일봉 사용'],
+  '3mo':['일봉 약 65개','중단기 추세 전환 확인용 · 신규 보완 단계'],
+  '6mo':['일봉 약 130개','중기 추세 분석 · SMMA200 단독 계산에는 부족'],
+  '1y':['일봉 약 252개','SMMA200+20봉 기울기와 최근 시장 체제 확인용'],
+  '2y':['일봉 약 504개','장기 사이클·복수 시장 체제 비교용'],
+  '5y':['일봉 약 1,260개','구조 연구용 · 모바일에서는 경량 전송 적용'],
+};
+function updatePeriodGuide() {
+  const select = document.getElementById('period-select');
+  const guide = document.getElementById('period-guide');
+  if (!select || !guide) return;
+  const row = _PERIOD_GUIDES[select.value] || ['', ''];
+  guide.textContent = `${row[0]} · ${row[1]}`;
+  guide.style.color = select.value === '3d' ? '#3fb950' : '#8b949e';
+  renderScalpPeriodRecommendation(_scalpPeriodRecommendation);
+}
+let _scalpPeriodRecommendation = null;
+
+function _formatScalpTurnover(value, currency) {
+  const amount = Number(value || 0);
+  if (!amount) return '미확보';
+  if (currency === 'KRW') {
+    if (amount >= 1e12) return `${(amount / 1e12).toFixed(2)}조원`;
+    return `${(amount / 1e8).toFixed(0)}억원`;
+  }
+  if (amount >= 1e9) return `$${(amount / 1e9).toFixed(2)}B`;
+  return `$${(amount / 1e6).toFixed(0)}M`;
+}
+
+function renderScalpPeriodRecommendation(rec = null) {
+  const el = document.getElementById('scalp-period-recommendation');
+  const select = document.getElementById('period-select');
+  if (!el || !select) return;
+  if (rec) _scalpPeriodRecommendation = rec;
+  const row = rec || _scalpPeriodRecommendation;
+  if (!row) {
+    el.style.borderColor = '#30363d';
+    el.innerHTML = '<strong style="color:#58a6ff">단타 기본: 3일·15분봉</strong><br>분석 후 장 경과시간·20일 평균 거래대금·시장별 ATR로 1일/3일 최적 구간을 다시 추천합니다.';
+    return;
+  }
+  const recommended = String(row.recommended_period || '3d');
+  const matches = select.value === recommended;
+  const tone = matches ? '#3fb950' : '#d29922';
+  const turnover = _formatScalpTurnover(row.average_daily_turnover, row.turnover_currency);
+  const threshold = _formatScalpTurnover(row.turnover_threshold, row.turnover_currency);
+  const atrRange = Array.isArray(row.atr_range_pct) ? row.atr_range_pct.join('~') : '—';
+  _scalpPeriodRecommendation = row;
+  el.style.borderColor = tone + '88';
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;flex-wrap:wrap">
+      <strong style="color:${tone}">자동 추천: ${_escPrediction(row.recommended_label || '3일')} · ${_escPrediction(row.recommended_interval || '15분봉')}</strong>
+      <span style="color:${matches ? '#3fb950' : '#d29922'}">${matches ? '현재 선택과 일치' : '재분석 필요'}</span>
+    </div>
+    <div style="margin-top:4px;color:#8b949e">${_escPrediction(row.market_label || row.market || '')} · ${_escPrediction(row.phase_label || '')}</div>
+    <div style="margin-top:3px;color:#cdd9e5">20일 평균 거래대금 ${turnover} (기준 ${threshold}) · ATR ${Number(row.atr_pct || 0).toFixed(2)}% (기준 ${atrRange}%)</div>
+    <div style="margin-top:3px;color:#8b949e">${_escPrediction(row.reason || '')}</div>
+    ${matches ? '' : `<button type="button" onclick="applyScalpPeriodRecommendation()" style="margin-top:6px;padding:5px 8px;width:auto;font-size:10px">추천 기간으로 재분석</button>`}
+    <div style="margin-top:5px;color:#f97316">기간 추천은 매수 승인이 아닙니다.</div>`;
+}
+
+function applyScalpPeriodRecommendation() {
+  if (!_scalpPeriodRecommendation) return;
+  const select = document.getElementById('period-select');
+  if (!select) return;
+  select.value = _scalpPeriodRecommendation.recommended_period || '3d';
+  updatePeriodGuide();
+  if (currentData) analyze();
+}
 let _loadingTimer = null;
+let _analysisController = null;
+let _analysisTimeout = null;
+let _analysisRequestId = 0;
+let _lastAnalysisRequest = null;
+const _ANALYSIS_TIMEOUT_MS = 50000;
 
 function _startLoadingAnimation() {
+  _stopLoadingAnimation();
   let idx = 0;
   const el = document.getElementById('loading-msg');
   if (el) {
@@ -16443,6 +16883,23 @@ function _startLoadingAnimation() {
 
 function _stopLoadingAnimation() {
   if (_loadingTimer) { clearInterval(_loadingTimer); _loadingTimer = null; }
+}
+
+function _networkProfile() {
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection || {};
+  const type = String(connection.effectiveType || '').toLowerCase();
+  const constrained = Boolean(connection.saveData) || ['slow-2g','2g','3g'].includes(type);
+  return {constrained, type: type || 'unknown', saveData: Boolean(connection.saveData)};
+}
+
+function retryLastAnalysis() {
+  if (!_lastAnalysisRequest) { analyze(); return; }
+  currentMarket = _lastAnalysisRequest.market;
+  const periodEl = document.getElementById('period-select');
+  const tickerEl = document.getElementById('ticker-input');
+  if (periodEl) periodEl.value = _lastAnalysisRequest.period;
+  if (tickerEl) tickerEl.value = _lastAnalysisRequest.ticker;
+  analyze(_lastAnalysisRequest.ticker);
 }
 
 // ── 미국 주식 실시간 가격 폴링 ──────────────────────────────────────────────
@@ -16504,6 +16961,14 @@ async function analyze(tickerOverride = '') {
   const ticker = String(tickerOverride || _selectedStockTicker || inputValue).trim();
   const period = document.getElementById('period-select').value;
   if (!ticker) return;
+  const requestId = ++_analysisRequestId;
+  if (_analysisController) _analysisController.abort();
+  if (_analysisTimeout) { clearTimeout(_analysisTimeout); _analysisTimeout = null; }
+  const controller = new AbortController();
+  const networkProfile = _networkProfile();
+  const analysisTimeoutMs = networkProfile.constrained ? 75000 : _ANALYSIS_TIMEOUT_MS;
+  _analysisController = controller;
+  _lastAnalysisRequest = {ticker, period, market: currentMarket};
   // 배지 초기화
   const badge = document.getElementById('investor-badge');
   if (badge) badge.classList.remove('visible');
@@ -16511,10 +16976,18 @@ async function analyze(tickerOverride = '') {
   _startLoadingAnimation();
   document.getElementById('analyze-btn').disabled = true;
   destroyCharts();
+  _analysisTimeout = setTimeout(() => {
+    if (requestId === _analysisRequestId && _analysisController === controller) {
+      controller.abort();
+    }
+  }, analysisTimeoutMs);
   try {
     // 캐시 우회: 같은 종목을 다시 분석해도 항상 서버에서 최신 현재가를 받아온다.
     // cache:'no-store' = 브라우저 HTTP 캐시 우회 / _ts = CDN(s-maxage) 캐시 키 분리
-    const r = await fetch(`/api/stock?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${currentMarket}&_ts=${Date.now()}`, {cache:'no-store'});
+    const liteQuery = networkProfile.constrained ? '&lite=1' : '';
+    const r = await fetch(`/api/stock?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${currentMarket}${liteQuery}&_ts=${Date.now()}`, {
+      cache:'no-store', signal: controller.signal,
+    });
     let text = await r.text();
     let d;
     try {
@@ -16522,7 +16995,12 @@ async function analyze(tickerOverride = '') {
     } catch(e) {
       throw new Error(`API 응답이 올바르지 않습니다. (상태: ${r.status}, 서버 오류나 타임아웃일 수 있습니다.)`);
     }
-    if (d.error) { setState('error'); document.getElementById('error-msg').textContent = d.error; return; }
+    if (requestId !== _analysisRequestId) return;
+    if (!r.ok || d.error) {
+      setState('error');
+      document.getElementById('error-msg').textContent = d.error || `분석 서버가 HTTP ${r.status} 상태를 반환했습니다.`;
+      return;
+    }
     currentData = d;
     _selectedStockTicker = d.symbol || ticker;
     if (d.market) {
@@ -16556,11 +17034,19 @@ async function analyze(tickerOverride = '') {
     resetPeerIndustryTab();
     loadPeerIndustryOutlook(d);
   } catch(e) {
+    if (requestId !== _analysisRequestId) return;
     setState('error');
-    document.getElementById('error-msg').textContent = 'API 서버 오류: ' + e.message;
+    const timedOut = e && e.name === 'AbortError';
+    document.getElementById('error-msg').textContent = timedOut
+      ? `분석이 ${Math.round(analysisTimeoutMs / 1000)}초 안에 완료되지 않아 중단했습니다. 모바일 네트워크 상태를 확인한 뒤 다시 시도해주세요.`
+      : 'API 서버 오류: ' + (e && e.message ? e.message : '알 수 없는 오류');
   } finally {
-    _stopLoadingAnimation();
-    document.getElementById('analyze-btn').disabled = false;
+    if (requestId === _analysisRequestId) {
+      if (_analysisTimeout) { clearTimeout(_analysisTimeout); _analysisTimeout = null; }
+      if (_analysisController === controller) _analysisController = null;
+      _stopLoadingAnimation();
+      document.getElementById('analyze-btn').disabled = false;
+    }
   }
 }
 
@@ -16740,11 +17226,12 @@ function renderSignalConfidence(d) {
     '<div class="signal-confidence-section"><div class="signal-confidence-section-title">신뢰도 제한·변동 요인</div>' +
       '<div class="signal-confidence-reason-grid">' + reasonHtml + '</div>' + newsMetaHtml + '</div>';
 }
-
+// ── 종목 분석 결과 렌더링 ──
 function renderResult(d) {
   const isKrx = d.market === 'KRX';
   const up = d.pct_change >= 0;
   const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
+  renderScalpPeriodRecommendation(d.scalp_period_recommendation || null);
 
   // 🔔 알림 버튼 연동 (KRX 전용)
   _currentAlertSymbol = isKrx ? d.symbol : null;
@@ -17956,6 +18443,42 @@ function renderPredictionSections(d, isKrx) {
 
   const decision = p.decision;
   const decisionColor = _predictionTone(decision.tone);
+  const dynamicRsi = p.dynamic_rsi || d.dynamic_rsi || {};
+  const timing = dynamicRsi.purchase_timing || {};
+  const timingColor = _predictionTone(timing.tone || 'neutral');
+  let dynamicTimingHtml = '';
+  if (dynamicRsi.available && timing.state) {
+    const timingConditions = (timing.conditions || []).map(item => `
+      <div class="dynamic-rsi-condition ${item.met ? 'met' : ''}">
+        <div class="dynamic-rsi-condition-name"><span style="color:${item.met ? '#3fb950' : '#6e7681'}">${item.met ? '✓' : '○'}</span> ${_escPrediction(item.label)}</div>
+        <div class="dynamic-rsi-condition-detail">${_escPrediction(item.detail || '')}${item.date ? ` · ${_escPrediction(item.date)}` : ''}</div>
+      </div>`).join('');
+    const validText = timing.valid_for_bars != null
+      ? `${Number(timing.valid_for_bars).toFixed(0)}봉 이내 조건 유효`
+      : `${Number(timing.conditions_met || 0).toFixed(0)}/${Number(timing.conditions_total || 3).toFixed(0)} 조건 충족`;
+    const chaseText = timing.max_chase_price != null ? fmt(timing.max_chase_price, isKrx) : '신호 확정 후 계산';
+    const stopText = timing.stop != null ? fmt(timing.stop, isKrx) : '진입 확정 후 계산';
+    dynamicTimingHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="${_escPrediction(timing.state)}" aria-label="동적 RSI 매수 타이밍" aria-live="polite">
+      <div class="dynamic-rsi-timing-head">
+        <div><div class="dynamic-rsi-timing-title">동적 RSI 구매 타이밍</div><div class="dynamic-rsi-timing-sub">${_escPrediction(dynamicRsi.market || d.market)} ${_escPrediction(dynamicRsi.timeframe_label || '일봉')} · 기준 ${_escPrediction(dynamicRsi.as_of || '최근 종가')} · 동적 하단 ${Number(dynamicRsi.lower).toFixed(1)} / RSI ${Number(dynamicRsi.rsi).toFixed(1)} / 동적 상단 ${Number(dynamicRsi.upper).toFixed(1)}</div></div>
+        <span class="dynamic-rsi-state" style="color:${timingColor}">${_escPrediction(timing.label || '관망')}</span>
+      </div>
+      <div class="dynamic-rsi-window">${_escPrediction(timing.window || '')}</div>
+      <div class="dynamic-rsi-action">${_escPrediction(timing.action || '')}</div>
+      <div class="dynamic-rsi-condition-grid">${timingConditions}</div>
+      <div class="dynamic-rsi-execution">
+        <div><div class="dynamic-rsi-execution-label">조건 진행</div><div class="dynamic-rsi-execution-value" style="color:${timingColor}">${_escPrediction(validText)}</div></div>
+        <div><div class="dynamic-rsi-execution-label">추격 제한 참고가</div><div class="dynamic-rsi-execution-value">${chaseText}</div></div>
+        <div><div class="dynamic-rsi-execution-label">동적 손절 참고가</div><div class="dynamic-rsi-execution-value" style="color:#f85149">${stopText}</div></div>
+      </div>
+      <div class="dynamic-rsi-footnote">${_escPrediction(timing.execution_rule || '')} · ${_escPrediction(timing.market_note || '')}<br>${_escPrediction(timing.invalidation || '')} · 이 단계 수는 상승확률이나 적중률이 아닙니다.</div>
+    </section>`;
+  } else {
+    dynamicTimingHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="unavailable" aria-label="동적 RSI 매수 타이밍">
+      <div class="dynamic-rsi-timing-title">동적 RSI 구매 타이밍</div>
+      <div class="dynamic-rsi-action">${_escPrediction(dynamicRsi.reason || '동적 RSI 계산에 필요한 과거 데이터가 부족합니다.')}</div>
+    </section>`;
+  }
   const statusHtml = (p.status || []).map(item => {
     const color = _predictionTone(item.tone);
     return `<div class="prediction-status-card">
@@ -17976,6 +18499,7 @@ function renderPredictionSections(d, isKrx) {
         <div class="prediction-summary">${_escPrediction(decision.summary)}</div>
       </div>
     </div>
+    ${dynamicTimingHtml}
     <div class="prediction-status-grid">${statusHtml}</div>
     <div class="prediction-scope">${_escPrediction(p.data_scope || '')}</div>
   </div>`;
@@ -18027,12 +18551,48 @@ function renderPredictionSections(d, isKrx) {
   </div>`;
 }
 
+function renderScalpEntryGate(d) {
+  const el = document.getElementById('scalp-entry-gate-section');
+  if (!el) return;
+  const rec = d.scalp_period_recommendation || {};
+  const decision = (d.prediction_outlook || {}).decision || {};
+  const arty = ((d.buy_price || {}).arty_smma_fractal || {});
+  const validation = arty.backtest_validation || {};
+  if (!rec.recommended_period) {
+    el.innerHTML = '<div style="padding:10px;margin-bottom:12px;border:1px solid #d2992255;border-radius:8px;background:#241a0a;color:#d29922;font-size:11px">단타 기간 추천 데이터가 없어 즉시 매수 판단을 보류합니다.</div>';
+    return;
+  }
+  const checks = [
+    {ok: rec.phase_key === 'active', label: rec.phase_key === 'active' ? '개장 초기·마감 집중 구간 통과' : `시장 시간: ${rec.phase_label || '확인 필요'}`},
+    {ok: Boolean(rec.liquidity_ok), label: rec.liquidity_ok ? '20일 평균 거래대금 기준 통과' : '거래대금 기준 미달 또는 데이터 부족'},
+    {ok: Boolean(rec.atr_ok), label: rec.atr_ok ? `${rec.market || ''} ATR 허용 범위 통과` : `${rec.market || ''} ATR 허용 범위 이탈`},
+    {ok: String(d.period || '') === String(rec.recommended_period), label: String(d.period || '') === String(rec.recommended_period) ? '현재 결과와 추천 기간 일치' : `${rec.recommended_label || '추천 기간'}로 재분석 필요`},
+    {ok: decision.key === 'conditional', label: decision.key === 'conditional' ? '가격·거래량 조건부 접근 상태' : `예측 판단: ${decision.label || '관망'}`},
+    {ok: validation.verdict === 'accepted', label: validation.verdict === 'accepted' ? 'SMMA·프랙탈 워크포워드 검증 통과' : `SMMA·프랙탈 검증: ${validation.verdict_label || '미통과'}`},
+  ];
+  const candidate = checks.every(row => row.ok);
+  const tone = candidate ? '#3fb950' : '#f97316';
+  const bg = candidate ? '#0d2d1a' : '#2b190c';
+  el.innerHTML = `
+    <div style="padding:11px;margin-bottom:12px;border:1px solid ${tone}66;border-radius:8px;background:${bg}">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+        <strong style="color:${tone}">${candidate ? '조건 확인 후보 · 즉시 매수 승인 아님' : '단타 매수 대기'}</strong>
+        <span style="font-size:10px;color:#8b949e">현재 ${_escPrediction(d.period || '—')} · 추천 ${_escPrediction(rec.recommended_period || '3d')}</span>
+      </div>
+      <div style="margin-top:7px;display:grid;gap:4px;font-size:10px;color:#cdd9e5">
+        ${checks.map(row => `<div><span style="color:${row.ok ? '#3fb950' : '#f85149'}">${row.ok ? '✓' : '✕'}</span> ${_escPrediction(row.label)}</div>`).join('')}
+      </div>
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid #30363d;color:#d29922;font-size:10px;line-height:1.5">3일 기본값과 동적 RSI만으로 매수하지 마세요. 추천 기간 재분석 후 지지 가격 유지, 거래량 회복, 손절 가격을 실제 주문 전에 확인해야 합니다.</div>
+    </div>`;
+}
+
 function renderForecast(d, isKrx) {
   const risk = d.risk_scenarios;
   const bp   = d.buy_price;
   const ai   = d.ai_strategy;
 
   renderPredictionSections(d, isKrx);
+  renderScalpEntryGate(d);
   // ── AI 종합 진단 및 트레이딩 전략 섹션 ──
   const aiEl = document.getElementById('ai-strategy-section');
   if (aiEl) {
@@ -18122,7 +18682,7 @@ function renderForecast(d, isKrx) {
         entry_pending: ['#d29922','#241a0a'], technical_only: ['#f97316','#2b190c'],
         benchmark_only: ['#8b949e','#161b22'], missed_entry: ['#8b949e','#161b22'],
         mixed: ['#58a6ff','#0d1b33'], insufficient: ['#8b949e','#161b22'],
-        invalid: ['#f85149','#2d1515'],
+        provider_error: ['#f97316','#2b190c'], invalid: ['#f85149','#2d1515'],
       };
       const artyPrice = value => Number.isFinite(Number(value)) ? fmt(Number(value), isKrx) : '—';
       const artyHtml = arty ? (() => {
@@ -19167,6 +19727,16 @@ function renderCharts(d, isKrx) {
     chartInstances['rsi'] = chart;
     const rsiSeries = chart.addLineSeries({ color: '#facc15', lineWidth: 1.5 });
     rsiSeries.setData(cd.rsi.map((v,i) => ({ time: cd.dates[i], value: v })).filter(p => p.value != null));
+    const drsiUpperData = Array.isArray(cd.dynamic_rsi_upper) ? cd.dynamic_rsi_upper : [];
+    const drsiLowerData = Array.isArray(cd.dynamic_rsi_lower) ? cd.dynamic_rsi_lower : [];
+    if (drsiUpperData.length === n && drsiLowerData.length === n) {
+      const drsiUpper = chart.addLineSeries({ color: 'rgba(248,81,73,0.9)', lineWidth: 2, title: '동적 상단' });
+      drsiUpper.setData(drsiUpperData.map((v,i) => ({ time: cd.dates[i], value: v })).filter(p => p.value != null));
+      const drsiLower = chart.addLineSeries({ color: 'rgba(63,185,80,0.9)', lineWidth: 2, title: '동적 하단' });
+      drsiLower.setData(drsiLowerData.map((v,i) => ({ time: cd.dates[i], value: v })).filter(p => p.value != null));
+      const drsiCenter = chart.addLineSeries({ color: 'rgba(201,209,217,0.55)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, title: '50 중심선' });
+      drsiCenter.setData([{ time: cd.dates[0], value: 50 }, { time: cd.dates[n-1], value: 50 }]);
+    }
     // 70/30 기준선 (버그 수정: cd.dates[20] → 데이터 부족 시 IndexError 방지)
     const rsiStartIdx = Math.min(20, Math.max(0, n - 2));
     if (rsiStartIdx < n - 1) {
@@ -21050,6 +21620,7 @@ function fetchTossAiSummary(ticker, market) {
 }
 
 // ── 초기화 ──
+updatePeriodGuide(); // 분석 기간의 실제 봉 간격과 권장 용도 표시
 loadMarketCore();   // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
 loadSectorFlow();   // 🏭 업종별 흐름 자동 로드
 initAlerts();       // 🔔 알림 시스템 초기화
@@ -21867,7 +22438,7 @@ def replace_nan_with_none(obj):
         return obj.isoformat()
     return obj
 
-VALID_PERIODS = {"1d", "3d", "1wk", "2wk", "1mo", "6mo", "1y", "2y", "5y"}
+VALID_PERIODS = {"1d", "3d", "1wk", "1mo", "3mo", "6mo", "1y", "2y", "5y"}
 
 def _send(handler_self, data: Any, status: int = 200, content_type: str = "application/json"):
     path = getattr(handler_self, 'path', '/').split('?')[0].rstrip('/') or '/'
@@ -21877,10 +22448,22 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
         body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
     else:
         body = data if isinstance(data, bytes) else data.encode("utf-8")
+
+    accept_encoding = str(getattr(handler_self, "headers", {}).get("Accept-Encoding", ""))
+    compressed = (
+        len(body) >= 1024
+        and "gzip" in accept_encoding.lower()
+        and content_type in {"application/json", "text/html"}
+    )
+    if compressed:
+        body = gzip.compress(body, compresslevel=5)
     
     handler_self.send_response(status)
     handler_self.send_header("Content-Type", content_type + "; charset=utf-8")
     handler_self.send_header("Content-Length", str(len(body)))
+    if compressed:
+        handler_self.send_header("Content-Encoding", "gzip")
+        handler_self.send_header("Vary", "Accept-Encoding")
     
     # CORS Policy
     handler_self.send_header("Access-Control-Allow-Origin", "*")
@@ -22112,7 +22695,7 @@ class handler(BaseHTTPRequestHandler):
             # Input Validation
             if path == "/api/stock":
                 ticker = params.get("ticker", "")
-                period = params.get("period", "1y")
+                period = params.get("period", "3d")
                 
                 if len(ticker) > 20 or (ticker and not re.match(r"^[a-zA-Z0-9가-힣.\-\s]+$", ticker)):
                      _send(self, {"error": "Invalid ticker format"}, 400)

@@ -1,6 +1,12 @@
 """예측 탭 구조화 로직과 미국 급등 추천 가격 경계 검증."""
+import gzip
+import io
+import json
+import sys
+from types import SimpleNamespace
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import api.index as index_module
 from api.index import (
@@ -16,6 +22,7 @@ from api.index import (
     calc_arty_smma_fractal,
     calc_risk,
     fetch_arty_daily_data,
+    recommend_scalp_analysis_period,
 )
 
 
@@ -40,6 +47,76 @@ def _sample_dd():
         "BB_Upper": [c + 3.0 for c in closes],
         "BB_Lower": [c - 3.0 for c in closes],
     }
+
+
+def _daily_liquidity(close, volume):
+    return {"Close": [close] * 20, "Volume": [volume] * 20}
+
+
+def test_krx_scalp_period_uses_opening_time_turnover_and_atr():
+    opening = recommend_scalp_analysis_period(
+        "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
+        selected_period="3d",
+        now=datetime(2026, 8, 24, 9, 10, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert opening["recommended_period"] == "3d"
+    assert opening["phase_key"] == "opening_noise"
+    assert opening["liquidity_ok"] is True
+    assert opening["atr_ok"] is True
+
+    active = recommend_scalp_analysis_period(
+        "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
+        selected_period="3d",
+        now=datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert active["recommended_period"] == "1d"
+    assert active["recommended_interval"] == "5분봉"
+    assert active["period_match"] is False
+    assert active["entry_permission"] is False
+
+
+def test_us_scalp_period_has_distinct_warmup_liquidity_and_atr_limits():
+    early = recommend_scalp_analysis_period(
+        "US", _daily_liquidity(100, 1_000_000), 100, 2,
+        selected_period="3d",
+        now=datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert early["recommended_period"] == "3d"
+    assert early["elapsed_minutes"] == 30
+
+    active = recommend_scalp_analysis_period(
+        "US", _daily_liquidity(100, 1_000_000), 100, 2,
+        selected_period="1d",
+        now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert active["recommended_period"] == "1d"
+    assert active["period_match"] is True
+    assert active["turnover_threshold"] == 50_000_000
+    assert active["atr_range_pct"] == [0.8, 3.2]
+
+    volatile = recommend_scalp_analysis_period(
+        "US", _daily_liquidity(100, 1_000_000), 100, 4,
+        selected_period="3d",
+        now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert volatile["recommended_period"] == "3d"
+    assert volatile["atr_ok"] is False
+
+    premarket_response = recommend_scalp_analysis_period(
+        "US", _daily_liquidity(100, 1_000_000), 100, 2,
+        selected_period="3d", session_name="프리마켓",
+        now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert premarket_response["recommended_period"] == "3d"
+    assert premarket_response["phase_key"] == "reported_non_regular"
+
+
+def test_scalp_period_ui_explains_reanalysis_and_no_buy_approval():
+    assert 'id="scalp-period-recommendation"' in HTML
+    assert 'id="scalp-entry-gate-section"' in HTML
+    assert "applyScalpPeriodRecommendation()" in HTML
+    assert "기간 추천은 매수 승인이 아닙니다." in HTML
+    assert "3일 기본값과 동적 RSI만으로 매수하지 마세요." in HTML
 
 
 def _base_kwargs(market="KRX", symbol="005930.KS", flags=None, signal_confidence=None):
@@ -265,6 +342,135 @@ def test_forecast_overview_does_not_render_aggregate_confidence_card():
     assert 'class="prediction-confidence-range"' not in renderer
     assert "종합 신뢰도" not in renderer
     assert ".prediction-confidence{" not in HTML
+
+
+def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
+    forecast_html = HTML.split('<div id="tab-forecast"', 1)[1].split('<!-- 뉴스 탭 -->', 1)[0]
+    renderer = HTML.split("function renderPredictionSections", 1)[1].split(
+        "function renderForecast", 1
+    )[0]
+
+    assert 'id="dynamic-rsi-purchase-timing"' in renderer
+    assert "동적 RSI 구매 타이밍" in renderer
+    assert "dynamic-rsi-condition-grid" in renderer
+    assert "추격 제한 참고가" in renderer
+    assert "이 단계 수는 상승확률이나 적중률이 아닙니다" in renderer
+    assert forecast_html.index('id="prediction-overview-section"') < forecast_html.index('id="buy-price-section"')
+
+
+def test_analysis_loader_has_timeout_cancellation_and_retry_path():
+    analyzer = HTML.split("async function analyze", 1)[1].split("function setState", 1)[0]
+
+    assert "new AbortController()" in analyzer
+    assert "_ANALYSIS_TIMEOUT_MS" in analyzer
+    assert "requestId !== _analysisRequestId" in analyzer
+    assert "signal: controller.signal" in analyzer
+    assert "finally" in analyzer
+    assert 'id="analysis-retry-btn"' in HTML
+    assert "function retryLastAnalysis" in HTML
+    assert "function _startLoadingAnimation() {\n  _stopLoadingAnimation();" in HTML
+    assert "_networkProfile()" in analyzer
+    assert "&lite=1" in analyzer
+    assert "75000" in analyzer
+
+
+def test_lite_stock_response_reduces_chart_and_backtest_diagnostics():
+    metric = {
+        "trades": 30, "avg_return_pct": 1.2, "median_return_pct": 0.4,
+        "profit_factor": 1.4, "unused_large_field": "x" * 1000,
+    }
+    payload = {
+        "chart_data": {
+            "dates": list(range(500)), "close": list(range(500)),
+            "open": list(range(500)), "pattern_overlays": [{"x": 1}],
+            "pattern_overlay_options": {"show_pattern_overlay": True},
+        },
+        "chart_patterns": list(range(20)), "candlestick_patterns": list(range(20)),
+        "news": list(range(20)),
+        "buy_price": {"arty_smma_fractal": {"backtest_validation": {
+            "train": metric, "test": metric, "entry_test": {"1": metric},
+            "retest_test": {"21": metric}, "atr_test": {"0.5": metric},
+            "walk_forward": {"folds": [{"fold": i, "blob": "z" * 500} for i in range(4)], "aggregate": metric},
+            "extended_diagnostics": {"market_regime": {"BULL": metric}},
+            "data_quality": {"passed": True, "download": {"requested": 100, "success": 100, "tickers": list(range(100))},
+                             "cross_provider_checks": [{"status": "passed", "blob": "q" * 500}]},
+        }}},
+    }
+
+    before = len(json.dumps(payload))
+    result = index_module._compact_stock_response(payload)
+    after = len(json.dumps(result))
+
+    assert result["response_meta"]["lite_mode"] is True
+    assert len(result["chart_data"]["dates"]) <= 161
+    assert result["chart_data"]["pattern_overlays"] == []
+    assert result["buy_price"]["arty_smma_fractal"]["backtest_validation"]["train"].get("unused_large_field") is None
+    assert after < before * 0.55
+
+
+def test_send_uses_gzip_when_client_accepts_it():
+    class Handler:
+        path = "/api/stock"
+        headers = {"Accept-Encoding": "gzip, deflate"}
+
+        def __init__(self):
+            self.output_headers = {}
+            self.wfile = io.BytesIO()
+
+        def send_response(self, status):
+            self.status = status
+
+        def send_header(self, key, value):
+            self.output_headers[key] = value
+
+        def end_headers(self):
+            pass
+
+    handler = Handler()
+    index_module._send(handler, {"text": "모바일" * 2000})
+
+    assert handler.output_headers["Content-Encoding"] == "gzip"
+    decoded = json.loads(gzip.decompress(handler.wfile.getvalue()).decode("utf-8"))
+    assert decoded["text"].startswith("모바일")
+
+
+def test_daily_history_uses_fdr_when_yahoo_history_is_short(monkeypatch):
+    short = index_module.pd.DataFrame(
+        {"Open": range(60), "High": range(1, 61), "Low": range(60),
+         "Close": range(1, 61), "Volume": [1000] * 60},
+        index=index_module.pd.date_range("2026-01-01", periods=60, freq="B"),
+    )
+    full = index_module.pd.DataFrame(
+        {"Open": range(260), "High": range(1, 261), "Low": range(260),
+         "Close": range(1, 261), "Volume": [1000] * 260},
+        index=index_module.pd.date_range("2025-01-01", periods=260, freq="B"),
+    )
+
+    class FakeTicker:
+        def history(self, **_kwargs):
+            return short
+
+    monkeypatch.setattr(index_module.yf, "Ticker", lambda _symbol: FakeTicker())
+    monkeypatch.setitem(sys.modules, "FinanceDataReader", SimpleNamespace(DataReader=lambda *_args: full))
+    index_module._CACHE.clear()
+
+    result = fetch_arty_daily_data("FDR-FALLBACK-TEST", "US")
+
+    assert result is not None and len(result["Close"]) == 260
+    assert result["_history_meta"]["provider"] == "FinanceDataReader"
+    assert result["_history_meta"]["history_exhausted"] is False
+
+
+def test_daily_provider_failure_is_not_mislabeled_as_short_listing():
+    dd = {
+        "Open": [], "High": [], "Low": [], "Close": [], "Date": [],
+        "_history_meta": {"failure_reason": "daily_providers_unavailable", "attempts": []},
+    }
+    result = calc_arty_smma_fractal(dd, 100.0, market="US")
+
+    assert result["status_key"] == "provider_error"
+    assert result["status"] == "일봉 공급자 연결 실패"
+    assert result["history_failure_reason"] == "daily_providers_unavailable"
 
 
 def test_us_fundamentals_are_not_rendered_in_result_ui():
@@ -579,6 +785,14 @@ def test_arty_evidence_matches_current_rule_version():
     evidence = index_module.ARTY_SMMA_BACKTEST_EVIDENCE
     assert evidence["strategy_rule_version"] == ARTY_STRATEGY_RULE_VERSION
     assert evidence["strategy_config_hash"]
+
+
+def test_current_arty_evidence_is_diagnostic_only_for_both_markets():
+    for market in ("KRX", "US"):
+        profile = index_module.ARTY_SMMA_BACKTEST_EVIDENCE["markets"][market]
+        assert profile["verdict"] == "inconclusive"
+        assert profile["production_applied"] is False
+        assert profile["verdict_label"] == "최신·롤링 결과 불일치"
 
 
 def test_import_does_not_start_toss_prewarm_thread():

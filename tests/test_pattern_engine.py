@@ -93,7 +93,7 @@ def test_hybrid_tolerance_is_clamped_to_min_and_max():
 
 @pytest.mark.parametrize(
     "period",
-    ["1d", "3d", "1wk", "2wk", "1mo", "6mo", "1y", "2y", "5y"],
+    ["1d", "3d", "1wk", "1mo", "3mo", "6mo", "1y", "2y", "5y"],
 )
 def test_supported_ui_periods_reuse_timeframe_specific_detection(period):
     engine = PatternEngine.from_mapping(_inverse_hs("confirmed"), timeframe=period)
@@ -108,16 +108,29 @@ def test_analysis_period_dropdown_matches_backend_allowlist():
     assert select is not None
     options = re.findall(r'<option value="([^"]+)"(?: selected)?>([^<]+)</option>', select.group(1))
     expected = [
-        ("1d", "초단기 (1일)"), ("3d", "초단기 (3일)"),
-        ("1wk", "초단기 (1주)"), ("2wk", "단기 (2주)"),
-        ("1mo", "단기 (1개월)"), ("6mo", "6개월"),
-        ("1y", "1년"), ("2y", "2년"), ("5y", "5년"),
+        ("1d", "초단기 (1일)"), ("3d", "초단기 (3일·단타 권장)"),
+        ("1wk", "초단기 (1주)"), ("1mo", "단기 (1개월)"),
+        ("3mo", "중단기 (3개월)"),
+        ("6mo", "6개월"), ("1y", "1년"),
+        ("2y", "2년"), ("5y", "5년"),
     ]
     assert options == expected
     allowlist_line = re.search(r'^VALID_PERIODS\s*=\s*\{([^}]*)\}', source, re.M)
     assert allowlist_line is not None
     allowlist = set(re.findall(r'"([^"]+)"', allowlist_line.group(1)))
     assert allowlist == {value for value, _ in expected}
+    assert '<option value="3d" selected>초단기 (3일·단타 권장)</option>' in select.group(1)
+    assert source.count('params.get("period", "3d")') == 2
+    assert "select.value === '3d'" in source
+    assert "updatePeriodGuide()" in source
+
+
+def test_three_month_period_has_explicit_prediction_horizons():
+    source = (Path(__file__).resolve().parents[1] / "api" / "index.py").read_text(encoding="utf-8")
+    assert '"3mo": 65' in source
+    assert '"3mo": 63' in source
+    assert '"3mo": "3개월"' in source
+    assert '"2wk"' not in source
 
 
 def test_e1_to_e5_coordinates_are_stable():

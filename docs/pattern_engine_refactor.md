@@ -75,7 +75,7 @@
 
 ## 호환성 주의사항
 
-- 화면과 API가 지원하는 분석 기간은 `1일·3일·1주·2주·1개월·6개월·1년·2년·5년`으로 통일한다.
+- 화면과 API가 지원하는 분석 기간은 `1일·3일·1주·1개월·3개월·6개월·1년·2년·5년`으로 통일한다.
 - `calc_risk()`의 기존 인자는 그대로이며 마지막 선택 인자 `chart_patterns`만 추가됐다.
 - 기존 TP1~TP5 개수·가격 정렬·시나리오 간 비중복 출력은 유지된다.
 - API 응답에는 `chart_patterns`, `chart_data.pattern_overlays`, `risk_scenarios.pattern_target_integration`이 추가된다.
