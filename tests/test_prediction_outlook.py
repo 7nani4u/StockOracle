@@ -8,10 +8,18 @@ from types import SimpleNamespace
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+import pytest
+
 import api.index as index_module
+from market_briefing import confidence_engine as confidence_engine_module
 from api.index import (
     HTML,
     ARTY_STRATEGY_RULE_VERSION,
+    _KR_SURGE_VI_OBSERVATIONS,
+    _kr_surge_vi_state,
+    _parse_official_us_calendar,
+    assess_confirmed_volume_recovery,
     _arty_atr_values,
     _build_us_ipo_risk,
     _confirmed_williams_fractals,
@@ -21,9 +29,28 @@ from api.index import (
     build_prediction_outlook,
     calc_arty_smma_fractal,
     calc_risk,
+    calibrate_volume_recovery_threshold,
+    compare_scalp_period_signals,
     fetch_arty_daily_data,
+    fetch_execution_quality,
+    fetch_scalp_period_comparison,
+    get_market_session_calendar_status,
+    get_krx_disclosure_cooldown,
+    get_us_earnings_recommendation_block,
     recommend_scalp_analysis_period,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stable_official_us_calendar(monkeypatch):
+    monkeypatch.setattr(index_module, "_fetch_us_official_calendar_reconciliation", lambda year: {
+        "verified": True, "checked_at": "2026-08-24T00:00:00-04:00",
+        "full_holidays": {}, "early_closes": {}, "discrepancies": {}, "sources": {},
+    })
+    monkeypatch.setattr(index_module, "_fetch_nasdaq_market_alert_status", lambda date_key: {
+        "available": True, "emergency_closed": False, "early_close": False,
+        "alerts": [], "checked_at": "2026-08-24T00:00:00-04:00",
+    })
 
 
 def _sample_dd():
@@ -53,6 +80,24 @@ def _daily_liquidity(close, volume):
     return {"Close": [close] * 20, "Volume": [volume] * 20}
 
 
+def _safe_scalp_context():
+    return {
+        "period_comparison": {
+            "available": True, "conflict": False, "aligned": True,
+            "verdict": "aligned", "verdict_label": "1일·3일 일치",
+        },
+        "volume_confirmation": {
+            "available": True, "bar_confirmed": True, "recovered": True,
+            "reason": "확정 봉 거래량 1.20배 · 회복 확인",
+        },
+        "execution_quality": {
+            "available": True, "quality_ok": True,
+            "spread_ok": True, "slippage_ok": True,
+            "reason": "스프레드 0.05% · 예상 슬리피지 0.08% 통과",
+        },
+    }
+
+
 def test_krx_scalp_period_uses_opening_time_turnover_and_atr():
     opening = recommend_scalp_analysis_period(
         "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
@@ -68,6 +113,8 @@ def test_krx_scalp_period_uses_opening_time_turnover_and_atr():
         "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
         selected_period="3d",
         now=datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        security_status={"vi": {"status": "normal", "active": False}},
+        **_safe_scalp_context(),
     )
     assert active["recommended_period"] == "1d"
     assert active["recommended_interval"] == "5분봉"
@@ -88,6 +135,8 @@ def test_us_scalp_period_has_distinct_warmup_liquidity_and_atr_limits():
         "US", _daily_liquidity(100, 1_000_000), 100, 2,
         selected_period="1d",
         now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+        days_to_earnings=30,
+        **_safe_scalp_context(),
     )
     assert active["recommended_period"] == "1d"
     assert active["period_match"] is True
@@ -98,6 +147,8 @@ def test_us_scalp_period_has_distinct_warmup_liquidity_and_atr_limits():
         "US", _daily_liquidity(100, 1_000_000), 100, 4,
         selected_period="3d",
         now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+        days_to_earnings=30,
+        **_safe_scalp_context(),
     )
     assert volatile["recommended_period"] == "3d"
     assert volatile["atr_ok"] is False
@@ -106,9 +157,301 @@ def test_us_scalp_period_has_distinct_warmup_liquidity_and_atr_limits():
         "US", _daily_liquidity(100, 1_000_000), 100, 2,
         selected_period="3d", session_name="프리마켓",
         now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+        days_to_earnings=30,
+        **_safe_scalp_context(),
     )
     assert premarket_response["recommended_period"] == "3d"
     assert premarket_response["phase_key"] == "reported_non_regular"
+
+
+def test_vi_earnings_disclosure_and_opposite_signals_force_three_day():
+    kr_now = datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("Asia/Seoul"))
+    vi_block = recommend_scalp_analysis_period(
+        "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
+        selected_period="1d", now=kr_now,
+        security_status={"vi": {"status": "active", "label": "VI 발동", "active": True}},
+        **_safe_scalp_context(),
+    )
+    assert vi_block["recommended_period"] == "3d"
+    assert vi_block["vi_blocked"] is True
+
+    us_now = datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York"))
+    earnings_block = recommend_scalp_analysis_period(
+        "US", _daily_liquidity(100, 1_000_000), 100, 2,
+        selected_period="1d", now=us_now, days_to_earnings=0,
+        **_safe_scalp_context(),
+    )
+    assert earnings_block["recommended_period"] == "3d"
+    assert earnings_block["earnings_today"] is True
+
+    disclosure_block = recommend_scalp_analysis_period(
+        "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
+        selected_period="1d", now=kr_now,
+        disclosures=[{"title": "주요사항보고서", "date": "2026.08.24 10:05"}],
+        **_safe_scalp_context(),
+    )
+    assert disclosure_block["recommended_period"] == "3d"
+    assert disclosure_block["disclosure_cooldown"]["active"] is True
+
+    opposite = _safe_scalp_context()
+    opposite["period_comparison"] = {
+        "available": True, "conflict": True, "aligned": False,
+        "verdict": "opposite", "verdict_label": "1일·3일 반대 신호",
+    }
+    opposite_block = recommend_scalp_analysis_period(
+        "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
+        selected_period="1d", now=kr_now, **opposite,
+    )
+    assert opposite_block["recommended_period"] == "3d"
+    assert opposite_block["period_comparison"]["conflict"] is True
+
+
+def test_unknown_vi_or_earnings_calendar_fails_closed_to_three_day():
+    krx = recommend_scalp_analysis_period(
+        "KRX", _daily_liquidity(100_000, 150_000), 100_000, 2_000,
+        selected_period="1d",
+        now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+        **_safe_scalp_context(),
+    )
+    assert krx["recommended_period"] == "3d"
+    assert krx["vi_check_available"] is False
+
+    us = recommend_scalp_analysis_period(
+        "US", _daily_liquidity(100, 1_000_000), 100, 2,
+        selected_period="1d",
+        now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+        **_safe_scalp_context(),
+    )
+    assert us["recommended_period"] == "3d"
+    assert us["earnings_check_available"] is False
+
+
+def test_after_close_earnings_blocks_the_next_trading_day_but_before_open_does_not_extend():
+    after_close = {
+        "earnings_date": "2026-08-21", "earnings_session": "after_close",
+        "earnings_session_label": "장후 발표",
+    }
+    monday = get_us_earnings_recommendation_block(
+        after_close,
+        now=datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert monday["active"] is True
+    assert monday["next_trading_date"] == "2026-08-24"
+    assert monday["block_dates"] == ["2026-08-21", "2026-08-24"]
+
+    before_open = {
+        "earnings_date": "2026-08-24", "earnings_session": "before_open",
+        "earnings_session_label": "장전 발표",
+    }
+    tuesday = get_us_earnings_recommendation_block(
+        before_open,
+        now=datetime(2026, 8, 25, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert tuesday["active"] is False
+    assert tuesday["block_dates"] == ["2026-08-24"]
+
+
+def test_earnings_provider_timestamp_is_classified_as_after_close(monkeypatch):
+    event_at = pd.Timestamp.now(tz="America/New_York").normalize() + pd.Timedelta(days=2, hours=16)
+
+    class FakeEarningsTicker:
+        def get_earnings_dates(self, limit=8):
+            return pd.DataFrame({"EPS Estimate": [1.0]}, index=pd.DatetimeIndex([event_at]))
+
+        @property
+        def calendar(self):
+            return {}
+
+    confidence_engine_module._CACHE.pop("earnings|EARNINGS-TIMING-TEST", None)
+    monkeypatch.setattr(confidence_engine_module.yf, "Ticker", lambda symbol: FakeEarningsTicker())
+    result = confidence_engine_module.get_earnings_proximity("EARNINGS-TIMING-TEST")
+    assert result["earnings_session"] == "after_close"
+    assert result["earnings_session_label"] == "장후 발표"
+    assert result["earnings_datetime"].endswith("16:00:00-04:00") or "16:00:00-05:00" in result["earnings_datetime"]
+
+
+def test_repeated_vi_activation_blocks_the_entire_observed_day(monkeypatch):
+    code = "009999"
+    _KR_SURGE_VI_OBSERVATIONS.pop(code, None)
+    times = iter([
+        datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 8, 24, 10, 3, tzinfo=ZoneInfo("Asia/Seoul")),
+        datetime(2026, 8, 24, 10, 20, tzinfo=ZoneInfo("Asia/Seoul")),
+    ])
+    monkeypatch.setattr(index_module, "_kr_surge_now", lambda: next(times))
+    active_row = {
+        "tradeStopType": {"code": "VI", "name": "VI"},
+        "tradableStatus": "tradable",
+    }
+    normal_row = {
+        "tradeStopType": {"code": "1", "name": "TRADING"},
+        "tradableStatus": "tradable",
+    }
+    first = _kr_surge_vi_state(code, active_row)
+    _kr_surge_vi_state(code, normal_row)
+    second = _kr_surge_vi_state(code, active_row)
+    assert first["activation_count_today"] == 1
+    assert first["day_blocked"] is False
+    assert second["activation_count_today"] == 2
+    assert second["day_blocked"] is True
+    _KR_SURGE_VI_OBSERVATIONS.pop(code, None)
+
+
+def test_volume_threshold_uses_stock_specific_walk_forward_distribution():
+    closes = [100.0]
+    volumes = []
+    for index in range(260):
+        ratio_boost = 1.45 if index % 7 == 0 else 0.90 + (index % 5) * 0.05
+        volumes.append(1000.0 * ratio_boost)
+        closes.append(closes[-1] * (1.002 if ratio_boost >= 1.4 else 0.9998))
+    result = calibrate_volume_recovery_threshold({
+        "Close": closes[:260], "Volume": volumes,
+    })
+    assert result["available"] is True
+    assert 1.05 <= result["selected_ratio"] <= 1.50
+    assert result["train_observations"] > result["validation_observations"]
+    assert result["best"]["signals"] >= 8
+
+
+def test_official_calendar_parsers_reconcile_closed_and_early_dates():
+    nyse_html = """
+    <table><tr><th>Holiday</th><th>2026</th></tr>
+    <tr><td>Christmas Day</td><td>Friday, December 25</td></tr></table>
+    <p>Each market will close early at 1:00 p.m. on Thursday, December 24, 2026.</p>
+    """
+    nasdaq_html = """
+    <table><tr><th>2026</th><th>Holiday</th><th>Status</th></tr>
+    <tr><td>December 24, 2026</td><td>Early Close</td><td>1:00 p.m.</td></tr>
+    <tr><td>December 25, 2026</td><td>Christmas</td><td>Closed</td></tr></table>
+    """
+    nyse = _parse_official_us_calendar(nyse_html, "nyse", 2026)
+    nasdaq = _parse_official_us_calendar(nasdaq_html, "nasdaq", 2026)
+    assert set(nyse["full_holidays"]) == set(nasdaq["full_holidays"]) == {"2026-12-25"}
+    assert set(nyse["early_closes"]) == set(nasdaq["early_closes"]) == {"2026-12-24"}
+
+
+def test_official_emergency_market_alert_overrides_regular_calendar(monkeypatch):
+    monkeypatch.setattr(index_module, "_fetch_nasdaq_market_alert_status", lambda date_key: {
+        "available": True, "emergency_closed": True, "early_close": False,
+        "alerts": [{"title": "U.S. equity market closed"}],
+    })
+    status = get_market_session_calendar_status(
+        "US", datetime(2026, 8, 24, 10, 30, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert status["is_closed"] is True
+    assert status["holiday_label"] == "Nasdaq 공식 긴급 휴장 경보"
+
+
+def test_execution_quality_requires_fresh_real_bid_ask_and_limits_slippage(monkeypatch):
+    now_epoch = 1_787_575_400
+    monkeypatch.setattr(index_module.time, "time", lambda: now_epoch)
+
+    class FakeTicker:
+        @property
+        def info(self):
+            return {
+                "bid": 99.95, "ask": 100.05, "bidSize": 100, "askSize": 120,
+                "regularMarketTime": now_epoch - 30,
+            }
+
+    monkeypatch.setattr(index_module.yf, "Ticker", lambda symbol: FakeTicker())
+    result = fetch_execution_quality(
+        "EXECUTION-QUALITY-TEST", "US", 100.0, 100_000_000.0, 2.0,
+    )
+    assert result["available"] is True
+    assert result["spread_pct"] == pytest.approx(0.1, abs=0.001)
+    assert result["quality_ok"] is True
+    assert result["estimated_slippage_pct"] <= result["slippage_limit_pct"]
+
+
+def test_period_comparison_computes_both_horizons_independent_of_selection(monkeypatch):
+    def fake_score(data, market, period):
+        return (70 if period == "1d" else 30), None
+
+    monkeypatch.setattr(index_module, "analyze_score", fake_score)
+    one_day = {"Close": list(range(30))}
+    three_day = {"Close": list(range(60))}
+    result = compare_scalp_period_signals(one_day, three_day, "KRX")
+    assert result["available"] is True
+    assert result["one_day"]["direction"] == "up"
+    assert result["three_day"]["direction"] == "down"
+    assert result["conflict"] is True
+    assert result["verdict"] == "opposite"
+
+
+def test_period_comparison_fetch_reuses_five_minute_feed_for_confirmed_volume(monkeypatch):
+    timezone = ZoneInfo("Asia/Seoul")
+    ranges = [
+        pd.date_range(
+            datetime(2026, 8, day, 9, 0, tzinfo=timezone), periods=30, freq="5min",
+        )
+        for day in (19, 20, 21)
+    ]
+    index = ranges[0].append(ranges[1:])
+    close = [100 + i * 0.1 for i in range(len(index))]
+    frame = pd.DataFrame({
+        "Open": [value - 0.1 for value in close],
+        "High": [value + 0.2 for value in close],
+        "Low": [value - 0.2 for value in close],
+        "Close": close,
+        "Volume": [100.0] * (len(index) - 1) + [150.0],
+    }, index=index)
+
+    class FakeTicker:
+        def history(self, **kwargs):
+            return frame
+
+    monkeypatch.setattr(index_module.yf, "Ticker", lambda symbol: FakeTicker())
+    monkeypatch.setattr(
+        index_module, "analyze_score",
+        lambda data, market, period: ((65 if period == "1d" else 60), None),
+    )
+    result = fetch_scalp_period_comparison("TEST-VOLUME-INDEPENDENT", "KRX")
+    assert result["available"] is True
+    assert result["volume_confirmation"]["bar_confirmed"] is True
+    assert result["volume_confirmation"]["recovered"] is True
+    assert result["volume_confirmation"]["interval_minutes"] == 5
+
+
+def test_disclosure_without_time_keeps_same_day_in_cooldown():
+    result = get_krx_disclosure_cooldown(
+        [{"title": "공급계약", "date": "2026.08.24"}],
+        now=datetime(2026, 8, 24, 14, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert result["active"] is True
+    assert result["time_precision"] == "date"
+
+
+def test_volume_recovery_waits_for_current_bar_close():
+    timezone = ZoneInfo("Asia/Seoul")
+    bar_start = datetime(2026, 8, 24, 10, 0, tzinfo=timezone)
+    data = {
+        "Date": [int((bar_start - timedelta(minutes=15 * i)).timestamp()) for i in range(20, -1, -1)],
+        "Volume": [100] * 20 + [120],
+    }
+    pending = assess_confirmed_volume_recovery(
+        data, "3d", "KRX", now=datetime(2026, 8, 24, 10, 10, tzinfo=timezone),
+    )
+    assert pending["bar_confirmed"] is False
+    assert pending["recovered"] is False
+    confirmed = assess_confirmed_volume_recovery(
+        data, "3d", "KRX", now=datetime(2026, 8, 24, 10, 16, tzinfo=timezone),
+    )
+    assert confirmed["bar_confirmed"] is True
+    assert confirmed["recovered"] is True
+
+
+def test_market_calendar_cache_covers_krx_holiday_and_us_early_close():
+    krx = get_market_session_calendar_status(
+        "KRX", datetime(2026, 5, 1, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert krx["is_closed"] is True
+    assert krx["cache_ttl_seconds"] == 21600
+    us = get_market_session_calendar_status(
+        "US", datetime(2026, 11, 27, 14, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    assert us["is_early_close"] is True
+    assert us["early_close_time"] == "13:00"
 
 
 def test_scalp_period_ui_explains_reanalysis_and_no_buy_approval():
@@ -117,6 +460,11 @@ def test_scalp_period_ui_explains_reanalysis_and_no_buy_approval():
     assert "applyScalpPeriodRecommendation()" in HTML
     assert "기간 추천은 매수 승인이 아닙니다." in HTML
     assert "3일 기본값과 동적 RSI만으로 매수하지 마세요." in HTML
+    assert "VI·거래정지 단타 추천 차단" in HTML
+    assert "미국 실적 일정 미확인: 보수적 대기" in HTML
+    assert "미국 공식 달력 일일 교차검증 완료" in HTML
+    assert "호가 스프레드·예상 슬리피지" in HTML
+    assert "거래량 보정:" in HTML
 
 
 def _base_kwargs(market="KRX", symbol="005930.KS", flags=None, signal_confidence=None):

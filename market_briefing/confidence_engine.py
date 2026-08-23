@@ -306,9 +306,11 @@ def get_earnings_proximity(symbol: str) -> Dict[str, Any]:
     """다음 실적 발표일까지 남은 일수 조회 (yfinance calendar). 실패 시 fallback.
 
     Returns:
-        {days_to_earnings, earnings_date?, source, earnings_risk}
+        {days_to_earnings, earnings_date?, earnings_session?, source, earnings_risk}
     """
     out = {"days_to_earnings": None, "earnings_date": None,
+           "earnings_datetime": None, "earnings_session": "unknown",
+           "earnings_session_label": "발표 시각 미확인",
            "source": "none", "earnings_risk": False}
     if not symbol or yf is None:
         return out
@@ -325,8 +327,14 @@ def get_earnings_proximity(symbol: str) -> Dict[str, Any]:
             if ed is not None and not ed.empty:
                 import pandas as _pd
                 now = _pd.Timestamp.now(tz=ed.index.tz) if ed.index.tz else _pd.Timestamp.now()
+                # 장후 발표 다음 거래일까지 차단하려면 발표 직후의 과거 일정도
+                # 잠시 보존해야 한다. 최근 7일 일정이 있으면 우선 사용하고,
+                # 없을 때 다음 예정 일정을 선택한다.
+                recent = [d for d in ed.index if now - _pd.Timedelta(days=7) <= d < now]
                 future = [d for d in ed.index if d >= now]
-                if future:
+                if recent:
+                    next_date = max(recent)
+                elif future:
                     next_date = min(future)
                     out["source"] = "earnings_dates"
         except Exception:
@@ -351,10 +359,26 @@ def get_earnings_proximity(symbol: str) -> Dict[str, Any]:
             import pandas as _pd
             now = _pd.Timestamp.now(tz=getattr(next_date, "tz", None)) \
                 if getattr(next_date, "tz", None) else _pd.Timestamp.now()
-            days = int(math.ceil((next_date - now).total_seconds() / 86400.0))
+            # 시간 차이를 24시간 단위로 올림하면 장 마감 후 실적 발표가 있는
+            # 당일 오전을 D-1로 오판할 수 있다. 현지 달력 날짜 차이를 사용해
+            # 발표 당일 전체를 D-0으로 유지한다.
+            days = int((next_date.date() - now.date()).days)
             out["days_to_earnings"] = days
             out["earnings_date"] = str(next_date.date()) if hasattr(next_date, "date") else str(next_date)
-            out["earnings_risk"] = (0 <= days <= 5)
+            out["earnings_datetime"] = next_date.isoformat() if hasattr(next_date, "isoformat") else str(next_date)
+            hour = int(getattr(next_date, "hour", 0) or 0)
+            minute = int(getattr(next_date, "minute", 0) or 0)
+            if hour == 0 and minute == 0:
+                session, session_label = "unknown", "발표 시각 미확인"
+            elif hour < 9 or (hour == 9 and minute < 30):
+                session, session_label = "before_open", "장전 발표"
+            elif hour >= 16:
+                session, session_label = "after_close", "장후 발표"
+            else:
+                session, session_label = "during_market", "장중 발표"
+            out["earnings_session"] = session
+            out["earnings_session_label"] = session_label
+            out["earnings_risk"] = (-7 <= days <= 5)
     except Exception as e:
         out["error"] = str(e)
     return _cache_set(ck, out, 3600)     # 1시간 캐시

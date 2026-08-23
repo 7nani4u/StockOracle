@@ -869,6 +869,10 @@ def _fetch_krx_security_detail_status(code: str) -> Dict[str, Any]:
         trade_stop = payload.get("tradeStopType") or {}
         trade_name = str(trade_stop.get("name") or "").upper()
         tradable = str(payload.get("tradableStatus") or "").lower()
+        try:
+            vi_state = _kr_surge_vi_state(code, payload)
+        except Exception:
+            vi_state = {"status": "unknown", "label": "VI 상태 미확인", "active": False}
         result.update({
             "available": True,
             "name": payload.get("stockName") or "",
@@ -879,6 +883,7 @@ def _fetch_krx_security_detail_status(code: str) -> Dict[str, Any]:
                 trade_name not in {"", "TRADING", "NORMAL"}
                 or tradable not in {"", "tradable"}
             ),
+            "vi": vi_state,
             "newly_listed": bool(payload.get("newlyListed")),
         })
     except Exception as exc:
@@ -1226,6 +1231,7 @@ def _compose_krx_security_status(
     release_label = str(live_detail.get("halt_release_label") or "해제일 미정")
     release_condition = str(live_detail.get("halt_release_condition") or "")
     release_basis = str(live_detail.get("halt_release_basis") or "정보 없음")
+    vi = live_detail.get("vi") or {"status": "unknown", "label": "VI 상태 미확인", "active": False}
     warnings_list = []
     labels = []
     if delisting:
@@ -1252,6 +1258,7 @@ def _compose_krx_security_status(
         "code": str(code or "").upper(),
         "management": management,
         "trading_halt": trading_halt,
+        "vi": vi,
         "delisting_scheduled": delisting,
         "newly_listed": newly_listed,
         "listed_date": listed_date,
@@ -1959,6 +1966,300 @@ _NASDAQ_TRADING_CALENDAR_URL = "https://www.nasdaqtrader.com/Trader.aspx?id=Cale
 _NASDAQ_HOLIDAY_RULES_URL = (
     "https://listingcenter.nasdaq.com/rulebook/nasdaq/rules/nasdaq-equity-1"
 )
+_KRX_TRADING_CALENDAR_URL = (
+    "https://global.krx.co.kr/contents/GLB/06/0602/0602010201/GLB0602010201T1.jsp"
+)
+_NYSE_TRADING_CALENDAR_URL = "https://www.nyse.com/trade/hours-calendars"
+_NASDAQ_MARKET_ALERT_RSS_URL = (
+    "https://www.nasdaqtrader.com/rss.aspx?categorylist=2%2C6%2C7&feed=currentheadlines"
+)
+
+
+def _parse_official_us_calendar(html: str, provider: str, year: int) -> Dict:
+    """NYSE/Nasdaq Trader 공식 표를 정규화한다."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    full_holidays: Dict[str, str] = {}
+    early_closes: Dict[str, Dict[str, str]] = {}
+    provider_key = str(provider or "").lower()
+    rows = soup.find_all("tr")
+    if provider_key == "nasdaq":
+        for row in rows:
+            cells = [" ".join(cell.get_text(" ", strip=True).split())
+                     for cell in row.find_all(["th", "td"])]
+            if len(cells) < 3:
+                continue
+            parsed = pd.to_datetime(cells[0], errors="coerce")
+            if pd.isna(parsed) or int(pd.Timestamp(parsed).year) != int(year):
+                continue
+            key = pd.Timestamp(parsed).strftime("%Y-%m-%d")
+            status = cells[-1].lower()
+            if "closed" in status:
+                full_holidays[key] = cells[1] or "Nasdaq 휴장"
+            elif "1:00" in status or "early close" in " ".join(cells).lower():
+                early_closes[key] = {"close": "13:00", "label": cells[1] or "Nasdaq 조기 폐장"}
+    else:
+        header_years: List[int] = []
+        for row in rows:
+            cells = [" ".join(cell.get_text(" ", strip=True).split())
+                     for cell in row.find_all(["th", "td"])]
+            if not cells:
+                continue
+            if cells[0].lower() == "holiday":
+                header_years = [int(value) for value in cells[1:] if value.isdigit()]
+                continue
+            if not header_years or len(cells) < 2:
+                continue
+            label = cells[0]
+            for index, cell in enumerate(cells[1:]):
+                if index >= len(header_years) or header_years[index] != int(year):
+                    continue
+                cleaned = re.sub(r"\([^)]*\)|\*+", "", cell).strip()
+                if not cleaned or cleaned.startswith("—"):
+                    continue
+                parsed = pd.to_datetime(f"{cleaned}, {year}", errors="coerce")
+                if not pd.isna(parsed):
+                    full_holidays[pd.Timestamp(parsed).strftime("%Y-%m-%d")] = label
+        text_value = " ".join(soup.get_text(" ", strip=True).split())
+        for match in re.finditer(
+            r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+"
+            r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+"
+            r"\d{1,2},\s+\d{4}", text_value,
+        ):
+            context = text_value[max(0, match.start() - 180):match.end() + 180].lower()
+            parsed = pd.to_datetime(match.group(0), errors="coerce")
+            if pd.isna(parsed) or int(pd.Timestamp(parsed).year) != int(year):
+                continue
+            if "close early" in context or "early at 1:00" in context:
+                key = pd.Timestamp(parsed).strftime("%Y-%m-%d")
+                if key not in full_holidays:
+                    early_closes[key] = {"close": "13:00", "label": "NYSE 공식 조기 폐장"}
+    return {"full_holidays": full_holidays, "early_closes": early_closes}
+
+
+@ttl_cache(86400)
+def _fetch_us_official_calendar_reconciliation(year: int) -> Dict:
+    """NYSE와 Nasdaq Trader 공식 일정을 하루 한 번 교차 대조한다."""
+    sources = {
+        "nyse": _NYSE_TRADING_CALENDAR_URL,
+        "nasdaq": _NASDAQ_TRADING_CALENDAR_URL,
+    }
+
+    def fetch_one(item: Tuple[str, str]) -> Tuple[str, Dict]:
+        name, url = item
+        try:
+            response = requests.get(
+                url, headers={"User-Agent": "Mozilla/5.0 StockOracle/1.0"}, timeout=8,
+            )
+            response.raise_for_status()
+            parsed = _parse_official_us_calendar(response.text, name, int(year))
+            return name, {"ok": True, "url": url, **parsed}
+        except Exception as exc:
+            return name, {"ok": False, "url": url, "error": str(exc),
+                          "full_holidays": {}, "early_closes": {}}
+
+    results: Dict[str, Dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        for name, row in executor.map(fetch_one, sources.items()):
+            results[name] = row
+    nyse = results.get("nyse") or {}
+    nasdaq = results.get("nasdaq") or {}
+    both_ok = bool(nyse.get("ok") and nasdaq.get("ok"))
+    nyse_closed = set((nyse.get("full_holidays") or {}).keys())
+    nasdaq_closed = set((nasdaq.get("full_holidays") or {}).keys())
+    nyse_early = set((nyse.get("early_closes") or {}).keys())
+    nasdaq_early = set((nasdaq.get("early_closes") or {}).keys())
+    return {
+        "verified": both_ok and nyse_closed == nasdaq_closed and nyse_early == nasdaq_early,
+        "sources_ok": both_ok,
+        "checked_at": dt.now().isoformat(),
+        "cache_ttl_seconds": 86400,
+        "full_holidays": dict(nasdaq.get("full_holidays") or nyse.get("full_holidays") or {}),
+        "early_closes": dict(nasdaq.get("early_closes") or nyse.get("early_closes") or {}),
+        "discrepancies": {
+            "closed": sorted(nyse_closed.symmetric_difference(nasdaq_closed)),
+            "early_close": sorted(nyse_early.symmetric_difference(nasdaq_early)),
+        },
+        "sources": results,
+    }
+
+
+@ttl_cache(300)
+def _fetch_nasdaq_market_alert_status(date_key: str) -> Dict:
+    """공식 Nasdaq 경보 RSS에서 전면 휴장·조기 폐장 공지를 5분 캐시한다."""
+    try:
+        response = requests.get(
+            _NASDAQ_MARKET_ALERT_RSS_URL,
+            headers={"User-Agent": "Mozilla/5.0 StockOracle/1.0"}, timeout=6,
+        )
+        response.raise_for_status()
+        feed = feedparser.parse(response.content) if feedparser else None
+        alerts: List[Dict] = []
+        for entry in list(getattr(feed, "entries", []) or [])[:40]:
+            published = str(entry.get("published") or entry.get("updated") or "")
+            parsed = pd.to_datetime(published, errors="coerce", utc=True)
+            if pd.isna(parsed):
+                continue
+            local_date = pd.Timestamp(parsed).tz_convert("America/New_York").date().isoformat()
+            if local_date != str(date_key):
+                continue
+            title = str(entry.get("title") or "")
+            summary = BeautifulSoup(str(entry.get("summary") or ""), "html.parser").get_text(" ", strip=True)
+            text_value = f"{title} {summary}".lower()
+            broad_market = any(term in text_value for term in (
+                "market-wide", "all markets", "u.s. equity market", "nasdaq will close",
+                "nasdaq market will", "market closure", "market closed", "early close",
+            ))
+            if not broad_market:
+                continue
+            alerts.append({"title": title, "published": published, "link": entry.get("link") or ""})
+        combined = " ".join(row["title"].lower() for row in alerts)
+        emergency_closed = bool(alerts and any(term in combined for term in (
+            "market closure", "market closed", "will not open", "close for the remainder",
+        )))
+        early_close = bool(alerts and "early close" in combined)
+        return {
+            "available": True, "checked_at": dt.now().isoformat(), "alerts": alerts,
+            "emergency_closed": emergency_closed, "early_close": early_close,
+            "early_close_time": "13:00" if early_close else "",
+            "source_url": _NASDAQ_MARKET_ALERT_RSS_URL, "cache_ttl_seconds": 300,
+        }
+    except Exception as exc:
+        return {
+            "available": False, "checked_at": dt.now().isoformat(), "alerts": [],
+            "emergency_closed": False, "early_close": False, "error": str(exc),
+            "source_url": _NASDAQ_MARKET_ALERT_RSS_URL, "cache_ttl_seconds": 300,
+        }
+
+
+@ttl_cache(21600)
+def _build_market_calendar_year(market: str, year: int) -> Dict:
+    """공식 규칙을 로컬 연도 달력으로 만들고 6시간 캐시한다."""
+    market_key = "US" if str(market).upper() == "US" else "KRX"
+    year = int(year)
+    full_holidays: Dict[str, str] = {}
+    early_closes: Dict[str, Dict[str, str]] = {}
+    warnings_list: List[str] = []
+    if market_key == "US":
+        holiday_series = _NASDAQ_HOLIDAY_CALENDAR.holidays(
+            start=f"{year}-01-01", end=f"{year}-12-31", return_name=True,
+        )
+        for value, name in holiday_series.items():
+            full_holidays[pd.Timestamp(value).strftime("%Y-%m-%d")] = (
+                _NASDAQ_HOLIDAY_LABELS.get(str(name), str(name))
+            )
+        # NYSE 공식 일정의 반복 조기폐장과 2026~2028 게시 일정을 캐시한다.
+        thanksgiving = next(
+            (pd.Timestamp(value) for value, name in holiday_series.items()
+             if str(name) == "Thanksgiving Day"), None,
+        )
+        if thanksgiving is not None:
+            next_day = thanksgiving + pd.Timedelta(days=1)
+            if next_day.weekday() < 5:
+                early_closes[next_day.strftime("%Y-%m-%d")] = {
+                    "close": "13:00", "label": "추수감사절 다음 날 조기 폐장",
+                }
+        published_early = {
+            2026: {"2026-12-24": "성탄절 전일 조기 폐장"},
+            2027: {},
+            2028: {"2028-07-03": "독립기념일 전일 조기 폐장"},
+        }
+        for date_value, label in published_early.get(year, {}).items():
+            if date_value not in full_holidays:
+                early_closes[date_value] = {"close": "13:00", "label": label}
+        source_url = _NYSE_TRADING_CALENDAR_URL
+    else:
+        try:
+            import holidays as country_holidays
+            for date_value, name in country_holidays.KR(years=[year]).items():
+                full_holidays[date_value.isoformat()] = str(name)
+        except Exception as exc:
+            warnings_list.append(f"대한민국 공휴일 라이브러리 미사용: {exc}")
+        full_holidays[f"{year}-05-01"] = "근로자의 날"
+        # KRX 규칙: 12월 31일이 휴일/토요일이면 그 직전 영업일을 연말 휴장일로 둔다.
+        candidate = datetime.date(year, 12, 31)
+        while candidate.weekday() >= 5 or candidate.isoformat() in full_holidays:
+            candidate -= timedelta(days=1)
+        full_holidays[candidate.isoformat()] = "연말 시장 휴장일"
+        source_url = _KRX_TRADING_CALENDAR_URL
+    return {
+        "market": market_key,
+        "year": year,
+        "full_holidays": full_holidays,
+        "early_closes": early_closes,
+        "generated_at": dt.now().isoformat(),
+        "cache_ttl_seconds": 21600,
+        "source_url": source_url,
+        "warnings": warnings_list,
+    }
+
+
+def get_market_session_calendar_status(market: str, now: dt | None = None) -> Dict:
+    """현재 시장 날짜의 전일 휴장·조기 폐장 상태를 캐시 달력에서 조회한다."""
+    from zoneinfo import ZoneInfo
+
+    market_key = "US" if str(market).upper() == "US" else "KRX"
+    timezone = ZoneInfo("America/New_York" if market_key == "US" else "Asia/Seoul")
+    local_now = now or dt.now(timezone)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=timezone)
+    else:
+        local_now = local_now.astimezone(timezone)
+    calendar_data = _build_market_calendar_year(market_key, local_now.year)
+    date_key = local_now.date().isoformat()
+    holiday_label = (calendar_data.get("full_holidays") or {}).get(date_key)
+    early = (calendar_data.get("early_closes") or {}).get(date_key) or {}
+    official_reconciliation: Dict = {}
+    market_alert: Dict = {}
+    if market_key == "US":
+        # 콜드 스타트에서도 두 공식 확인을 병렬 실행해 최대 지연을 합산하지 않는다.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            reconciliation_future = executor.submit(
+                _fetch_us_official_calendar_reconciliation, local_now.year,
+            )
+            alert_future = executor.submit(_fetch_nasdaq_market_alert_status, date_key)
+            official_reconciliation = reconciliation_future.result()
+            market_alert = alert_future.result()
+        official_holiday = (official_reconciliation.get("full_holidays") or {}).get(date_key)
+        official_early = (official_reconciliation.get("early_closes") or {}).get(date_key) or {}
+        if official_holiday:
+            holiday_label = official_holiday
+        if official_early:
+            early = official_early
+        if market_alert.get("emergency_closed"):
+            holiday_label = "Nasdaq 공식 긴급 휴장 경보"
+        if market_alert.get("early_close"):
+            early = {
+                "close": market_alert.get("early_close_time") or "13:00",
+                "label": "Nasdaq 공식 긴급 조기 폐장 경보",
+            }
+    weekend = local_now.weekday() >= 5
+    warnings_list = list(calendar_data.get("warnings") or [])
+    if market_key == "US" and not official_reconciliation.get("verified"):
+        warnings_list.append("NYSE·Nasdaq 공식 캘린더 일일 교차검증 미완료 또는 불일치")
+    if market_key == "US" and not market_alert.get("available"):
+        warnings_list.append("Nasdaq 공식 긴급 경보 확인 실패")
+    return {
+        "market": market_key,
+        "date": date_key,
+        "timezone": str(timezone),
+        "is_closed": bool(weekend or holiday_label),
+        "is_weekend": weekend,
+        "holiday_label": holiday_label or ("주말" if weekend else ""),
+        "is_early_close": bool(early),
+        "early_close_time": early.get("close") or "",
+        "early_close_label": early.get("label") or "",
+        "calendar_generated_at": calendar_data.get("generated_at"),
+        "cache_ttl_seconds": calendar_data.get("cache_ttl_seconds"),
+        "source_url": calendar_data.get("source_url"),
+        "warnings": warnings_list,
+        "official_calendar_verified": (
+            bool(official_reconciliation.get("verified")) if market_key == "US" else True
+        ),
+        "official_calendar_checked_at": official_reconciliation.get("checked_at"),
+        "official_calendar_discrepancies": official_reconciliation.get("discrepancies") or {},
+        "official_calendar_sources": official_reconciliation.get("sources") or {},
+        "market_alert": market_alert,
+    }
 
 
 def _project_nasdaq_session_date(last_session_date: str, sessions_needed: int) -> Dict:
@@ -4915,16 +5216,28 @@ def _kr_surge_vi_state(code: str, row: Dict[str, Any]) -> Dict[str, Any]:
     with _KR_SURGE_VI_LOCK:
         previous = _KR_SURGE_VI_OBSERVATIONS.get(code) or {}
         released_at = previous.get("released_at")
+        observed_date = observed_at.date().isoformat()
+        activation_times = list(previous.get("activation_times") or [])
+        if previous.get("observed_date") != observed_date:
+            activation_times = []
+            released_at = None
         transition = None
         if vi_active and not previous.get("active"):
             transition = "발동"
+            activation_times.append(observed_at.isoformat())
         elif not vi_active and previous.get("active"):
             transition = "해제"
             released_at = observed_at.isoformat()
+        activation_count_today = len(activation_times)
+        day_blocked = activation_count_today >= 2
         _KR_SURGE_VI_OBSERVATIONS[code] = {
             "active": vi_active,
             "released_at": released_at,
             "observed_at": observed_at.isoformat(),
+            "observed_date": observed_date,
+            "activation_times": activation_times,
+            "activation_count_today": activation_count_today,
+            "day_blocked": day_blocked,
         }
     seconds_since_release = None
     if released_at:
@@ -4941,6 +5254,10 @@ def _kr_surge_vi_state(code: str, row: Dict[str, Any]) -> Dict[str, Any]:
         "released_at": released_at,
         "seconds_since_release": seconds_since_release,
         "cooldown_active": cooldown,
+        "activation_count_today": activation_count_today,
+        "activation_times": activation_times,
+        "day_blocked": day_blocked,
+        "day_block_threshold": 2,
         "provider_status": raw_name or raw_code or "미제공",
         "provider_normal": normal_trading,
         "observed_at": observed_at.isoformat(),
@@ -12845,6 +13162,484 @@ def build_prediction_outlook(
     }
 
 
+def get_krx_disclosure_cooldown(
+    disclosures: List[Dict] | None,
+    now: dt | None = None,
+    cooldown_minutes: int = 60,
+) -> Dict:
+    """KRX 공시 직후에는 1일봉 추천을 막고 3일 관찰 창을 유지한다."""
+    from zoneinfo import ZoneInfo
+
+    timezone = ZoneInfo("Asia/Seoul")
+    local_now = now or dt.now(timezone)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=timezone)
+    else:
+        local_now = local_now.astimezone(timezone)
+    latest: Dict | None = None
+    for row in disclosures or []:
+        raw = str(row.get("published") or row.get("date") or row.get("published_at") or "").strip()
+        if not raw:
+            continue
+        normalized = raw.replace("년", "-").replace("월", "-").replace("일", " ")
+        has_time = bool(re.search(r"\d{1,2}:\d{2}", normalized))
+        parsed = pd.to_datetime(normalized, errors="coerce")
+        if pd.isna(parsed):
+            continue
+        timestamp = pd.Timestamp(parsed)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize(timezone)
+        else:
+            timestamp = timestamp.tz_convert(timezone)
+        age_minutes = (pd.Timestamp(local_now) - timestamp).total_seconds() / 60.0
+        same_day_without_time = not has_time and timestamp.date() == local_now.date()
+        active = same_day_without_time or (0 <= age_minutes <= cooldown_minutes)
+        candidate = {
+            "active": active,
+            "title": str(row.get("title") or "공시"),
+            "published_at": timestamp.isoformat(),
+            "minutes_since": round(age_minutes, 1),
+            "time_precision": "minute" if has_time else "date",
+            "cooldown_minutes": cooldown_minutes,
+            "reason": (
+                "공시 시각 미제공으로 당일 전체를 보수적 관찰 구간으로 적용"
+                if same_day_without_time else
+                f"공시 발표 후 {max(0.0, age_minutes):.0f}분 · {cooldown_minutes}분 안정화 대기"
+                if active else "공시 안정화 시간 경과"
+            ),
+        }
+        if latest is None or timestamp > pd.Timestamp(latest["published_at"]):
+            latest = candidate
+    return latest or {
+        "active": False, "title": "", "published_at": None,
+        "minutes_since": None, "time_precision": "none",
+        "cooldown_minutes": cooldown_minutes, "reason": "최근 공시 시각 미확보",
+    }
+
+
+def calibrate_volume_recovery_threshold(
+    data: Dict | None,
+    default_ratio: float = 1.10,
+    forward_bars: int = 3,
+) -> Dict:
+    """종목별 과거 5분봉 분포를 워크포워드 방식으로 보정한다.
+
+    앞 70% 구간에서 후보 임계치를 만들고 뒤 30% 구간의 이후 3봉 수익률로
+    선택한다. 표본 부족 시 고정 1.10배로 되돌아간다.
+    """
+    closes = list((data or {}).get("Close") or [])
+    volumes = list((data or {}).get("Volume") or [])
+    length = min(len(closes), len(volumes))
+    observations: List[Tuple[float, float]] = []
+    for index in range(20, max(20, length - max(1, int(forward_bars)))):
+        try:
+            current_volume = float(volumes[index])
+            previous = [float(value) for value in volumes[index - 20:index]
+                        if value is not None and np.isfinite(float(value)) and float(value) >= 0]
+            entry = float(closes[index])
+            future = float(closes[index + int(forward_bars)])
+        except (TypeError, ValueError, IndexError):
+            continue
+        average = float(np.mean(previous)) if previous else 0.0
+        if average <= 0 or entry <= 0 or not np.isfinite(current_volume) or not np.isfinite(future):
+            continue
+        observations.append((current_volume / average, (future / entry - 1.0) * 100.0))
+    if len(observations) < 80:
+        return {
+            "available": False, "selected_ratio": round(float(default_ratio), 3),
+            "default_ratio": float(default_ratio), "observations": len(observations),
+            "reason": "종목별 5분봉 백테스트 표본 부족으로 기본 1.10배 적용",
+        }
+    split = max(40, int(len(observations) * 0.70))
+    train = observations[:split]
+    validation = observations[split:]
+    train_ratios = np.asarray([row[0] for row in train], dtype=float)
+    candidates = sorted({
+        round(float(np.clip(np.quantile(train_ratios, quantile), 1.05, 1.50)), 3)
+        for quantile in (0.50, 0.60, 0.70, 0.80)
+    } | {round(float(default_ratio), 3)})
+    results: List[Dict] = []
+    for threshold in candidates:
+        selected = [forward_return for ratio, forward_return in validation if ratio >= threshold]
+        if len(selected) < 8:
+            continue
+        wins = sum(value > 0 for value in selected)
+        shrunken_win_rate = (wins + 4.0) / (len(selected) + 8.0)
+        average_return = float(np.mean(selected))
+        score = shrunken_win_rate + float(np.clip(average_return / 10.0, -0.05, 0.05))
+        results.append({
+            "threshold": threshold, "signals": len(selected),
+            "win_rate_pct": round(wins / len(selected) * 100.0, 1),
+            "avg_forward_return_pct": round(average_return, 4),
+            "selection_score": round(score, 5),
+        })
+    if not results:
+        return {
+            "available": False, "selected_ratio": round(float(default_ratio), 3),
+            "default_ratio": float(default_ratio), "observations": len(observations),
+            "train_observations": len(train), "validation_observations": len(validation),
+            "reason": "검증 구간 신호 표본 부족으로 기본 1.10배 적용",
+        }
+    best = max(results, key=lambda row: (row["selection_score"], row["signals"], -abs(row["threshold"] - default_ratio)))
+    if best["win_rate_pct"] < 52.0 or best["avg_forward_return_pct"] <= 0:
+        return {
+            "available": False, "selected_ratio": round(float(default_ratio), 3),
+            "default_ratio": float(default_ratio), "observations": len(observations),
+            "train_observations": len(train), "validation_observations": len(validation),
+            "forward_bars": int(forward_bars), "best": best, "candidates": results,
+            "method": "5분봉 70/30 워크포워드 · 이후 3봉 방향",
+            "reason": (
+                f"종목별 후보 승률 {best['win_rate_pct']:.1f}%·평균수익 "
+                f"{best['avg_forward_return_pct']:.3f}%로 개선 근거 부족 · 기본 1.10배 유지"
+            ),
+        }
+    return {
+        "available": True, "selected_ratio": best["threshold"],
+        "default_ratio": float(default_ratio), "observations": len(observations),
+        "train_observations": len(train), "validation_observations": len(validation),
+        "forward_bars": int(forward_bars), "best": best, "candidates": results,
+        "method": "5분봉 70/30 워크포워드 · 이후 3봉 방향",
+        "reason": (
+            f"종목별 백테스트 임계치 {best['threshold']:.2f}배 · "
+            f"검증 {best['signals']}건 승률 {best['win_rate_pct']:.1f}%"
+        ),
+    }
+
+
+def assess_confirmed_volume_recovery(
+    data: Dict | None,
+    period: str,
+    market: str,
+    now: dt | None = None,
+    recovery_ratio: float = 1.10,
+) -> Dict:
+    """현재 봉 종료 후에만 최근 20봉 대비 거래량 회복을 확정한다."""
+    from zoneinfo import ZoneInfo
+
+    interval_minutes = {"1d": 5, "3d": 15}.get(str(period))
+    if not interval_minutes:
+        return {
+            "available": False, "bar_confirmed": False, "recovered": False,
+            "reason": "단타 거래량 확정은 1일·3일 분석에서만 판정",
+            "required_ratio": recovery_ratio,
+        }
+    dates = list((data or {}).get("Date") or [])
+    volumes = list((data or {}).get("Volume") or [])
+    if len(dates) < 2 or len(volumes) < 2:
+        return {
+            "available": False, "bar_confirmed": False, "recovered": False,
+            "reason": "봉 시각 또는 거래량 표본 부족", "required_ratio": recovery_ratio,
+        }
+    timezone = ZoneInfo("America/New_York" if str(market).upper() == "US" else "Asia/Seoul")
+    local_now = now or dt.now(timezone)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=timezone)
+    else:
+        local_now = local_now.astimezone(timezone)
+    last_raw = dates[-1]
+    try:
+        if isinstance(last_raw, (int, float)) or str(last_raw).isdigit():
+            last_start = pd.Timestamp(int(last_raw), unit="s", tz="UTC").tz_convert(timezone)
+        else:
+            last_start = pd.Timestamp(last_raw)
+            if last_start.tzinfo is None:
+                last_start = last_start.tz_localize(timezone)
+            else:
+                last_start = last_start.tz_convert(timezone)
+    except (TypeError, ValueError, OverflowError):
+        return {
+            "available": False, "bar_confirmed": False, "recovered": False,
+            "reason": "마지막 봉 시각 해석 실패", "required_ratio": recovery_ratio,
+        }
+    bar_end = last_start + pd.Timedelta(minutes=interval_minutes)
+    bar_confirmed = pd.Timestamp(local_now) >= bar_end
+    previous = []
+    for value in volumes[-21:-1]:
+        try:
+            number = float(value)
+            if np.isfinite(number) and number >= 0:
+                previous.append(number)
+        except (TypeError, ValueError):
+            continue
+    try:
+        current_volume = float(volumes[-1])
+    except (TypeError, ValueError):
+        current_volume = 0.0
+    average_volume = float(np.mean(previous)) if previous else 0.0
+    ratio = current_volume / average_volume if average_volume > 0 else 0.0
+    recovered = bool(bar_confirmed and average_volume > 0 and ratio >= recovery_ratio)
+    return {
+        "available": average_volume > 0,
+        "period": str(period),
+        "interval_minutes": interval_minutes,
+        "bar_start": last_start.isoformat(),
+        "bar_end": bar_end.isoformat(),
+        "bar_confirmed": bar_confirmed,
+        "current_volume": round(current_volume, 2),
+        "previous_20_average": round(average_volume, 2),
+        "ratio": round(ratio, 3),
+        "required_ratio": recovery_ratio,
+        "recovered": recovered,
+        "reason": (
+            f"확정 봉 거래량 {ratio:.2f}배 · 회복 확인"
+            if recovered else
+            f"현재 봉은 {bar_end.strftime('%H:%M')} 종료 전 · 거래량 판정 대기"
+            if not bar_confirmed else
+            f"확정 봉 거래량 {ratio:.2f}배 · {recovery_ratio:.2f}배 미달"
+        ),
+    }
+
+
+@ttl_cache(30)
+def fetch_execution_quality(
+    ticker: str,
+    market: str,
+    last_price: float,
+    average_daily_turnover: float,
+    atr_pct: float,
+) -> Dict:
+    """실제 최우선 호가 스프레드와 보수적 예상 슬리피지를 계산한다."""
+    market_key = "US" if str(market).upper() == "US" else "KRX"
+    limits = {
+        "KRX": {"spread": 0.25, "slippage": 0.35, "notional": 10_000_000.0, "currency": "KRW"},
+        "US": {"spread": 0.20, "slippage": 0.30, "notional": 10_000.0, "currency": "USD"},
+    }[market_key]
+    try:
+        info = yf.Ticker(str(ticker)).info or {}
+    except Exception as exc:
+        return {
+            "available": False, "quality_ok": False, "reason": f"실시간 호가 조회 실패: {exc}",
+            "provider": "Yahoo Finance", **limits,
+        }
+    try:
+        bid = float(info.get("bid") or 0)
+        ask = float(info.get("ask") or 0)
+        bid_size = float(info.get("bidSize") or 0)
+        ask_size = float(info.get("askSize") or 0)
+    except (TypeError, ValueError):
+        bid = ask = bid_size = ask_size = 0.0
+    valid_quote = bool(bid > 0 and ask >= bid)
+    midpoint = (bid + ask) / 2.0 if valid_quote else float(last_price or 0)
+    spread_pct = (ask - bid) / midpoint * 100.0 if valid_quote and midpoint > 0 else None
+    quote_epoch = info.get("regularMarketTime")
+    quote_age_seconds = None
+    if quote_epoch:
+        try:
+            quote_age_seconds = max(0, int(time.time() - float(quote_epoch)))
+        except (TypeError, ValueError):
+            quote_age_seconds = None
+    quote_fresh = quote_age_seconds is not None and quote_age_seconds <= 900
+    participation = (
+        limits["notional"] / float(average_daily_turnover)
+        if average_daily_turnover and average_daily_turnover > 0 else 1.0
+    )
+    impact_pct = max(0.0, float(atr_pct or 0)) * math.sqrt(max(0.0, participation)) * 0.5
+    estimated_slippage_pct = (
+        float(spread_pct) / 2.0 + impact_pct if spread_pct is not None else None
+    )
+    available = bool(valid_quote and quote_fresh)
+    spread_ok = bool(available and spread_pct is not None and spread_pct <= limits["spread"])
+    slippage_ok = bool(
+        available and estimated_slippage_pct is not None
+        and estimated_slippage_pct <= limits["slippage"]
+    )
+    quality_ok = bool(spread_ok and slippage_ok)
+    if not valid_quote:
+        reason = "최우선 매수·매도호가 미확보"
+    elif not quote_fresh:
+        reason = f"호가 시세가 {quote_age_seconds if quote_age_seconds is not None else '미상'}초 경과해 신선도 기준 초과"
+    elif not spread_ok:
+        reason = f"호가 스프레드 {spread_pct:.3f}% · 허용 {limits['spread']:.2f}% 초과"
+    elif not slippage_ok:
+        reason = f"예상 슬리피지 {estimated_slippage_pct:.3f}% · 허용 {limits['slippage']:.2f}% 초과"
+    else:
+        reason = f"스프레드 {spread_pct:.3f}% · 예상 슬리피지 {estimated_slippage_pct:.3f}% 통과"
+    return {
+        "available": available, "quality_ok": quality_ok,
+        "spread_ok": spread_ok, "slippage_ok": slippage_ok,
+        "bid": bid if valid_quote else None, "ask": ask if valid_quote else None,
+        "bid_size": bid_size, "ask_size": ask_size,
+        "midpoint": round(midpoint, 6) if midpoint else None,
+        "spread_pct": round(spread_pct, 4) if spread_pct is not None else None,
+        "estimated_slippage_pct": (
+            round(estimated_slippage_pct, 4) if estimated_slippage_pct is not None else None
+        ),
+        "market_impact_pct": round(impact_pct, 4),
+        "assumed_order_notional": limits["notional"],
+        "average_daily_turnover": round(float(average_daily_turnover or 0), 2),
+        "participation_rate": round(participation, 8),
+        "quote_age_seconds": quote_age_seconds, "quote_fresh": quote_fresh,
+        "spread_limit_pct": limits["spread"], "slippage_limit_pct": limits["slippage"],
+        "currency": limits["currency"], "provider": "Yahoo Finance 최우선 호가",
+        "reason": reason,
+        "actual_slippage_note": "실제 체결 슬리피지는 주문 체결 후에만 확정되며, 여기서는 실시간 호가 기반 예상값을 사용합니다.",
+    }
+
+
+def _average_recent_turnover(data: Dict | None, bars: int = 20) -> float:
+    closes = list((data or {}).get("Close") or [])
+    volumes = list((data or {}).get("Volume") or [])
+    values: List[float] = []
+    for close_value, volume_value in zip(closes[-bars:], volumes[-bars:]):
+        try:
+            close_num, volume_num = float(close_value), float(volume_value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(close_num) and np.isfinite(volume_num) and close_num > 0 and volume_num > 0:
+            values.append(close_num * volume_num)
+    return float(np.mean(values)) if values else 0.0
+
+
+def get_us_earnings_recommendation_block(
+    earnings: Dict | None,
+    now: dt | None = None,
+) -> Dict:
+    """장전은 발표 당일, 장후·시각미상은 다음 거래일까지 차단한다."""
+    from zoneinfo import ZoneInfo
+
+    timezone = ZoneInfo("America/New_York")
+    local_now = now or dt.now(timezone)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=timezone)
+    else:
+        local_now = local_now.astimezone(timezone)
+    row = earnings or {}
+    raw_date = row.get("earnings_date")
+    parsed = pd.to_datetime(raw_date, errors="coerce")
+    if pd.isna(parsed):
+        return {
+            "available": False, "active": False, "earnings_date": None,
+            "earnings_session": row.get("earnings_session") or "unknown",
+            "reason": "실적 발표일·세션 미확인",
+        }
+    event_date = pd.Timestamp(parsed).date().isoformat()
+    session = str(row.get("earnings_session") or "unknown")
+    session_label = str(row.get("earnings_session_label") or {
+        "before_open": "장전 발표", "after_close": "장후 발표",
+        "during_market": "장중 발표", "unknown": "발표 시각 미확인",
+    }.get(session, "발표 시각 미확인"))
+    next_session = _project_nasdaq_session_date(event_date, 1).get("date")
+    block_dates = [event_date]
+    if session in {"after_close", "unknown", "during_market"} and next_session:
+        block_dates.append(str(next_session))
+    active = local_now.date().isoformat() in set(block_dates)
+    if session == "before_open":
+        policy = "발표 당일 정규장 차단"
+    else:
+        policy = f"발표 당일과 다음 거래일({next_session}) 차단"
+    return {
+        "available": True, "active": active, "earnings_date": event_date,
+        "earnings_session": session, "earnings_session_label": session_label,
+        "next_trading_date": next_session, "block_dates": block_dates,
+        "policy": policy,
+        "reason": f"미국 실적 {session_label} · {policy}",
+    }
+
+
+def compare_scalp_period_signals(one_day: Dict | None, three_day: Dict | None, market: str) -> Dict:
+    """동일 원천시계열의 1일·3일 기술 점수를 비교해 반대 신호를 탐지한다."""
+    rows: Dict[str, Dict] = {}
+    for period, data, label in (("1d", one_day, "1일·5분봉"), ("3d", three_day, "3일·15분봉")):
+        closes = list((data or {}).get("Close") or [])
+        if len(closes) < 20:
+            rows[period] = {"available": False, "label": label, "bars": len(closes)}
+            continue
+        try:
+            score, *_ = analyze_score(data, market=market, period=period)
+            score = float(score)
+        except Exception as exc:
+            rows[period] = {"available": False, "label": label, "bars": len(closes), "error": str(exc)}
+            continue
+        direction = "up" if score >= 58 else "down" if score <= 42 else "neutral"
+        rows[period] = {
+            "available": True, "label": label, "bars": len(closes),
+            "score": round(score, 1), "direction": direction,
+            "direction_label": {"up": "상승", "down": "하락", "neutral": "중립"}[direction],
+        }
+    available = all(rows.get(period, {}).get("available") for period in ("1d", "3d"))
+    directions = {rows.get(period, {}).get("direction") for period in ("1d", "3d")}
+    conflict = available and directions == {"up", "down"}
+    aligned = available and not conflict and len(directions) == 1
+    return {
+        "available": available,
+        "one_day": rows.get("1d") or {},
+        "three_day": rows.get("3d") or {},
+        "conflict": conflict,
+        "aligned": aligned,
+        "verdict": "opposite" if conflict else "aligned" if aligned else "mixed" if available else "unavailable",
+        "verdict_label": "1일·3일 반대 신호" if conflict else "1일·3일 일치" if aligned else "1일·3일 혼조" if available else "1일·3일 비교 불가",
+    }
+
+
+def _indicator_frame_to_dict(frame: pd.DataFrame, market: str) -> Dict:
+    enriched = add_indicators(frame.copy(), market=market)
+    enriched = enriched.dropna(subset=["Close"])
+    result = enriched.where(pd.notna(enriched), other=None).to_dict(orient="list")
+    result["Date"] = [int(pd.Timestamp(value).timestamp()) for value in enriched.index]
+    return result
+
+
+@ttl_cache(90)
+def fetch_scalp_period_comparison(ticker: str, market: str) -> Dict:
+    """20일 5분봉 한 번으로 기간 비교와 종목별 거래량 보정을 수행한다."""
+    symbol = str(ticker or "").strip().upper()
+    candidates = [symbol]
+    if market == "KRX" and symbol.endswith(".KS"):
+        candidates.append(symbol[:-3] + ".KQ")
+    frame = pd.DataFrame()
+    provider_symbol = symbol
+    error = ""
+    for candidate in candidates:
+        try:
+            frame = yf.Ticker(candidate).history(
+                period="20d", interval="5m", auto_adjust=True, timeout=12,
+            )
+            if frame is not None and not frame.empty:
+                provider_symbol = candidate
+                break
+        except Exception as exc:
+            error = str(exc)
+    if frame is None or frame.empty:
+        return {"available": False, "verdict": "unavailable", "verdict_label": "1일·3일 비교 불가", "error": error or "5분봉 데이터 없음"}
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = [column[0] if isinstance(column, tuple) else column for column in frame.columns]
+    frame.columns = [column.capitalize() if str(column).lower() in {"open", "high", "low", "close", "volume"} else column for column in frame.columns]
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if not required.issubset(frame.columns):
+        return {"available": False, "verdict": "unavailable", "verdict_label": "1일·3일 비교 불가", "error": "OHLCV 컬럼 부족"}
+    frame = frame.sort_index()
+    unique_dates = list(dict.fromkeys(frame.index.date))
+    if not unique_dates:
+        return {"available": False, "verdict": "unavailable", "verdict_label": "1일·3일 비교 불가", "error": "거래일 없음"}
+    enriched_5m = _indicator_frame_to_dict(frame, market)
+    one_mask = [pd.Timestamp(value, unit="s", tz="UTC").date() == unique_dates[-1] for value in enriched_5m["Date"]]
+    one_day = {
+        key: [value for value, keep in zip(values, one_mask) if keep]
+        for key, values in enriched_5m.items() if isinstance(values, list) and len(values) == len(one_mask)
+    }
+    resampled = frame.resample("15min", origin="start_day", label="left", closed="left").agg({
+        "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum",
+    }).dropna(subset=["Open", "High", "Low", "Close"])
+    enriched_15m = _indicator_frame_to_dict(resampled, market)
+    target_dates = set(unique_dates[-3:])
+    three_mask = [pd.Timestamp(value, unit="s", tz="UTC").date() in target_dates for value in enriched_15m["Date"]]
+    three_day = {
+        key: [value for value, keep in zip(values, three_mask) if keep]
+        for key, values in enriched_15m.items() if isinstance(values, list) and len(values) == len(three_mask)
+    }
+    result = compare_scalp_period_signals(one_day, three_day, market)
+    # 사용자가 1개월·1년 등을 골라도 단타 거래량 판정은 독립된 최신 5분봉을
+    # 사용한다. 진행 중인 마지막 봉의 누적 거래량을 확정치로 오인하지 않는다.
+    volume_calibration = calibrate_volume_recovery_threshold(enriched_5m)
+    result["volume_confirmation"] = assess_confirmed_volume_recovery(
+        one_day, "1d", market,
+        recovery_ratio=float(volume_calibration.get("selected_ratio") or 1.10),
+    )
+    result["volume_confirmation"]["calibration"] = volume_calibration
+    result.update({"provider": "Yahoo Finance 5분봉", "symbol": provider_symbol, "cache_ttl_seconds": 90})
+    return result
+
+
 def recommend_scalp_analysis_period(
     market: str,
     daily_data: Dict | None,
@@ -12853,12 +13648,19 @@ def recommend_scalp_analysis_period(
     selected_period: str = "3d",
     session_name: str = "",
     now: dt | None = None,
+    security_status: Dict | None = None,
+    days_to_earnings: int | None = None,
+    earnings_context: Dict | None = None,
+    disclosures: List[Dict] | None = None,
+    period_comparison: Dict | None = None,
+    volume_confirmation: Dict | None = None,
+    execution_quality: Dict | None = None,
 ) -> Dict:
     """장 경과시간·20일 평균 거래대금·ATR로 단타용 1일/3일을 추천한다.
 
-    추천은 분석 해상도 선택용 휴리스틱이며 매수 승인 신호가 아니다. 휴장일과
-    조기 폐장은 외부 거래소 달력을 호출하지 않으므로 실제 세션 응답을 함께
-    확인하게 하고, 불명확한 경우에는 보수적으로 3일·15분봉을 반환한다.
+    추천은 분석 해상도 선택용 휴리스틱이며 매수 승인 신호가 아니다. 휴장·
+    조기 폐장, VI·거래정지, 실적 당일, 공시 직후, 1일·3일 반대 신호를
+    확인하고 불명확한 경우에는 보수적으로 3일·15분봉을 반환한다.
     """
     from zoneinfo import ZoneInfo
 
@@ -12886,14 +13688,24 @@ def recommend_scalp_analysis_period(
     else:
         local_now = local_now.astimezone(timezone)
 
+    calendar_status = get_market_session_calendar_status(market_key, local_now)
+
     minute_of_day = local_now.hour * 60 + local_now.minute
     open_minute = config["open"][0] * 60 + config["open"][1]
     close_minute = config["close"][0] * 60 + config["close"][1]
+    if calendar_status.get("is_early_close"):
+        try:
+            close_hour, close_value = str(calendar_status["early_close_time"]).split(":", 1)
+            close_minute = int(close_hour) * 60 + int(close_value)
+        except (TypeError, ValueError):
+            pass
     elapsed = minute_of_day - open_minute
-    weekday = local_now.weekday() < 5
+    weekday = local_now.weekday() < 5 and not calendar_status.get("is_closed")
     in_regular_clock = weekday and open_minute <= minute_of_day < close_minute
 
-    if not weekday:
+    if calendar_status.get("is_closed"):
+        phase_key, phase_label = "closed", f"휴장: {calendar_status.get('holiday_label') or '거래소 휴장'}"
+    elif not weekday:
         phase_key, phase_label = "closed", "주말·휴장 가능 시간"
     elif minute_of_day < open_minute:
         phase_key, phase_label = "pre_open", "정규장 시작 전"
@@ -12916,18 +13728,7 @@ def recommend_scalp_analysis_period(
         phase_key = "reported_non_regular"
         phase_label = f"실제 세션 응답: {reported_session}"
 
-    closes = list((daily_data or {}).get("Close") or [])
-    volumes = list((daily_data or {}).get("Volume") or [])
-    turnovers: list[float] = []
-    for close_value, volume_value in zip(closes[-20:], volumes[-20:]):
-        try:
-            close_num = float(close_value)
-            volume_num = float(volume_value)
-        except (TypeError, ValueError):
-            continue
-        if np.isfinite(close_num) and np.isfinite(volume_num) and close_num > 0 and volume_num > 0:
-            turnovers.append(close_num * volume_num)
-    average_turnover = float(np.mean(turnovers)) if turnovers else 0.0
+    average_turnover = _average_recent_turnover(daily_data)
     liquidity_ok = average_turnover >= config["turnover_min"]
     atr_pct = float(atr) / float(last_price) * 100.0 if last_price and atr else 0.0
     atr_ok = config["atr_min"] <= atr_pct <= config["atr_max"]
@@ -12935,7 +13736,7 @@ def recommend_scalp_analysis_period(
     blockers: list[str] = []
     if phase_key != "active":
         blockers.append(f"{phase_label}: 3일 흐름으로 개장·마감 노이즈 완충")
-    if not turnovers:
+    if average_turnover <= 0:
         blockers.append("최근 20일 거래대금 데이터 미확보")
     elif not liquidity_ok:
         blockers.append(
@@ -12948,7 +13749,88 @@ def recommend_scalp_analysis_period(
     elif atr_pct > config["atr_max"]:
         blockers.append(f"ATR {atr_pct:.2f}%로 {market_key} 단타 노이즈 위험이 큼")
 
-    recommend_one_day = in_regular_clock and phase_key == "active" and liquidity_ok and atr_ok
+    security = security_status or {}
+    vi = security.get("vi") or {}
+    vi_blocked = bool(
+        security.get("trading_halt")
+        or vi.get("active")
+        or vi.get("cooldown_active")
+        or vi.get("day_blocked")
+        or str(vi.get("status") or "") in {"active", "released"}
+    )
+    vi_check_available = bool(
+        market_key != "KRX"
+        or str(vi.get("status") or "").lower() not in {"", "unknown"}
+    )
+    earnings_row = dict(earnings_context or {})
+    earnings_block = (
+        get_us_earnings_recommendation_block(earnings_row, now=local_now)
+        if market_key == "US" and earnings_row else
+        {"available": False, "active": False, "reason": "실적 세션 미확인"}
+    )
+    earnings_today = bool(earnings_block.get("active"))
+    earnings_check_available = bool(
+        market_key != "US" or earnings_block.get("available") or days_to_earnings is not None
+    )
+    try:
+        earnings_today = earnings_today or (market_key == "US" and int(days_to_earnings) == 0)
+    except (TypeError, ValueError):
+        pass
+    disclosure_cooldown = (
+        get_krx_disclosure_cooldown(disclosures, now=local_now)
+        if market_key == "KRX" else
+        {"active": False, "reason": "KRX 종목 아님"}
+    )
+    comparison = period_comparison or {
+        "available": False, "conflict": False,
+        "verdict": "unavailable", "verdict_label": "1일·3일 비교 불가",
+    }
+    confirmed_volume = volume_confirmation or {
+        "available": False, "bar_confirmed": False, "recovered": False,
+        "reason": "거래량 확정 데이터 미확보",
+    }
+    execution = execution_quality or {
+        "available": False, "quality_ok": False,
+        "reason": "최우선 호가·예상 슬리피지 데이터 미확보",
+    }
+    force_three_day_reasons: list[str] = []
+    entry_blockers: list[str] = []
+    if calendar_status.get("is_closed"):
+        force_three_day_reasons.append(f"거래소 휴장: {calendar_status.get('holiday_label') or '휴장일'}")
+    if market_key == "US" and not calendar_status.get("official_calendar_verified"):
+        force_three_day_reasons.append("NYSE·Nasdaq 공식 캘린더 일일 교차검증 미완료: 3일 관찰 유지")
+    if vi_blocked:
+        vi_label = vi.get("label") or ("거래정지" if security.get("trading_halt") else "VI 상태")
+        force_three_day_reasons.append(f"{vi_label}: 단타 추천 전체 차단")
+    elif not vi_check_available:
+        force_three_day_reasons.append("VI·거래정지 실시간 상태 미확인: 3일 관찰 유지")
+    if earnings_block.get("active"):
+        force_three_day_reasons.append(earnings_block.get("reason") or "미국 실적 발표 차단 구간")
+    elif earnings_today:
+        force_three_day_reasons.append("미국 실적 발표 당일: 1일·5분봉 추천 차단")
+    elif not earnings_check_available:
+        force_three_day_reasons.append("미국 실적 일정 미확인: 1일 추천 보수적 차단")
+    if disclosure_cooldown.get("active"):
+        force_three_day_reasons.append(
+            f"KRX 공시 안정화: {disclosure_cooldown.get('reason') or '공시 직후'}"
+        )
+    if comparison.get("conflict"):
+        force_three_day_reasons.append("1일 상승·3일 하락 또는 반대 신호: 매수 대기")
+    elif not comparison.get("available"):
+        force_three_day_reasons.append("1일·3일 자동 비교 불가: 3일 관찰 유지")
+    if not confirmed_volume.get("bar_confirmed"):
+        entry_blockers.append("현재 봉 미확정: 거래량 회복 판정 대기")
+    elif not confirmed_volume.get("recovered"):
+        entry_blockers.append(confirmed_volume.get("reason") or "확정 봉 거래량 회복 미달")
+    if not execution.get("available"):
+        entry_blockers.append(execution.get("reason") or "최우선 호가·슬리피지 확인 불가")
+    elif not execution.get("quality_ok"):
+        entry_blockers.append(execution.get("reason") or "호가 스프레드·예상 슬리피지 기준 미달")
+
+    recommend_one_day = (
+        in_regular_clock and phase_key == "active" and liquidity_ok and atr_ok
+        and not force_three_day_reasons
+    )
     recommended_period = "1d" if recommend_one_day else "3d"
     recommended_interval = "5분봉" if recommend_one_day else "15분봉"
     if recommend_one_day:
@@ -12957,7 +13839,7 @@ def recommend_scalp_analysis_period(
             "1일·5분봉으로 진입 시점을 세밀하게 확인할 수 있습니다."
         )
     else:
-        reason = " · ".join(blockers) or "불확실한 단타 환경이므로 3일·15분봉을 유지합니다."
+        reason = " · ".join(force_three_day_reasons + blockers) or "불확실한 단타 환경이므로 3일·15분봉을 유지합니다."
 
     return {
         "market": market_key,
@@ -12979,9 +13861,22 @@ def recommend_scalp_analysis_period(
         "atr_ok": atr_ok,
         "reason": reason,
         "blockers": blockers,
+        "hard_blocked": bool(force_three_day_reasons or entry_blockers),
+        "hard_blockers": force_three_day_reasons + entry_blockers,
+        "vi_blocked": vi_blocked,
+        "vi_check_available": vi_check_available,
+        "vi": vi,
+        "earnings_today": earnings_today,
+        "earnings_check_available": earnings_check_available,
+        "earnings_block": earnings_block,
+        "disclosure_cooldown": disclosure_cooldown,
+        "period_comparison": comparison,
+        "volume_confirmation": confirmed_volume,
+        "execution_quality": execution,
+        "calendar": calendar_status,
         "entry_permission": False,
         "entry_note": "분석 기간 추천은 매수 승인이 아닙니다. 가격 지지·거래량 회복·손절 기준을 별도로 확인하세요.",
-        "calendar_limit": "주말만 직접 판별하며 거래소 휴장·조기 폐장은 실제 세션 상태 확인이 필요합니다.",
+        "calendar_limit": "연도별 휴장·조기 폐장 달력을 6시간 캐시하며 특별 임시휴장은 실제 세션 상태를 함께 확인합니다.",
     }
 
 
@@ -13381,10 +14276,6 @@ def route(path: str, params: Dict) -> Dict:
         # 예측 탭의 동적 RSI 매수 타이밍은 선택한 차트가 분봉이어도 항상 일봉으로 고정한다.
         # SMMA 전략이 이미 확보한 일봉을 재사용하므로 별도 네트워크 호출은 추가하지 않는다.
         dynamic_rsi = dynamic_rsi_daily_snapshot(arty_dd, market=market)
-        scalp_period_recommendation = recommend_scalp_analysis_period(
-            market, arty_dd, last, atr_val, selected_period=period,
-            session_name=session_name,
-        )
         buy_price        = calc_buy_price(
             dd, last, atr_val, score, indicator_signals, market, period,
             event_risk, learning_adjustment, regime, prev, pct, arty_dd=arty_dd,
@@ -13508,6 +14399,40 @@ def route(path: str, params: Dict) -> Dict:
             )
         except Exception:
             signal_confidence = None   # 엔진 실패 시 기존 응답 유지
+
+        # 사용자가 어떤 기간을 선택해도 단타용 1일·3일 신호와 최신 확정 5분봉
+        # 거래량을 별도 경량 조회로 비교한다. 호가 조회와 병렬 실행해 추가
+        # 안전 조건 때문에 모바일 응답 시간이 직렬로 늘어나지 않게 한다.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            comparison_future = executor.submit(fetch_scalp_period_comparison, sym, market)
+            execution_future = executor.submit(
+                fetch_execution_quality,
+                sym, market, last,
+                _average_recent_turnover(arty_dd),
+                (float(atr_val) / float(last) * 100.0) if last and atr_val else 0.0,
+            )
+            scalp_period_comparison = comparison_future.result()
+            execution_quality = execution_future.result()
+        confirmed_volume = scalp_period_comparison.get("volume_confirmation")
+        if not isinstance(confirmed_volume, dict):
+            # 비교 원천 조회가 실패한 경우에도 선택 기간이 단타 범위라면 안전
+            # 상태를 설명할 수 있도록 제한적으로 폴백한다.
+            confirmed_volume = assess_confirmed_volume_recovery(dd, period, market)
+        earnings_context = (signal_confidence or {}).get("earnings") or {}
+        earnings_days = earnings_context.get("days_to_earnings")
+        if earnings_days is None:
+            earnings_days = event_risk.get("days_to_earnings")
+        scalp_period_recommendation = recommend_scalp_analysis_period(
+            market, arty_dd, last, atr_val, selected_period=period,
+            session_name=session_name,
+            security_status=security_status,
+            days_to_earnings=earnings_days,
+            earnings_context=earnings_context,
+            disclosures=_event_disclosures,
+            period_comparison=scalp_period_comparison,
+            volume_confirmation=confirmed_volume,
+            execution_quality=execution_quality,
+        )
 
         target_price = calc_target_price(dd, last, atr_val, period, market)
         target_price = _apply_signal_confidence_to_target(target_price, signal_confidence, last, atr_val, market)
@@ -16839,17 +17764,36 @@ function renderScalpPeriodRecommendation(rec = null) {
   const turnover = _formatScalpTurnover(row.average_daily_turnover, row.turnover_currency);
   const threshold = _formatScalpTurnover(row.turnover_threshold, row.turnover_currency);
   const atrRange = Array.isArray(row.atr_range_pct) ? row.atr_range_pct.join('~') : '—';
+  const comparison = row.period_comparison || {};
+  const oneDay = comparison.one_day || {};
+  const threeDay = comparison.three_day || {};
+  const volume = row.volume_confirmation || {};
+  const volumeCalibration = volume.calibration || {};
+  const execution = row.execution_quality || {};
+  const earningsBlock = row.earnings_block || {};
+  const viState = row.vi || {};
+  const calendar = row.calendar || {};
+  const hardBlockers = Array.isArray(row.hard_blockers) ? row.hard_blockers : [];
+  const recommendationTitle = row.vi_blocked
+    ? 'VI·거래정지 단타 추천 차단'
+    : row.hard_blocked ? '단타 매수 대기' : '자동 추천';
   _scalpPeriodRecommendation = row;
   el.style.borderColor = tone + '88';
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;flex-wrap:wrap">
-      <strong style="color:${tone}">자동 추천: ${_escPrediction(row.recommended_label || '3일')} · ${_escPrediction(row.recommended_interval || '15분봉')}</strong>
+      <strong style="color:${tone}">${recommendationTitle}: ${_escPrediction(row.recommended_label || '3일')} · ${_escPrediction(row.recommended_interval || '15분봉')}</strong>
       <span style="color:${matches ? '#3fb950' : '#d29922'}">${matches ? '현재 선택과 일치' : '재분석 필요'}</span>
     </div>
     <div style="margin-top:4px;color:#8b949e">${_escPrediction(row.market_label || row.market || '')} · ${_escPrediction(row.phase_label || '')}</div>
     <div style="margin-top:3px;color:#cdd9e5">20일 평균 거래대금 ${turnover} (기준 ${threshold}) · ATR ${Number(row.atr_pct || 0).toFixed(2)}% (기준 ${atrRange}%)</div>
+    <div style="margin-top:3px;color:${comparison.conflict ? '#f85149' : '#8b949e'}">1일 ${oneDay.score != null ? Number(oneDay.score).toFixed(1) + '점·' + _escPrediction(oneDay.direction_label || '') : '비교 불가'} / 3일 ${threeDay.score != null ? Number(threeDay.score).toFixed(1) + '점·' + _escPrediction(threeDay.direction_label || '') : '비교 불가'} · ${_escPrediction(comparison.verdict_label || '')}</div>
+    <div style="margin-top:3px;color:${volume.recovered ? '#3fb950' : '#d29922'}">거래량: ${_escPrediction(volume.reason || '확정 봉 판정 전')} · 달력 ${calendar.is_closed ? '휴장' : calendar.is_early_close ? '조기 폐장 ' + _escPrediction(calendar.early_close_time || '') : '정규 일정'}</div>
+    <div style="margin-top:3px;color:#8b949e">거래량 보정: ${_escPrediction(volumeCalibration.reason || '기본 1.10배')} · ${row.market === 'US' ? `공식 달력 ${calendar.official_calendar_verified === false ? '교차검증 실패' : '교차검증 완료'}` : 'KRX 휴장 달력 확인'}</div>
+    <div style="margin-top:3px;color:${execution.quality_ok ? '#3fb950' : '#d29922'}">체결 여건: ${_escPrediction(execution.reason || '최우선 호가 미확보')}${row.market === 'KRX' ? ` · VI 오늘 ${Number(viState.activation_count_today || 0)}회` : ''}</div>
+    ${earningsBlock.available ? `<div style="margin-top:3px;color:${earningsBlock.active ? '#f85149' : '#8b949e'}">실적: ${_escPrediction(earningsBlock.reason || '')}</div>` : ''}
     <div style="margin-top:3px;color:#8b949e">${_escPrediction(row.reason || '')}</div>
-    ${matches ? '' : `<button type="button" onclick="applyScalpPeriodRecommendation()" style="margin-top:6px;padding:5px 8px;width:auto;font-size:10px">추천 기간으로 재분석</button>`}
+    ${hardBlockers.length ? `<div style="margin-top:5px;color:#f85149">${hardBlockers.map(reason => '⛔ ' + _escPrediction(reason)).join('<br>')}</div>` : ''}
+    ${matches || row.vi_blocked ? '' : `<button type="button" onclick="applyScalpPeriodRecommendation()" style="margin-top:6px;padding:5px 8px;width:auto;font-size:10px">추천 기간으로 재분석</button>`}
     <div style="margin-top:5px;color:#f97316">기간 추천은 매수 승인이 아닙니다.</div>`;
 }
 
@@ -18562,7 +19506,21 @@ function renderScalpEntryGate(d) {
     el.innerHTML = '<div style="padding:10px;margin-bottom:12px;border:1px solid #d2992255;border-radius:8px;background:#241a0a;color:#d29922;font-size:11px">단타 기간 추천 데이터가 없어 즉시 매수 판단을 보류합니다.</div>';
     return;
   }
+  const calendar = rec.calendar || {};
+  const earningsBlock = rec.earnings_block || {};
+  const execution = rec.execution_quality || {};
+  const viState = rec.vi || {};
+  const calendarVerified = rec.market !== 'US' || calendar.official_calendar_verified === true;
   const checks = [
+    {ok: !calendar.is_closed, label: calendar.is_closed ? `휴장: ${calendar.holiday_label || '거래소 휴장'}` : calendar.is_early_close ? `조기 폐장 ${calendar.early_close_time || ''} 반영` : '거래소 정규 일정'},
+    {ok: calendarVerified, label: rec.market === 'US' ? (calendarVerified ? '미국 공식 달력 일일 교차검증 완료' : 'NYSE·Nasdaq 공식 달력 교차검증 실패') : 'KRX 휴장 달력 확인'},
+    {ok: Boolean(rec.vi_check_available) && !rec.vi_blocked, label: rec.market !== 'KRX' ? '미국 종목 · KRX VI 조건 제외' : rec.vi_blocked ? `VI·거래정지 차단 · 오늘 ${Number(viState.activation_count_today || 0)}회 발동` : rec.vi_check_available ? `VI 차단 없음 · 오늘 ${Number(viState.activation_count_today || 0)}회` : 'VI·거래정지 상태 미확인: 보수적 대기'},
+    {ok: Boolean(rec.earnings_check_available) && !earningsBlock.active && !rec.earnings_today, label: rec.market !== 'US' ? 'KRX 종목 · 미국 실적 조건 제외' : earningsBlock.active ? `${earningsBlock.reason || '미국 실적 차단 구간'}` : rec.earnings_today ? '미국 실적 발표 당일: 1일 추천 차단' : rec.earnings_check_available ? '미국 실적 차단 구간 아님' : '미국 실적 일정 미확인: 보수적 대기'},
+    {ok: !((rec.disclosure_cooldown || {}).active), label: rec.market !== 'KRX' ? '미국 종목 · KRX 공시 조건 제외' : (rec.disclosure_cooldown || {}).active ? `KRX 공시 안정화: ${(rec.disclosure_cooldown || {}).reason || '대기'}` : 'KRX 공시 안정화 시간 통과'},
+    {ok: Boolean((rec.period_comparison || {}).available) && !(rec.period_comparison || {}).conflict, label: (rec.period_comparison || {}).conflict ? '1일·3일 반대 신호' : (rec.period_comparison || {}).available ? `${(rec.period_comparison || {}).verdict_label || '1일·3일 비교 완료'}` : '1일·3일 비교 불가'},
+    {ok: Boolean((rec.volume_confirmation || {}).bar_confirmed), label: (rec.volume_confirmation || {}).bar_confirmed ? '현재 봉 종료·확정 완료' : '현재 봉 미확정: 거래량 판정 대기'},
+    {ok: Boolean((rec.volume_confirmation || {}).recovered), label: (rec.volume_confirmation || {}).recovered ? `${(rec.volume_confirmation || {}).reason || '거래량 회복'}` : `${(rec.volume_confirmation || {}).reason || '거래량 회복 미달'}`},
+    {ok: Boolean(execution.available) && Boolean(execution.quality_ok), label: execution.quality_ok ? `${execution.reason || '호가 스프레드·예상 슬리피지 통과'}` : `${execution.reason || '최우선 호가·예상 슬리피지 확인 불가'}`},
     {ok: rec.phase_key === 'active', label: rec.phase_key === 'active' ? '개장 초기·마감 집중 구간 통과' : `시장 시간: ${rec.phase_label || '확인 필요'}`},
     {ok: Boolean(rec.liquidity_ok), label: rec.liquidity_ok ? '20일 평균 거래대금 기준 통과' : '거래대금 기준 미달 또는 데이터 부족'},
     {ok: Boolean(rec.atr_ok), label: rec.atr_ok ? `${rec.market || ''} ATR 허용 범위 통과` : `${rec.market || ''} ATR 허용 범위 이탈`},
