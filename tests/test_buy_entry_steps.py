@@ -78,6 +78,14 @@ def test_all_buy_bands_expose_five_ordered_dynamic_steps():
             assert steps[0]["price"] == band["range"][1]
             assert steps[-1]["price"] == band["range"][0]
             assert all(band["range"][0] <= step["price"] <= band["range"][1] for step in steps)
+            assert all(step["price_range"][0] <= step["price"] <= step["price_range"][1] for step in steps)
+            assert steps[0]["price_range"][1] == band["range"][1]
+            assert steps[-1]["price_range"][0] == band["range"][0]
+            assert all(
+                steps[index]["price_range"][0] >= steps[index + 1]["price_range"][1]
+                for index in range(len(steps) - 1)
+            )
+            assert all(len(step["decline_pct_range"]) == 2 for step in steps)
             assert [step["price"] for step in steps] == sorted(
                 (step["price"] for step in steps), reverse=True
             )
@@ -198,10 +206,12 @@ def test_sparse_empirical_hits_use_dynamic_model_period_instead_of_unavailable()
 
 
 def test_forecast_band_ui_uses_aligned_five_column_stage_rows():
-    for label in ("단계", "매수 가격", "하락률", "도달 확률", "예상 기간"):
+    for label in ("단계", "매수 가격 범위", "하락률", "도달 확률", "예상 기간"):
         assert f'role="columnheader">{label}</span>' in HTML
     assert "buy-stage-row" in HTML
     assert "buy-stage-price" in HTML
+    assert "밴드 전체 매수 가격" in HTML
+    assert "s.price_range" in HTML
     assert "분석 데이터 부족" in HTML
     assert "기간 산정 불가" in HTML
     assert "TP1" not in HTML.split("const renderBandCard", 1)[1].split(

@@ -8566,7 +8566,9 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         """
         _, hi = tgt_range[0], tgt_range[1]
         price_tick = 10 ** (-rnd)
-        boundary_gap = max(price_tick * 2, atr * 0.02, price * 0.0002)
+        # 목표 중심값뿐 아니라 새로 제공하는 목표 가격 범위까지 서로 겹치지 않도록
+        # 시나리오 경계에 최소 0.30 ATR 간격을 둔다.
+        boundary_gap = max(price_tick * 2, atr * 0.30, price * 0.0010)
         if previous_ceiling is None:
             segment_start = price
             progress_steps = [0.30, 0.48, 0.66, 0.82, 1.0]
@@ -8678,6 +8680,43 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         except (ImportError, ValueError, TypeError, KeyError, IndexError):
             pattern_target_integration = {"accepted": [], "rejected": [], "error": "integration_failed"}
 
+    def _attach_target_price_ranges(tp_levels: list[Dict]) -> list[Dict]:
+        """TP 중심값에 ATR·인접 TP 간격 기반의 비중첩 목표 가격 범위를 붙인다."""
+        if not tp_levels:
+            return tp_levels
+        centers = [float(level["price"]) for level in tp_levels]
+        price_tick = 10 ** (-rnd)
+        for index, level in enumerate(tp_levels):
+            center = centers[index]
+            left_gap = center - centers[index - 1] if index else (
+                centers[1] - center if len(centers) > 1 else atr
+            )
+            right_gap = centers[index + 1] - center if index + 1 < len(centers) else left_gap
+            local_gap = max(price_tick * 2, min(left_gap, right_gap))
+            uncertainty = max(
+                price_tick,
+                min(atr * 0.12, local_gap * 0.28, center * 0.0025),
+            )
+            lower_boundary = (
+                (centers[index - 1] + center) / 2.0 + price_tick
+                if index else price + price_tick
+            )
+            upper_boundary = (
+                (center + centers[index + 1]) / 2.0 - price_tick
+                if index + 1 < len(centers) else center + uncertainty
+            )
+            low = max(lower_boundary, center - uncertainty)
+            high = min(upper_boundary, center + uncertainty)
+            if high < low:
+                low = high = center
+            level["price_range"] = [round(low, rnd), round(high, rnd)]
+            level["price_range_basis"] = "ATR 0.12배·인접 목표 간격·가격 0.25% 중 최소 폭"
+        return tp_levels
+
+    # 세 시나리오 15개 목표를 한 번에 처리해 보수적→중립적→공격적 경계에서도
+    # 가격 범위가 겹치지 않도록 한다. 함수가 각 level dict를 제자리 갱신한다.
+    _attach_target_price_ranges(cons_tp + bal_tp + agg_tp)
+
     def _target_zone_confidence(tp_levels: list[Dict], target_low: float) -> float | None:
         return next((level["prob_pct"] for level in tp_levels if level["price"] >= target_low),
                     tp_levels[-1]["prob_pct"] if tp_levels else None)
@@ -8698,7 +8737,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "interpretation": f"BB 하단 참조 손절 · 단기 반등 목표 (R/R {cons_rr:.1f}:1)",
             "target_basis": cons_basis,
             "target_confidence_pct": _target_zone_confidence(cons_tp, cons_tgt_range[0]),
-            "tp_range": [cons_tp[0]["price"], cons_tp[-1]["price"]],
+            "tp_range": [cons_tp[0]["price_range"][0], cons_tp[-1]["price_range"][1]],
             "tp_levels": cons_tp,
         },
         "balanced": {
@@ -8715,7 +8754,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "interpretation": f"MA20 지지 손절 · 중기 추세 목표 (R/R {bal_rr:.1f}:1)",
             "target_basis": bal_basis,
             "target_confidence_pct": _target_zone_confidence(bal_tp, bal_tgt_range[0]),
-            "tp_range": [bal_tp[0]["price"], bal_tp[-1]["price"]],
+            "tp_range": [bal_tp[0]["price_range"][0], bal_tp[-1]["price_range"][1]],
             "tp_levels": bal_tp,
         },
         "aggressive": {
@@ -8733,7 +8772,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "target_basis": agg_basis,
             "target_confidence_pct": _target_zone_confidence(agg_tp, agg_tgt_range[0]),
             "breakout_probability_pct": breakout_probability_pct,
-            "tp_range": [agg_tp[0]["price"], agg_tp[-1]["price"]],
+            "tp_range": [agg_tp[0]["price_range"][0], agg_tp[-1]["price_range"][1]],
             "tp_levels": agg_tp,
         },
         "vol_state": vol_state_txt,
@@ -10579,6 +10618,19 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             )
         rounded_prices[-1] = round(lo, rnd)
 
+        # 단일 지정가 대신 각 단계가 담당하는 실제 주문 허용 범위를 만든다.
+        # 인접 단계의 중간값을 경계로 사용해 5개 범위가 겹치지 않으면서
+        # 밴드 전체(lo~hi)를 빠짐없이 세분하도록 한다.
+        step_price_ranges = []
+        for _idx, center in enumerate(rounded_prices):
+            upper = hi if _idx == 0 else (rounded_prices[_idx - 1] + center) / 2.0
+            lower = lo if _idx == len(rounded_prices) - 1 else (center + rounded_prices[_idx + 1]) / 2.0
+            lower = round(_clip(lower, lo, hi), rnd)
+            upper = round(_clip(upper, lo, hi), rnd)
+            if lower > upper:
+                lower, upper = upper, lower
+            step_price_ranges.append([lower, upper])
+
         allocation_curve = _clip(
             0.65 + downside_score / 180.0 + (0.12 if is_recommended else 0.0),
             0.55, 1.25,
@@ -10647,6 +10699,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         previous_prob_mid = previous_prob_low = previous_prob_high = 100.0
         previous_days_min = previous_days_max = 0
         for _idx, price in enumerate(rounded_prices):
+            price_low, price_high = step_price_ranges[_idx]
             distance_atr = max(0.0, (last_price - price) / max(atr_d, 1e-9))
             probability_mid = probability_low = probability_high = None
             days_min = days_max = None
@@ -10742,7 +10795,13 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 "stage": _idx + 1,
                 "label": f"{_idx + 1}단계",
                 "price": price,
+                "price_range": [price_low, price_high],
+                "price_range_basis": "인접 단계 중간값으로 세분한 주문 허용 구간",
                 "decline_pct": round((price - last_price) / last_price * 100.0, 1),
+                "decline_pct_range": [
+                    round((price_low - last_price) / last_price * 100.0, 1),
+                    round((price_high - last_price) / last_price * 100.0, 1),
+                ],
                 "reach_probability_pct": round(probability_mid, 1) if probability_mid is not None else None,
                 "probability_low_pct": round(probability_low, 1) if probability_low is not None else None,
                 "probability_high_pct": round(probability_high, 1) if probability_high is not None else None,
@@ -15473,6 +15532,21 @@ body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI','Noto Sans KR',sans
 .sb-home-btn:hover{background:#30363d;color:#e6edf3}
 .sb-section{padding:14px;border-bottom:1px solid #30363d}
 .sb-label{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;display:block}
+#scalp-period-recommendation{font-size:10px;line-height:1.45;margin:-2px 0 10px;padding:8px;border:1px solid #30363d;border-radius:7px;background:#0d1117;color:#8b949e}
+.scalp-rec-head{display:flex;justify-content:space-between;gap:5px;align-items:flex-start}
+.scalp-rec-head strong{min-width:0;line-height:1.35}
+.scalp-rec-match{flex-shrink:0;font-size:9px;white-space:nowrap}
+.scalp-rec-brief{margin-top:5px;color:#8b949e;display:flex;gap:4px;flex-wrap:wrap}
+.scalp-rec-chip{padding:1px 4px;border:1px solid #30363d;border-radius:999px;background:#161b22;white-space:nowrap}
+.scalp-rec-block-count{margin-top:5px;color:#f85149;font-weight:600}
+.scalp-rec-details{margin-top:6px;border-top:1px solid #21262d;padding-top:5px}
+.scalp-rec-details>summary{cursor:pointer;color:#58a6ff;font-weight:600;min-height:26px;display:flex;align-items:center;list-style:none;user-select:none}
+.scalp-rec-details>summary::-webkit-details-marker{display:none}
+.scalp-rec-details>summary::before{content:'＋';width:16px;color:#8b949e}
+.scalp-rec-details[open]>summary::before{content:'－'}
+.scalp-rec-detail-body{padding:2px 0 1px 16px;overflow-wrap:anywhere}
+.scalp-rec-detail-row{margin-top:4px}
+.scalp-rec-warning{margin-top:5px;color:#f97316;font-size:9px}
 .mkt-btns{display:flex;gap:6px}
 .mkt-btn{flex:1;padding:8px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:500;transition:all .15s}
 .mkt-btn.active{background:#1f6feb;color:#fff}
@@ -15779,12 +15853,12 @@ input::placeholder{color:#484f58}
 .buy-band-title{font-size:12px;font-weight:700;display:flex;align-items:center;min-width:0}
 .buy-band-badges{display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .buy-stage-table{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
-.buy-stage-row{display:grid;grid-template-columns:36px minmax(68px,1fr) 44px minmax(90px,1.2fr) 46px;gap:3px;align-items:center;min-width:0;padding:5px 4px;background:#101820;border:1px solid #1f2b36;border-radius:5px}
+.buy-stage-row{display:grid;grid-template-columns:36px minmax(108px,1.35fr) 54px minmax(90px,1.2fr) 46px;gap:3px;align-items:center;min-width:0;padding:5px 4px;background:#101820;border:1px solid #1f2b36;border-radius:5px}
 .buy-stage-row>span{min-width:0}
 .buy-stage-header{background:transparent;border:0;border-bottom:1px solid #21262d;border-radius:0;padding:0 6px 4px;color:#6e7681;font-size:8px;line-height:1.2;text-align:right}
 .buy-stage-header span:first-child{text-align:left}
 .buy-stage-name{font-size:9px;font-weight:800;white-space:nowrap}
-.buy-stage-price{font-size:11px;font-weight:900;color:#e6edf3;white-space:nowrap;text-align:right}
+.buy-stage-price{font-size:10px;font-weight:900;color:#e6edf3;white-space:normal;text-align:right;line-height:1.25}
 .buy-stage-drop{font-size:9px;font-weight:700;color:#f85149;white-space:nowrap;text-align:right}
 .buy-stage-prob{font-size:9px;font-weight:700;white-space:nowrap;text-align:right}
 .buy-stage-days{font-size:9px;color:#8b949e;white-space:nowrap;text-align:right}
@@ -15794,10 +15868,10 @@ input::placeholder{color:#484f58}
 .buy-band-detail.positive{color:#3fb950}.buy-band-detail.warning{color:#d29922}.buy-band-detail.negative{color:#f97316}
 @media(max-width:480px){
   .buy-band-card{padding:9px 8px}
-  .buy-stage-row{grid-template-columns:30px minmax(58px,1fr) 38px minmax(74px,1.1fr) 40px;gap:2px;padding:5px 2px}
+  .buy-stage-row{grid-template-columns:28px minmax(82px,1.3fr) 42px minmax(68px,1fr) 38px;gap:2px;padding:5px 1px}
   .buy-stage-header{padding:0 2px 4px;font-size:7px}
   .buy-stage-name,.buy-stage-drop,.buy-stage-prob,.buy-stage-days{font-size:8px}
-  .buy-stage-price{font-size:10px}
+  .buy-stage-price{font-size:9px}
 }
 .buy-label{font-size:10px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
 .buy-price-val{font-size:18px;font-weight:800;margin-bottom:4px;word-break:break-all}
@@ -15865,7 +15939,6 @@ input::placeholder{color:#484f58}
 .prediction-mini-list{font-size:10px;color:#8b949e;line-height:1.55}
 .prediction-scope{font-size:10px;color:#484f58;line-height:1.5;margin-top:9px}
 .prediction-context-inline{margin-top:12px;border-top:1px solid #30363d;padding-top:12px}
-.prediction-context-inline #ai-strategy-section{margin-top:9px}
 
 /* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
 .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -15943,6 +16016,8 @@ input::placeholder{color:#484f58}
     box-shadow:6px 0 32px rgba(0,0,0,.6)
   }
   #sidebar.open{transform:translateX(0)}
+  #scalp-period-recommendation{padding:7px}
+  .scalp-rec-details>summary{min-height:36px}
 
   /* 그리드: 4열 유지, span 재배치 */
   .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:start}
@@ -16571,7 +16646,7 @@ input::placeholder{color:#484f58}
       <option value="5y">5년</option>
     </select>
     <div id="period-guide" style="font-size:10px;color:#8b949e;line-height:1.45;margin-bottom:10px"></div>
-    <div id="scalp-period-recommendation" role="status" aria-live="polite" style="font-size:10px;line-height:1.5;margin:-2px 0 10px;padding:8px;border:1px solid #30363d;border-radius:7px;background:#0d1117;color:#8b949e"></div>
+    <div id="scalp-period-recommendation" role="status" aria-live="polite"></div>
     <button id="analyze-btn" onclick="analyze()">🔍 분석 시작</button>
   </div>
 
@@ -16618,14 +16693,17 @@ input::placeholder{color:#484f58}
         </div>
         <div id="sector-flow-content" style="display:none">
           <div class="sector-flow-header">
-            <span class="sector-flow-title">🏭 업종별 흐름</span>
-            <button onclick="loadSectorFlow()" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
+            <div style="min-width:0">
+              <span class="sector-flow-title">🏭 업종별 흐름</span>
+              <span id="sector-flow-status" style="margin-left:7px;font-size:10px;color:#6e7681"></span>
+            </div>
+            <button onclick="loadSectorFlow(true)" class="home-section-refresh" title="새로고침">🔄 새로고침</button>
           </div>
           <div class="sector-cards" id="sector-cards"></div>
         </div>
         <div id="sector-flow-error" style="display:none;text-align:center;padding:12px;color:#484f58;font-size:12px">
           업종별 흐름 데이터를 불러오지 못했습니다
-          <button onclick="loadSectorFlow()" class="home-section-refresh" style="margin-left:6px">재시도</button>
+          <button onclick="loadSectorFlow(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
         </div>
       </div>
 
@@ -16746,7 +16824,6 @@ input::placeholder{color:#484f58}
           <div id="prediction-overview-section"></div>
           <div class="prediction-context-inline">
             <div id="prediction-context-section"></div>
-            <div id="ai-strategy-section"></div>
           </div>
         </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
@@ -17751,6 +17828,7 @@ function renderScalpPeriodRecommendation(rec = null) {
   const el = document.getElementById('scalp-period-recommendation');
   const select = document.getElementById('period-select');
   if (!el || !select) return;
+  const detailsWasOpen = !!el.querySelector('.scalp-rec-details[open]');
   if (rec) _scalpPeriodRecommendation = rec;
   const row = rec || _scalpPeriodRecommendation;
   if (!row) {
@@ -17777,24 +17855,39 @@ function renderScalpPeriodRecommendation(rec = null) {
   const recommendationTitle = row.vi_blocked
     ? 'VI·거래정지 단타 추천 차단'
     : row.hard_blocked ? '단타 매수 대기' : '자동 추천';
+  const quickFacts = [
+    row.market_label || row.market || '',
+    row.phase_label || '',
+    volume.recovered ? '거래량 회복' : '거래량 대기',
+    execution.quality_ok ? '체결 통과' : '체결 대기',
+    comparison.conflict ? '1일·3일 충돌' : '',
+  ].filter(Boolean);
+  const detailCount = 6 + (earningsBlock.available ? 1 : 0) + (row.reason ? 1 : 0) + hardBlockers.length;
   _scalpPeriodRecommendation = row;
   el.style.borderColor = tone + '88';
   el.innerHTML = `
-    <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;flex-wrap:wrap">
+    <div class="scalp-rec-head">
       <strong style="color:${tone}">${recommendationTitle}: ${_escPrediction(row.recommended_label || '3일')} · ${_escPrediction(row.recommended_interval || '15분봉')}</strong>
-      <span style="color:${matches ? '#3fb950' : '#d29922'}">${matches ? '현재 선택과 일치' : '재분석 필요'}</span>
+      <span class="scalp-rec-match" style="color:${matches ? '#3fb950' : '#d29922'}">${matches ? '선택 일치' : '재분석 필요'}</span>
     </div>
-    <div style="margin-top:4px;color:#8b949e">${_escPrediction(row.market_label || row.market || '')} · ${_escPrediction(row.phase_label || '')}</div>
-    <div style="margin-top:3px;color:#cdd9e5">20일 평균 거래대금 ${turnover} (기준 ${threshold}) · ATR ${Number(row.atr_pct || 0).toFixed(2)}% (기준 ${atrRange}%)</div>
-    <div style="margin-top:3px;color:${comparison.conflict ? '#f85149' : '#8b949e'}">1일 ${oneDay.score != null ? Number(oneDay.score).toFixed(1) + '점·' + _escPrediction(oneDay.direction_label || '') : '비교 불가'} / 3일 ${threeDay.score != null ? Number(threeDay.score).toFixed(1) + '점·' + _escPrediction(threeDay.direction_label || '') : '비교 불가'} · ${_escPrediction(comparison.verdict_label || '')}</div>
-    <div style="margin-top:3px;color:${volume.recovered ? '#3fb950' : '#d29922'}">거래량: ${_escPrediction(volume.reason || '확정 봉 판정 전')} · 달력 ${calendar.is_closed ? '휴장' : calendar.is_early_close ? '조기 폐장 ' + _escPrediction(calendar.early_close_time || '') : '정규 일정'}</div>
-    <div style="margin-top:3px;color:#8b949e">거래량 보정: ${_escPrediction(volumeCalibration.reason || '기본 1.10배')} · ${row.market === 'US' ? `공식 달력 ${calendar.official_calendar_verified === false ? '교차검증 실패' : '교차검증 완료'}` : 'KRX 휴장 달력 확인'}</div>
-    <div style="margin-top:3px;color:${execution.quality_ok ? '#3fb950' : '#d29922'}">체결 여건: ${_escPrediction(execution.reason || '최우선 호가 미확보')}${row.market === 'KRX' ? ` · VI 오늘 ${Number(viState.activation_count_today || 0)}회` : ''}</div>
-    ${earningsBlock.available ? `<div style="margin-top:3px;color:${earningsBlock.active ? '#f85149' : '#8b949e'}">실적: ${_escPrediction(earningsBlock.reason || '')}</div>` : ''}
-    <div style="margin-top:3px;color:#8b949e">${_escPrediction(row.reason || '')}</div>
-    ${hardBlockers.length ? `<div style="margin-top:5px;color:#f85149">${hardBlockers.map(reason => '⛔ ' + _escPrediction(reason)).join('<br>')}</div>` : ''}
+    <div class="scalp-rec-brief">${quickFacts.map(fact => `<span class="scalp-rec-chip">${_escPrediction(fact)}</span>`).join('')}</div>
+    ${hardBlockers.length ? `<div class="scalp-rec-block-count">⛔ 차단 사유 ${hardBlockers.length}개</div>` : ''}
+    <details class="scalp-rec-details" ${detailsWasOpen ? 'open' : ''}>
+      <summary>상세 근거 보기 (${detailCount})</summary>
+      <div class="scalp-rec-detail-body">
+        <div class="scalp-rec-detail-row" style="color:#8b949e">${_escPrediction(row.market_label || row.market || '')} · ${_escPrediction(row.phase_label || '')}</div>
+        <div class="scalp-rec-detail-row" style="color:#cdd9e5">20일 평균 거래대금 ${turnover} (기준 ${threshold}) · ATR ${Number(row.atr_pct || 0).toFixed(2)}% (기준 ${atrRange}%)</div>
+        <div class="scalp-rec-detail-row" style="color:${comparison.conflict ? '#f85149' : '#8b949e'}">1일 ${oneDay.score != null ? Number(oneDay.score).toFixed(1) + '점·' + _escPrediction(oneDay.direction_label || '') : '비교 불가'} / 3일 ${threeDay.score != null ? Number(threeDay.score).toFixed(1) + '점·' + _escPrediction(threeDay.direction_label || '') : '비교 불가'} · ${_escPrediction(comparison.verdict_label || '')}</div>
+        <div class="scalp-rec-detail-row" style="color:${volume.recovered ? '#3fb950' : '#d29922'}">거래량: ${_escPrediction(volume.reason || '확정 봉 판정 전')} · 달력 ${calendar.is_closed ? '휴장' : calendar.is_early_close ? '조기 폐장 ' + _escPrediction(calendar.early_close_time || '') : '정규 일정'}</div>
+        <div class="scalp-rec-detail-row" style="color:#8b949e">거래량 보정: ${_escPrediction(volumeCalibration.reason || '기본 1.10배')} · ${row.market === 'US' ? `공식 달력 ${calendar.official_calendar_verified === false ? '교차검증 실패' : '교차검증 완료'}` : 'KRX 휴장 달력 확인'}</div>
+        <div class="scalp-rec-detail-row" style="color:${execution.quality_ok ? '#3fb950' : '#d29922'}">체결 여건: ${_escPrediction(execution.reason || '최우선 호가 미확보')}${row.market === 'KRX' ? ` · VI 오늘 ${Number(viState.activation_count_today || 0)}회` : ''}</div>
+        ${earningsBlock.available ? `<div class="scalp-rec-detail-row" style="color:${earningsBlock.active ? '#f85149' : '#8b949e'}">실적: ${_escPrediction(earningsBlock.reason || '')}</div>` : ''}
+        ${row.reason ? `<div class="scalp-rec-detail-row" style="color:#8b949e">${_escPrediction(row.reason)}</div>` : ''}
+        ${hardBlockers.length ? `<div class="scalp-rec-detail-row" style="color:#f85149">${hardBlockers.map(reason => '⛔ ' + _escPrediction(reason)).join('<br>')}</div>` : ''}
+      </div>
+    </details>
     ${matches || row.vi_blocked ? '' : `<button type="button" onclick="applyScalpPeriodRecommendation()" style="margin-top:6px;padding:5px 8px;width:auto;font-size:10px">추천 기간으로 재분석</button>`}
-    <div style="margin-top:5px;color:#f97316">기간 추천은 매수 승인이 아닙니다.</div>`;
+    <div class="scalp-rec-warning">기간 추천은 매수 승인이 아닙니다.</div>`;
 }
 
 function applyScalpPeriodRecommendation() {
@@ -19547,48 +19640,9 @@ function renderScalpEntryGate(d) {
 function renderForecast(d, isKrx) {
   const risk = d.risk_scenarios;
   const bp   = d.buy_price;
-  const ai   = d.ai_strategy;
 
   renderPredictionSections(d, isKrx);
   renderScalpEntryGate(d);
-  // ── AI 종합 진단 및 트레이딩 전략 섹션 ──
-  const aiEl = document.getElementById('ai-strategy-section');
-  if (aiEl) {
-    aiEl.style.display = ai ? 'block' : 'none';
-  }
-  if (aiEl && ai) {
-    const hiddenAiStrategyPatterns = [
-      /^\[시장 상태\]/,
-      /^⚠️\s*\[경고\]\s*부채비율/,
-      /^\[투자자 수급\]/,
-    ];
-    const visibleAiStrategyLines = (ai.result || '')
-      .split(' | ')
-      .map(line => line.trim())
-      .filter(line => line && !hiddenAiStrategyPatterns.some(pattern => pattern.test(line)));
-
-    const reusedEvidence = ((d.prediction_outlook || {}).ai_evidence || []).slice(0, 4);
-    const reusedSet = new Set(reusedEvidence.map(line => String(line).replace(/\s+/g, ' ').trim()));
-    const conciseLines = visibleAiStrategyLines
-      .filter(line => !reusedSet.has(String(line).replace(/\s+/g, ' ').trim()))
-      .slice(0, 6);
-    const detailBody = conciseLines.length
-      ? conciseLines.map(line => {
-          if (line.startsWith('[')) return `<div style="margin-top:10px;font-weight:bold;color:#388bfd;font-size:13px">${_escPrediction(line)}</div>`;
-          return `<div style="margin-top:5px;margin-left:8px">${_escPrediction(line)}</div>`;
-        }).join('')
-      : '<div style="color:#8b949e">추가 해석은 위의 시장·AI 판단 근거에 통합되어 있습니다.</div>';
-
-    aiEl.innerHTML = `
-      <div style="background:rgba(31,111,235,.05);border-radius:10px;padding:13px;border:1px solid #1f6feb55">
-        <div style="font-size:11px;color:#58a6ff;font-weight:700;margin-bottom:8px">AI 진단 탭의 추가 근거</div>
-        <div style="color:#cdd9e5;font-size:12px;line-height:1.6">
-          ${detailBody}
-        </div>
-        <div style="font-size:10px;color:#8b949e;margin-top:9px">단독 매매 신호가 아니라 가격·거래량·지지선 조건과 함께 확인하는 참고 정보입니다.</div>
-      </div>
-    `;
-  }
   // ── 매수 전략 섹션 ──
   const bpEl = document.getElementById('buy-price-section');
   const buyRiskNotesEl = document.getElementById('buy-risk-notes-section');
@@ -19890,6 +19944,8 @@ function renderForecast(d, isKrx) {
           : `<span style="font-size:9px;color:#8b949e;background:#21262d;border-radius:3px;padding:1px 5px">대기</span>`;
         const priTag   = isPriority ? `<span style="font-size:9px;background:${bc}33;color:${bc};border:1px solid ${bc};border-radius:3px;padding:1px 5px;margin-left:4px">권장</span>` : '';
         const steps = Array.isArray(b.steps) ? b.steps : [];
+        const bandRangeText = Array.isArray(b.range) && b.range.length === 2
+          ? `${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}` : '분석 데이터 부족';
         const stepRows = steps.map(s => {
           const hasProbability = s.probability_low_pct != null && s.probability_high_pct != null;
           const probabilityMid = s.reach_probability_pct != null ? Number(s.reach_probability_pct) : null;
@@ -19902,15 +19958,20 @@ function renderForecast(d, isKrx) {
           const periodText = s.days_min != null && s.days_max != null
             ? `${s.days_min}~${s.days_max}일`
             : (s.period_label || '기간 산정 불가');
-          const decline = Number(s.decline_pct);
-          const declineText = Number.isFinite(decline) ? `${decline.toFixed(1)}%` : '-';
+          const priceRange = Array.isArray(s.price_range) && s.price_range.length === 2
+            ? s.price_range : [s.price, s.price];
+          const priceText = `${fmt(priceRange[0], isKrx)} ~ ${fmt(priceRange[1], isKrx)}`;
+          const declineRange = Array.isArray(s.decline_pct_range) && s.decline_pct_range.length === 2
+            ? s.decline_pct_range.map(Number) : [Number(s.decline_pct), Number(s.decline_pct)];
+          const declineText = declineRange.every(Number.isFinite)
+            ? `${declineRange[0].toFixed(1)}~${declineRange[1].toFixed(1)}%` : '-';
           const periodBasis = s.period_note
             ? ` · 예상 기간: ${s.period_note}`
             : '';
-          const stepTitle = `${s.basis || 'ATR·기술 지표'}${periodBasis} · 단계 배분 ${s.allocation_pct || 0}%`;
-          return `<div class="buy-stage-row" role="row" title="${stepTitle}" aria-label="${s.label}, ${fmt(s.price, isKrx)}, 현재가 대비 ${declineText}, 도달 확률 ${probabilityText}, 예상 ${periodText}, 단계 배분 ${s.allocation_pct || 0}%">
+          const stepTitle = `${s.basis || 'ATR·기술 지표'} · ${s.price_range_basis || '단계별 주문 허용 범위'}${periodBasis} · 단계 배분 ${s.allocation_pct || 0}%`;
+          return `<div class="buy-stage-row" role="row" title="${stepTitle}" aria-label="${s.label}, 매수 가격 범위 ${priceText}, 현재가 대비 ${declineText}, 도달 확률 ${probabilityText}, 예상 ${periodText}, 단계 배분 ${s.allocation_pct || 0}%">
             <span class="buy-stage-name" role="cell" style="color:${bc}">${s.label}</span>
-            <span class="buy-stage-price" role="cell" style="color:${bc}">${fmt(s.price, isKrx)}</span>
+            <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}</span>
             <span class="buy-stage-drop" role="cell">${declineText}</span>
             <span class="buy-stage-prob ${hasProbability ? '' : 'buy-stage-unavailable'}" role="cell" style="color:${probabilityColor}">${probabilityText}</span>
             <span class="buy-stage-days ${s.days_min == null ? 'buy-stage-unavailable' : ''}" role="cell">${periodText}</span>
@@ -19919,7 +19980,7 @@ function renderForecast(d, isKrx) {
         const stageTable = `<div class="buy-stage-table" role="table" aria-label="밴드 ${b.band} 5단계 매수 가격">
           <div class="buy-stage-row buy-stage-header" role="row">
             <span role="columnheader">단계</span>
-            <span role="columnheader">매수 가격</span>
+            <span role="columnheader">매수 가격 범위</span>
             <span role="columnheader">하락률</span>
             <span role="columnheader">도달 확률</span>
             <span role="columnheader">예상 기간</span>
@@ -19943,6 +20004,10 @@ function renderForecast(d, isKrx) {
               <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || (isRec ? '주 진입' : '소액 탐색 진입')}</span>
               ${allocationTag}
             </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin:-2px 0 7px;padding:5px 7px;border:1px solid ${bc}44;border-radius:5px;background:${bc}0d">
+            <span style="font-size:9px;color:#8b949e">밴드 전체 매수 가격</span>
+            <span style="font-size:10px;font-weight:800;color:${bc};text-align:right">${bandRangeText}</span>
           </div>
           ${stageTable}
           ${detailHtml}
@@ -20081,7 +20146,7 @@ function renderForecast(d, isKrx) {
           <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
           <div style="font-size:10px;color:#8b949e;margin:-4px 0 8px">ATR ${risk.atr_pct || '—'}% · 손절 기준 ${sc.atr_mul_stp || '—'}ATR · 현재 변동성 보정 반영</div>
           <div class="risk-row" style="margin-bottom:4px">
-            <span class="risk-lbl">🎯 목표가</span>
+            <span class="risk-lbl">🎯 목표 가격 범위</span>
             <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
           </div>
           ${(sc.target_basis && sc.target_basis.length) ? `
@@ -20119,7 +20184,7 @@ function renderForecast(d, isKrx) {
             </div>` : ''}
             <div class="risk-tp-level risk-tp-head" role="row">
               <span role="columnheader">단계</span>
-              <span role="columnheader">목표 가격</span>
+              <span role="columnheader">목표 가격 범위</span>
               <span role="columnheader">수익률</span>
               <span role="columnheader">도달 가능성</span>
               <span role="columnheader">예상 거래일</span>
@@ -20130,9 +20195,12 @@ function renderForecast(d, isKrx) {
                 ? `${lv.prob_low_pct}~${lv.prob_high_pct}%` : `${lv.prob_pct}%`;
               const daysText = lv.days_min != null && lv.days_max != null
                 ? `${lv.days_min}~${lv.days_max}일` : `약 ${lv.avg_days}일`;
+              const levelRange = Array.isArray(lv.price_range) && lv.price_range.length === 2
+                ? lv.price_range : [lv.price, lv.price];
+              const levelPriceText = `${fmt(levelRange[0], isKrx)} ~ ${fmt(levelRange[1], isKrx)}`;
               return `<div class="risk-tp-level" role="row" style="background:#0d1117;border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
-                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600">${fmt(lv.price, isKrx)}</span>
+                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600">${levelPriceText}</span>
                 <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
@@ -21023,27 +21091,130 @@ function renderMarketCore(d) {
 // ═══════════════════════════════════════════════════════════════
 // 🏭 업종별 흐름 — 메인 페이지 자동 로드
 // ═══════════════════════════════════════════════════════════════
-async function loadSectorFlow() {
+const _SECTOR_FLOW_CACHE_KEY = 'stockoracle:sector-flow:v1';
+const _SECTOR_FLOW_CLIENT_TTL = 30 * 60 * 1000;
+let _sectorFlowRequest = null;
+
+function _sectorFlowPlaceholder() {
+  const rows = [
+    ['제조','1027','🏭'],['금융','1021','🏦'],['화학','1008','🧪'],['제약','1009','💊'],
+    ['유통','1016','🛒'],['운송장비·부품','1015','🚗'],['음식료·담배','1005','🍽️'],['금속','1011','🔩'],
+    ['섬유·의류','1006','👕'],['일반서비스','1026','🧰'],['종이·목재','1007','📄'],['비금속','1010','🧱'],
+    ['부동산','1045','🏢'],['운송·창고','1019','🚚'],['전기·전자','1013','⚡'],['보험','1025','🛡️'],
+    ['IT 서비스','1046','💻'],['건설','1018','🏗️'],['오락·문화','1047','🎬'],['기계·장비','1012','⚙️'],
+    ['전기·가스','1017','🔌'],['통신','1020','📡'],['증권','1024','📈'],['의료·정밀기기','1014','🔬']
+  ];
+  return {is_placeholder:true, sectors:rows.map(([name,upcode,emoji]) => ({
+    name, upcode, emoji, avg_change_pct:null, mood:'neutral', top_stocks:[]
+  }))};
+}
+
+function _readSectorFlowClientCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(_SECTOR_FLOW_CACHE_KEY) || 'null');
+    if (!cached || !cached.savedAt || !cached.data || !Array.isArray(cached.data.sectors)) return null;
+    if (Date.now() - cached.savedAt > _SECTOR_FLOW_CLIENT_TTL) return null;
+    return {...cached.data, is_client_cache:true};
+  } catch (_) {
+    return null;
+  }
+}
+
+function _writeSectorFlowClientCache(data) {
+  try {
+    localStorage.setItem(_SECTOR_FLOW_CACHE_KEY, JSON.stringify({savedAt:Date.now(), data}));
+  } catch (_) {}
+}
+
+function _sectorFlowNetworkBudget() {
+  // Network Information API 미지원 브라우저(iOS Safari 포함)는 검증된 기본값을 사용한다.
+  if (navigator.onLine === false) return {timeoutMs:2500, label:'오프라인'};
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!connection) return {timeoutMs:8000, label:'표준망'};
+
+  const type = String(connection.effectiveType || '').toLowerCase();
+  const rtt = Number(connection.rtt);
+  const downlink = Number(connection.downlink);
+  let timeoutMs = type === 'slow-2g' ? 20000
+                : type === '2g' ? 16000
+                : type === '3g' ? 12000
+                : 8000;
+
+  // effectiveType 값이 실제 혼잡을 늦게 반영하는 경우 RTT·대역폭으로 재보정한다.
+  if (Number.isFinite(rtt) && rtt > 0) {
+    if (rtt >= 1500) timeoutMs = Math.max(timeoutMs, 20000);
+    else if (rtt >= 800) timeoutMs = Math.max(timeoutMs, 16000);
+    else if (rtt >= 400) timeoutMs = Math.max(timeoutMs, 12000);
+    else if (rtt <= 150 && type === '4g') timeoutMs = Math.min(timeoutMs, 7000);
+  }
+  if (Number.isFinite(downlink) && downlink > 0) {
+    if (downlink < 0.25) timeoutMs = Math.max(timeoutMs, 20000);
+    else if (downlink < 0.75) timeoutMs = Math.max(timeoutMs, 16000);
+    else if (downlink < 1.5) timeoutMs = Math.max(timeoutMs, 12000);
+  }
+  if (connection.saveData) timeoutMs = Math.max(timeoutMs, 16000);
+
+  timeoutMs = Math.max(2500, Math.min(timeoutMs, 20000));
+  const label = timeoutMs >= 16000 ? '저속망' : timeoutMs >= 12000 ? '보통망' : '고속망';
+  return {timeoutMs, label};
+}
+
+async function loadSectorFlow(force = false) {
   const elLoad = document.getElementById('sector-flow-loading');
   const elCont = document.getElementById('sector-flow-content');
   const elErr  = document.getElementById('sector-flow-error');
+  const elStatus = document.getElementById('sector-flow-status');
   if (!elLoad) return;
-  elLoad.style.display = 'block';
-  elCont.style.display = 'none';
-  elErr.style.display  = 'none';
-  try {
-    const r = await fetch('/api/market/sector-summary');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
-    if (d.error) throw new Error(d.error);
-    renderSectorFlow(d);
-    elLoad.style.display = 'none';
-    elCont.style.display = 'block';
-  } catch(e) {
-    elLoad.style.display = 'none';
-    elErr.style.display  = 'block';
-    console.warn('[sector-flow] 로드 실패:', e.message);
+
+  if (_sectorFlowRequest && !force) return _sectorFlowRequest;
+
+  // 네트워크보다 먼저 이전 정상 응답 또는 24개 업종 골격을 그린다.
+  const immediate = !force && _readSectorFlowClientCache();
+  if (immediate) {
+    renderSectorFlow(immediate);
+    if (elStatus) elStatus.textContent = '이전 데이터 표시 · 최신 갱신 중';
+  } else if (!_sectorFlowSnapshot || force) {
+    renderSectorFlow(_sectorFlowPlaceholder());
+    if (elStatus) elStatus.textContent = '최신 등락률 확인 중';
   }
+  elLoad.style.display = 'none';
+  elCont.style.display = 'block';
+  elErr.style.display  = 'none';
+
+  const networkBudget = _sectorFlowNetworkBudget();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), networkBudget.timeoutMs);
+  if (elStatus && !immediate) {
+    elStatus.textContent = `최신 등락률 확인 중 · ${networkBudget.label}`;
+  }
+  const requestUrl = '/api/market/sector-summary' + (force ? '?refresh=' + Date.now() : '');
+  let request = null;
+  request = (async () => {
+    try {
+      const r = await fetch(requestUrl, {signal:controller.signal, cache:force ? 'reload' : 'default'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      renderSectorFlow(d);
+      if (!d.is_fallback && !d.is_placeholder) _writeSectorFlowClientCache(d);
+      if (elStatus) elStatus.textContent = d.is_stale ? '캐시 데이터 · 서버 갱신 중' : '최신 데이터';
+    } catch(e) {
+      // 이미 카드가 보이는 상태이므로 느린 네트워크에서 전체 영역을 오류로 바꾸지 않는다.
+      const hasVisibleData = !!((_sectorFlowSnapshot || {}).sectors || []).length;
+      if (!hasVisibleData) {
+        elCont.style.display = 'none';
+        elErr.style.display = 'block';
+      }
+      if (elStatus) elStatus.textContent = e && e.name === 'AbortError'
+        ? '응답 지연 · 표시 데이터 유지' : '갱신 실패 · 표시 데이터 유지';
+      console.warn('[sector-flow] 로드 실패:', e.message);
+    } finally {
+      clearTimeout(timeoutId);
+      if (_sectorFlowRequest === request) _sectorFlowRequest = null;
+    }
+  })();
+  _sectorFlowRequest = request;
+  return request;
 }
 
 // 페이지 수명 동안 hover·touch 선조회와 실제 클릭이 같은 Promise를 공유한다.
@@ -21059,13 +21230,22 @@ function _sectorTopRequestInfo(el) {
 function _fetchSectorTopStocks(el) {
   const info = _sectorTopRequestInfo(el);
   if (_sectorTopStockRequests.has(info.key)) return _sectorTopStockRequests.get(info.key);
+  const networkBudget = _sectorFlowNetworkBudget();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), networkBudget.timeoutMs);
   const request = (async () => {
-    const query = new URLSearchParams({sector:info.sector, upcode:info.upcode});
-    const response = await fetch('/api/market/sector-top-stocks?' + query.toString());
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    const data = await response.json();
-    if (data.error) throw new Error(data.error);
-    return data;
+    try {
+      const query = new URLSearchParams({sector:info.sector, upcode:info.upcode});
+      const response = await fetch('/api/market/sector-top-stocks?' + query.toString(), {
+        signal:controller.signal
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const data = await response.json();
+      if (data.error) throw new Error(data.error);
+      return data;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   })();
   _sectorTopStockRequests.set(info.key, request);
   request.catch(() => _sectorTopStockRequests.delete(info.key));
@@ -21161,7 +21341,7 @@ function renderSectorFlow(d) {
 
   cardsEl.innerHTML = sorted.map(_buildSectorCardHtml).join('');
   // 최초 렌더를 막지 않고 선두 2개 업종만 유휴 시간에 병렬 선조회한다.
-  _warmLeadingSectorCards(cardsEl);
+  if (!d.is_placeholder && !d.is_client_cache) _warmLeadingSectorCards(cardsEl);
   if (currentData && currentData.prediction_outlook) {
     renderPredictionSections(currentData, currentData.market === 'KRX');
     refreshPeerIndustryTabFromCache();
@@ -23477,7 +23657,7 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
                     _smx, _swr = 300, 600          # 장중: 5분
             except Exception:
                 _smx, _swr = 300, 600
-            cache_control = f"public, s-maxage={_smx}, stale-while-revalidate={_swr}"
+            cache_control = f"public, max-age=30, s-maxage={_smx}, stale-while-revalidate={_swr}"
 
         elif path in ("/api/stock", "/api/price", "/api/alert/quote"):
             # 실시간 현재가 포함 응답 — 캐시 금지.

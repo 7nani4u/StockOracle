@@ -465,6 +465,11 @@ def test_scalp_period_ui_explains_reanalysis_and_no_buy_approval():
     assert "미국 공식 달력 일일 교차검증 완료" in HTML
     assert "호가 스프레드·예상 슬리피지" in HTML
     assert "거래량 보정:" in HTML
+    assert 'class="scalp-rec-details"' in HTML
+    assert "상세 근거 보기" in HTML
+    assert "⛔ 차단 사유 ${hardBlockers.length}개" in HTML
+    assert "detailsWasOpen" in HTML
+    assert "scalp-rec-chip" in HTML
 
 
 def _base_kwargs(market="KRX", symbol="005930.KS", flags=None, signal_confidence=None):
@@ -538,17 +543,30 @@ def test_risk_scenarios_expose_five_ordered_tp_estimate_ranges():
             levels = scenario["tp_levels"]
             assert len(levels) == 5
             assert [level["price"] for level in levels] == sorted(level["price"] for level in levels)
-            assert scenario["tp_range"] == [levels[0]["price"], levels[-1]["price"]]
+            assert scenario["tp_range"] == [levels[0]["price_range"][0], levels[-1]["price_range"][1]]
             probabilities = [level["prob_pct"] for level in levels]
             assert probabilities == sorted(probabilities, reverse=True)
             for level in levels:
+                assert level["price_range"][0] <= level["price"] <= level["price_range"][1]
                 assert level["prob_low_pct"] <= level["prob_pct"] <= level["prob_high_pct"]
                 assert level["days_min"] <= level["avg_days"] <= level["days_max"]
+            assert all(
+                levels[index]["price_range"][1] < levels[index + 1]["price_range"][0]
+                for index in range(len(levels) - 1)
+            )
             assert "position_plan" not in scenario
             assert "failure_conditions" not in scenario
 
         assert result["conservative"]["tp_levels"][-1]["price"] < result["balanced"]["tp_levels"][0]["price"]
         assert result["balanced"]["tp_levels"][-1]["price"] < result["aggressive"]["tp_levels"][0]["price"]
+        assert (
+            result["conservative"]["tp_levels"][-1]["price_range"][1]
+            < result["balanced"]["tp_levels"][0]["price_range"][0]
+        )
+        assert (
+            result["balanced"]["tp_levels"][-1]["price_range"][1]
+            < result["aggressive"]["tp_levels"][0]["price_range"][0]
+        )
 
 
 def test_removed_risk_card_sections_are_not_rendered():
@@ -557,7 +575,7 @@ def test_removed_risk_card_sections_are_not_rendered():
     assert "이 시나리오가 실패할 수 있는 조건" not in HTML
     assert "목표가 레벨별 도달 가능성" in HTML
     assert "예측 목표 가격 범위" in HTML
-    for column in ("목표 가격", "수익률", "도달 가능성", "예상 거래일"):
+    for column in ("목표 가격 범위", "수익률", "도달 가능성", "예상 거래일"):
         assert f'role="columnheader">{column}</span>' in HTML
 
 
@@ -669,7 +687,8 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     assert "분석 흐름" not in forecast_html
     assert "📈 목표 가격 범위" not in forecast_html
     assert 'id="target-price-section"' not in forecast_html
-    assert forecast_html.count('id="ai-strategy-section"') == 1
+    assert 'id="ai-strategy-section"' not in forecast_html
+    assert "AI 진단 탭의 추가 근거" not in forecast_html
     assert 'class="prediction-context-inline"' in forecast_html
     assert 'id="prediction-context-section"' in forecast_html
     assert "시장·AI 판단 근거 상세 보기" not in forecast_html

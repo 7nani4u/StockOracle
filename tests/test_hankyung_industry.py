@@ -12,6 +12,7 @@ from market_briefing import hankyung_industry as provider
 def _reset_provider_cache(monkeypatch):
     monkeypatch.setattr(provider, "_SUMMARY_CACHE", (None, 0.0))
     monkeypatch.setattr(provider, "_TOP_STOCKS_CACHE", {})
+    monkeypatch.setattr(provider, "_SUMMARY_REFRESHING", False)
 
 
 def test_industry_summary_uses_industry_rate_not_average_of_top_stocks(monkeypatch):
@@ -68,6 +69,25 @@ def test_repeated_top_stock_request_uses_memory_cache(monkeypatch):
     assert first["performance"]["cache_hit"] is False
     assert second["performance"] == {"cache_hit": True, "total_ms": 0.0}
     assert len(calls) == 1
+
+
+def test_expired_summary_returns_immediately_and_schedules_background_refresh(monkeypatch):
+    _reset_provider_cache(monkeypatch)
+    monkeypatch.setattr(provider, "_SUMMARY_CACHE", ({"sectors": [{"name": "제조"}]}, 0.0))
+    scheduled = []
+    monkeypatch.setattr(provider, "_start_summary_background_refresh", lambda: scheduled.append(True) or True)
+    monkeypatch.setattr(
+        provider,
+        "_authorized_get_json",
+        lambda path: (_ for _ in ()).throw(AssertionError("stale request must not block on upstream")),
+    )
+
+    result = provider.fetch_kospi_industry_summary()
+
+    assert result["sectors"][0]["name"] == "제조"
+    assert result["is_stale"] is True
+    assert result["performance"]["refreshing"] is True
+    assert scheduled == [True]
 
 
 def test_static_industry_code_map_covers_all_24_sectors():

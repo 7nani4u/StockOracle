@@ -56,3 +56,30 @@ def test_sector_cards_keep_existing_tablet_and_mobile_breakpoints():
     assert "repeat(3,minmax(0,1fr))" in responsive
     assert "@media(max-width:480px)" in responsive
     assert "repeat(2,minmax(0,1fr))" in responsive
+
+
+def test_sector_flow_renders_cached_or_placeholder_cards_before_network_finishes():
+    html = index.HTML
+
+    assert "_sectorFlowPlaceholder()" in html
+    assert "_readSectorFlowClientCache()" in html
+    assert "renderSectorFlow(immediate)" in html
+    assert "renderSectorFlow(_sectorFlowPlaceholder())" in html
+    assert "_SECTOR_FLOW_CLIENT_TTL = 30 * 60 * 1000" in html
+    assert "setTimeout(() => controller.abort(), networkBudget.timeoutMs)" in html
+    assert "loadSectorFlow(true)" in html
+
+
+def test_sector_flow_timeout_adapts_to_browser_network_quality():
+    html = index.HTML
+
+    assert "function _sectorFlowNetworkBudget()" in html
+    assert "navigator.connection || navigator.mozConnection || navigator.webkitConnection" in html
+    assert "type === 'slow-2g' ? 20000" in html
+    assert "type === '2g' ? 16000" in html
+    assert "type === '3g' ? 12000" in html
+    assert "rtt >= 1500" in html
+    assert "downlink < 0.25" in html
+    assert "connection.saveData" in html
+    assert "Math.min(timeoutMs, 20000)" in html
+    assert "navigator.onLine === false" in html
