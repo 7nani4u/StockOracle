@@ -711,7 +711,7 @@ def test_forecast_overview_does_not_render_aggregate_confidence_card():
     assert ".prediction-confidence{" not in HTML
 
 
-def test_forecast_hides_requested_decision_and_risk_warning_cards():
+def test_forecast_restores_decision_card_but_keeps_removed_risk_warnings_hidden():
     overview_renderer = HTML.split("function renderPredictionSections", 1)[1].split(
         "function renderForecast", 1
     )[0]
@@ -719,8 +719,9 @@ def test_forecast_hides_requested_decision_and_risk_warning_cards():
         "function renderTechnicalSignals", 1
     )[0]
 
-    assert "현재 조건에서의 대응 판단" not in overview_renderer
-    assert 'class="prediction-decision"' not in overview_renderer
+    assert "현재 조건에서의 대응 판단" in overview_renderer
+    assert 'class="prediction-decision"' in overview_renderer
+    assert 'role="status"' in overview_renderer
     assert "1차 구간 이격 주의" not in forecast_renderer
     assert "추가 하락 위험:" not in forecast_renderer
     assert "bandDistanceHtml" not in forecast_renderer
@@ -730,7 +731,7 @@ def test_forecast_hides_requested_decision_and_risk_warning_cards():
     assert ".prediction-context-inline{" not in HTML
     assert "현재 앱에서 확보 가능한 가격·거래량·기술지표·수급·시장 데이터 기준" not in HTML
 
-    removed_decision_classes = (
+    restored_decision_classes = (
         "prediction-decision",
         "prediction-kicker",
         "prediction-badges",
@@ -738,9 +739,9 @@ def test_forecast_hides_requested_decision_and_risk_warning_cards():
         "prediction-chip",
         "prediction-summary",
     )
-    for class_name in removed_decision_classes:
-        assert f".{class_name}{{" not in HTML
-        assert f'class="{class_name}"' not in HTML
+    for class_name in restored_decision_classes:
+        assert f".{class_name}{{" in HTML
+        assert f'class="{class_name}"' in HTML
 
 
 def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():

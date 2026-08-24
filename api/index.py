@@ -15884,6 +15884,12 @@ input::placeholder{color:#484f58}
 .forecast-scenario-title{font-size:13px;margin-bottom:9px;color:#cdd9e5}
 .prediction-scenario-action{font-size:11px;line-height:1.55;color:#e6edf3;background:#0d1117;border-radius:7px;padding:7px 8px;margin-top:8px}
 .prediction-stack{display:flex;flex-direction:column;gap:14px}
+.prediction-decision{background:linear-gradient(135deg,#161b22,#111820);border:1px solid #30363d;border-radius:12px;padding:18px}
+.prediction-kicker{font-size:10px;color:#8b949e;letter-spacing:.06em;text-transform:uppercase;margin-bottom:7px}
+.prediction-badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:9px}
+.prediction-action{font-size:23px;font-weight:900;line-height:1.25;color:#e6edf3}
+.prediction-chip{font-size:10px;font-weight:800;border-radius:999px;padding:3px 8px;border:1px solid #30363d;background:#0d1117;white-space:nowrap}
+.prediction-summary{font-size:12px;color:#cdd9e5;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}
 .dynamic-rsi-timing{background:linear-gradient(135deg,#111b2c,#161b22);border:1px solid #388bfd55;border-radius:12px;padding:14px;min-width:0}
 .dynamic-rsi-timing-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px}
 .dynamic-rsi-timing-title{font-size:13px;font-weight:900;color:#e6edf3;margin-bottom:3px}
@@ -15979,6 +15985,7 @@ input::placeholder{color:#484f58}
   .indicator-grid{grid-template-columns:1fr}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
+  .prediction-action{font-size:20px}
   .two-col-grid{grid-template-columns:1fr}
   .prediction-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prediction-scenario-grid{grid-template-columns:1fr}
@@ -16073,6 +16080,7 @@ input::placeholder{color:#484f58}
   .step-result{font-size:12px}
   .pattern-item{font-size:12px;padding:12px}
   .flow-range-meta{flex-direction:column;align-items:flex-start}
+  .prediction-decision{padding:12px}
   .prediction-status-grid,.prediction-facts{grid-template-columns:1fr}
   .prediction-price-range{font-size:15px;white-space:normal}
   .risk-card{padding:12px}
@@ -19466,6 +19474,8 @@ function renderPredictionSections(d, isKrx) {
     return;
   }
 
+  const decision = p.decision;
+  const decisionColor = _predictionTone(decision.tone);
   const dynamicRsi = p.dynamic_rsi || d.dynamic_rsi || {};
   const timing = dynamicRsi.purchase_timing || {};
   const timingColor = _predictionTone(timing.tone || 'neutral');
@@ -19511,6 +19521,17 @@ function renderPredictionSections(d, isKrx) {
     </div>`;
   }).join('');
   overviewEl.innerHTML = `<div class="prediction-stack">
+    <div class="prediction-decision" style="border-color:${decisionColor}55" role="status" aria-label="현재 조건에서의 대응 판단">
+      <div>
+        <div class="prediction-kicker">현재 조건에서의 대응 판단</div>
+        <div class="prediction-badges">
+          <div class="prediction-action" style="color:${decisionColor}">${_escPrediction(decision.label)}</div>
+          <span class="prediction-chip" style="color:${decisionColor};border-color:${decisionColor}55">${_escPrediction(decision.direction)}</span>
+          <span class="prediction-chip" style="color:#8b949e">확정 예측 아님</span>
+        </div>
+        <div class="prediction-summary">${_escPrediction(decision.summary)}</div>
+      </div>
+    </div>
     ${dynamicTimingHtml}
     <div class="prediction-status-grid">${statusHtml}</div>
   </div>`;
