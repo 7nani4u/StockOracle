@@ -15885,12 +15885,6 @@ input::placeholder{color:#484f58}
 .forecast-scenario-title{font-size:13px;margin-bottom:9px;color:#cdd9e5}
 .prediction-scenario-action{font-size:11px;line-height:1.55;color:#e6edf3;background:#0d1117;border-radius:7px;padding:7px 8px;margin-top:8px}
 .prediction-stack{display:flex;flex-direction:column;gap:14px}
-.prediction-decision{background:linear-gradient(135deg,#161b22,#111820);border:1px solid #30363d;border-radius:12px;padding:18px}
-.prediction-kicker{font-size:10px;color:#8b949e;letter-spacing:.06em;text-transform:uppercase;margin-bottom:7px}
-.prediction-badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:9px}
-.prediction-action{font-size:23px;font-weight:900;line-height:1.25;color:#e6edf3}
-.prediction-chip{font-size:10px;font-weight:800;border-radius:999px;padding:3px 8px;border:1px solid #30363d;background:#0d1117;white-space:nowrap}
-.prediction-summary{font-size:12px;color:#cdd9e5;line-height:1.65;word-break:keep-all;overflow-wrap:anywhere}
 .dynamic-rsi-timing{background:linear-gradient(135deg,#111b2c,#161b22);border:1px solid #388bfd55;border-radius:12px;padding:14px;min-width:0}
 .dynamic-rsi-timing-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px}
 .dynamic-rsi-timing-title{font-size:13px;font-weight:900;color:#e6edf3;margin-bottom:3px}
@@ -16032,7 +16026,6 @@ input::placeholder{color:#484f58}
   .indicator-grid{grid-template-columns:1fr}
   .ai-top-grid,.ai-bottom-grid{grid-template-columns:1fr}
   .flow-detail-grid{grid-template-columns:1fr}
-  .prediction-action{font-size:20px}
 
   /* 헤더/타이포 */
   .page-header h2{font-size:18px}
@@ -16082,7 +16075,6 @@ input::placeholder{color:#484f58}
   .step-result{font-size:12px}
   .pattern-item{font-size:12px;padding:12px}
   .flow-range-meta{flex-direction:column;align-items:flex-start}
-  .prediction-decision{padding:12px}
   .prediction-status-grid,.prediction-facts{grid-template-columns:1fr}
   .prediction-price-range{font-size:15px;white-space:normal}
   .risk-card{padding:12px}
@@ -19478,8 +19470,6 @@ function renderPredictionSections(d, isKrx) {
     return;
   }
 
-  const decision = p.decision;
-  const decisionColor = _predictionTone(decision.tone);
   const dynamicRsi = p.dynamic_rsi || d.dynamic_rsi || {};
   const timing = dynamicRsi.purchase_timing || {};
   const timingColor = _predictionTone(timing.tone || 'neutral');
@@ -19525,17 +19515,6 @@ function renderPredictionSections(d, isKrx) {
     </div>`;
   }).join('');
   overviewEl.innerHTML = `<div class="prediction-stack">
-    <div class="prediction-decision" style="border-color:${decisionColor}55">
-      <div>
-        <div class="prediction-kicker">현재 조건에서의 대응 판단</div>
-        <div class="prediction-badges">
-          <div class="prediction-action" style="color:${decisionColor}">${_escPrediction(decision.label)}</div>
-          <span class="prediction-chip" style="color:${decisionColor};border-color:${decisionColor}55">${_escPrediction(decision.direction)}</span>
-          <span class="prediction-chip" style="color:#8b949e">확정 예측 아님</span>
-        </div>
-        <div class="prediction-summary">${_escPrediction(decision.summary)}</div>
-      </div>
-    </div>
     ${dynamicTimingHtml}
     <div class="prediction-status-grid">${statusHtml}</div>
     <div class="prediction-scope">${_escPrediction(p.data_scope || '')}</div>
@@ -19889,20 +19868,6 @@ function renderForecast(d, isKrx) {
       })() : '';
 
       const dr = bp.downside_risk || null;
-      const riskTone = dr && (dr.level === 'severe' || dr.level === 'high') ? '#f85149'
-                     : dr && dr.level === 'medium' ? '#d29922' : '#3fb950';
-      const downsideRiskHtml = dr ? `
-        <div style="background:#0d1117;border:1px solid ${riskTone}66;border-radius:10px;padding:12px 14px;margin-bottom:14px">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-            <div style="font-size:13px;font-weight:800;color:${riskTone}">추가 하락 위험: ${dr.label}</div>
-            <div style="font-size:12px;font-weight:800;color:${riskTone};background:${riskTone}1f;border-radius:4px;padding:2px 8px">${dr.score}점</div>
-          </div>
-          <div style="font-size:11px;color:#8b949e;margin-bottom:7px">매수 밴드는 기본 ATR 구간보다 ${dr.depth_shift_atr}ATR 낮춰 계산했습니다.</div>
-          <div style="font-size:11px;color:#cdd9e5;line-height:1.5">
-            ${(dr.reasons || []).slice(0, 4).map(r => `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:2px"><span style="color:${riskTone};flex-shrink:0">•</span><span>${r}</span></div>`).join('')}
-          </div>
-        </div>` : '';
-
       const er = d.event_risk || (dr && dr.event_risk) || null;
       const eventRiskHtml = er && er.score > 0 ? `
         <div style="background:#2d1515;border:1px solid #f8514966;border-radius:10px;padding:12px 14px;margin-bottom:14px">
@@ -19916,18 +19881,6 @@ function renderForecast(d, isKrx) {
         </div>` : '';
 
       // ── 추천 밴드 (active_bands 기준으로 필터링) ──
-      const bw = bp.band_distance_warning || null;
-      const bwGap = bw && Number.isFinite(Number(bw.gap_pct)) ? Math.abs(Number(bw.gap_pct)).toFixed(1) : null;
-      const bandDistanceHtml = bw ? `
-        <div style="background:${bw.level === 'severe' ? '#2d1515' : '#241a0a'};border:1px solid ${bw.level === 'severe' ? '#f8514966' : '#d2992255'};border-radius:10px;padding:10px 14px;margin-bottom:14px">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-            <div style="font-size:12px;font-weight:800;color:${bw.level === 'severe' ? '#f85149' : '#d29922'}">1차 구간 이격 주의</div>
-            ${bwGap ? `<div style="font-size:10px;color:#8b949e;background:#0d1117;border-radius:4px;padding:2px 7px">현재가 대비 -${bwGap}%</div>` : ''}
-          </div>
-          <div style="font-size:11px;color:#cdd9e5;line-height:1.5">${bw.message || '현재가와 1차 구간의 차이가 큽니다.'}</div>
-          <div style="font-size:10px;color:#8b949e;margin-top:3px">${bw.action || '반등 확인 전까지 관망이 우선입니다.'}</div>
-        </div>` : '';
-
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
 
@@ -20040,7 +19993,7 @@ function renderForecast(d, isKrx) {
 
       bpEl.innerHTML = stratBanner + artyHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
       if (buyRiskNotesEl) {
-        buyRiskNotesEl.innerHTML = bandDistanceHtml + eventRiskHtml + downsideRiskHtml;
+        buyRiskNotesEl.innerHTML = eventRiskHtml;
       }
     }
   }

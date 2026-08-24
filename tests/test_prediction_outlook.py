@@ -711,6 +711,35 @@ def test_forecast_overview_does_not_render_aggregate_confidence_card():
     assert ".prediction-confidence{" not in HTML
 
 
+def test_forecast_hides_requested_decision_and_risk_warning_cards():
+    overview_renderer = HTML.split("function renderPredictionSections", 1)[1].split(
+        "function renderForecast", 1
+    )[0]
+    forecast_renderer = HTML.split("function renderForecast", 1)[1].split(
+        "function renderTechnicalSignals", 1
+    )[0]
+
+    assert "현재 조건에서의 대응 판단" not in overview_renderer
+    assert 'class="prediction-decision"' not in overview_renderer
+    assert "1차 구간 이격 주의" not in forecast_renderer
+    assert "추가 하락 위험:" not in forecast_renderer
+    assert "bandDistanceHtml" not in forecast_renderer
+    assert "downsideRiskHtml" not in forecast_renderer
+    assert "buyRiskNotesEl.innerHTML = eventRiskHtml" in forecast_renderer
+
+    removed_decision_classes = (
+        "prediction-decision",
+        "prediction-kicker",
+        "prediction-badges",
+        "prediction-action",
+        "prediction-chip",
+        "prediction-summary",
+    )
+    for class_name in removed_decision_classes:
+        assert f".{class_name}{{" not in HTML
+        assert f'class="{class_name}"' not in HTML
+
+
 def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
     forecast_html = HTML.split('<div id="tab-forecast"', 1)[1].split('<!-- 뉴스 탭 -->', 1)[0]
     renderer = HTML.split("function renderPredictionSections", 1)[1].split(
