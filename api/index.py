@@ -13217,7 +13217,6 @@ def build_prediction_outlook(
         "ai_evidence": ai_lines[:6],
         "risk_triggers": risk_triggers[:6],
         "dynamic_rsi": dynamic_rsi or dynamic_rsi_snapshot(dd, market=market),
-        "data_scope": "현재 앱에서 확보 가능한 가격·거래량·기술지표·수급·시장 데이터 기준",
     }
 
 
@@ -15932,7 +15931,6 @@ input::placeholder{color:#484f58}
 .prediction-pattern-alert{font-size:11px;line-height:1.55;border-left:3px solid #d29922;background:#2d220055;border-radius:0 7px 7px 0;padding:8px 10px;margin-bottom:8px}
 .prediction-mini-list{font-size:10px;color:#8b949e;line-height:1.55}
 .prediction-scope{font-size:10px;color:#484f58;line-height:1.5;margin-top:9px}
-.prediction-context-inline{margin-top:12px;border-top:1px solid #30363d;padding-top:12px}
 
 /* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
 .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -16814,9 +16812,7 @@ input::placeholder{color:#484f58}
           <div class="card-title">🔮 핵심 판단과 현재 상태</div>
           <div id="scalp-entry-gate-section"></div>
           <div id="prediction-overview-section"></div>
-          <div class="prediction-context-inline">
-            <div id="prediction-context-section"></div>
-          </div>
+          <div id="prediction-context-section"></div>
         </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
         <div class="card forecast-entry-group">
@@ -19517,7 +19513,6 @@ function renderPredictionSections(d, isKrx) {
   overviewEl.innerHTML = `<div class="prediction-stack">
     ${dynamicTimingHtml}
     <div class="prediction-status-grid">${statusHtml}</div>
-    <div class="prediction-scope">${_escPrediction(p.data_scope || '')}</div>
   </div>`;
 
   scenariosEl.innerHTML = `<div class="prediction-scenario-grid">${(p.scenarios || []).map(sc => {

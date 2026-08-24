@@ -689,7 +689,7 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     assert 'id="target-price-section"' not in forecast_html
     assert 'id="ai-strategy-section"' not in forecast_html
     assert "AI 진단 탭의 추가 근거" not in forecast_html
-    assert 'class="prediction-context-inline"' in forecast_html
+    assert 'class="prediction-context-inline"' not in forecast_html
     assert 'id="prediction-context-section"' in forecast_html
     assert "시장·AI 판단 근거 상세 보기" not in forecast_html
     assert "<details" not in forecast_html
@@ -726,6 +726,9 @@ def test_forecast_hides_requested_decision_and_risk_warning_cards():
     assert "bandDistanceHtml" not in forecast_renderer
     assert "downsideRiskHtml" not in forecast_renderer
     assert "buyRiskNotesEl.innerHTML = eventRiskHtml" in forecast_renderer
+    assert "p.data_scope" not in overview_renderer
+    assert ".prediction-context-inline{" not in HTML
+    assert "현재 앱에서 확보 가능한 가격·거래량·기술지표·수급·시장 데이터 기준" not in HTML
 
     removed_decision_classes = (
         "prediction-decision",
