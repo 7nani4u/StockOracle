@@ -19,7 +19,7 @@ from .labels import SECTOR_EMOJI
 
 _BASE_URL = "https://markets.hankyung.com"
 _INDUSTRY_PAGE = f"{_BASE_URL}/index-info/industry"
-_TIMEOUT = (4, 15)
+_TIMEOUT = (2.5, 6)
 _TOKEN_TTL = 6 * 60 * 60
 _SUMMARY_TTL = 5 * 60
 _STOCKS_TTL = 5 * 60
@@ -43,6 +43,7 @@ _TOP_FETCH_LOCKS: dict[str, threading.Lock] = {}
 _TOKEN_CACHE: tuple[str | None, float] = (None, 0.0)
 _SUMMARY_CACHE: tuple[dict | None, float] = (None, 0.0)
 _TOP_STOCKS_CACHE: dict[str, tuple[dict, float]] = {}
+_SUMMARY_REFRESHING = False
 
 _SESSION = requests.Session()
 _SESSION.headers.update({
@@ -131,6 +132,32 @@ def _authorized_get_json(path: str):
     return response.json()
 
 
+def _start_summary_background_refresh() -> bool:
+    """만료 캐시를 즉시 제공한 뒤 한 스레드만 최신 데이터를 갱신한다."""
+    global _SUMMARY_REFRESHING
+    with _LOCK:
+        if _SUMMARY_REFRESHING:
+            return False
+        _SUMMARY_REFRESHING = True
+
+    def refresh() -> None:
+        global _SUMMARY_REFRESHING
+        try:
+            fetch_kospi_industry_summary(force=True)
+        except Exception as exc:
+            print(f"[sector-flow] background refresh failed: {exc}")
+        finally:
+            with _LOCK:
+                _SUMMARY_REFRESHING = False
+
+    threading.Thread(
+        target=refresh,
+        name="sector-summary-refresh",
+        daemon=True,
+    ).start()
+    return True
+
+
 def fetch_kospi_industry_summary(force: bool = False) -> dict:
     """코스피 업종 목록과 업종 자체 등락률을 반환한다."""
     global _SUMMARY_CACHE
@@ -139,6 +166,22 @@ def fetch_kospi_industry_summary(force: bool = False) -> dict:
         cached, expires = _SUMMARY_CACHE
         if not force and cached is not None and expires > now:
             return {**cached, "performance": {"cache_hit": True, "total_ms": 0.0}}
+        stale = cached if not force else None
+
+    # 메모리 캐시가 한 번이라도 준비됐다면 만료 시 외부 API를 기다리지 않는다.
+    # 현재 요청에는 stale 값을 즉시 반환하고 단일 daemon 스레드가 갱신한다.
+    if stale is not None:
+        refreshing = _start_summary_background_refresh()
+        return {
+            **stale,
+            "is_stale": True,
+            "performance": {
+                "cache_hit": True,
+                "stale": True,
+                "refreshing": refreshing,
+                "total_ms": 0.0,
+            },
+        }
 
     with _SUMMARY_FETCH_LOCK:
         now = time.monotonic()

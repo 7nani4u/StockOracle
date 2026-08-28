@@ -76,12 +76,39 @@ def _sector_ttl_seconds() -> int:
 
 # ── 내부 HTTP 헬퍼 ──────────────────────────────────────────────────────────
 
+def _get_with_retry(url: str, headers: dict, timeout: float = 5,
+                    retries: int = 2, backoff: float = 0.2) -> requests.Response:
+    """일시적 네트워크 실패에 대해 지수 백오프 재시도를 수행."""
+    from requests.exceptions import ConnectionError as _ConnErr
+    from requests.exceptions import HTTPError as _HTTPErr
+    from requests.exceptions import Timeout as _TimeoutErr
+
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout)
+            r.raise_for_status()
+            return r
+        except _TimeoutErr:
+            last_err = _TimeoutErr("timeout")
+            _time.sleep(backoff * (2 ** attempt))
+        except _ConnErr:
+            last_err = _ConnErr(f"conn {url}")
+            _time.sleep(backoff * (2 ** attempt))
+        except _HTTPErr as e:
+            # 4xx는 재시도해도 성공하지 못함 — 즉시 반환
+            if e.response is not None and 400 <= e.response.status_code < 500:
+                raise
+            last_err = e
+            _time.sleep(backoff * (2 ** attempt))
+    raise last_err if last_err else _ConnErr(f"unreachable {url}")
+
+
 def _get(url: str, referer: str | None = None) -> BeautifulSoup:
     headers = {"User-Agent": _UA, "Accept-Language": "ko-KR,ko;q=0.9"}
     if referer:
         headers["Referer"] = referer
-    r = requests.get(url, headers=headers, timeout=7)   # 15s → 7s
-    r.raise_for_status()
+    r = _get_with_retry(url, headers)
     ct = r.headers.get("content-type", "").lower()
     if "charset" not in ct:
         r.encoding = "euc-kr"
@@ -731,7 +758,7 @@ def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     symbol = f"{code}{primary}"
     for suffix in (primary, fallback):
         try:
-            cand = yf.Ticker(f"{code}{suffix}").history(period="1y", auto_adjust=False)
+            cand = yf.Ticker(f"{code}{suffix}").history(period="1y", auto_adjust=True)
         except Exception:
             cand = None
         if cand is not None and len(cand) >= 2:
@@ -758,9 +785,18 @@ def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     if high_52w > low_52w:
         pos_52w = round((last_close - low_52w) / (high_52w - low_52w) * 100, 1)
 
+    highs_20d = [float(x) for x in h["High"].tolist()[-20:]]
+    lows_20d  = [float(x) for x in h["Low"].tolist()[-20:]]
+    opens_20d = [float(x) for x in h["Open"].tolist()[-20:]]
+    vols_20d  = [float(v) for v in h["Volume"].tolist()[-20:]]
+
     return {
         "symbol":              symbol,
         "closes_20d":          [round(float(c), 2) for c in last20],
+        "highs_20d":           [round(float(x), 2) for x in highs_20d],
+        "lows_20d":            [round(float(x), 2) for x in lows_20d],
+        "opens_20d":           [round(float(x), 2) for x in opens_20d],
+        "volumes_20d":         [int(v) for v in vols_20d],
         "fifty_two_week_high": round(high_52w, 2),
         "fifty_two_week_low":  round(low_52w, 2),
         "last_close":          round(last_close, 2),
@@ -779,7 +815,7 @@ def fetch_proxy_changes(tickers: list[str]) -> dict[str, float]:
     out: dict[str, float] = {}
     for sym in tickers:
         try:
-            h = yf.Ticker(sym).history(period="5d", auto_adjust=False)
+            h = yf.Ticker(sym).history(period="5d", auto_adjust=True)
             if len(h) < 2:
                 continue
             prev = float(h.iloc[-2]["Close"])
@@ -927,8 +963,7 @@ def fetch_stock_list_snapshot(
     })
     proxy_changes = fetch_proxy_changes(all_proxies) if all_proxies else {}
 
-    result = []
-    for cfg in stock_configs:
+    def _fetch(cfg: dict) -> dict:
         snap = fetch_stock_snapshot(
             code               = cfg["code"],
             market             = cfg.get("market", "KOSPI"),
@@ -939,8 +974,15 @@ def fetch_stock_list_snapshot(
         for key in ("name", "sector", "owners", "leader", "is_etf"):
             if cfg.get(key) is not None:
                 snap[key] = cfg[key]
-        result.append(snap)
-    return result
+        return snap
+
+    if len(stock_configs) <= 1:
+        return [_fetch(cfg) for cfg in stock_configs]
+
+    # Preserve input order while overlapping independent network waits.
+    workers = min(6, len(stock_configs))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(_fetch, stock_configs))
 
 
 def fetch_stock_list_quote_only(

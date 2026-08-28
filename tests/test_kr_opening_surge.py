@@ -53,12 +53,12 @@ def _analysis():
 
 
 def test_krx_tick_size_respects_kospi_and_kosdaq_price_bands():
-    assert _krx_tick_size(999, "KOSPI") == 1
-    assert _krx_tick_size(1_000, "KOSPI") == 5
+    assert _krx_tick_size(1_999, "KOSPI") == 1
+    assert _krx_tick_size(2_000, "KOSPI") == 5
     assert _krx_tick_size(5_000, "KOSPI") == 10
-    assert _krx_tick_size(10_000, "KOSPI") == 50
+    assert _krx_tick_size(20_000, "KOSPI") == 50
     assert _krx_tick_size(50_000, "KOSPI") == 100
-    assert _krx_tick_size(100_000, "KOSPI") == 500
+    assert _krx_tick_size(200_000, "KOSPI") == 500
     assert _krx_tick_size(500_000, "KOSPI") == 1_000
     assert _krx_tick_size(500_000, "KOSDAQ") == 100
 

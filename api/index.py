@@ -17,9 +17,7 @@ StockOracle - Vercel Serverless Unified Handler
 [버그 수정 내역 v2]
 1. 거래량 차트 색상: hex 문자열에 .replace('rgb','rgba') 적용 불가 → rgba() 직접 사용
 2. RSI 기준선 dates[20] → dates가 20개 미만이면 IndexError → safe index 사용
-3. holt_winters_forecast seasonal 오류 방지 → 데이터 부족 시 linear fallback 강화
 4. route() path 매칭 일관성: /api/* trailing slash 정규화
-5. XGBoost 컬럼 dtype 명시 → pandas 3.x 경고 제거
 6. screener yf.download 멀티인덱스 처리 강화
 """
 
@@ -5501,15 +5499,15 @@ def _krx_tick_size(price: float, market: str = "KOSPI") -> int:
     """KRX 주권시장 호가가격단위. KOSDAQ은 10만원 이상도 100원 단위다."""
     p = max(0.0, _kr_surge_float(price))
     market_name = str(market or "").upper()
-    if p < 1_000:
+    if p < 2_000:
         return 1
     if p < 5_000:
         return 5
-    if p < 10_000:
+    if p < 20_000:
         return 10
     if p < 50_000:
         return 50
-    if p < 100_000:
+    if p < 200_000:
         return 100
     if "KOSDAQ" in market_name or market_name in {"KQ", "KOSDAQ_GLOBAL"}:
         return 100
@@ -5530,6 +5528,28 @@ def _round_krx_price(price: float, market: str = "KOSPI", mode: str = "nearest")
     else:
         rounded = round(units) * tick
     return int(max(tick, rounded))
+
+
+def _market_tick_size(price: float, market: str = "KRX") -> float:
+    if str(market).upper() == "US":
+        return 0.0001 if 0 < float(price or 0) < 1.0 else 0.01
+    return float(_krx_tick_size(price, market))
+
+
+def _round_market_price(price: float, market: str = "KRX", mode: str = "nearest") -> float | int:
+    """Round every actionable price to a valid exchange tick."""
+    value = max(0.0, _kr_surge_float(price))
+    if str(market).upper() != "US":
+        return _round_krx_price(value, market, mode)
+    tick = _market_tick_size(value, market)
+    units = value / tick
+    if mode == "floor":
+        rounded = math.floor(units) * tick
+    elif mode == "ceil":
+        rounded = math.ceil(units) * tick
+    else:
+        rounded = round(units) * tick
+    return round(max(tick, rounded), 4 if tick < 0.01 else 2)
 
 
 def _kr_surge_session(now: Optional[dt] = None) -> Dict[str, str]:
@@ -7663,50 +7683,215 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
 
     return score, steps, patterns, geo_patterns, ai_strategy
 
-def calc_probability(score: float, dd: Dict) -> tuple:
-    """
-    상승/하락 가능성 계산 (0–100%)
+BACKTEST_PRIOR = {
+    "KRX": {
+        "avg_atr_pct": 2.37, "band_width": 1.18, "prob_adj": -0.06,
+        "zones": {
+            "A": {"k": 0.45, "k1": 0.25, "k2": 0.65, "win": 49.5, "ret": 1.94, "loss_p": 50.5, "hold": 15.1, "floss": -1.61, "sharpe": 3.36},
+            "B": {"k": 0.875, "k1": 0.65, "k2": 1.10, "win": 60.4, "ret": 2.74, "loss_p": 39.6, "hold": 13.0, "floss": -1.11, "sharpe": 5.68},
+            "C": {"k": 1.40, "k1": 1.10, "k2": 1.70, "win": 74.3, "ret": 3.72, "loss_p": 25.7, "hold": 9.2, "floss": -0.79, "sharpe": 11.21},
+        },
+    },
+    "US": {
+        "avg_atr_pct": 1.83, "band_width": 0.92, "prob_adj": 0.05,
+        "zones": {
+            "A": {"k": 0.45, "k1": 0.25, "k2": 0.65, "win": 59.4, "ret": 1.49, "loss_p": 40.6, "hold": 14.0, "floss": -1.67, "sharpe": 3.07},
+            "B": {"k": 0.875, "k1": 0.65, "k2": 1.10, "win": 66.3, "ret": 2.00, "loss_p": 33.7, "hold": 12.3, "floss": -1.22, "sharpe": 4.86},
+            "C": {"k": 1.40, "k1": 1.10, "k2": 1.70, "win": 75.2, "ret": 2.70, "loss_p": 24.8, "hold": 9.0, "floss": -0.68, "sharpe": 9.18},
+        },
+    },
+}
 
-    계산 방식:
-    1. 기본값: score(0~100) 편차의 70%를 확률 편차로 선형 변환
-       - score=50 → 50%, score=70 → 64%, score=30 → 36%
-    2. RSI 보조 조정: 과매도(<30) +5pp 상승, 과매수(>70) -5pp 하락
-    3. 볼린저 밴드 위치: 하단 20% 이내 근접 → +3pp, 상단 80% 초과 → -3pp
-    4. 거래량 급증(>20일 평균 1.5배): 현재 추세 방향으로 추가 ±2pp
-    5. 최종 클리핑: [15%, 85%] — 극단값 방지
-    """
-    prob_up = 50.0 + (score - 50) * 0.70  # 점수 편차를 확률로 변환
 
-    def _last(k):
-        a = dd.get(k, [])
-        return float(a[-1]) if a and a[-1] is not None else None
+def _market_key(market: str) -> str:
+    return "US" if str(market).upper() == "US" else "KRX"
 
-    # RSI 보조 조정
-    rsi = _last("RSI") or 50.0
-    if rsi < 30:    prob_up += 5.0   # 과매도 → 반등 기대
-    elif rsi > 70:  prob_up -= 5.0   # 과매수 → 하락 압력
 
-    # 볼린저 밴드 내 현재가 위치
-    close = _last("Close")
-    bb_u  = _last("BB_Upper")
-    bb_l  = _last("BB_Lower")
-    if close and bb_u and bb_l and bb_u > bb_l:
-        pos = (close - bb_l) / (bb_u - bb_l)  # 0=하단, 1=상단
-        if pos < 0.2:    prob_up += 3.0   # 하단 근접 → 반등 기대
-        elif pos > 0.8:  prob_up -= 3.0   # 상단 근접 → 하락 경계
+def _calc_trend_score(dd: Dict | None) -> float:
+    def _last(key: str, default: float) -> float:
+        values = (dd or {}).get(key, [])
+        return float(values[-1]) if values and values[-1] is not None else default
 
-    # 거래량 급증: 추세 방향 강화
-    vols = dd.get("Volume", [])
-    if vols:
-        cur_vol = float(vols[-1] or 0)
-        avg_vol = float(np.mean([x for x in vols[-20:] if x])) if len(vols) >= 2 else cur_vol
-        if avg_vol > 0 and cur_vol > avg_vol * 1.5:
-            if score > 50:  prob_up += 2.0   # 상승 추세에 거래량 확인
-            else:           prob_up -= 2.0   # 하락 추세에 거래량 확인
+    close = _last("Close", 0.0)
+    ma20 = _last("MA20", close)
+    ma60 = _last("MA60", close)
+    rsi = _last("RSI", 50.0)
+    macd = _last("MACD", 0.0)
+    signal = _last("Signal_Line", 0.0)
+    adx = _last("ADX", 20.0)
+    score = 0.0
+    score += 0.25 if close > ma20 else -0.15
+    score += 0.25 if close > ma60 else -0.15
+    score += 0.20 if macd > signal else -0.10
+    score += 0.15 if 45 <= rsi <= 65 else (-0.20 if rsi > 75 else 0.05 if rsi < 35 else 0.0)
+    score += 0.15 if adx >= 25 else 0.0
+    return max(-1.0, min(1.0, score))
 
-    prob_up   = max(15.0, min(85.0, prob_up))  # 극단값 클리핑
-    prob_down = round(100.0 - prob_up, 1)
-    return round(prob_up, 1), prob_down
+
+def _similar_pattern_winrate(dd: Dict | None, atr_pct: float,
+                             horizon: int = 20) -> tuple[float, int]:
+    """Return causal similar-regime target hit rate and sample count."""
+    closes = list((dd or {}).get("Close") or [])
+    atrs = list((dd or {}).get("ATR") or [])
+    rsis = list((dd or {}).get("RSI") or [])
+    size = min(len(closes), len(atrs), len(rsis))
+    if size < horizon + 40:
+        return 0.55, 0
+    try:
+        cur_rsi = float(rsis[size - 1])
+    except (TypeError, ValueError):
+        return 0.55, 0
+
+    wins: list[bool] = []
+    start = max(20, size - 180)
+    for i in range(start, size - horizon):
+        try:
+            close = float(closes[i])
+            hist_atr = float(atrs[i])
+            hist_rsi = float(rsis[i])
+            future = [float(x) for x in closes[i + 1:i + 1 + horizon] if x is not None]
+        except (TypeError, ValueError):
+            continue
+        if close <= 0 or hist_atr <= 0 or len(future) < horizon:
+            continue
+        hist_atr_pct = hist_atr / close * 100.0
+        if abs(hist_rsi - cur_rsi) <= 8.0 and abs(hist_atr_pct - atr_pct) <= 0.7:
+            target_return = max(0.012, atr_pct / 100.0 * 0.8)
+            wins.append(max(future) / close - 1.0 >= target_return)
+    return (float(np.mean(wins)), len(wins)) if wins else (0.55, 0)
+
+
+def _probability(base_prob: float, atr_pct: float, trend_score: float,
+                 pattern_win: float, pattern_n: int, market: str) -> float:
+    prior = BACKTEST_PRIOR[_market_key(market)]
+    vol_ratio = atr_pct / max(float(prior["avg_atr_pct"]), 0.01)
+    vol_adj = -0.08 * max(0.0, vol_ratio - 1.0) + 0.03 * max(0.0, 1.0 - vol_ratio)
+    trend_adj = 0.10 * trend_score
+    sample_weight = min(pattern_n / 12.0, 1.0)
+    pattern_adj = (pattern_win - base_prob) * 0.35 * sample_weight
+    probability = base_prob + float(prior["prob_adj"]) + vol_adj + trend_adj + pattern_adj
+    return round(max(0.05, min(0.92, probability)) * 100.0, 1)
+
+
+def _prediction_quality_profile(dd: Dict | None, market: str = "KRX") -> Dict:
+    """Measure history and tradability without penalizing share price itself."""
+    closes = [float(x) for x in (dd or {}).get("Close", []) if x is not None and float(x) > 0]
+    volumes = [float(x) for x in (dd or {}).get("Volume", []) if x is not None and float(x) >= 0]
+    atrs = [float(x) for x in (dd or {}).get("ATR", []) if x is not None and float(x) > 0]
+    market_key = _market_key(market)
+    price = closes[-1] if closes else 0.0
+    count = len(closes)
+    history_score = min(1.0, count / 252.0)
+
+    paired = min(20, len(closes), len(volumes))
+    turnovers = [closes[-paired + i] * volumes[-paired + i] for i in range(paired)] if paired else []
+    average_turnover = float(np.mean(turnovers)) if turnovers else 0.0
+    turnover_floor = 1_000_000_000.0 if market_key == "KRX" else 5_000_000.0
+    if average_turnover > 0:
+        liquidity_score = max(0.0, min(1.0, 0.5 + math.log10(average_turnover / turnover_floor) * 0.35))
+    else:
+        liquidity_score = 0.0
+
+    raw_close_count = len((dd or {}).get("Close", []))
+    completeness = min(1.0, count / max(1, raw_close_count))
+    atr_pct = atrs[-1] / price * 100.0 if atrs and price > 0 else 0.0
+    volatility_score = 1.0 if 0.35 <= atr_pct <= (8.0 if market_key == "KRX" else 6.0) else 0.45
+    reliability = max(0.20, min(1.0,
+        history_score * 0.35 + liquidity_score * 0.35
+        + completeness * 0.20 + volatility_score * 0.10
+    ))
+    confidence_cap = round(55.0 + reliability * 37.0, 1)
+
+    if market_key == "KRX":
+        price_bucket = "under_5k" if price < 5_000 else "5k_20k" if price < 20_000 else "20k_100k" if price < 100_000 else "100k_500k" if price < 500_000 else "over_500k"
+    else:
+        price_bucket = "under_10" if price < 10 else "10_50" if price < 50 else "50_200" if price < 200 else "200_500" if price < 500 else "over_500"
+
+    warnings = []
+    if count < 120:
+        warnings.append(f"유효 일봉 {count}개로 중장기 검증 표본 부족")
+    if average_turnover < turnover_floor:
+        warnings.append("20일 평균 거래대금이 실전 체결 안정성 기준 미달")
+    if atr_pct and volatility_score < 1.0:
+        warnings.append(f"ATR {atr_pct:.1f}%가 일반 검증 구간 밖")
+    return {
+        "reliability": round(reliability, 3),
+        "confidence_cap": confidence_cap,
+        "history_bars": count,
+        "average_turnover": round(average_turnover, 2),
+        "turnover_floor": turnover_floor,
+        "price_bucket": price_bucket,
+        "atr_pct": round(atr_pct, 3),
+        "warnings": warnings,
+    }
+
+
+def _quality_adjust_probability(probability: float, quality: Dict) -> float:
+    reliability = float((quality or {}).get("reliability") or 0.20)
+    adjusted = 50.0 + (float(probability) - 50.0) * reliability
+    cap = float((quality or {}).get("confidence_cap") or 62.0)
+    return round(max(100.0 - cap, min(cap, adjusted)), 1)
+
+
+STOP_FIRST_TARGET_CALIBRATION = {
+    # prior, original mean prediction, retained signal slope, floor, cap, high-volatility prior adjustment
+    "KRX": {
+        "conservative": (74.2, 79.5, 0.40, 40.0, 82.0, 0.0),
+        "balanced": (47.9, 71.5, 0.30, 22.0, 62.0, -1.0),
+        "aggressive": (41.5, 56.9, 0.35, 15.0, 58.0, -6.0),
+        "pullback_main": (61.1, 77.7, 0.30, 25.0, 72.0, -4.0),
+        "pullback_ext": (41.6, 49.1, 0.40, 12.0, 56.0, -4.0),
+    },
+    "US": {
+        "conservative": (58.8, 73.8, 0.35, 30.0, 72.0, -5.0),
+        "balanced": (27.9, 53.2, 0.30, 12.0, 42.0, 0.0),
+        "aggressive": (22.9, 29.2, 0.45, 5.0, 38.0, 0.0),
+        "pullback_main": (34.8, 74.4, 0.25, 12.0, 48.0, -5.0),
+        "pullback_ext": (14.3, 47.1, 0.25, 5.0, 28.0, 0.0),
+    },
+}
+
+US_QUALIFIED_TARGET_PRIOR = {
+    # First chronological half of 100 US stocks, 90-trading-day walk-forward;
+    # trend >= 3, risk < 30, breakout >= 60. Keeping this training-only avoids
+    # using the later validation outcomes to inflate live confidence.
+    "balanced": 34.2,
+    "aggressive": 20.2,
+}
+
+
+def _calibrate_target_probability(probability: float, market: str, profile: str,
+                                  quality: Dict | None = None,
+                                  qualified_us_entry: bool = False) -> float:
+    """Calibrate target-hit confidence against stop-first walk-forward outcomes."""
+    market_key = _market_key(market)
+    prior, reference, slope, floor, cap, high_vol_adjust = STOP_FIRST_TARGET_CALIBRATION[market_key][profile]
+    atr_pct = float((quality or {}).get("atr_pct") or 0.0)
+    high_vol_threshold = 4.0 if market_key == "KRX" else 3.0
+    if atr_pct > high_vol_threshold:
+        prior += high_vol_adjust
+
+    calibrated = prior + (float(probability) - reference) * slope
+    reliability = float((quality or {}).get("reliability") or 0.20)
+    calibrated = prior + (calibrated - prior) * reliability
+    if market_key == "US" and qualified_us_entry and profile in US_QUALIFIED_TARGET_PRIOR:
+        qualified_prior = US_QUALIFIED_TARGET_PRIOR[profile]
+        calibrated = qualified_prior + (calibrated - prior) * 0.50
+    quality_cap = float((quality or {}).get("confidence_cap") or cap)
+    return round(max(floor, min(cap, quality_cap, calibrated)), 1)
+
+
+def calc_probability(score: float, dd: Dict, market: str = "KRX") -> tuple:
+    """Backtest prior, volatility, trend and similar-pattern directional probability."""
+    close = _last_float(dd, "Close", 0.0)
+    atr = _last_float(dd, "ATR", close * 0.02)
+    atr_pct = atr / close * 100.0 if close > 0 else BACKTEST_PRIOR[_market_key(market)]["avg_atr_pct"]
+    trend_score = _calc_trend_score(dd)
+    pattern_win, pattern_n = _similar_pattern_winrate(dd, atr_pct)
+    base_prob = max(0.20, min(0.80, 0.50 + (float(score) - 50.0) * 0.007))
+    prob_up = _probability(base_prob, atr_pct, trend_score, pattern_win, pattern_n, market)
+    prob_up = _quality_adjust_probability(prob_up, _prediction_quality_profile(dd, market))
+    return prob_up, round(100.0 - prob_up, 1)
 
 EVENT_RISK_KEYWORDS = {
     "earnings_negative": [
@@ -7740,16 +7925,27 @@ PREDICTION_LEARNING_GITHUB_TOKEN = (
     or os.getenv("GITHUB_TOKEN")
     or ""
 ).strip()
-PREDICTION_LEARNING_PATH = os.getenv(
-    "STOCKORACLE_PREDICTION_LOG",
+PREDICTION_LEARNING_REMOTE_READ = os.getenv(
+    "STOCKORACLE_LEARNING_REMOTE_READ", "0"
+).strip().lower() in {"1", "true", "yes"}
+PREDICTION_LEARNING_SYNC_ON_REQUEST = os.getenv(
+    "STOCKORACLE_LEARNING_SYNC_ON_REQUEST", "0"
+).strip().lower() in {"1", "true", "yes"}
+_prediction_log_default = (
+    os.path.join(tempfile.gettempdir(), "stockoracle_prediction_learning.jsonl")
+    if os.getenv("VERCEL") else
     os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         *PREDICTION_LEARNING_REPO_PATH.split("/"),
-    ),
+    )
+)
+PREDICTION_LEARNING_PATH = os.getenv(
+    "STOCKORACLE_PREDICTION_LOG",
+    _prediction_log_default,
 )
 _PREDICTION_LEARNING_EVENTS_CACHE: list[dict] | None = None
 _PREDICTION_LEARNING_EVENTS_CACHE_TS: float = 0.0
-_PREDICTION_LEARNING_EVENTS_CACHE_TTL: float = 60.0
+_PREDICTION_LEARNING_EVENTS_CACHE_TTL: float = 600.0
 
 def calc_event_risk(symbol: str, market: str, news_items: list | None = None,
                     disclosures: list | None = None, signal_confidence: Dict | None = None) -> Dict:
@@ -7837,7 +8033,10 @@ def _read_prediction_learning_events() -> list[dict]:
             now - _PREDICTION_LEARNING_EVENTS_CACHE_TS < _PREDICTION_LEARNING_EVENTS_CACHE_TTL):
         return list(_PREDICTION_LEARNING_EVENTS_CACHE)
 
-    github_rows = _parse_prediction_learning_jsonl(_github_read_prediction_learning_text() or "")
+    github_rows = (
+        _parse_prediction_learning_jsonl(_github_read_prediction_learning_text() or "")
+        if PREDICTION_LEARNING_REMOTE_READ else []
+    )
     local_rows = _parse_prediction_learning_jsonl(_read_local_prediction_learning_text() or "")
     if not github_rows:
         rows = local_rows
@@ -7876,7 +8075,8 @@ def _append_prediction_learning_event(row: Dict) -> None:
         rows.append(row)
         _PREDICTION_LEARNING_EVENTS_CACHE = rows[-5000:]
         _PREDICTION_LEARNING_EVENTS_CACHE_TS = time.monotonic()
-    _github_append_prediction_learning_line(line)
+    if PREDICTION_LEARNING_SYNC_ON_REQUEST:
+        _github_append_prediction_learning_line(line)
 
 def _parse_prediction_learning_jsonl(text: str) -> list[dict]:
     rows = []
@@ -8422,6 +8622,12 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         + (12.0 if near_resistance else -8.0)
         - (15.0 if rsi > 75 else 0.0)
     )), 1)
+    _us_entry_qualified = (
+        market == "US"
+        and trend >= 3
+        and downside_points < 30
+        and breakout_probability_pct >= 60.0
+    )
 
     # 기존 ATR 배수 체계(1.2 / 2.5 / 4.5)를 "현실적으로 도달 가능한 범위"의 기준선으로
     # 유지하고, 구조적 앵커(저항·피보나치 확장 등)는 이 기준선의 ATR 거리 대비
@@ -8545,19 +8751,16 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         "normal":      "→ 변동성 안정 구간"
     }[vol_trend]
 
-    # ── TP 확률 산출 (2025~2026 KRX 30종목·US 30종목 1년 실데이터 백테스트로 보정) ──
-    # scripts/backtest_target_price_accuracy.py 결과, 기존 기준점(0.8 ATR=68.3/80.2%,
-    # ATR당 12pp 감쇄)은 실제 도달률 대비 전 구간에서 과소평가(최대 −62pp, 공격적/KRX)
-    # 되어 있었다. 보수적·공격적 두 지점의 실측 적중률로 절편/감쇄율을 다시 선형 회귀한
-    # 뒤, 특정 구간(2025~2026 상승장)에 과최적화되지 않도록 실측값의 ~70%만 반영했다.
-    #   KRX: cons 0.99ATR→95.9% 적중 / agg 5.12ATR→78.5% 적중 (회귀: 절편 96.7, 감쇄 4.2pp)
-    #   US : cons 1.23ATR→91.1% 적중 / agg 6.06ATR→48.4% 적중 (회귀: 절편 94.9, 감쇄 8.8pp)
+    # 기본 거리 감쇄 후, 30+30종목·90거래일·다음 시가 진입·손절 우선
+    # 워크포워드 실현률로 다시 보정한다. 단순 고가 터치율만 쓴 과거 절편은 실제 매매
+    # 성공률을 크게 과대평가했으므로 최종 확률에는 신호 강도의 일부만 유지한다.
     _is_us    = (market == "US")
     _tp1_base = 84.0 if _is_us else 88.0
     _decay_rate = 9.5 if _is_us else 6.0
     _tp_mom   = (trend - 2) * 3.0          # 추세 강도별 ±6pp
     _tp_rsi   = 4.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _base_days = 12.3 if _is_us else 13.0  # Zone B 평균 보유일 기준
+    _target_quality = _prediction_quality_profile(dd, market)
     def _make_tp_from_tgt(tgt_range, profile: str, previous_ceiling: float | None = None):
         """시나리오 전용 가격 구간을 TP1~TP5로 나누고 도달 가능성·기간을 산출한다.
 
@@ -8565,7 +8768,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         TP5보다 높은 가격에서 시작한다. 따라서 세 시나리오의 TP 가격은 서로 겹치지 않는다.
         """
         _, hi = tgt_range[0], tgt_range[1]
-        price_tick = 10 ** (-rnd)
+        price_tick = _market_tick_size(price, market)
         # 목표 중심값뿐 아니라 새로 제공하는 목표 가격 범위까지 서로 겹치지 않도록
         # 시나리오 경계에 최소 0.30 ATR 간격을 둔다.
         boundary_gap = max(price_tick * 2, atr * 0.30, price * 0.0010)
@@ -8578,10 +8781,10 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         minimum_span = max(atr * 0.5, price * 0.005, price_tick * 5)
         final_price = max(hi, segment_start + minimum_span)
         total_move = final_price - segment_start
-        tp_prices = [round(segment_start + total_move * progress, rnd) for progress in progress_steps]
+        tp_prices = [_round_market_price(segment_start + total_move * progress, market) for progress in progress_steps]
         for index in range(1, len(tp_prices)):
             if tp_prices[index] <= tp_prices[index - 1]:
-                tp_prices[index] = round(tp_prices[index - 1] + price_tick, rnd)
+                tp_prices[index] = _round_market_price(tp_prices[index - 1] + price_tick, market, "ceil")
 
         adx_adjust = min(5.0, max(0.0, adx - 20.0) * 0.35)
         if trend <= 1:
@@ -8608,10 +8811,13 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             decay = max(0.0, dist_atr - 0.8) * _decay_rate
             raw_prob = (_tp1_base - decay + _tp_mom + _tp_rsi + adx_adjust
                         + volume_adjust + risk_adjust + volatility_adjust + profile_adjust)
-            prob = min(95.0, max(8.0, raw_prob))
+            prob = _calibrate_target_probability(
+                raw_prob, market, profile, _target_quality,
+                qualified_us_entry=_us_entry_qualified,
+            )
             if index:
                 prob = min(prob, previous_prob - 1.0)
-            prob = round(max(8.0, prob), 1)
+            prob = round(max(5.0, prob), 1)
             previous_prob = prob
 
             # 기간은 거래일 기준 중앙 추정치와 변동성·이벤트 위험을 반영한 범위로 제공한다.
@@ -8630,7 +8836,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             prob_margin += min(3.0, max(0.0, dist_atr - 2.0) * 0.5)
             ret_pct = round((tp_price - price) / price * 100, 2) if price > 0 else 0.0
             result.append({
-                "price":             round(tp_price, rnd),
+                "price":             _round_market_price(tp_price, market),
                 "return_pct":        ret_pct,
                 "prob_pct":          prob,
                 "prob_low_pct":      round(max(5.0, prob - prob_margin), 1),
@@ -8688,7 +8894,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         if not tp_levels:
             return tp_levels
         centers = [float(level["price"]) for level in tp_levels]
-        price_tick = 10 ** (-rnd)
+        price_tick = _market_tick_size(price, market)
         for index, level in enumerate(tp_levels):
             center = centers[index]
             left_gap = center - centers[index - 1] if index else (
@@ -8712,7 +8918,10 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             high = min(upper_boundary, center + uncertainty)
             if high < low:
                 low = high = center
-            level["price_range"] = [round(low, rnd), round(high, rnd)]
+            level["price_range"] = [
+                _round_market_price(low, market, "floor"),
+                _round_market_price(high, market, "ceil"),
+            ]
             level["price_range_basis"] = "ATR 0.12배·인접 목표 간격·가격 0.25% 중 최소 폭"
         return tp_levels
 
@@ -8724,7 +8933,35 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         return next((level["prob_pct"] for level in tp_levels if level["price"] >= target_low),
                     tp_levels[-1]["prob_pct"] if tp_levels else None)
 
-    r = lambda v: round(v, rnd)
+    def _scenario_entry_metadata(profile: str, tp_levels: list[Dict], target_low: float,
+                                 reward_pct: float, stop_pct: float) -> Dict:
+        confidence = _target_zone_confidence(tp_levels, target_low)
+        probability = float(confidence or 0.0) / 100.0
+        round_trip_cost = 0.15 if market == "US" else 0.40
+        expected_value = probability * reward_pct + (1.0 - probability) * stop_pct - round_trip_cost
+        is_us_growth_profile = market == "US" and profile in {"balanced", "aggressive"}
+        eligible = not is_us_growth_profile or _us_entry_qualified
+        if eligible:
+            status = "진입 조건 충족"
+        else:
+            status = "신규 진입 보류: 추세·하락위험·돌파 조건 미충족"
+        return {
+            "confidence": confidence,
+            "expected_value_pct": round(expected_value, 2),
+            "entry_eligible": eligible,
+            "entry_status": status,
+        }
+
+    cons_entry = _scenario_entry_metadata(
+        "conservative", cons_tp, cons_tgt_range[0], cons_ret, cons_stp_pct,
+    )
+    bal_entry = _scenario_entry_metadata(
+        "balanced", bal_tp, bal_tgt_range[0], bal_ret, bal_stp_pct,
+    )
+    agg_entry = _scenario_entry_metadata(
+        "aggressive", agg_tp, agg_tgt_range[0], agg_ret, agg_stp_pct,
+    )
+    r = lambda v: _round_market_price(v, market)
     return {
         "conservative": {
             "label": "보수적",
@@ -8739,7 +8976,10 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_stp": cons_stp_mul,
             "interpretation": f"BB 하단 참조 손절 · 단기 반등 목표 (R/R {cons_rr:.1f}:1)",
             "target_basis": cons_basis,
-            "target_confidence_pct": _target_zone_confidence(cons_tp, cons_tgt_range[0]),
+            "target_confidence_pct": cons_entry["confidence"],
+            "expected_value_pct": cons_entry["expected_value_pct"],
+            "entry_eligible": cons_entry["entry_eligible"],
+            "entry_status": cons_entry["entry_status"],
             "tp_range": [cons_tp[0]["price_range"][0], cons_tp[-1]["price_range"][1]],
             "tp_levels": cons_tp,
         },
@@ -8756,7 +8996,10 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_stp": bal_stp_mul,
             "interpretation": f"MA20 지지 손절 · 중기 추세 목표 (R/R {bal_rr:.1f}:1)",
             "target_basis": bal_basis,
-            "target_confidence_pct": _target_zone_confidence(bal_tp, bal_tgt_range[0]),
+            "target_confidence_pct": bal_entry["confidence"],
+            "expected_value_pct": bal_entry["expected_value_pct"],
+            "entry_eligible": bal_entry["entry_eligible"],
+            "entry_status": bal_entry["entry_status"],
             "tp_range": [bal_tp[0]["price_range"][0], bal_tp[-1]["price_range"][1]],
             "tp_levels": bal_tp,
         },
@@ -8773,7 +9016,10 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "atr_mul_stp": agg_stp_mul,
             "interpretation": f"BB 상단 참조 목표 · 추세 지속 시 최대 수익 (R/R {agg_rr:.1f}:1)",
             "target_basis": agg_basis,
-            "target_confidence_pct": _target_zone_confidence(agg_tp, agg_tgt_range[0]),
+            "target_confidence_pct": agg_entry["confidence"],
+            "expected_value_pct": agg_entry["expected_value_pct"],
+            "entry_eligible": agg_entry["entry_eligible"],
+            "entry_status": agg_entry["entry_status"],
             "breakout_probability_pct": breakout_probability_pct,
             "tp_range": [agg_tp[0]["price_range"][0], agg_tp[-1]["price_range"][1]],
             "tp_levels": agg_tp,
@@ -8781,6 +9027,14 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         "vol_state": vol_state_txt,
         "vol_trend": vol_trend_txt,
         "atr_pct": round(atr_pct, 2),
+        "model_context": {
+            "trend_score": trend,
+            "downside_risk_score": min(100, downside_points),
+            "downside_risk_level": downside_risk_level,
+            "breakout_probability_pct": breakout_probability_pct,
+            "volatility_expanding": vol_trend == "expanding",
+            "us_entry_qualified": _us_entry_qualified,
+        },
         "breakout_probability_pct": breakout_probability_pct,
         "downside_risk_level": downside_risk_level,
         "downside_risk_score": min(100, downside_points),
@@ -10452,22 +10706,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # ── 백테스트 기반 가격 밴드 (A/B/C) 산출 ─────────────────────────
     # 근거: tools/simulate_backtest.py (seed=2718, N=252, KRX/US 각 8종목 동일가중)
     # ATR 배수별 20일 TP/SL 시뮬레이션 → 진입 구간별 승률·기대수익·Sharpe 도출
-    _BT_Z = {
-        "KRX": {
-            "A": {"k": 0.45, "k1": 0.25, "k2": 0.65, "win": 49.5, "ret": 1.94, "loss_p": 50.5, "hold": 15.1, "floss": -1.61, "sharpe": 3.36},
-            "B": {"k": 0.875,"k1": 0.65, "k2": 1.10, "win": 60.4, "ret": 2.74, "loss_p": 39.6, "hold": 13.0, "floss": -1.11, "sharpe": 5.68},
-            "C": {"k": 1.40, "k1": 1.10, "k2": 1.70, "win": 74.3, "ret": 3.72, "loss_p": 25.7, "hold": 9.2,  "floss": -0.79, "sharpe": 11.21},
-        },
-        "US": {
-            "A": {"k": 0.45, "k1": 0.25, "k2": 0.65, "win": 59.4, "ret": 1.49, "loss_p": 40.6, "hold": 14.0, "floss": -1.67, "sharpe": 3.07},
-            "B": {"k": 0.875,"k1": 0.65, "k2": 1.10, "win": 66.3, "ret": 2.00, "loss_p": 33.7, "hold": 12.3, "floss": -1.22, "sharpe": 4.86},
-            "C": {"k": 1.40, "k1": 1.10, "k2": 1.70, "win": 75.2, "ret": 2.70, "loss_p": 24.8, "hold": 9.0,  "floss": -0.68, "sharpe": 9.18},
-        },
-    }
-    _mkt = market if market in _BT_Z else "KRX"
-    _btz = _BT_Z[_mkt]
+    _mkt = _market_key(market)
+    _prior = BACKTEST_PRIOR[_mkt]
+    _btz = _prior["zones"]
     # 한국: 수급 급등락 반영 → 밴드 폭 18% 확대 / 미국: 추세 안정 → 8% 축소
-    _bw = (1.18 if _mkt == "KRX" else 0.92) * float(_profile.get("band_width_mult") or 1.0)
+    _bw = float(_prior["band_width"]) * float(_profile.get("band_width_mult") or 1.0)
 
     # 추세 강도(0~4) + RSI 기반 확률 보정
     # 백테스트 기저 확률에 모멘텀·기술적 상태를 반영한 조정치 적용
@@ -10477,14 +10720,20 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         1 if macd > sig_line else 0,
         1 if rsi > 50 else 0,
     ])
-    _mom_adj  = (_trend - 2) * 2.5   # 추세 중립(2)에서 ±5pp
-    _rsi_adj2 = 5.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _risk_penalty = min(22.0, downside_score * 0.22)
     _stat_adj = float(_profile.get("prob_adj_pp") or 0.0)
+    _trend_model = _calc_trend_score(dd)
+    _pattern_win, _pattern_n = _similar_pattern_winrate(dd, atr_pct)
+    _model_quality = _prediction_quality_profile(dd, _mkt)
 
     def _ap(base_prob):
-        """백테스트 기저확률 + 모멘텀·RSI 보정 → 최종 확률 (5~95% 클램프)"""
-        return round(min(95.0, max(5.0, base_prob + _mom_adj + _rsi_adj2 + _stat_adj - _risk_penalty)), 1)
+        """백테스트 승률에 변동성·추세·유사 패턴·하락 위험을 보정."""
+        probability = _probability(
+            float(base_prob) / 100.0, atr_pct, _trend_model,
+            _pattern_win, _pattern_n, _mkt,
+        )
+        probability = _quality_adjust_probability(probability, _model_quality)
+        return round(_clip(probability + _stat_adj - _risk_penalty, 5.0, 95.0), 1)
 
     # ── 밴드 내부 5단계 매수 가격·도달 확률·예상 기간 ────────────────────
     # 가격은 기존 밴드의 상·하단을 절대 벗어나지 않는다. 내부 3개 가격은
@@ -10611,15 +10860,16 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         prices[0], prices[-1] = hi, lo
 
         # 반올림 뒤에도 상단→하단 순서를 보존하고 기존 밴드 범위에 고정한다.
-        rounded_prices = [round(_clip(price, lo, hi), rnd) for price in prices]
-        rounded_prices[0], rounded_prices[-1] = round(hi, rnd), round(lo, rnd)
-        price_epsilon = 10 ** (-rnd)
+        rounded_prices = [_round_market_price(_clip(price, lo, hi), market) for price in prices]
+        rounded_prices[0] = _round_market_price(hi, market, "floor" if is_recommended else "ceil")
+        rounded_prices[-1] = _round_market_price(lo, market, "floor")
+        price_epsilon = _market_tick_size(last_price, market)
         for _idx in range(1, len(rounded_prices)):
             rounded_prices[_idx] = min(
                 rounded_prices[_idx],
-                round(rounded_prices[_idx - 1] - price_epsilon, rnd),
+                _round_market_price(rounded_prices[_idx - 1] - price_epsilon, market, "floor"),
             )
-        rounded_prices[-1] = round(lo, rnd)
+        rounded_prices[-1] = _round_market_price(lo, market, "floor")
 
         # 단일 지정가 대신 각 단계가 담당하는 실제 주문 허용 범위를 만든다.
         # 인접 단계의 중간값을 경계로 사용해 5개 범위가 겹치지 않으면서
@@ -10628,8 +10878,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         for _idx, center in enumerate(rounded_prices):
             upper = hi if _idx == 0 else (rounded_prices[_idx - 1] + center) / 2.0
             lower = lo if _idx == len(rounded_prices) - 1 else (center + rounded_prices[_idx + 1]) / 2.0
-            lower = round(_clip(lower, lo, hi), rnd)
-            upper = round(_clip(upper, lo, hi), rnd)
+            lower = _round_market_price(_clip(lower, lo, hi), market, "ceil")
+            upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
             if lower > upper:
                 lower, upper = upper, lower
             step_price_ranges.append([lower, upper])
@@ -10833,6 +11083,14 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # 급등 전 옛 저점 등 더 이상 유효하지 않은 지지대일 가능성이 높다 — 이 경우
     # 지지선 기반 클램프를 적용하면 밴드가 현재가에서 비현실적으로 멀어지므로 건너뛴다.
     _support_is_near = bool(strong_support) and strong_support >= last_price - atr_d * 4.0
+
+    def _ensure_orderable_band(lo: float, hi: float, upper_mode: str) -> tuple[float, float]:
+        rounded_hi = float(_round_market_price(hi, market, upper_mode))
+        rounded_lo = float(_round_market_price(lo, market, "floor"))
+        tick = _market_tick_size(rounded_hi, market)
+        rounded_lo = min(rounded_lo, rounded_hi - tick * 4)
+        rounded_lo = float(_round_market_price(max(tick, rounded_lo), market, "floor"))
+        return rounded_lo, rounded_hi
     for _zn in ["A", "B", "C"]:
         _z = _btz[_zn]
         _k1 = _z["k1"] + _base_depth_offset + depth_shift
@@ -10850,11 +11108,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             _hi = min(_hi, strong_support - _support_gap)
             _lo = min(_lo, _hi - _min_width)
         _lo, _hi = _floor_band(_lo, _hi)
+        _lo, _hi = _ensure_orderable_band(_lo, _hi, "ceil")
         _win = _ap(_z["win"]); _los = round(100.0 - _win, 1)
         _band_allocation = round((6 if _zn == "A" else 4 if _zn == "B" else 3) * _allocation_scale, 1)
         aggressive_bands.append({
             "band": _zn,
-            "range": [round(_lo, rnd), round(_hi, rnd)],
+            "range": [_lo, _hi],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
             "steps": _build_buy_steps(_lo, _hi, False, _band_allocation),
@@ -10960,11 +11219,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 _hi = min(_hi, max(_band_floor + _width, _max_core_hi))
                 _lo = max(_band_floor, _hi - _width)
         _lo, _hi = _floor_band(_lo, _hi)
+        _lo, _hi = _ensure_orderable_band(_lo, _hi, "floor")
         _win = _ap(_z["win"])
         _band_allocation = round((22 if _zn == "A" else 35 if _zn == "B" else 18) * _allocation_scale, 1)
         recommended_bands.append({
             "band": _zn,
-            "range": [round(_lo, rnd), round(_hi, rnd)],
+            "range": [_lo, _hi],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
             "steps": _build_buy_steps(_lo, _hi, True, _band_allocation),
@@ -11158,9 +11418,10 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     arty_smma_fractal = calc_arty_smma_fractal(
         arty_dd or dd, last_price, market=market
     )
-    r = lambda v: round(v, rnd)
+    r = lambda v: _round_market_price(v, market)
     return {
         "current": r(last_price),
+        "model_quality": _model_quality,
         # 기존 단일 구간 (백워드 호환)
         "aggressive": {
             "range":  [r(agg_low), r(agg_high)],
@@ -11552,18 +11813,22 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
     ext_basis = [ext_basis_lbl, f"거래량 {vol_ratio_pb:.1f}배(평균 대비) · " +
                  ("추세 지속 확인" if trend_cnt_pb >= 3 else "돌파 후 거래량 재확인 필요")]
 
-    # 신뢰도 계수는 scripts/backtest_target_price_accuracy.py의 KRX 30·US 30종목
-    # 1년 백테스트로 보정했다. 1차(main)는 원래도 준수하게 보정돼 있었으나(오차 +5~9pp,
-    # 과소평가) 절편을 소폭 상향했다. 2차(ext)는 "돌파 확인" 보너스가 실제로는 반대로
-    # 작용했다(고신뢰 구간 예측 66% vs 실제 적중 39% — 과대평가) — 확인 여부에 따른
-    # 급격한 가중을 없애고 범위를 좁혀(20~55%) 과신을 방지했다.
-    main_confidence = round(min(92.0, max(15.0,
+    # 기술 신호 원점수는 순위 정보로만 사용하고, 실제 다음 시가 진입·손절 우선
+    # 워크포워드 실현률을 기준으로 최종 목표 도달 신뢰도를 보정한다.
+    main_confidence_raw = round(min(92.0, max(15.0,
         40.0 + quality * 0.40 + trend_cnt_pb * 7.0 + (vol_ratio_pb - 1.0) * 8.0
         - (10.0 if rsi_val > 72 else 0.0)
     )), 1)
-    ext_confidence = round(min(55.0, max(20.0,
+    ext_confidence_raw = round(min(55.0, max(20.0,
         28.0 + quality * 0.22 + trend_cnt_pb * 4.0 + (vol_ratio_pb - 1.0) * 3.0
     )), 1)
+    target_quality = _prediction_quality_profile(dd, market)
+    main_confidence = _calibrate_target_probability(
+        main_confidence_raw, market, "pullback_main", target_quality,
+    )
+    ext_confidence = _calibrate_target_probability(
+        ext_confidence_raw, market, "pullback_ext", target_quality,
+    )
 
     # 목표가: 앙상블 예측이 있으면 우선하되, 구조적 분석 대비 과도하게 괴리되면 현실성 있게 보정
     forecast_min = None; forecast_max = None; forecast_source = "구조적 분석 기반 (피보나치 확장 + 스윙 저항 + 거래량·추세 반영)"
@@ -12139,148 +12404,17 @@ def _normalize_target_output(target: Dict, current_price: float, market: str = "
         if lo is None or hi is None:
             return
         lo, hi = min(lo, hi), max(lo, hi)
-        obj["min_price"] = round(lo, rnd)
-        obj["max_price"] = round(hi, rnd)
+        obj["min_price"] = _round_market_price(lo, market, "floor")
+        obj["max_price"] = _round_market_price(hi, market, "ceil")
         obj["min_return"] = round((lo - current_price) / current_price * 100.0, 1)
         obj["max_return"] = round((hi - current_price) / current_price * 100.0, 1)
 
     _normalize_pair(target)
-    target["base_price"] = round(current_price, rnd)
+    target["base_price"] = _round_market_price(current_price, market)
     for row in target.get("long_term") or []:
         if isinstance(row, dict):
             _normalize_pair(row)
     return target
-
-def holt_winters_forecast(dd: Dict, days: int = 30):
-    """
-    Lightweight implementation of Double Exponential Smoothing (Holt's Linear Trend)
-    Replaces statsmodels to reduce dependency size.
-    """
-    try:
-        closes = [float(c) for c in dd.get("Close", []) if c is not None]
-        dates = dd.get("Date", [])
-        if len(closes) < 30: return None
-        
-        # ── Holt's Double Exponential Smoothing 파라미터 ──────────────
-        # alpha=0.3: 레벨 평활 (낮을수록 안정적, 노이즈 저감)
-        # beta=0.05: 트렌드 평활 (낮을수록 과도한 기울기 방지)
-        alpha = 0.3
-        beta  = 0.05
-
-        # Initialization
-        level = closes[0]
-        trend = closes[1] - closes[0]
-
-        # Fit
-        for i in range(1, len(closes)):
-            last_level = level
-            level = alpha * closes[i] + (1 - alpha) * (level + trend)
-            trend = beta * (level - last_level) + (1 - beta) * trend
-
-        # Forecast
-        forecast = []
-        last_d = datetime.datetime.strptime(dates[-1], "%Y-%m-%d") if dates else datetime.datetime.now()
-        future_dates = []
-        d = last_d
-
-        for i in range(1, days + 1):
-            d += datetime.timedelta(days=1)
-            while d.weekday() >= 5:
-                d += datetime.timedelta(days=1)
-            future_dates.append(d.strftime("%Y-%m-%d"))
-            # 음수 방지: 주가는 0 이하가 될 수 없음
-            yhat = max(0.01, level + i * trend)
-            forecast.append(yhat)
-
-        # ── 신뢰구간 동적화: 기간이 길수록 불확실성 증가 (sqrt 스케일) ──
-        std = np.std(closes[-30:]) if len(closes) >= 30 else closes[-1] * 0.02
-
-        return {
-            "dates": future_dates,
-            "yhat":       [round(float(f), 2) for f in forecast],
-            "yhat_upper": [round(max(0.01, float(f) + 1.96 * std * math.sqrt(i + 1)), 2)
-                           for i, f in enumerate(forecast)],
-            "yhat_lower": [round(max(0.01, float(f) - 1.96 * std * math.sqrt(i + 1)), 2)
-                           for i, f in enumerate(forecast)],
-        }
-    except Exception:
-        return linear_forecast(dd, days)
-
-def linear_forecast(dd: Dict, days: int):
-    """
-    Simple Linear Regression using numpy.polyfit
-    Replaces sklearn to reduce dependency size.
-    """
-    try:
-        closes = [float(c) for c in dd.get("Close", []) if c is not None]
-        dates = dd.get("Date", [])
-        if len(closes) < 20: return None
-        
-        y = np.array(closes)
-        x = np.arange(len(y))
-        
-        # Linear Fit (Degree 1)
-        slope, intercept = np.polyfit(x, y, 1)
-        
-        # Predict
-        future_x = np.arange(len(y), len(y) + days)
-        preds = slope * future_x + intercept
-        
-        last_d = datetime.datetime.strptime(dates[-1], "%Y-%m-%d") if dates else datetime.datetime.now()
-        fds = []
-        d = last_d
-        for _ in range(days):
-            d += datetime.timedelta(days=1)
-            while d.weekday() >= 5: d += datetime.timedelta(days=1)
-            fds.append(d.strftime("%Y-%m-%d"))
-            
-        # ── 신뢰구간 동적화: 최근 30일 변동성 + sqrt 스케일 ─────────
-        vol = np.std(closes[-30:]) if len(closes) >= 30 else closes[-1] * 0.03
-
-        return {
-            "dates": fds,
-            "yhat":       [round(float(p), 2) for p in preds],
-            "yhat_upper": [round(max(0.01, float(p) + 1.96 * vol * math.sqrt(i + 1)), 2)
-                           for i, p in enumerate(preds)],
-            "yhat_lower": [round(max(0.01, float(p) - 1.96 * vol * math.sqrt(i + 1)), 2)
-                           for i, p in enumerate(preds)],
-        }
-    except Exception:
-        return None
-
-def xgb_forecast(dd: Dict, days: int = 30):
-    """
-    Simulated Forecast based on Momentum & Mean Reversion
-    Replaces XGBoost to reduce dependency size.
-    """
-    try:
-        closes = [float(c) for c in dd.get("Close", []) if c is not None]
-        if len(closes) < 60: return None
-        
-        # Calculate recent momentum (short vs long MA)
-        short_ma = np.mean(closes[-5:])
-        long_ma = np.mean(closes[-20:])
-        momentum_strength = (short_ma - long_ma) / long_ma
-        
-        last_price = closes[-1]
-        preds = []
-        
-        # Simulation parameters
-        decay = 0.95 # Momentum decay factor
-        current_price = last_price
-        
-        # Estimated daily drift based on momentum
-        # If momentum is 0.05 (5%), daily drift might be approx 0.05/20 per day initially
-        drift = momentum_strength * last_price * 0.1
-        
-        for _ in range(days):
-            drift *= decay # Momentum fades over time
-            current_price += drift
-            preds.append(round(current_price, 2))
-        
-        return preds
-    except Exception:
-        return None
 
 # =============================================================================
 # 섹터 흐름 기본 종목 목록 (메인 페이지 /api/market/sector-summary 용)
@@ -14123,7 +14257,7 @@ def route(path: str, params: Dict) -> Dict:
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
         score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
-        prob_up, prob_down = calc_probability(score, dd)  # 상승/하락 가능성 계산
+        prob_up, prob_down = calc_probability(score, dd, market)  # 상승/하락 가능성 계산
 
         # Market Regime 필터 적용
         regime = check_market_regime(market, sym)
@@ -20090,11 +20224,17 @@ function renderForecast(d, isKrx) {
             ${rows}
           </div>`;
         })();
+        const entryStatusHtml = sc.entry_eligible === false
+          ? `<div style="font-size:10px;color:#f85149;background:#f8514914;border:1px solid #f8514955;border-radius:5px;padding:5px 7px;margin:-2px 0 8px">${_escPrediction(sc.entry_status || '신규 진입 보류')}</div>`
+          : sc.expected_value_pct != null
+            ? `<div style="font-size:10px;color:#8b949e;margin:-2px 0 8px">비용 반영 기대값 <b style="color:${sc.expected_value_pct > 0 ? '#3fb950' : '#f85149'}">${sc.expected_value_pct > 0 ? '+' : ''}${sc.expected_value_pct}%</b> · ${_escPrediction(sc.entry_status || '')}</div>`
+            : '';
         return `
         <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
           <div class="risk-icon">${sc.icon}</div>
           <div class="risk-name">${sc.label}</div>
           <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
+          ${entryStatusHtml}
           <div style="font-size:10px;color:#8b949e;margin:-4px 0 8px">ATR ${risk.atr_pct || '—'}% · 손절 기준 ${sc.atr_mul_stp || '—'}ATR · 현재 변동성 보정 반영</div>
           <div class="risk-row" style="margin-bottom:4px">
             <span class="risk-lbl">🎯 목표 가격 범위</span>

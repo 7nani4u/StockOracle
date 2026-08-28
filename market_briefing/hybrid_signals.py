@@ -242,6 +242,7 @@ def compute_regime(
     adx_data: dict | None,
     vix: float | None = None,
     advance_decline_ratio: float | None = None,
+    atr_percent: float | None = None,
 ) -> dict:
     """5신호 포인트 기반 레짐 감지 (HybridTurtle §8).
 
@@ -320,8 +321,10 @@ def compute_regime(
     else:
         regime = REGIME_SIDEWAYS
 
-    # 변동성 레짐 (ATR% 기반, 단순화)
-    vol_regime = _VOL_REGIME_NORMAL
+    vol_regime = (
+        detect_vol_regime(float(atr_percent))
+        if atr_percent is not None else _VOL_REGIME_NORMAL
+    )
 
     return {
         "regime":    regime,
@@ -747,9 +750,10 @@ def compute_hybrid_score(
         adx_data=adx_data,
         vix=vix,
         advance_decline_ratio=adv_decline,
+        atr_percent=atr_pct,
     )
     regime       = regime_data["regime"]
-    vol_regime   = (detect_vol_regime(atr_pct) if atr_pct else _VOL_REGIME_NORMAL)
+    vol_regime   = regime_data["vol_regime"]
     regime_stable = not regime_data["chop_band"]
 
     # 적응형 ATR 버퍼

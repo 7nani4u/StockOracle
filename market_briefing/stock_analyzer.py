@@ -282,7 +282,8 @@ def _enrich_hybrid_inline(s: dict) -> dict:
 
     history dict의 closes_20d, volume_20d_avg 등을 활용해
     compute_hybrid_score()를 호출하고 결과를 종목 dict에 병합한다.
-    데이터 부족/예외 시 무결하게 스킵한다.
+    highs/lows/volumes가 있으면 실제 OHLCV를 사용해 ATR·BIS·변동성
+    기반 스코어 정확도를 높인다. 데이터 부족/예외 시 무결하게 스킵한다.
     """
     try:
         hist    = s.get("history") or {}
@@ -290,18 +291,29 @@ def _enrich_hybrid_inline(s: dict) -> dict:
         if len(closes) < 10:
             return s
 
-        # history에는 종가만 있으므로 highs/lows는 closes로 근사 (분봉 없이도 동작)
-        highs   = closes[:]
-        lows    = closes[:]
+        # 실제 캔들 데이터 우선 사용 — 없으면 이전처럼 종가 근사로 폴백
+        highs  = [float(x) for x in (hist.get("highs_20d") or []) if x is not None]
+        lows   = [float(x) for x in (hist.get("lows_20d") or []) if x is not None]
+
         volumes: list[float] = []
-        avg_vol = hist.get("volume_20d_avg")
-        if avg_vol:
+        if hist.get("volumes_20d"):
+            volumes = [float(v) for v in hist["volumes_20d"] if v is not None]
+        elif hist.get("volume_20d_avg"):
+            avg_vol = hist["volume_20d_avg"]
             volumes = [float(avg_vol)] * len(closes)
 
-        # 거래량 오늘 값 덮어쓰기
+        use_proxy = False
+        if len(highs) != len(closes) or len(lows) != len(closes):
+            highs = closes[:]
+            lows = closes[:]
+            use_proxy = True
+
+        # 거래량 오늘 값 덮어쓰기 (proxy 볼륨이면 비례 확장)
         today_vol = (s.get("quote") or {}).get("volume")
         if today_vol and volumes:
             volumes[-1] = float(today_vol)
+        elif today_vol and not volumes:
+            volumes = [float(today_vol)] * len(closes)
 
         hscore = compute_hybrid_score(
             closes   = closes,
@@ -309,6 +321,10 @@ def _enrich_hybrid_inline(s: dict) -> dict:
             lows     = lows,
             volumes  = volumes,
         )
+        hscore["data_quality"] = {
+            "proxy_ohlc": use_proxy,
+            "note": "실제 OHLCV 사용" if not use_proxy else "종가 근사 OHLC — ATR·BIS 변동성 스코어 제한",
+        }
         s["hybrid_score"] = hscore
 
         # ── NCS 기반 추천/신뢰도 보정 ─────────────────────────────────
