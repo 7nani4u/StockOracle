@@ -711,7 +711,7 @@ def test_forecast_overview_does_not_render_aggregate_confidence_card():
     assert ".prediction-confidence{" not in HTML
 
 
-def test_forecast_restores_decision_card_but_keeps_removed_risk_warnings_hidden():
+def test_forecast_removes_current_condition_decision_card_and_risk_warnings():
     overview_renderer = HTML.split("function renderPredictionSections", 1)[1].split(
         "function renderForecast", 1
     )[0]
@@ -719,9 +719,9 @@ def test_forecast_restores_decision_card_but_keeps_removed_risk_warnings_hidden(
         "function renderTechnicalSignals", 1
     )[0]
 
-    assert "현재 조건에서의 대응 판단" in overview_renderer
-    assert 'class="prediction-decision"' in overview_renderer
-    assert 'role="status"' in overview_renderer
+    assert "현재 조건에서의 대응 판단" not in overview_renderer
+    assert 'class="prediction-decision"' not in overview_renderer
+    assert 'role="status"' not in overview_renderer
     assert "1차 구간 이격 주의" not in forecast_renderer
     assert "추가 하락 위험:" not in forecast_renderer
     assert "bandDistanceHtml" not in forecast_renderer
@@ -731,7 +731,7 @@ def test_forecast_restores_decision_card_but_keeps_removed_risk_warnings_hidden(
     assert ".prediction-context-inline{" not in HTML
     assert "현재 앱에서 확보 가능한 가격·거래량·기술지표·수급·시장 데이터 기준" not in HTML
 
-    restored_decision_classes = (
+    removed_decision_classes = (
         "prediction-decision",
         "prediction-kicker",
         "prediction-badges",
@@ -739,9 +739,27 @@ def test_forecast_restores_decision_card_but_keeps_removed_risk_warnings_hidden(
         "prediction-chip",
         "prediction-summary",
     )
-    for class_name in restored_decision_classes:
-        assert f".{class_name}{{" in HTML
-        assert f'class="{class_name}"' in HTML
+    for class_name in removed_decision_classes:
+        assert f".{class_name}{{" not in HTML
+        assert f'class="{class_name}"' not in overview_renderer
+
+
+def test_us_balanced_tp2_explains_beginner_sell_action_without_promising_execution():
+    dd = _sample_dd()
+    result = calc_risk(
+        price=dd["Close"][-1],
+        atr=2.1,
+        market="US",
+        dd=dd,
+        event_risk={"score": 8, "level": "low", "reasons": []},
+    )
+    tp2 = result["balanced"]["tp_levels"][1]
+
+    assert tp2["display_label"] == "TP2 · 핵심 분할 매도 검토"
+    assert "수익 일부 확보" in tp2["action_guide"]
+    assert "보장되는 가격은 아니" in tp2["action_guide"]
+    assert "lv.display_label" in HTML
+    assert "lv.action_guide" in HTML
 
 
 def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
