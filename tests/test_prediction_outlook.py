@@ -744,7 +744,7 @@ def test_forecast_removes_current_condition_decision_card_and_risk_warnings():
         assert f'class="{class_name}"' not in overview_renderer
 
 
-def test_us_balanced_tp2_explains_beginner_sell_action_without_promising_execution():
+def test_us_balanced_tp2_uses_color_highlight_without_extra_copy():
     dd = _sample_dd()
     result = calc_risk(
         price=dd["Close"][-1],
@@ -755,11 +755,12 @@ def test_us_balanced_tp2_explains_beginner_sell_action_without_promising_executi
     )
     tp2 = result["balanced"]["tp_levels"][1]
 
-    assert tp2["display_label"] == "TP2 · 핵심 분할 매도 검토"
-    assert "수익 일부 확보" in tp2["action_guide"]
-    assert "보장되는 가격은 아니" in tp2["action_guide"]
-    assert "lv.display_label" in HTML
-    assert "lv.action_guide" in HTML
+    assert tp2["highlight_primary_exit"] is True
+    assert result["balanced"]["tp_levels"][0]["highlight_primary_exit"] is False
+    assert "display_label" not in tp2
+    assert "action_guide" not in tp2
+    assert "lv.highlight_primary_exit" in HTML
+    assert "linear-gradient(90deg,#162a46,#111b2c)" in HTML
 
 
 def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():

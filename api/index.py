@@ -8646,14 +8646,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                     "provisional": False,
                 }],
                 "source_count":      1,
-                "display_label":     (
-                    "TP2 · 핵심 분할 매도 검토"
-                    if _is_us and profile == "balanced" and index == 1 else None
-                ),
-                "action_guide":      (
-                    "급등락이 큰 미국 시장에서 수익 일부 확보를 검토하는 2차 목표입니다. "
-                    "매도 도달이 보장되는 가격은 아니므로 표시된 도달 가능성 범위를 함께 확인하세요."
-                    if _is_us and profile == "balanced" and index == 1 else None
+                "highlight_primary_exit": bool(
+                    _is_us and profile == "balanced" and index == 1
                 ),
             })
         return result
@@ -20155,17 +20149,16 @@ function renderForecast(d, isKrx) {
               const levelRange = Array.isArray(lv.price_range) && lv.price_range.length === 2
                 ? lv.price_range : [lv.price, lv.price];
               const levelPriceText = `${fmt(levelRange[0], isKrx)} ~ ${fmt(levelRange[1], isKrx)}`;
-              const levelLabel = lv.display_label || `TP${i+1}`;
-              const actionGuide = lv.action_guide
-                ? `<div style="margin:-1px 0 5px;padding:6px 8px;border-left:2px solid #d29922;background:#241a0a;border-radius:0 5px 5px 0;font-size:9px;color:#c9d1d9;line-height:1.5">${_escPrediction(lv.action_guide)}</div>`
-                : '';
-              return `<div class="risk-tp-level" role="row" style="background:#0d1117;border-radius:5px;padding:5px 7px;margin-bottom:3px">
-                <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">${_escPrediction(levelLabel)}</span>
+              const levelBackground = lv.highlight_primary_exit
+                ? 'background:linear-gradient(90deg,#162a46,#111b2c);box-shadow:inset 3px 0 #58a6ff,0 0 0 1px #388bfd55;'
+                : 'background:#0d1117;';
+              return `<div class="risk-tp-level" role="row" style="${levelBackground}border-radius:5px;padding:5px 7px;margin-bottom:3px">
+                <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
                 <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600">${levelPriceText}</span>
                 <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
-              </div>${actionGuide}`;
+              </div>`;
             }).join('')}
           </div>` : ''}
         </div>`;
