@@ -1655,26 +1655,32 @@ def add_indicators(df: pd.DataFrame, market: str = "US") -> pd.DataFrame:
     bb_std = c.rolling(20).std()
     df["BB_Upper"] = df["BB_Middle"] + 2 * bb_std
     df["BB_Lower"] = df["BB_Middle"] - 2 * bb_std
+    # ATR (14) — Wilder 평활로 통일 (hybrid_signals._calc_atr와 동일 로직)
     hl = df["High"] - df["Low"]
     hc = (df["High"] - df["Close"].shift()).abs()
     lc = (df["Low"] - df["Close"].shift()).abs()
-    df["ATR"] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    # Wilder RMA: 첫 14봉 평균 후 (prev*13 + tr)/14
+    df["ATR"] = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
     low14 = df["Low"].rolling(14).min()
     high14 = df["High"].rolling(14).max()
     denom = (high14 - low14).replace(0, np.nan)
     df["%K"] = (c - low14) / denom * 100
     df["%D"] = df["%K"].rolling(3).mean()
 
-    # ADX (14)
+    # ADX (14) — Wilder 평활로 통일 (hybrid_signals._calc_adx와 일치)
     dm_plus = df["High"].diff()
     dm_minus = -df["Low"].diff()
-    dm_plus_adj = dm_plus.where((dm_plus > dm_minus) & (dm_plus > 0), 0.0)
-    dm_minus_adj = dm_minus.where((dm_minus > dm_plus) & (dm_minus > 0), 0.0)
-    atr14 = df["ATR"]
-    df["DI_Plus"]  = 100 * dm_plus_adj.rolling(14).mean()  / atr14.replace(0, np.nan)
-    df["DI_Minus"] = 100 * dm_minus_adj.rolling(14).mean() / atr14.replace(0, np.nan)
+    dm_plus_raw = dm_plus.where((dm_plus > dm_minus) & (dm_plus > 0), 0.0)
+    dm_minus_raw = dm_minus.where((dm_minus > dm_plus) & (dm_minus > 0), 0.0)
+    # Wilder 평활된 TR/DM
+    tr14 = tr.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    dm_p14 = dm_plus_raw.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    dm_m14 = dm_minus_raw.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    df["DI_Plus"]  = 100 * dm_p14 / tr14.replace(0, np.nan)
+    df["DI_Minus"] = 100 * dm_m14 / tr14.replace(0, np.nan)
     dx = (df["DI_Plus"] - df["DI_Minus"]).abs() / (df["DI_Plus"] + df["DI_Minus"]).replace(0, np.nan) * 100
-    df["ADX"] = dx.rolling(14).mean()
+    df["ADX"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
 
     # OBV (On-Balance Volume) — 거래량 기반 추세 확인
     _obv_dir = np.sign(c.diff()).fillna(0)
@@ -1720,6 +1726,16 @@ def add_indicators(df: pd.DataFrame, market: str = "US") -> pd.DataFrame:
         _sv_p[_i] = _s
     df["PSAR"]     = _sv_p
     df["PSAR_DIR"] = _sd_p   # 1.0=상승 추세, -1.0=하락 추세
+
+    # TRIX (14, 14, 14) — 종가 3중 EMA 기울기. analyze_score의 Aroon+TRIX 이중 모멘텀 확인에 사용.
+    # add_indicators에 TRIX가 없으면 trix_v가 항상 None이 되어 이중 확인이 반쪽만 작동하므로 추가.
+    try:
+        _trix1 = c.ewm(span=14, adjust=False).mean()
+        _trix2 = _trix1.ewm(span=14, adjust=False).mean()
+        _trix3 = _trix2.ewm(span=14, adjust=False).mean()
+        df["TRIX"] = _trix3.pct_change() * 10000  # 1/10000 단위 기울기
+    except Exception:
+        df["TRIX"] = np.nan
 
     # 동적 RSI는 기존 Wilder RSI를 재사용하는 연구용 보조 지표다.
     # 현재 봉을 밴드 학습에서 제외해 인과성을 유지하며 기존 점수는 변경하지 않는다.
@@ -7638,6 +7654,23 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
                   "result": " | ".join(msgs),
                   "score": round(max(-6.0, min(6.0, sx)), 1), "weight": "보조"})
 
+    # ── 보조 신호(score_eligible 패턴·크로스 지표)를 최종 점수에 제한적으로 반영 ──
+    # 완전히 배제하면 패턴의 예측 정보가 소실되고, 과하게 반영하면 과신호 발생.
+    # ±4점 클램프로 제한하고, 패턴과 크로스 지표가 서로 충돌하면 가중을 절반으로 축소.
+    _aux_raw = cp_score * 0.60 + sx * 0.60
+    _aux = max(-4.0, min(4.0, _aux_raw))
+    if cp_score != 0 and sx != 0 and cp_score * sx < 0:
+        _aux *= 0.5
+    # 고변동(ATR%) 구간에서는 보조 신호 신뢰도 추가 축소
+    try:
+        _atr_pct_aux = float(atr or 0) / float(close or 1) * 100.0 if close else 0
+    except Exception:
+        _atr_pct_aux = 0
+    _atr_thr = 4.0 if market == "KRX" else 3.2
+    if _atr_pct_aux >= _atr_thr:
+        _aux *= 0.6
+    score += _aux
+
     score = max(0.0, min(100.0, round(score)))
 
     # ── [AI 종합 진단 및 미래 예측 시나리오 추가] ──
@@ -13054,14 +13087,18 @@ def build_prediction_outlook(
         elif foreign + institution < 0:
             flow_bias = -1.5
 
-    base_confidence = float((signal_confidence or {}).get("confidence") or
-                            (target_price or {}).get("reach_probability") or 50.0)
+    # 방향성 신뢰도(signal)와 목표가 도달 신뢰도(TP)를 분리 — 혼용하지 않는다.
+    # direction confidence: 신호 일치도 기반, TP confidence: stop-first 실현률 기반(별도 캘리브레이션)
+    base_confidence = float((signal_confidence or {}).get("confidence") or 50.0)
+    tp_base = float((target_price or {}).get("reach_probability") or 50.0)
     data_penalty = ((0.0 if volume_available else 4.0)
                     + (0.0 if rsi_available else 3.0)
                     + (0.0 if macd_available else 3.0)
                     + (0.0 if atr_observed else 2.0)
                     + (0.0 if market != "KRX" or flow.get("ok") else 2.0))
     confidence = _bounded(base_confidence - data_penalty, 5.0, 95.0)
+    # TP 도달 신뢰도는 방향 신뢰도와 별도 — 데이터 결측 시에만 소폭 하향
+    tp_confidence = _bounded(tp_base - data_penalty * 0.35, 5.0, 95.0)
     conf_interval = (signal_confidence or {}).get("confidence_interval") or {}
     conf_spread = float(conf_interval.get("spread") or 18.0)
     conf_lower = _bounded(float(conf_interval.get("lower") or max(5.0, base_confidence - conf_spread / 2)) - data_penalty, 1.0, confidence)
@@ -13312,6 +13349,8 @@ def build_prediction_outlook(
             "confidence": round(confidence, 1),
             "confidence_interval": [round(conf_lower, 1), round(conf_upper, 1)],
             "confidence_note": f"여러 지표의 일치도와 데이터 가용성을 반영한 참고 신뢰도{f' · 결측 감점 {data_penalty:.0f}p' if data_penalty else ''}",
+            "tp_confidence": round(tp_confidence, 1),
+            "tp_confidence_note": "목표가 도달 신뢰도(손절 우선 워크포워드 보정) — 방향 신뢰도와 분리",
         },
         "status": [
             {"key": "position", "label": "현재가 위치", "value": position_value, "tone": position_tone,
@@ -14257,7 +14296,9 @@ def route(path: str, params: Dict) -> Dict:
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
         score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
-        prob_up, prob_down = calc_probability(score, dd, market)  # 상승/하락 가능성 계산
+        # prob_up/down은 최종 score 확정 후에 계산해야 투자자 수급·Hybrid·레짐 보정과 일치한다.
+        # 초기값은 참고용으로만 계산하고 최종 보정 후 재계산한다.
+        prob_up, prob_down = calc_probability(score, dd, market)
 
         # Market Regime 필터 적용
         regime = check_market_regime(market, sym)
@@ -14273,16 +14314,22 @@ def route(path: str, params: Dict) -> Dict:
             else:
                 ai_strategy = {"step": "💡 AI 종합 진단", "result": "시장 전체 상승장(BULL) 진행 중: 적극 매수 유리"}
             
-        # 부채비율 검증 로직 적용
+        # 부채비율 검증 로직 적용 — TTL 캐시로 중복 yfinance info 호출 방지 (Vercel warm 인스턴스 재사용)
+        @ttl_cache(3600)
+        def _cached_ticker_info(_sym: str) -> dict:
+            try:
+                return yf.Ticker(_sym).info or {}
+            except Exception:
+                return {}
         try:
-            info = yf.Ticker(sym).info
+            info = _cached_ticker_info(sym)
             if not validate_financial_health(info):
                 if isinstance(ai_strategy, dict):
                     ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"
                 else:
                     ai_strategy = {"step": "💡 AI 종합 진단", "result": "⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"}
                 score = min(score, 45)
-        except:
+        except Exception:
             pass
         
         # ── 기하학적 패턴 → 캔들 패턴 리스트 통합 (UI 표시용) ───────────────
@@ -14471,12 +14518,10 @@ def route(path: str, params: Dict) -> Dict:
         # 예측 탭의 동적 RSI 매수 타이밍은 선택한 차트가 분봉이어도 항상 일봉으로 고정한다.
         # SMMA 전략이 이미 확보한 일봉을 재사용하므로 별도 네트워크 호출은 추가하지 않는다.
         dynamic_rsi = dynamic_rsi_daily_snapshot(arty_dd, market=market)
-        buy_price        = calc_buy_price(
-            dd, last, atr_val, score, indicator_signals, market, period,
-            event_risk, learning_adjustment, regime, prev, pct, arty_dd=arty_dd,
-        )
 
-        # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) ────────────────────
+        # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) — buy_price 전에 score 보정 ──
+        #  이전에는 buy_price가 hybrid 보정 전 score로 계산되어 조건부 진입 구간이
+        #  최종 신호와 불일치할 수 있었다. 먼저 hybrid로 score를 확정한다.
         hybrid_score = None
         try:
             import sys as _sys, os as _os
@@ -14516,6 +14561,14 @@ def route(path: str, params: Dict) -> Dict:
                             ai_strategy["result"] += " | [레짐 BEARISH] 약세장 국면"
         except Exception as _e:
             pass   # hybrid 실패 시 기존 점수 유지
+
+        # score 최종 확정 후 확률 재계산 — 투자자 수급·Hybrid·레짐/재무 보정이 반영된 최종 확률
+        prob_up, prob_down = calc_probability(score, dd, market)
+
+        buy_price        = calc_buy_price(
+            dd, last, atr_val, score, indicator_signals, market, period,
+            event_risk, learning_adjustment, regime, prev, pct, arty_dd=arty_dd,
+        )
 
         # ── Step 6: 신호 신뢰도 종합 엔진 (거시·섹터·실적·불일치·뉴스감정·신뢰구간) ──
         #   confidence_engine에서 4개 소스 점수를 받아 단일 confidence + 신뢰구간 산출.
