@@ -20196,10 +20196,10 @@ function renderForecast(d, isKrx) {
         <div style="background:#2d1515;border:1px solid #f8514966;border-radius:10px;padding:12px 14px;margin-bottom:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:7px">
             <div style="font-size:13px;font-weight:800;color:#f85149">이벤트 캘린더 위험 반영</div>
-            <div style="font-size:12px;font-weight:800;color:#f85149;background:#f851491f;border-radius:4px;padding:2px 8px">+${er.score}점</div>
+            <div style="font-size:12px;font-weight:800;color:#f85149;background:#f851491f;border-radius:4px;padding:2px 8px">+${_buyEr.score}점</div>
           </div>
           <div style="font-size:11px;color:#cdd9e5;line-height:1.5">
-            ${(er.reasons || []).slice(0, 4).map(r => `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:2px"><span style="color:#f85149;flex-shrink:0">•</span><span>${r}</span></div>`).join('')}
+            ${(_buyEr.reasons || []).slice(0, 4).map(r => `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:2px"><span style="color:#f85149;flex-shrink:0">•</span><span>${r}</span></div>`).join('')}
           </div>
         </div>` : '';
 
