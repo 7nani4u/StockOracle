@@ -303,7 +303,7 @@ def _fetch_vix(symbol: str = "^VIX") -> float:
 def _get_index_cache(market: str) -> Dict[str, float]:
     """
     Returns dict: {NIFTY_return, BANKNIFTY_return, India_VIX, NIFTY_cum20}
-    Caches per market (KRX/US) for 30min.
+    Caches per market (KRX/US) for 30min. Parallel fetch with short timeout for Vercel.
     슬롯명은 StockFlow 호환 유지.
     """
     mk = "KRX" if market.upper() == "KRX" else "US"
@@ -312,24 +312,59 @@ def _get_index_cache(market: str) -> Dict[str, float]:
         return _INDEX_CACHE[mk]
     symbols = INDEX_SYMBOLS[mk]
     result: Dict[str, float] = {"NIFTY_return": 0.0, "BANKNIFTY_return": 0.0, "India_VIX": 15.0, "NIFTY_cum20": 0.0}
-    if mk == "KRX":
-        # try ^KS200 first, fallback ^KS11
-        daily, cum20 = _fetch_index_return(symbols["market"])
-        if daily == 0 and cum20 == 0:
-            daily, cum20 = _fetch_index_return(symbols.get("fallback_market") or "^KS11")
-        result["NIFTY_return"] = daily
-        result["NIFTY_cum20"] = cum20
-        d2, _ = _fetch_index_return(symbols["sector"])
-        result["BANKNIFTY_return"] = d2
-        # KRX has no native VIX - try CBOE VIX, else 15
-        result["India_VIX"] = _fetch_vix(symbols["vix"])
-    else:
-        daily, cum20 = _fetch_index_return(symbols["market"])
-        result["NIFTY_return"] = daily
-        result["NIFTY_cum20"] = cum20
-        d2, _ = _fetch_index_return(symbols["sector"])
-        result["BANKNIFTY_return"] = d2
-        result["India_VIX"] = _fetch_vix(symbols["vix"])
+    # Parallel fetch with 5s budget per symbol (Vercel-friendly)
+    import concurrent.futures
+    def _fetch_market():
+        try:
+            daily, cum20 = _fetch_index_return(symbols["market"])
+            if mk == "KRX" and daily == 0 and cum20 == 0:
+                daily, cum20 = _fetch_index_return(symbols.get("fallback_market") or "^KS11")
+            return daily, cum20
+        except Exception:
+            return 0.0, 0.0
+    def _fetch_sector():
+        try:
+            d2, _ = _fetch_index_return(symbols["sector"])
+            return d2
+        except Exception:
+            return 0.0
+    def _fetch_vix_inner():
+        try:
+            return _fetch_vix(symbols["vix"])
+        except Exception:
+            return 15.0
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            fut_m = ex.submit(_fetch_market)
+            fut_s = ex.submit(_fetch_sector)
+            fut_v = ex.submit(_fetch_vix_inner)
+            try:
+                daily, cum20 = fut_m.result(timeout=6)
+                result["NIFTY_return"] = daily
+                result["NIFTY_cum20"] = cum20
+            except Exception:
+                pass
+            try:
+                result["BANKNIFTY_return"] = fut_s.result(timeout=6)
+            except Exception:
+                pass
+            try:
+                result["India_VIX"] = fut_v.result(timeout=6)
+            except Exception:
+                pass
+    except Exception:
+        # fallback sequential if thread pool fails
+        try:
+            daily, cum20 = _fetch_index_return(symbols["market"])
+            if mk == "KRX" and daily == 0 and cum20 == 0:
+                daily, cum20 = _fetch_index_return(symbols.get("fallback_market") or "^KS11")
+            result["NIFTY_return"] = daily
+            result["NIFTY_cum20"] = cum20
+            d2, _ = _fetch_index_return(symbols["sector"])
+            result["BANKNIFTY_return"] = d2
+            result["India_VIX"] = _fetch_vix(symbols["vix"])
+        except Exception:
+            pass
     _INDEX_CACHE[mk] = result
     _INDEX_CACHE_TS[mk] = now
     logger.info(f"[ML] {mk} index cache refreshed: NIFTY {result['NIFTY_return']:.2f}% VIX {result['India_VIX']:.1f}")
@@ -707,8 +742,5 @@ def predict_direction(metrics: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# ── Auto-load on import (best-effort) ────────────────────────────────────
-try:
-    load_model()
-except Exception:
-    pass
+# ── Lazy load: model is loaded on first predict() call to keep Vercel cold start minimal.
+# No auto-load at import time. The first inference will trigger load_model() if needed.

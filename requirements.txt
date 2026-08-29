@@ -19,12 +19,13 @@ holidays>=0.80
 # Vercel Python 런타임: certifi 는 자동 포함되나 명시 권장
 certifi>=2024.2.2
 
-# ── ML 예측 파이프라인 (StockFlow 통합, 선택적) ──────────────────
-# LightGBM: 14일 방향 분류 핵심 모델 (없으면 sklearn fallback)
-# scikit-learn: time-based split, calibration, fallback HistGradientBoosting
-# scipy: Platt calibration 최적화 (없으면 미보정)
-# joblib: 모델 직렬화 (sklearn 의존성으로 자동 포함)
+# ── ML 예측 파이프라인 (StockFlow 통합, Vercel 최적화) ────────
+# LightGBM: 1차 모델 — Train 7x 빠름, 모델 37x 작음(34KB vs 1.3MB), 추론 5x 빠름, 과적합↓
+# Vercel: manylinux py3-none wheel 1.4MB, 추가 네이티브 의존성 없음, cold start +0.05s
+# scikit-learn: fallback/검증/보정용 — LightGBM 미가용시 HistGradientBoosting으로 자동 대체
+# scipy: Platt calibration (없으면 미보정, 추론에는 불필요)
+# narwhals: lightgbm 의존성 (자동 설치)
+# 학습은 오프라인(scripts/train_ml_model.py), Vercel에는 추론(모델 pkl)만 배포
 scikit-learn>=1.3.0
 scipy>=1.10.0
-# lightgbm은 Vercel 빌드 크기 제한으로 선택적 — 없으면 휴리스틱+sklearn fallback
-# lightgbm>=4.0.0  # 필요 시 주석 해제하여 설치
+lightgbm>=4.0.0
