@@ -454,22 +454,23 @@ def test_market_calendar_cache_covers_krx_holiday_and_us_early_close():
     assert us["early_close_time"] == "13:00"
 
 
-def test_scalp_period_ui_explains_reanalysis_and_no_buy_approval():
+def test_scalp_period_ui_keeps_period_recommendation_without_forecast_gate():
+    forecast_html = HTML.split('<div id="tab-forecast"', 1)[1].split('<!-- 뉴스 탭 -->', 1)[0]
     assert 'id="scalp-period-recommendation"' in HTML
-    assert 'id="scalp-entry-gate-section"' in HTML
+    assert 'id="scalp-entry-gate-section"' not in forecast_html
+    assert "renderScalpEntryGate(d);" not in HTML
     assert "applyScalpPeriodRecommendation()" in HTML
     assert "기간 추천은 매수 승인이 아닙니다." in HTML
-    assert "3일 기본값과 동적 RSI만으로 매수하지 마세요." in HTML
     assert "VI·거래정지 단타 추천 차단" in HTML
-    assert "미국 실적 일정 미확인: 보수적 대기" in HTML
-    assert "미국 공식 달력 일일 교차검증 완료" in HTML
-    assert "호가 스프레드·예상 슬리피지" in HTML
     assert "거래량 보정:" in HTML
     assert 'class="scalp-rec-details"' in HTML
     assert "상세 근거 보기" in HTML
     assert "⛔ 차단 사유 ${hardBlockers.length}개" in HTML
     assert "detailsWasOpen" in HTML
     assert "scalp-rec-chip" in HTML
+    assert "읽는 순서:" in forecast_html
+    assert "진입 원칙:" in forecast_html
+    assert "실행 순서:" in forecast_html
 
 
 def _base_kwargs(market="KRX", symbol="005930.KS", flags=None, signal_confidence=None):
@@ -1219,26 +1220,7 @@ def test_import_does_not_start_toss_prewarm_thread():
     assert index_module._prewarm_started is False
 
 
-def test_forecast_renders_arty_smma_fractal_strategy_inside_buy_section():
-    assert 'id="arty-smma-fractal-strategy"' in HTML
-    assert 'id="arty-backtest-validation"' in HTML
-    assert "SMMA·프랙탈 기술 조건" in HTML
-    assert "확정 Williams Fractal(2봉 지연)" in HTML
-    assert "① 종가/다음 시가" in HTML
-    assert "② 재시험 분리" in HTML
-    assert "③ 프랙탈 지연" in HTML
-    assert "④ ATR 허용폭" in HTML
-    assert "⑤ 거래량" in HTML
-    assert "⑥ 횡보장" in HTML
-    assert "⑦ 기업행위" in HTML
-    assert "⑧ 분기 워크포워드" in HTML
-    assert "⑨ 시장체제" in HTML
-    assert "⑩ 민감도" in HTML
-    assert "⑪ 데이터 품질" in HTML
-    assert "나스닥 예정 전일 휴장 반영" in HTML
-    assert "Nasdaq 거래 달력" in HTML
-    assert 'id="ipo-supply-dilution-risk"' in HTML
-    assert 'id="ipo-supply-dilution-risk-unverified"' in HTML
-    assert "기존주식 재판매이므로 그 자체는 신주 희석이 아니며" in HTML
-    assert "확인된 워런트 상한 시나리오" in HTML
-    assert HTML.index('id="buy-price-section"') < HTML.index('id="arty-smma-fractal-strategy"')
+def test_forecast_does_not_mount_arty_smma_fractal_strategy():
+    forecast_html = HTML.split('<div id="tab-forecast"', 1)[1].split('<!-- 뉴스 탭 -->', 1)[0]
+    assert 'id="technical-validation-section"' not in forecast_html
+    assert 'id="arty-smma-fractal-strategy"' not in forecast_html

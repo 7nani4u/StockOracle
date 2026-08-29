@@ -130,12 +130,11 @@ def test_reach_probability_and_period_are_bounded_and_monotonic():
                 step["days_max"] for step in period_steps
             )
 
-    exploration_floor = min(band["range"][0] for band in result["aggressive_bands"])
-    for recommended in result["recommended_bands"]:
-        if recommended["is_available"]:
-            assert recommended["steps"][0]["price"] < exploration_floor
-        else:
-            assert recommended["steps"] == []
+    for aggressive, recommended in zip(
+        result["aggressive_bands"], result["recommended_bands"]
+    ):
+        assert recommended["steps"]
+        assert recommended["steps"][0]["price"] <= aggressive["steps"][0]["price"]
 
 
 def test_insufficient_history_never_fabricates_probability_or_period():
