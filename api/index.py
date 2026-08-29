@@ -19438,7 +19438,11 @@ function renderDiagnosis(d, isKrx) {
   // ── 신규 투자매력 진단이 있으면 ChoiceStock 스타일로 렌더, 없으면 기존 기술 진단 fallback ──
   const charm = d.investment_charm;
   const km = d.key_metrics;
-  if (charm && typeof charm === 'object') {
+  // 재무 축이 충분하지 않으면 빈 스마트스코어 카드가 기존 기술 진단을
+  // 가리지 않도록 기존 진단 렌더링으로 즉시 fallback한다.
+  const hasUsableCharm = charm && charm.smart_score != null &&
+    Number.isFinite(Number(charm.smart_score)) && Number(charm.available_count) >= 3;
+  if (hasUsableCharm) {
     // ── 신규: 종합 스마트스코어 + 4지표 + 레이더 + 5세부 ──
     const isFiniteValue = v => v != null && v !== '' && Number.isFinite(Number(v));
     const smart = isFiniteValue(charm.smart_score) ? Number(charm.smart_score) : null;
