@@ -17189,7 +17189,7 @@ input::placeholder{color:#484f58}
         <!-- 리스크 관리와 목표 청산 -->
         <div class="card">
           <div class="card-title">🛡️ 리스크 관리와 목표 청산</div>
-          <div id="buy-risk-notes-section"></div>
+          <div id="risk-event-banner"></div>
           <div class="risk-grid" id="risk-grid"></div>
         </div>
         <div class="card forecast-scenario-group">
@@ -19946,7 +19946,7 @@ function renderForecast(d, isKrx) {
   renderPredictionSections(d, isKrx);
   // ── 매수 전략 섹션 ──
   const bpEl = document.getElementById('buy-price-section');
-  const buyRiskNotesEl = document.getElementById('buy-risk-notes-section');
+  const buyRiskNotesEl = document.getElementById('risk-event-banner'); // migrated from buy-risk-notes-section
   if (bpEl) {
     if (!bp) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
@@ -20190,8 +20190,9 @@ function renderForecast(d, isKrx) {
       })() : '';
 
       const dr = bp.downside_risk || null;
-      const er = d.event_risk || (dr && dr.event_risk) || null;
-      const eventRiskHtml = er && er.score > 0 ? `
+      const _buyEr = d.event_risk || (dr && dr.event_risk) || null;
+      // buy-price에서는 이벤트 배너를 별도로 렌더링하지 않음 — 리스크 그리드 헤더에서 통합 렌더링
+      const eventRiskHtml = _buyEr && _buyEr.score > 0 ? `
         <div style="background:#2d1515;border:1px solid #f8514966;border-radius:10px;padding:12px 14px;margin-bottom:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:7px">
             <div style="font-size:13px;font-weight:800;color:#f85149">이벤트 캘린더 위험 반영</div>
@@ -20334,7 +20335,24 @@ function renderForecast(d, isKrx) {
 
   // ── 리스크 카드 ──
   const rgEl = document.getElementById('risk-grid');
+  const riskEventBannerEl = document.getElementById('risk-event-banner');
   if (rgEl && risk) {
+    // ── 이벤트 캘린더 위험 배너 (리스크 그리드 헤더) ──
+    // buy-price에서 계산된 eventRiskHtml을 재사용하되, risk 카드와 동일한 소스(d.event_risk || risk.event_risk)로 재생성하여
+    // 매수 구간과 리스크 관리 간의 결합도를 낮춘다. 점수 0이면 배너 숨김.
+    const _erForRisk = d.event_risk || risk.event_risk || null;
+    const _riskEventHtml = (_erForRisk && _erForRisk.score > 0) ? `
+        <div style="grid-column:1/-1;background:#2d1515;border:1px solid #f8514966;border-radius:8px;padding:10px 12px;margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+            <div style="font-size:12px;font-weight:800;color:#f85149">📅 이벤트 캘린더 · 리스크 가산 +${_erForRisk.score}점</div>
+            <div style="font-size:10px;color:#8b949e">실적/FDA/소송/공시 D-5 이내 — 손절 확대·목표 축소 반영</div>
+          </div>
+          <div style="font-size:11px;color:#cdd9e5;line-height:1.5">
+            ${(_erForRisk.reasons || []).slice(0,3).map(r => `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:2px"><span style="color:#f85149;flex-shrink:0">•</span><span>${r}</span></div>`).join('')}
+          </div>
+          ${_erForRisk.days_to_earnings != null ? `<div style="font-size:10px;color:#d29922;margin-top:6px">다음 실적까지 D-${_erForRisk.days_to_earnings} — 발표 전후 갭 위험으로 비중 축소 권장</div>` : ''}
+        </div>` : '';
+    if (riskEventBannerEl) riskEventBannerEl.innerHTML = _riskEventHtml;
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     // 📌 눌림목 분석 기반 정밀 가격 — 시나리오 카드에 통합 (별도 섹션 폐지)
