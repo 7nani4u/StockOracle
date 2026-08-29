@@ -16134,6 +16134,9 @@ input::placeholder{color:#484f58}
 .charm-metric-val.na{color:#484f58;font-weight:400}
 .charm-radar-wrap{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;display:flex;flex-direction:column;align-items:center;gap:12px;width:100%}
 .charm-radar-canvas{display:block;width:100%;max-width:320px;height:320px;aspect-ratio:1;margin:0 auto}
+.charm-radar-detail-grid{display:grid;grid-template-columns:minmax(320px,.8fr) minmax(0,1.2fr);gap:12px;align-items:stretch;width:100%}
+.charm-radar-detail-grid .charm-detail-list{height:100%}
+@media(max-width:900px){.charm-radar-detail-grid{grid-template-columns:1fr}}
 .charm-legacy-section{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
 .charm-legacy-title{font-size:12px;font-weight:700;color:#cdd9e5;margin-bottom:10px}
 .charm-detail-list{display:flex;flex-direction:column;gap:8px}
@@ -19560,14 +19563,16 @@ function renderDiagnosis(d, isKrx) {
           <div class="charm-metric"><div class="charm-metric-label">ROE</div><div class="charm-metric-val" style="color:${roeColor}">${roeVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">DY</div><div class="charm-metric-val" style="color:${dyColor}">${dyVal}</div></div>
         </div>
-        <div class="charm-radar-wrap">
-          <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
+        <div class="charm-radar-detail-grid">
+          <div class="charm-radar-wrap">
+            <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
 ${hasCompleteRadarData
-            ? `<canvas id="${radarId}" class="charm-radar-canvas"></canvas>`
-            : `<div class="empty-note" style="text-align:center">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
-          <div style="font-size:10px;color:#484f58">중앙 스마트스코어 ${smartDisplay} · 축 순서: 미래성장성 → 사업독점력 → 재무안전성 → 수익성 → 현금창출력</div>
+              ? `<canvas id="${radarId}" class="charm-radar-canvas"></canvas>`
+              : `<div class="empty-note" style="text-align:center">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
+            <div style="font-size:10px;color:#484f58">중앙 스마트스코어 ${smartDisplay} · 축 순서: 미래성장성 → 사업독점력 → 재무안전성 → 수익성 → 현금창출력</div>
+          </div>
+          <div class="charm-detail-list">${detailRows}</div>
         </div>
-        <div class="charm-detail-list">${detailRows}</div>
         <div style="font-size:10px;color:#484f58;line-height:1.5">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
         <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px">
           <div style="font-size:11px;color:#8b949e;margin-bottom:6px">🧠 AI 종합 진단</div>
