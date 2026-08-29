@@ -15837,12 +15837,13 @@ input::placeholder{color:#484f58}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* 메트릭 카드 */
-.metrics-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+.metrics-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:16px}
 .metric-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
-/* 카드 기본 span — 데스크탑 기준 (5열 그리드: 2+1+1+1) */
+/* 카드 기본 span — 데스크탑 기준 (7열 그리드: 2+1+1+1+1+1) */
 .metric-price-card{grid-column:span 2}
 .metric-volume-card{grid-column:span 1}
 .metric-atr-card{grid-column:span 1}
+.metric-support-card{grid-column:span 1}
 .metric-toss-card{grid-column:span 1}
 /* 토스증권 AI 요약 카드 내부 스타일 */
 .toss-ai-summary{font-size:13px;font-weight:600;color:#e6edf3;line-height:1.55;margin-top:4px;word-break:keep-all}
@@ -16254,10 +16255,11 @@ input::placeholder{color:#484f58}
 
   /* 그리드: 4열 유지, span 재배치 */
   .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:start}
-  .metric-price-card{grid-column:span 3}
+  .metric-price-card{grid-column:span 2}
   .metric-volume-card{grid-column:span 1}
-  .metric-atr-card{grid-column:span 2}
-  .metric-toss-card{grid-column:span 2}
+  .metric-atr-card{grid-column:span 1}
+  .metric-support-card{grid-column:span 2}
+  .metric-toss-card{grid-column:span 4}
   .metric-price-row{gap:14px}
   .two-col-grid{grid-template-columns:1fr;gap:10px}
   .risk-grid{grid-template-columns:1fr}
@@ -16293,6 +16295,7 @@ input::placeholder{color:#484f58}
   .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:stretch}
   .metric-price-card{grid-column:1/-1}
   .metric-volume-card,.metric-atr-card{grid-column:span 2}
+  .metric-support-card{grid-column:span 2}
   .metric-toss-card{grid-column:1/-1}
   /* 480px 이하: 2열, 카드 패딩 축소로 내용 확보 */
   .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
@@ -16975,8 +16978,10 @@ input::placeholder{color:#484f58}
       <div id="security-status-banner" class="security-status-banner" role="status" aria-live="polite"></div>
       <div class="metrics-grid">
         <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
-        <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div></div>
-        <div class="metric-card metric-atr-card"><div class="m-label">ATR (변동성)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
+        <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div><div id="r-vol-source" style="font-size:10px;color:#8b949e;margin-top:4px"></div></div>
+        <div class="metric-card metric-atr-card"><div class="m-label">하루 평균 움직임(ATR)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
+        <div class="metric-card metric-support-card"><div class="m-label">바로 아래 버팀목(단기 지지)</div><div class="m-value" id="r-support-short" style="font-size:18px"></div></div>
+        <div class="metric-card metric-support-card"><div class="m-label">중기 버팀목 구간</div><div class="m-value" id="r-support-mid" style="font-size:18px"></div></div>
         <div class="metric-card metric-toss-card" id="r-toss-card">
           <div class="m-label">토스증권 AI 요약</div>
           <div class="toss-ai-summary" id="r-toss-summary" style="color:#484f58;font-size:11px">-</div>
@@ -18568,6 +18573,8 @@ function renderResult(d) {
   }
 
   document.getElementById('r-vol').textContent = d.volume.toLocaleString();
+  const volSrcEl = document.getElementById('r-vol-source');
+  if (volSrcEl) volSrcEl.textContent = isKrx ? '출처: 네이버 금융 · KRX 시세' : '출처: Yahoo Finance · 거래소 시세';
   document.getElementById('r-atr').textContent = d.atr.toLocaleString();
 
   // ATR% + 변동성 추세 → ATR 카드 서브텍스트
@@ -18576,12 +18583,20 @@ function renderResult(d) {
     const vt = d.buy_price.vol_trend;
     const vtHtml = vt === 'expanding'   ? '<span style="color:#f85149">변동성 확대↑</span>' :
                    vt === 'contracting' ? '<span style="color:#3fb950">변동성 수축↓</span>' :
-                                         '<span style="color:#d29922">변동성 안정</span>';
+                                          '<span style="color:#d29922">변동성 안정</span>';
     atrPctEl.innerHTML = `${d.buy_price.atr_pct}% · ${vtHtml}`;
     atrPctEl.style.display = 'block';
   } else if (atrPctEl) {
     atrPctEl.style.display = 'none';
   }
+  // 바로 아래/중기 버팀목 — 상단 메트릭 카드에 표시 (예측 탭과 동일 원천)
+  const _bpTop = d.buy_price || {};
+  const _fibTop = _bpTop.fib || {};
+  const _midTop = _fibTop.f382 != null && _fibTop.f500 != null ? [_fibTop.f382, _fibTop.f500].sort((a,b)=>a-b) : null;
+  const supShortEl = document.getElementById('r-support-short');
+  if (supShortEl) supShortEl.textContent = _bpTop.support_zone != null ? fmt(_bpTop.support_zone, isKrx) : '데이터 부족';
+  const supMidEl = document.getElementById('r-support-mid');
+  if (supMidEl) supMidEl.textContent = _midTop ? `${fmt(_midTop[0], isKrx)} ~ ${fmt(_midTop[1], isKrx)}` : '데이터 부족';
 
   // 📐 피보나치 되돌림 기준 카드 및 "🔗 연계 밴드" 연동 표시는 모두 폐지됨.
   //    (ATR 밴드 가격과 피보나치 레벨 가격이 독립 계산되어 정합이 어려움 — renderForecast 참조)
@@ -20180,11 +20195,7 @@ function renderForecast(d, isKrx) {
       const entryConfirmation = isWaitMode
         ? '지금은 대기입니다. 하루 마감이 가격을 지키고 반등 모양+거래 증가가 함께 보일 때까지 주문하지 마세요.'
         : '조건 충족 때만 접근: 그 가격에서 하루 마감이 버티고 거래가 함께 늘 때만 조금씩 접근하세요.';
-      const sharedEntryHtml = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:7px;margin:0 0 12px">
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:8px"><div style="font-size:9px;color:#8b949e">하루 평균 움직임(ATR)</div><div style="font-size:11px;color:#cdd9e5;font-weight:700">ATR ${bp.atr_pct != null ? bp.atr_pct + '%' : '—'} · ${volatilityLabel}</div></div>
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:8px"><div style="font-size:9px;color:#8b949e">바로 아래 버팀목(단기 지지)</div><div style="font-size:11px;color:#58a6ff;font-weight:700">${bp.support_zone != null ? fmt(bp.support_zone, isKrx) : '데이터 부족'}</div></div>
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:8px"><div style="font-size:9px;color:#8b949e">중기 버팀목 구간</div><div style="font-size:11px;color:#cdd9e5;font-weight:700">${midStructure ? `${fmt(midStructure[0], isKrx)} ~ ${fmt(midStructure[1], isKrx)}` : '데이터 부족'}</div></div>
-      </div><div style="font-size:10px;color:${isWaitMode ? '#f85149' : '#8b949e'};line-height:1.5;margin:-4px 0 12px">${entryConfirmation}</div>`;
+      const sharedEntryHtml = `<div style="font-size:10px;color:${isWaitMode ? '#f85149' : '#8b949e'};line-height:1.5;margin:0 0 12px">${entryConfirmation}</div>`;
 
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
         ? `<div class="buy-card aggressive" style="padding:12px 14px">
