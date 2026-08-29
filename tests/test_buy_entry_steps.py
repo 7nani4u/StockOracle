@@ -66,17 +66,19 @@ def _calculate(dd):
     )
 
 
-def test_all_buy_bands_expose_five_ordered_dynamic_steps():
+def test_all_buy_bands_expose_only_ordered_independent_structure_steps():
     result = _calculate(_sample_buy_dd())
 
     for family in ("aggressive_bands", "recommended_bands"):
         assert [band["band"] for band in result[family]] == ["A", "B", "C"]
         for band in result[family]:
             steps = band["steps"]
-            assert [step["label"] for step in steps] == [f"{index}단계" for index in range(1, 6)]
-            assert len(steps) == 5
-            assert steps[0]["price"] == band["range"][1]
-            assert steps[-1]["price"] == band["range"][0]
+            if band.get("is_available") is False:
+                assert steps == []
+                assert band.get("availability_note")
+                continue
+            assert [step["label"] for step in steps] == [f"{index}단계" for index in range(1, len(steps) + 1)]
+            assert 1 <= len(steps) <= 5
             assert all(band["range"][0] <= step["price"] <= band["range"][1] for step in steps)
             assert all(step["price_range"][0] <= step["price"] <= step["price_range"][1] for step in steps)
             assert steps[0]["price_range"][1] == band["range"][1]
@@ -89,7 +91,7 @@ def test_all_buy_bands_expose_five_ordered_dynamic_steps():
             assert [step["price"] for step in steps] == sorted(
                 (step["price"] for step in steps), reverse=True
             )
-            assert len({step["price"] for step in steps}) == 5
+            assert len({step["price"] for step in steps}) == len(steps)
             assert [step["decline_pct"] for step in steps] == sorted(
                 (step["decline_pct"] for step in steps), reverse=True
             )
@@ -128,10 +130,12 @@ def test_reach_probability_and_period_are_bounded_and_monotonic():
                 step["days_max"] for step in period_steps
             )
 
-    for aggressive, recommended in zip(
-        result["aggressive_bands"], result["recommended_bands"]
-    ):
-        assert recommended["steps"][0]["price"] < aggressive["steps"][-1]["price"]
+    exploration_floor = min(band["range"][0] for band in result["aggressive_bands"])
+    for recommended in result["recommended_bands"]:
+        if recommended["is_available"]:
+            assert recommended["steps"][0]["price"] < exploration_floor
+        else:
+            assert recommended["steps"] == []
 
 
 def test_insufficient_history_never_fabricates_probability_or_period():

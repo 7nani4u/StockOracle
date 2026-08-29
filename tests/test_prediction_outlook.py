@@ -527,7 +527,7 @@ def test_us_surge_price_filter_is_strictly_below_20():
     assert not _is_us_surge_price_eligible(None)
 
 
-def test_risk_scenarios_expose_five_ordered_tp_estimate_ranges():
+def test_risk_scenarios_expose_only_ordered_independent_tp_estimate_ranges():
     dd = _sample_dd()
     for market in ("KRX", "US"):
         result = calc_risk(
@@ -541,7 +541,7 @@ def test_risk_scenarios_expose_five_ordered_tp_estimate_ranges():
         for key in ("conservative", "balanced", "aggressive"):
             scenario = result[key]
             levels = scenario["tp_levels"]
-            assert len(levels) == 5
+            assert 1 <= len(levels) <= 5
             assert [level["price"] for level in levels] == sorted(level["price"] for level in levels)
             assert scenario["tp_range"] == [levels[0]["price_range"][0], levels[-1]["price_range"][1]]
             probabilities = [level["prob_pct"] for level in levels]
@@ -550,6 +550,7 @@ def test_risk_scenarios_expose_five_ordered_tp_estimate_ranges():
                 assert level["price_range"][0] <= level["price"] <= level["price_range"][1]
                 assert level["prob_low_pct"] <= level["prob_pct"] <= level["prob_high_pct"]
                 assert level["days_min"] <= level["avg_days"] <= level["days_max"]
+                assert level["basis"]
             assert all(
                 levels[index]["price_range"][1] < levels[index + 1]["price_range"][0]
                 for index in range(len(levels) - 1)
@@ -574,7 +575,7 @@ def test_removed_risk_card_sections_are_not_rendered():
     assert "최대 허용 손실" not in HTML
     assert "이 시나리오가 실패할 수 있는 조건" not in HTML
     assert "목표가 레벨별 도달 가능성" in HTML
-    assert "예측 목표 가격 범위" in HTML
+    assert "예측 목표 가격 범위" not in HTML
     for column in ("목표 가격 범위", "수익률", "도달 가능성", "예상 거래일"):
         assert f'role="columnheader">{column}</span>' in HTML
 
@@ -683,7 +684,7 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     scenario_pos = forecast_html.index('id="prediction-scenarios-section"')
     risk_pos = forecast_html.index('id="risk-grid"')
 
-    assert overview_pos < buy_pos < scenario_pos < risk_pos
+    assert overview_pos < buy_pos < risk_pos < scenario_pos
     assert "분석 흐름" not in forecast_html
     assert "📈 목표 가격 범위" not in forecast_html
     assert 'id="target-price-section"' not in forecast_html
@@ -695,7 +696,7 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     assert "<details" not in forecast_html
     assert "시장·업종·수급" in HTML
     assert "AI 진단 · 세력 흔들림 재활용" in HTML
-    assert '<div class="buy-card forecast-scenario-group">' in forecast_html
+    assert '<div class="card forecast-scenario-group">' in forecast_html
 
 
 def test_forecast_overview_does_not_render_aggregate_confidence_card():

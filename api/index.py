@@ -8742,7 +8742,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     cons_ret    = round(cons_reward / price * 100, 2)
     cons_stp_pct= round(-cons_risk / price * 100, 2)
     cons_tgt_mul = round((cons_anchor - price) / atr, 2) if atr > 0 else 0.0
-    cons_basis  = [cons_basis_lbl, f"추세강도 {trend}/4 · 거래량추세 {vol_trend}"]
+    _vol_trend_label = {"expanding": "확대", "contracting": "수축", "normal": "안정"}[vol_trend]
+    cons_basis  = [cons_basis_lbl, f"추세강도 {trend}/4 · 거래량추세 {_vol_trend_label}"]
 
     # 중립적
     bal_tgt_range = _center_rng(bal_anchor, 0.35)
@@ -8794,30 +8795,57 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     _tp_rsi   = 4.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _base_days = 12.3 if _is_us else 13.0  # Zone B 평균 보유일 기준
     _target_quality = _prediction_quality_profile(dd, market)
-    def _make_tp_from_tgt(tgt_range, profile: str, previous_ceiling: float | None = None):
-        """시나리오 전용 가격 구간을 TP1~TP5로 나누고 도달 가능성·기간을 산출한다.
-
-        보수적 구간은 현재가 위에서 시작하고, 중립적·공격적 구간은 직전 시나리오의
-        TP5보다 높은 가격에서 시작한다. 따라서 세 시나리오의 TP 가격은 서로 겹치지 않는다.
-        """
+    def _make_tp_from_tgt(tgt_range, profile: str, previous_ceiling: float | None = None,
+                          final_basis: str = "시나리오 최종 구조 목표"):
+        """구조적 저항만으로 TP를 만들고, 독립 저항이 부족하면 단계 수를 줄인다."""
         _, hi = tgt_range[0], tgt_range[1]
         price_tick = _market_tick_size(price, market)
-        # 목표 중심값뿐 아니라 새로 제공하는 목표 가격 범위까지 서로 겹치지 않도록
-        # 시나리오 경계에 최소 0.30 ATR 간격을 둔다.
         boundary_gap = max(price_tick * 2, atr * 0.30, price * 0.0010)
         if previous_ceiling is None:
             segment_start = price
-            progress_steps = [0.30, 0.48, 0.66, 0.82, 1.0]
         else:
             segment_start = max(price, previous_ceiling + boundary_gap)
-            progress_steps = [0.0, 0.25, 0.50, 0.75, 1.0]
         minimum_span = max(atr * 0.5, price * 0.005, price_tick * 5)
         final_price = max(hi, segment_start + minimum_span)
-        total_move = final_price - segment_start
-        tp_prices = [_round_market_price(segment_start + total_move * progress, market) for progress in progress_steps]
-        for index in range(1, len(tp_prices)):
-            if tp_prices[index] <= tp_prices[index - 1]:
-                tp_prices[index] = _round_market_price(tp_prices[index - 1] + price_tick, market, "ceil")
+
+        # ATR 배수의 선형 반복 대신 BB 상단·스윙 고점·장기 고점·피보나치 확장처럼
+        # 실제 저항 후보만 채택한다. 프로파일별로 허용하는 확장 수준을 달리해
+        # 보수/중립/공격 목표가가 이름만 다른 복제본이 되지 않게 한다.
+        resistance_pool = [
+            (float(bb_u), "볼린저 상단") if bb_u and float(bb_u) > price else None,
+            (h60, "최근 60일 고점"),
+            (h120, "최근 120일 고점"),
+            (fib_ext["236"], "피보나치 확장 23.6%"),
+            (fib_ext["382"], "피보나치 확장 38.2%"),
+            (fib_ext["618"], "피보나치 확장 61.8%"),
+            (fib_ext["1000"], "피보나치 확장 100%"),
+            (fib_ext["1272"], "피보나치 확장 127.2%"),
+            (fib_ext["1618"], "피보나치 확장 161.8%"),
+        ]
+        allowed_levels = {
+            "conservative": {"볼린저 상단", "최근 60일 고점", "피보나치 확장 23.6%"},
+            "balanced": {"최근 60일 고점", "최근 120일 고점", "피보나치 확장 23.6%", "피보나치 확장 38.2%", "피보나치 확장 61.8%"},
+            "aggressive": {"최근 120일 고점", "피보나치 확장 61.8%", "피보나치 확장 100%", "피보나치 확장 127.2%", "피보나치 확장 161.8%"},
+        }[profile]
+        candidates = [
+            (candidate[0], candidate[1]) for candidate in resistance_pool if candidate
+            and candidate[1] in allowed_levels
+            and segment_start + boundary_gap <= candidate[0] <= final_price
+        ]
+        candidates.append((final_price, final_basis))
+        candidates.sort(key=lambda item: item[0])
+        cluster_gap = max(price_tick * 3, min(atr * 0.30, (final_price - segment_start) * 0.28))
+        tp_pairs: list[tuple[float, str]] = []
+        for candidate in candidates:
+            if not tp_pairs or candidate[0] - tp_pairs[-1][0] >= cluster_gap:
+                tp_pairs.append(candidate)
+            elif candidate[1] == final_basis:
+                tp_pairs[-1] = candidate
+        # TP는 최대 5개까지만 보인다. 선택된 값은 모두 구조 앵커이며 부족하면 1~4개만 출력.
+        if len(tp_pairs) > 5:
+            tp_pairs = tp_pairs[:4] + [tp_pairs[-1]]
+        tp_prices = [_round_market_price(value, market) for value, _label in tp_pairs]
+        tp_labels = [label for _value, label in tp_pairs]
 
         adx_adjust = min(5.0, max(0.0, adx - 20.0) * 0.35)
         if trend <= 1:
@@ -8885,15 +8913,20 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                     "provisional": False,
                 }],
                 "source_count":      1,
+                "basis":             tp_labels[index],
                 "highlight_primary_exit": bool(
                     _is_us and profile == "balanced" and index == 1
                 ),
             })
         return result
     # 각 시나리오는 직전 시나리오의 TP5 위에서 시작해 가격 범위가 겹치지 않는다.
-    cons_tp = _make_tp_from_tgt(cons_tgt_range, "conservative")
-    bal_tp  = _make_tp_from_tgt(bal_tgt_range, "balanced", cons_tp[-1]["price"])
-    agg_tp  = _make_tp_from_tgt(agg_tgt_range, "aggressive", bal_tp[-1]["price"])
+    cons_tp = _make_tp_from_tgt(cons_tgt_range, "conservative", final_basis=cons_basis_lbl)
+    bal_tp  = _make_tp_from_tgt(
+        bal_tgt_range, "balanced", cons_tp[-1]["price"], final_basis=bal_basis_lbl,
+    )
+    agg_tp  = _make_tp_from_tgt(
+        agg_tgt_range, "aggressive", bal_tp[-1]["price"], final_basis=agg_basis_lbl,
+    )
 
     # 구조 기반 목표가는 기존 TP를 덮지 않는다. 가장 가까운 후보에 근거를
     # 병합하고, 크게 충돌하는 값은 메타데이터에 남겨 예측 과장을 방지한다.
@@ -8961,6 +8994,26 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     # 세 시나리오 15개 목표를 한 번에 처리해 보수적→중립적→공격적 경계에서도
     # 가격 범위가 겹치지 않도록 한다. 함수가 각 level dict를 제자리 갱신한다.
     _attach_target_price_ranges(cons_tp + bal_tp + agg_tp)
+
+    def _validated_tp_levels(levels: list[Dict], previous_ceiling: float | None = None) -> list[Dict]:
+        """반올림·패턴 병합 뒤에도 역전/중첩된 목표는 출력하지 않는다."""
+        valid: list[Dict] = []
+        ceiling = previous_ceiling
+        for level in levels:
+            value = float(level.get("price") or 0)
+            price_range = level.get("price_range") or []
+            if (value <= 0 or len(price_range) != 2
+                    or price_range[0] > value or value > price_range[1]
+                    or (ceiling is not None and price_range[0] <= ceiling)):
+                continue
+            level.setdefault("basis", "구조 목표")
+            valid.append(level)
+            ceiling = price_range[1]
+        return valid
+
+    cons_tp = _validated_tp_levels(cons_tp)
+    bal_tp = _validated_tp_levels(bal_tp, cons_tp[-1]["price_range"][1])
+    agg_tp = _validated_tp_levels(agg_tp, bal_tp[-1]["price_range"][1])
 
     def _target_zone_confidence(tp_levels: list[Dict], target_low: float) -> float | None:
         return next((level["prob_pct"] for level in tp_levels if level["price"] >= target_low),
@@ -10768,7 +10821,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         probability = _quality_adjust_probability(probability, _model_quality)
         return round(_clip(probability + _stat_adj - _risk_penalty, 5.0, 95.0), 1)
 
-    # ── 밴드 내부 5단계 매수 가격·도달 확률·예상 기간 ────────────────────
+    # ── 밴드 내부 구조 기반 매수 가격·도달 확률·예상 기간 ────────────────
     # 가격은 기존 밴드의 상·하단을 절대 벗어나지 않는다. 내부 3개 가격은
     # ATR/추세/위험으로 기울인 가격 밀도와 기술적 앵커의 커널 밀도를 결합한
     # 가중 분위수로 산출하므로 단순 고정 간격이 아니다.
@@ -10864,49 +10917,53 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                          band_allocation_pct: float) -> list[Dict]:
         lo, hi = float(min(lo, hi)), float(max(lo, hi))
         width = max(hi - lo, max(atr_d * 0.01, last_price * 0.00001))
-        depths = np.linspace(0.0, 1.0, 161)
-        grid_prices = hi - depths * width
-
-        # 하락 위험·약한 추세·거래량 확대일수록 밀도의 무게중심을 깊게 이동한다.
-        risk_tilt = _clip(
-            (downside_score - 35.0) / 120.0
-            + (2.0 - _trend) * 0.07
-            + (vol_ratio - 1.0) * 0.08
-            + (0.08 if vol_trend == "expanding" else -0.04 if vol_trend == "contracting" else 0.0),
-            -0.35, 0.45,
-        )
-        density = np.exp(risk_tilt * (depths - 0.5) * 2.0)
         anchors = _step_anchors(is_recommended)
-        kernel_sigma = _clip((atr_d / width) * 0.10, 0.065, 0.24)
-        for anchor_price, weight, _label in anchors:
-            anchor_depth = (hi - anchor_price) / width
-            if -0.35 <= anchor_depth <= 1.35:
-                density += weight * np.exp(-0.5 * ((depths - anchor_depth) / kernel_sigma) ** 2)
+        price_tick = _market_tick_size(last_price, market)
 
-        cumulative = np.concatenate((
-            np.array([0.0]),
-            np.cumsum((density[:-1] + density[1:]) * 0.5),
-        ))
-        cumulative /= cumulative[-1] if cumulative[-1] > 0 else 1.0
-        quantiles = np.linspace(0.0, 1.0, 5)
-        prices = [float(np.interp(q, cumulative, grid_prices)) for q in quantiles]
-        prices[0], prices[-1] = hi, lo
+        # 단계는 밴드를 기계적으로 5등분하지 않는다. 실제 지지 앵커와 밴드 경계만
+        # 후보로 삼고, 서로 같은 지지 클러스터면 하나로 합친다. 따라서 근거가 부족한
+        # 종목은 1~4단계만 노출될 수 있으며 가짜 정밀도를 만들지 않는다.
+        candidates = [
+            (hi, 0.35, "ATR·위험 보정 상단"),
+            (lo, 0.35, "ATR·위험 보정 하단"),
+        ]
+        candidates.extend(
+            (anchor_price, weight, label)
+            for anchor_price, weight, label in anchors
+            if lo <= anchor_price <= hi
+        )
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        cluster_gap = max(price_tick * 3, min(atr_d * 0.30, width * 0.32))
+        clusters: list[tuple[float, float, str]] = []
+        for candidate in candidates:
+            if not clusters or abs(clusters[-1][0] - candidate[0]) >= cluster_gap:
+                clusters.append(candidate)
+            elif candidate[1] > clusters[-1][1]:
+                clusters[-1] = candidate
 
-        # 반올림 뒤에도 상단→하단 순서를 보존하고 기존 밴드 범위에 고정한다.
-        rounded_prices = [_round_market_price(_clip(price, lo, hi), market) for price in prices]
-        rounded_prices[0] = _round_market_price(hi, market, "floor" if is_recommended else "ceil")
-        rounded_prices[-1] = _round_market_price(lo, market, "floor")
-        price_epsilon = _market_tick_size(last_price, market)
-        for _idx in range(1, len(rounded_prices)):
-            rounded_prices[_idx] = min(
-                rounded_prices[_idx],
-                _round_market_price(rounded_prices[_idx - 1] - price_epsilon, market, "floor"),
-            )
-        rounded_prices[-1] = _round_market_price(lo, market, "floor")
+        # 구조 후보가 많으면 양 끝 경계와 근거 가중치가 높은 앵커만 남긴다. 남는 모든
+        # 값은 실제 앵커이므로 개수 제한이 가격을 인위적으로 생성하지 않는다.
+        if len(clusters) > 5:
+            boundary_ids = {0, len(clusters) - 1}
+            ranked = sorted(range(1, len(clusters) - 1), key=lambda i: clusters[i][1], reverse=True)
+            keep_ids = boundary_ids | set(ranked[:3])
+            clusters = [item for index, item in enumerate(clusters) if index in keep_ids]
+            clusters.sort(key=lambda item: item[0], reverse=True)
 
-        # 단일 지정가 대신 각 단계가 담당하는 실제 주문 허용 범위를 만든다.
-        # 인접 단계의 중간값을 경계로 사용해 5개 범위가 겹치지 않으면서
-        # 밴드 전체(lo~hi)를 빠짐없이 세분하도록 한다.
+        rounded_prices: list[float] = []
+        step_basis: list[str] = []
+        for candidate_price, _weight, label in clusters:
+            rounded = _round_market_price(_clip(candidate_price, lo, hi), market)
+            if rounded_prices and rounded >= rounded_prices[-1]:
+                continue
+            rounded_prices.append(rounded)
+            step_basis.append(label)
+        if not rounded_prices:
+            rounded_prices = [_round_market_price((lo + hi) / 2.0, market)]
+            step_basis = ["유효한 독립 지지 구조 없음"]
+
+        # 인접 독립 구조의 중간값을 경계로 주문 허용 범위를 구성한다. 구조가 하나면
+        # 해당 밴드 전체를 한 구간으로 유지한다.
         step_price_ranges = []
         for _idx, center in enumerate(rounded_prices):
             upper = hi if _idx == 0 else (rounded_prices[_idx - 1] + center) / 2.0
@@ -10921,7 +10978,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             0.65 + downside_score / 180.0 + (0.12 if is_recommended else 0.0),
             0.55, 1.25,
         )
-        allocation_weights = np.exp(np.linspace(0.0, allocation_curve, 5))
+        allocation_weights = np.exp(np.linspace(0.0, allocation_curve, len(rounded_prices)))
         allocations = [
             round(band_allocation_pct * float(weight / allocation_weights.sum()), 1)
             for weight in allocation_weights
@@ -11067,22 +11124,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 )
                 previous_days_min, previous_days_max = days_min, days_max
 
-            nearest_anchor = min(
-                anchors,
-                key=lambda item: abs(item[0] - price),
-                default=None,
-            )
-            anchor_label = (
-                nearest_anchor[2]
-                if nearest_anchor and abs(nearest_anchor[0] - price) <= max(width * 0.45, atr_d * 0.30)
-                else "ATR·위험 분포"
-            )
             result.append({
                 "stage": _idx + 1,
                 "label": f"{_idx + 1}단계",
                 "price": price,
                 "price_range": [price_low, price_high],
-                "price_range_basis": "인접 단계 중간값으로 세분한 주문 허용 구간",
+                "price_range_basis": "인접 독립 지지 구조의 중간 경계",
                 "decline_pct": round((price - last_price) / last_price * 100.0, 1),
                 "decline_pct_range": [
                     round((price_low - last_price) / last_price * 100.0, 1),
@@ -11098,7 +11145,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 "period_source": period_source,
                 "period_note": period_note,
                 "allocation_pct": allocations[_idx],
-                "basis": anchor_label,
+                "basis": step_basis[_idx],
             })
         return result
 
@@ -11110,6 +11157,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "C": (f"BB하단({bb_l:,.{rnd}f}) 구조적 지지" if bb_l_raw else "볼린저 하단 기준"),
     }
     aggressive_bands = []
+    _strategy_meta = {
+        "A": ("conservative", "보수적", "가까운 지지의 종가 회복을 우선 확인"),
+        "B": ("balanced", "중립적", "현재 변동성과 지지 구조를 균형 있게 반영"),
+        "C": ("aggressive", "공격적", "더 깊은 조정까지 허용하되 확인 조건을 강화"),
+    }
     _base_depth_offset = 0.20 if _mkt == "KRX" else 0.15
     _allocation_scale = float((learning_adjustment or {}).get("allocation_scale") or 1.0)
     # strong_support(최근 20일 저점 클러스터)가 현재가와 4 ATR 이상 떨어져 있으면
@@ -11146,6 +11198,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _band_allocation = round((6 if _zn == "A" else 4 if _zn == "B" else 3) * _allocation_scale, 1)
         aggressive_bands.append({
             "band": _zn,
+            "strategy_key": _strategy_meta[_zn][0],
+            "strategy_label": _strategy_meta[_zn][1],
+            "strategy_desc": _strategy_meta[_zn][2],
             "range": [_lo, _hi],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
@@ -11257,6 +11312,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _band_allocation = round((22 if _zn == "A" else 35 if _zn == "B" else 18) * _allocation_scale, 1)
         recommended_bands.append({
             "band": _zn,
+            "strategy_key": _strategy_meta[_zn][0],
+            "strategy_label": _strategy_meta[_zn][1],
+            "strategy_desc": _strategy_meta[_zn][2],
             "range": [_lo, _hi],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
@@ -11273,6 +11331,43 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "win_prob_pct":  _win,
             "avg_hold_days": _z["hold"],
         })
+
+    # 최종 출력 전 가격 구간의 방향·중첩을 검증한다. 2차 주 진입은 같은 전략의
+    # 1차 탐색보다 실제로 더 깊은 구조가 확인될 때만 표시한다. 데이터가 이를
+    # 뒷받침하지 않으면 억지로 가격을 낮추지 않고 해당 전략을 보류 처리한다.
+    def _validate_entry_steps(band: Dict) -> bool:
+        steps = band.get("steps") or []
+        if not steps:
+            return False
+        for previous, current in zip(steps, steps[1:]):
+            previous_range = previous.get("price_range") or []
+            current_range = current.get("price_range") or []
+            if (len(previous_range) != 2 or len(current_range) != 2
+                    or previous["price"] <= current["price"]
+                    or previous_range[0] < current_range[1]):
+                return False
+        return True
+
+    for _band in aggressive_bands:
+        _band["is_available"] = _validate_entry_steps(_band)
+        if not _band["is_available"]:
+            _band["availability_note"] = "독립적인 탐색 가격 구조를 확인하지 못해 표시를 보류했습니다."
+    _exploration_floor = min(
+        (float((band.get("range") or [0])[0] or 0) for band in aggressive_bands),
+        default=0.0,
+    )
+    for _core in recommended_bands:
+        _core["is_available"] = _validate_entry_steps(_core)
+        _core_ceiling = float((_core.get("range") or [0, 0])[1] or 0)
+        if _core_ceiling >= _exploration_floor:
+            _core["is_available"] = False
+            _core["availability_note"] = (
+                "1차 탐색 구간 전체보다 깊은 독립 지지 구조가 확인되지 않아 "
+                "주 진입 가격을 임의로 생성하지 않았습니다."
+            )
+            _core["steps"] = []
+        elif not _core["is_available"]:
+            _core["availability_note"] = "독립적인 주 진입 가격 구조를 확인하지 못해 표시를 보류했습니다."
 
     # ── 타이밍 산출 ──────────────────────────────────────────────────
     now = dt.now()
@@ -11373,7 +11468,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
 
     if vol_trend == "expanding" and _akey not in ("wait", "wait_support"):
         _rationale.append("⚠️ 변동성 확대 중 — 한 번에 몰지 말고 분산 진입 권장")
-    if _adx_strong and _ctx not in ("overbought", "downtrend"):
+    if _adx_strong and di_plus > di_minus and _ctx not in ("overbought", "downtrend", "breakdown"):
         _rationale.append(f"ADX {adx:.0f} — 추세 강도 양호, 진입 타이밍 유리")
 
     _chase_pct  = 1.04 if _ctx in ("sideways", "recovery") else 1.03 if _ctx == "uptrend" else 1.015
@@ -17006,19 +17101,20 @@ input::placeholder{color:#484f58}
         </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
         <div class="card forecast-entry-group">
-          <div class="card-title">🎯 현재가 기준 매수 전략</div>
+          <div class="card-title">🎯 진입 전략: 탐색 후 주 진입</div>
           <div id="buy-price-section"></div>
-          <div class="buy-card forecast-scenario-group">
-            <div class="buy-label forecast-scenario-title">🧭 조건부 예측 시나리오</div>
-            <div id="prediction-scenarios-section"></div>
-          </div>
         </div>
-        <!-- 리스크 관리 카드: 시나리오 + ATR 기반 정밀 가격 통합 -->
+        <!-- 리스크 관리와 목표 청산 -->
         <div class="card">
-          <div class="card-title">🛡️ 리스크 관리 (ATR 기반)</div>
+          <div class="card-title">🛡️ 리스크 관리와 목표 청산</div>
           <div id="buy-risk-notes-section"></div>
           <div class="risk-grid" id="risk-grid"></div>
         </div>
+        <div class="card forecast-scenario-group">
+          <div class="card-title">🧭 조건부 시나리오와 무효화 조건</div>
+          <div id="prediction-scenarios-section"></div>
+        </div>
+        <div id="technical-validation-section"></div>
       </div>
       <!-- 뉴스 탭 -->
       <div id="tab-news" style="display:none">
@@ -19810,10 +19906,12 @@ function renderForecast(d, isKrx) {
   // ── 매수 전략 섹션 ──
   const bpEl = document.getElementById('buy-price-section');
   const buyRiskNotesEl = document.getElementById('buy-risk-notes-section');
+  const technicalValidationEl = document.getElementById('technical-validation-section');
   if (bpEl) {
     if (!bp) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
+      if (technicalValidationEl) technicalValidationEl.innerHTML = '';
     } else {
       const sr = bp.strategy_rec || {};
       const cur = bp.current;
@@ -20068,6 +20166,7 @@ function renderForecast(d, isKrx) {
       // ── 추천 밴드 (active_bands 기준으로 필터링) ──
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
+      const isWaitMode = ['wait', 'wait_support', 'wait_breakdown'].includes(sr.action_key);
 
       // ── "🔗 연계 밴드"(피보나치 연동) · 핵심 구간(저항대/방어) · 분할 매수 단계(1~4차)
       //    설명은 모두 매수 구간 카드에서 폐지됨 → 카드에는 밴드 가격대/근거만 표시한다.
@@ -20077,10 +20176,16 @@ function renderForecast(d, isKrx) {
         const isActive = activeBands.includes(b.band);
         const isPriority = b.band === sr.priority_band;
         const dimStyle = isActive ? '' : 'opacity:0.4;';
+        if (b.is_available === false) {
+          return `<div class="buy-band-card" style="${dimStyle}border:1px solid #30363d;background:#161b22">
+            <div class="buy-band-head"><div class="buy-band-title" style="color:${bc}">${b.strategy_label || `밴드 ${b.band}`}</div><span style="font-size:9px;color:#8b949e">가격 표시 보류</span></div>
+            <div class="buy-band-detail warning">${_escPrediction(b.availability_note || '유효한 독립 가격 구조를 확인하지 못했습니다.')}</div>
+          </div>`;
+        }
         const allocationTag = isActive
           ? `<span style="font-size:9px;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px">권장 ${b.allocation_pct || 0}%</span>`
           : `<span style="font-size:9px;color:#8b949e;background:#21262d;border-radius:3px;padding:1px 5px">대기</span>`;
-        const priTag   = isPriority ? `<span style="font-size:9px;background:${bc}33;color:${bc};border:1px solid ${bc};border-radius:3px;padding:1px 5px;margin-left:4px">권장</span>` : '';
+        const priTag   = isPriority ? `<span style="font-size:9px;background:${bc}33;color:${bc};border:1px solid ${bc};border-radius:3px;padding:1px 5px;margin-left:4px">우선 확인</span>` : '';
         const steps = Array.isArray(b.steps) ? b.steps : [];
         const bandRangeText = Array.isArray(b.range) && b.range.length === 2
           ? `${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}` : '분석 데이터 부족';
@@ -20106,16 +20211,17 @@ function renderForecast(d, isKrx) {
           const periodBasis = s.period_note
             ? ` · 예상 기간: ${s.period_note}`
             : '';
-          const stepTitle = `${s.basis || 'ATR·기술 지표'} · ${s.price_range_basis || '단계별 주문 허용 범위'}${periodBasis} · 단계 배분 ${s.allocation_pct || 0}%`;
+          const stepBasis = s.basis || 'ATR·기술 지표';
+          const stepTitle = `${stepBasis} · ${s.price_range_basis || '단계별 주문 허용 범위'}${periodBasis} · 단계 배분 ${s.allocation_pct || 0}%`;
           return `<div class="buy-stage-row" role="row" title="${stepTitle}" aria-label="${s.label}, 매수 가격 범위 ${priceText}, 현재가 대비 ${declineText}, 도달 확률 ${probabilityText}, 예상 ${periodText}, 단계 배분 ${s.allocation_pct || 0}%">
             <span class="buy-stage-name" role="cell" style="color:${bc}">${s.label}</span>
-            <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}</span>
+            <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;line-height:1.25;margin-top:1px">${_escPrediction(stepBasis)}</small></span>
             <span class="buy-stage-drop" role="cell">${declineText}</span>
             <span class="buy-stage-prob ${hasProbability ? '' : 'buy-stage-unavailable'}" role="cell" style="color:${probabilityColor}">${probabilityText}</span>
             <span class="buy-stage-days ${s.days_min == null ? 'buy-stage-unavailable' : ''}" role="cell">${periodText}</span>
           </div>`;
         }).join('');
-        const stageTable = `<div class="buy-stage-table" role="table" aria-label="밴드 ${b.band} 5단계 매수 가격">
+        const stageTable = `<div class="buy-stage-table" role="table" aria-label="${b.strategy_label || `밴드 ${b.band}`} 구조 기반 매수 가격 단계">
           <div class="buy-stage-row buy-stage-header" role="row">
             <span role="columnheader">단계</span>
             <span role="columnheader">매수 가격 범위</span>
@@ -20126,20 +20232,15 @@ function renderForecast(d, isKrx) {
           ${stepRows || '<div class="buy-stage-unavailable">분석 데이터 부족</div>'}
         </div>`;
         const detailHtml = isRec
-          ? `<div class="buy-band-detail">• ${b.basis}</div>
-             <div class="buy-band-detail positive">→ ${b.hold_note}</div>
-             <div class="buy-band-detail">• ${b.confirm_note || '지지 확인 후 진입'}</div>
-             <div class="buy-band-detail warning">승률 ${b.win_prob_pct}% · ${b.risk_note || '위험 보정 반영'}</div>`
-          : `<div class="buy-band-detail">• ${b.atr_basis}</div>
-             <div class="buy-band-detail">• ${b.tech_note}</div>
-             <div class="buy-band-detail">• ${b.confirm_note || '반등 확인 전 소액만 테스트'}</div>
-             <div class="buy-band-detail warning">승률 ${b.win_prob_pct}% · 손실확률 ${b.loss_prob_pct}%</div>
-             <div class="buy-band-detail negative">• ${b.risk_note || '시장 위험 보정 반영'}</div>`;
+          ? `<div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
+             <div class="buy-band-detail">• ${b.hold_note || '지지 구조 재확인 후 주 진입'}</div>`
+          : `<div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
+             <div class="buy-band-detail">• ${b.atr_basis}</div>`;
         return `<div class="buy-band-card" style="${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
           <div class="buy-band-head">
-            <div class="buy-band-title" style="color:${bc}">밴드 ${b.band}${priTag}</div>
+            <div class="buy-band-title" style="color:${bc}">${b.strategy_label || `밴드 ${b.band}`}${priTag}</div>
             <div class="buy-band-badges">
-              <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${b.entry_role || (isRec ? '주 진입' : '소액 탐색 진입')}</span>
+              <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${isWaitMode ? '참고 구간' : (b.entry_role || (isRec ? '주 진입' : '소액 탐색 진입'))}</span>
               ${allocationTag}
             </div>
           </div>
@@ -20156,27 +20257,39 @@ function renderForecast(d, isKrx) {
         ? `<div class="buy-card recommended" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
               <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 2차 매수 구간 · 주 진입</div>
-              <div style="font-size:10px;color:#484f58">※ 지지선·이평선·VWAP 앵커 기반, 주 비중</div>
+              <div style="font-size:10px;color:#8b949e">독립 지지 구조가 없으면 가격을 복제하지 않고 단계 수를 줄입니다</div>
             </div>
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
           </div>` : '';
 
-      const isWaitMode = ['wait', 'wait_support', 'wait_breakdown'].includes(sr.action_key);
       const aggTitle = '⚡ 1차 매수 구간 (ATR 기반) · 소액 탐색';
       const aggNote = isWaitMode
         ? '매수 보류 상태 · 반등 확인 전 실행 구간 아님'
         : '백테스트 + 이벤트 위험 반영';
+      const fib = bp.fib || {};
+      const volatilityLabel = ({ expanding: '변동성 확대', contracting: '변동성 수축', normal: '변동성 안정' })[bp.vol_trend] || '변동성 확인 중';
+      const midStructure = fib.f382 != null && fib.f500 != null
+        ? [fib.f382, fib.f500].sort((a, b) => a - b) : null;
+      const entryConfirmation = isWaitMode
+        ? '현재는 매수 보류입니다. 종가 지지·반등 캔들·거래량 회복이 동시에 확인되기 전에는 주문하지 않습니다.'
+        : '공통 실행 조건: 해당 구간의 종가 지지와 거래량 확인이 동시에 충족될 때만 단계적으로 접근합니다.';
+      const sharedEntryHtml = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:7px;margin:0 0 12px">
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:8px"><div style="font-size:9px;color:#8b949e">현재 변동성</div><div style="font-size:11px;color:#cdd9e5;font-weight:700">ATR ${bp.atr_pct != null ? bp.atr_pct + '%' : '—'} · ${volatilityLabel}</div></div>
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:8px"><div style="font-size:9px;color:#8b949e">핵심 지지</div><div style="font-size:11px;color:#58a6ff;font-weight:700">${bp.support_zone != null ? fmt(bp.support_zone, isKrx) : '데이터 부족'}</div></div>
+        <div style="background:#0d1117;border:1px solid #30363d;border-radius:7px;padding:8px"><div style="font-size:9px;color:#8b949e">중기 지지 구조</div><div style="font-size:11px;color:#cdd9e5;font-weight:700">${midStructure ? `${fmt(midStructure[0], isKrx)} ~ ${fmt(midStructure[1], isKrx)}` : '데이터 부족'}</div></div>
+      </div><div style="font-size:10px;color:${isWaitMode ? '#f85149' : '#8b949e'};line-height:1.5;margin:-4px 0 12px">${entryConfirmation}</div>`;
 
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
         ? `<div class="buy-card aggressive" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
               <div class="buy-label" style="margin-bottom:0;font-size:13px">${aggTitle}</div>
-              <div style="font-size:10px;color:#484f58">※ ${aggNote}</div>
+              <div style="font-size:10px;color:#8b949e">${aggNote} · 지지 구조별로만 단계 생성</div>
             </div>
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + artyHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      if (technicalValidationEl) technicalValidationEl.innerHTML = artyHtml;
       if (buyRiskNotesEl) {
         buyRiskNotesEl.innerHTML = eventRiskHtml;
       }
@@ -20213,11 +20326,12 @@ function renderForecast(d, isKrx) {
         <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">손절가</div>
         <div style="font-size:17px;font-weight:800;color:#f85149">${fmt(_stopVal, isKrx)}</div>
         <div style="font-size:11px;color:#d29922;margin-top:4px">${_stopPct != null ? _stopPct + '% 범위 · ' : ''}종가 이탈과 거래량 증가가 함께 나타나면 손실 제한 우선</div>
-        <div style="font-size:10px;color:#8b949e;margin-top:5px">${risk.vol_state || ''} · ${risk.vol_trend || ''} 변동성이 클수록 정상 가격 진폭도 커져 ATR 손절 폭이 넓어지며, 저변동성에서는 기준이 좁아질 수 있습니다.</div>
+        <div style="font-size:10px;color:#8b949e;margin-top:5px">현재 변동성: ${risk.vol_state || '확인 중'} · ${risk.vol_trend || '추세 확인 중'}<br>변동성이 클수록 정상 가격 진폭도 커져 ATR 손절 폭이 넓어지며, 저변동성에서는 기준이 좁아질 수 있습니다.</div>
         ${warningZoneHtml}
         ${riskTriggerHtml ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #30363d"><div style="font-size:10px;color:#f85149;font-weight:700;margin-bottom:4px">리스크 확대 조건</div><div style="font-size:10px;color:#8b949e;line-height:1.5">${riskTriggerHtml}</div></div>` : ''}
       </div>`;
     rgEl.innerHTML = `
+      ${commonStopHtml}
       ${riskEntries.map(sc => {
         // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
         const pbHtml = (() => {
@@ -20288,7 +20402,6 @@ function renderForecast(d, isKrx) {
           <div class="risk-name">${sc.label}</div>
           <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
           ${entryStatusHtml}
-          <div style="font-size:10px;color:#8b949e;margin:-4px 0 8px">ATR ${risk.atr_pct || '—'}% · 손절 기준 ${sc.atr_mul_stp || '—'}ATR · 현재 변동성 보정 반영</div>
           <div class="risk-row" style="margin-bottom:4px">
             <span class="risk-lbl">🎯 목표 가격 범위</span>
             <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
@@ -20320,12 +20433,7 @@ function renderForecast(d, isKrx) {
           ${sc.tp_levels && sc.tp_levels.length ? `
           <div role="table" aria-label="${sc.label} 목표가 레벨별 도달 가능성" style="margin-top:8px;padding-top:8px;${DIVIDER}">
             <div style="font-size:10px;color:#8b949e;margin-bottom:2px">📊 목표가 레벨별 도달 가능성 · 참고 추정</div>
-            <div style="font-size:9px;color:#6e7681;margin-bottom:6px">ATR 거리·추세·거래량·변동성·시장 위험 보정 · 기간은 거래일 기준</div>
-            ${(sc.tp_range && sc.tp_range.length === 2) ? `
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:#0d1117;border:1px solid #30363d;border-radius:5px;padding:5px 7px;margin-bottom:5px">
-              <span style="font-size:9px;color:#8b949e">${sc.label} 예측 목표 가격 범위</span>
-              <span style="font-size:10px;font-weight:700;color:#58a6ff;white-space:nowrap">${fmt(sc.tp_range[0], isKrx)} ~ ${fmt(sc.tp_range[1], isKrx)}</span>
-            </div>` : ''}
+              <div style="font-size:9px;color:#6e7681;margin-bottom:6px">독립 저항·스윙 확장만 표시 · 도달 가능성/기간은 ATR 거리·추세·거래량·변동성·시장 위험을 함께 반영</div>
             <div class="risk-tp-level risk-tp-head" role="row">
               <span role="columnheader">단계</span>
               <span role="columnheader">목표 가격 범위</span>
@@ -20347,7 +20455,7 @@ function renderForecast(d, isKrx) {
                 : 'background:#0d1117;';
               return `<div class="risk-tp-level" role="row" style="${levelBackground}border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
-                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600">${levelPriceText}</span>
+                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction(lv.basis || '구조 목표')}">${levelPriceText}<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis || '구조 목표')}</small></span>
                 <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
@@ -20355,8 +20463,7 @@ function renderForecast(d, isKrx) {
             }).join('')}
           </div>` : ''}
         </div>`;
-      }).join('')}
-      ${commonStopHtml}`;
+      }).join('')}`;
   }
 }
 
