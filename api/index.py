@@ -16117,8 +16117,8 @@ input::placeholder{color:#484f58}
 .charm-header{display:flex;flex-direction:column;gap:12px}
 .charm-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:stretch}
 @media(max-width:640px){.charm-top{grid-template-columns:1fr}}
-.charm-score-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;text-align:center;position:relative;overflow:hidden}
-.charm-score-ring{width:120px;height:120px;border-radius:50%;margin:0 auto 10px;position:relative;display:flex;align-items:center;justify-content:center;background:conic-gradient(var(--score-color, #58a6ff) calc(var(--score, 50) * 3.6deg), #21262d 0)}
+.charm-score-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;text-align:center;position:relative;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.charm-score-ring{width:100%;aspect-ratio:1;max-width:180px;border-radius:50%;margin:0 auto 10px;position:relative;display:flex;align-items:center;justify-content:center;background:conic-gradient(var(--score-color, #58a6ff) calc(var(--score, 50) * 3.6deg), #21262d 0)}
 .charm-score-inner{width:96px;height:96px;border-radius:50%;background:#161b22;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .charm-score-val{font-size:32px;font-weight:800;color:var(--score-color, #58a6ff);line-height:1}
 .charm-score-label{font-size:11px;color:#8b949e;margin-top:2px}
@@ -19562,8 +19562,8 @@ function renderDiagnosis(d, isKrx) {
         </div>
         <div class="charm-radar-wrap">
           <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
-          ${hasCompleteRadarData
-            ? `<canvas id="${radarId}" class="charm-radar-canvas" width="320" height="320"></canvas>`
+${hasCompleteRadarData
+            ? `<canvas id="${radarId}" class="charm-radar-canvas"></canvas>`
             : `<div class="empty-note" style="text-align:center">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
           <div style="font-size:10px;color:#484f58">중앙 스마트스코어 ${smartDisplay} · 축 순서: 미래성장성 → 사업독점력 → 재무안전성 → 수익성 → 현금창출력</div>
         </div>
@@ -19581,12 +19581,18 @@ function renderDiagnosis(d, isKrx) {
       </div>
     `;
 
-    // 레이더 그리기
+// 레이더 그리기
     setTimeout(() => {
       const canvas = document.getElementById(radarId);
       if (!canvas || !hasCompleteRadarData) return;
       const ctx = canvas.getContext('2d');
-      const W = canvas.width, H = canvas.height, CX = W/2, CY = H/2, R = Math.min(W,H)*0.38;
+      // CSS 렌더링 크기에 맞춰 캔버스 해상도 설정 (고해상도 대응)
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      const W = rect.width, H = rect.height, CX = W/2, CY = H/2, R = Math.min(W,H)*0.33;
       const labels = ['미래성장성','사업독점력','재무안전성','수익성','현금창출력'];
       const scores = subScoresForRadar;
       // 배경 그리드
@@ -19604,13 +19610,6 @@ function renderDiagnosis(d, isKrx) {
         ctx.strokeStyle = lvl===5 ? '#30363d' : '#21262d';
         ctx.lineWidth = lvl===5 ? 1.2 : 1;
         ctx.stroke();
-        // 레벨 라벨
-        if (lvl===5) {
-          ctx.fillStyle = '#484f58';
-          ctx.font = '10px sans-serif';
-          ctx.textAlign = 'center';
-          // ctx.fillText(String(lvl*20), CX, CY - r + 10);
-        }
       }
       // 축
       for (let i=0;i<5;i++) {
@@ -19651,18 +19650,18 @@ function renderDiagnosis(d, isKrx) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
-      // 라벨
+      // 라벨 - 거리 증가로 잘림 방지
       ctx.fillStyle = '#cdd9e5';
       ctx.font = '11px sans-serif';
       for (let i=0;i<5;i++) {
         const ang = -Math.PI/2 + i*2*Math.PI/5;
-        const x = CX + Math.cos(ang)*(R+18);
-        const y = CY + Math.sin(ang)*(R+18);
+        const x = CX + Math.cos(ang)*(R+28);
+        const y = CY + Math.sin(ang)*(R+28);
         ctx.textAlign = Math.cos(ang) > 0.3 ? 'left' : Math.cos(ang) < -0.3 ? 'right' : 'center';
         ctx.textBaseline = Math.sin(ang) > 0.3 ? 'top' : Math.sin(ang) < -0.3 ? 'bottom' : 'middle';
         ctx.fillText(labels[i], x, y);
       }
-      // 중앙 스마트스코어
+      // 중앙 스마트스코어 - 텍스트 크기 축소
       ctx.fillStyle = '#0d1117';
       ctx.beginPath();
       ctx.arc(CX,CY,28,0,Math.PI*2);
@@ -19676,7 +19675,7 @@ function renderDiagnosis(d, isKrx) {
       ctx.textBaseline = 'middle';
       ctx.fillText(smartDisplay, CX, CY-6);
       ctx.fillStyle = '#8b949e';
-      ctx.font = '8px sans-serif';
+      ctx.font = '7px sans-serif';
       ctx.fillText('스마트스코어', CX, CY+8);
     }, 30);
 
