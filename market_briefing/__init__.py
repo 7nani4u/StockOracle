@@ -79,6 +79,40 @@ try:
 except Exception:
     _CONFIDENCE_ENGINE_AVAILABLE = False
 
+try:
+    from .ml_features import (
+        FEATURE_COLS, FEATURE_DESCRIPTIONS, FORWARD_DAYS, DEAD_ZONE,
+        engineer_ticker_features, compute_feature_vector, walk_forward_splits,
+    )
+    _ML_FEATURES_AVAILABLE = True
+except Exception:
+    _ML_FEATURES_AVAILABLE = False
+    FEATURE_COLS = []
+
+try:
+    from .ml_predictor import (
+        predict_direction as ml_predict_direction,
+        predict_from_ohlcv as ml_predict_from_ohlcv,
+        load_model as ml_load_model,
+        is_model_available as ml_is_available,
+        get_feature_columns as ml_feature_columns,
+        get_model_metadata as ml_model_metadata,
+    )
+    _ML_PREDICTOR_AVAILABLE = True
+except Exception:
+    _ML_PREDICTOR_AVAILABLE = False
+
+try:
+    from .ml_evaluate import (
+        evaluate_predictions as ml_evaluate_predictions,
+        time_based_split as ml_time_based_split,
+        walk_forward_evaluate as ml_walk_forward_evaluate,
+        check_data_leakage as ml_check_leakage,
+    )
+    _ML_EVALUATE_AVAILABLE = True
+except Exception:
+    _ML_EVALUATE_AVAILABLE = False
+
 __all__ = [
     # 기존
     "build_core_summary",
@@ -112,7 +146,14 @@ __all__ = [
     "build_signal_confidence", "get_macro_regime", "get_sector_relative",
     "get_earnings_proximity", "earnings_cap", "disagreement_penalty",
     "confidence_interval", "analyze_news_sentiment",
+    # ml pipeline (StockFlow leakage-safe)
+    "FEATURE_COLS", "FEATURE_DESCRIPTIONS", "FORWARD_DAYS", "DEAD_ZONE",
+    "engineer_ticker_features", "compute_feature_vector", "walk_forward_splits",
+    "ml_predict_direction", "ml_predict_from_ohlcv", "ml_load_model", "ml_is_available",
+    "ml_feature_columns", "ml_model_metadata",
+    "ml_evaluate_predictions", "ml_time_based_split", "ml_walk_forward_evaluate", "ml_check_leakage",
     # 가용성 플래그
     "_PORTFOLIO_AVAILABLE", "_IMMUNE_AVAILABLE",
     "_CROSS_REF_AVAILABLE", "_DASHBOARD_AVAILABLE", "_CONFIDENCE_ENGINE_AVAILABLE",
+    "_ML_FEATURES_AVAILABLE", "_ML_PREDICTOR_AVAILABLE", "_ML_EVALUATE_AVAILABLE",
 ]

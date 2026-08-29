@@ -18,3 +18,13 @@ holidays>=0.80
 # (requests, bs4, yfinance, lxml 은 위에서 이미 선언됨)
 # Vercel Python 런타임: certifi 는 자동 포함되나 명시 권장
 certifi>=2024.2.2
+
+# ── ML 예측 파이프라인 (StockFlow 통합, 선택적) ──────────────────
+# LightGBM: 14일 방향 분류 핵심 모델 (없으면 sklearn fallback)
+# scikit-learn: time-based split, calibration, fallback HistGradientBoosting
+# scipy: Platt calibration 최적화 (없으면 미보정)
+# joblib: 모델 직렬화 (sklearn 의존성으로 자동 포함)
+scikit-learn>=1.3.0
+scipy>=1.10.0
+# lightgbm은 Vercel 빌드 크기 제한으로 선택적 — 없으면 휴리스틱+sklearn fallback
+# lightgbm>=4.0.0  # 필요 시 주석 해제하여 설치

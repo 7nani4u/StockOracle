@@ -151,6 +151,50 @@ from market_briefing.dynamic_rsi import (
     dynamic_rsi_snapshot,
 )
 
+# ── ML predictor (StockFlow leakage-safe pipeline) ──────────────────────────
+try:
+    from market_briefing.ml_predictor import (
+        predict_from_ohlcv as _ml_predict_from_ohlcv,
+        is_model_available as _ml_is_available,
+        get_model_metadata as _ml_get_metadata,
+    )
+    _ML_AVAILABLE = True
+except Exception as _ml_e:
+    _ML_AVAILABLE = False
+    _ml_predict_from_ohlcv = None
+    _ml_is_available = lambda: False
+    _ml_get_metadata = lambda: {}
+
+def _get_ml_prediction(dd, market: str, ticker: str) -> dict | None:
+    """ML 14-day direction prediction with leakage-safe features.
+    Returns dict with direction/confidence/prob_up or None on failure/insufficient data.
+    Never raises — failures are silent to preserve existing API contract.
+    """
+    if not _ML_AVAILABLE or _ml_predict_from_ohlcv is None:
+        return None
+    try:
+        closes = dd.get("Close") or dd.get("close") or []
+        highs = dd.get("High") or dd.get("high") or []
+        lows = dd.get("Low") or dd.get("low") or []
+        volumes = dd.get("Volume") or dd.get("volume") or []
+        if not closes or len(closes) < 60:
+            return None
+        # sanitize None
+        closes = [float(x) for x in closes if x is not None]
+        highs = [float(x) for x in highs if x is not None]
+        lows = [float(x) for x in lows if x is not None]
+        volumes = [float(x) for x in volumes if x is not None]
+        if len(closes) < 60:
+            return None
+        result = _ml_predict_from_ohlcv(ticker, closes, highs, lows, volumes, market=market)
+        # result always contains fallback flag if model missing; only return if meaningful
+        if result and isinstance(result, dict):
+            return result
+    except Exception:
+        pass
+    return None
+
+
 # yfinance 타임아웃 및 차단 방지를 위한 전역 설정 (session 래핑 제거)
 import yfinance.utils
 import yfinance.data
@@ -14348,6 +14392,22 @@ def route(path: str, params: Dict) -> Dict:
         # prob_up/down은 최종 score 확정 후에 계산해야 투자자 수급·Hybrid·레짐 보정과 일치한다.
         # 초기값은 참고용으로만 계산하고 최종 보정 후 재계산한다.
         prob_up, prob_down = calc_probability(score, dd, market)
+        # ── ML 14-day direction prediction (StockFlow integrated) ─────────
+        ml_prediction = None
+        try:
+            ml_prediction = _get_ml_prediction(dd, market, sym)
+            # expose ML prob as complementary signal; blend 15% into prob_up if confident
+            if ml_prediction and not ml_prediction.get("fallback"):
+                ml_prob = float(ml_prediction.get("prob_up", 0.5))
+                ml_conf = float(ml_prediction.get("confidence", 0.5))
+                # only blend if ML is reasonably confident (>=0.55) to avoid noise
+                if ml_conf >= 0.56 and 0.25 < ml_prob < 0.85:
+                    # weighted blend: 85% heuristic + 15% ML
+                    blended = prob_up * 0.85 + ml_prob * 100 * 0.15
+                    prob_up = round(max(5.0, min(95.0, blended)), 1)
+                    prob_down = round(100.0 - prob_up, 1)
+        except Exception:
+            ml_prediction = None
 
         # Market Regime 필터 적용
         regime = check_market_regime(market, sym)
@@ -14613,6 +14673,22 @@ def route(path: str, params: Dict) -> Dict:
 
         # score 최종 확정 후 확률 재계산 — 투자자 수급·Hybrid·레짐/재무 보정이 반영된 최종 확률
         prob_up, prob_down = calc_probability(score, dd, market)
+        # ── ML 14-day direction prediction (StockFlow integrated) ─────────
+        ml_prediction = None
+        try:
+            ml_prediction = _get_ml_prediction(dd, market, sym)
+            # expose ML prob as complementary signal; blend 15% into prob_up if confident
+            if ml_prediction and not ml_prediction.get("fallback"):
+                ml_prob = float(ml_prediction.get("prob_up", 0.5))
+                ml_conf = float(ml_prediction.get("confidence", 0.5))
+                # only blend if ML is reasonably confident (>=0.55) to avoid noise
+                if ml_conf >= 0.56 and 0.25 < ml_prob < 0.85:
+                    # weighted blend: 85% heuristic + 15% ML
+                    blended = prob_up * 0.85 + ml_prob * 100 * 0.15
+                    prob_up = round(max(5.0, min(95.0, blended)), 1)
+                    prob_down = round(100.0 - prob_up, 1)
+        except Exception:
+            ml_prediction = None
 
         buy_price        = calc_buy_price(
             dd, last, atr_val, score, indicator_signals, market, period,
@@ -14778,6 +14854,7 @@ def route(path: str, params: Dict) -> Dict:
             "volume": int(dd.get("Volume", [0])[-1] or 0),
             "atr": round(atr_val, _price_rnd),
             "score": score, "prob_up": prob_up, "prob_down": prob_down,
+              "ml_prediction": ml_prediction,
             "analysis_steps": steps, "ai_strategy": ai_strategy,
             "candlestick_patterns": patterns,
             "chart_patterns": geo_patterns,
