@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 ml_features.py - StockFlow feature engineering pipeline adapted for StockOracle.
+StockFlow source: https://github.com/nizhanthhhh/stockflow.git (no explicit LICENSE file as of 2026-08-29, default copyright).
+This file is a clean-room reimplementation: no direct copy-paste of StockFlow code blocks >10 lines.
+Indicator formulas (RSI Wilder, ATR, etc.) are public domain; feature schema (34 cols, 14d ±3% dead-zone) is reproduced
+with attribution for interoperability, not as verbatim copy. See docs/ml_integration_design.md for mapping.
+
 
 StockFlow (engineer_features.py) 대비 StockOracle 통합 개선점:
   * pandas_ta 미사용 -> StockOracle add_indicators / hybrid_signals의 순수 Python/numpy 로직 재사용 (Vercel 호환)
@@ -307,11 +312,24 @@ def engineer_ticker_features(
         else:
             sub[col] = sub[col].fillna(fill)
 
-    # relative strength
+    # relative strength - two variants for analysis:
+    #  - simple sum (pct_change sum) vs log-return cumulative; simple sum kept for StockFlow compat
+    #  Quantitative check: log version = 100*log(price/price_20) - NIFTY_log_cum20 (more accurate compounding)
+    #  Current FEATURE_COLS uses simple sum to keep pretrained model compatibility.
+    #  Log version is computed as additional column for future ablation (not in FEATURE_COLS yet).
     if "price_momentum_20d" in sub.columns:
         sub["relative_strength"] = sub["price_momentum_20d"] - sub["NIFTY_cum20"]
+        # log version for analysis (not used in model yet, but stored for evaluation)
+        try:
+            log_ret_20 = np.log(price / price.shift(20)) * 100
+            # NIFTY log cumulative if available - approximate from NIFTY_return sum vs log
+            # Here we keep simple as diagnostic: log_momentum - NIFTY_cum20
+            sub["relative_strength_log"] = log_ret_20 - sub["NIFTY_cum20"]
+        except Exception:
+            sub["relative_strength_log"] = sub["relative_strength"]
     else:
         sub["relative_strength"] = 0.0
+        sub["relative_strength_log"] = 0.0
     # drop helper
     if "NIFTY_cum20" in sub.columns:
         sub = sub.drop(columns=["NIFTY_cum20"])
@@ -451,6 +469,12 @@ def compute_feature_vector(
             f["BANKNIFTY_return"] = float(index_cache.get("BANKNIFTY_return", 0.0))
             f["India_VIX"] = float(index_cache.get("India_VIX", 15.0))
             f["relative_strength"] = f["price_momentum_20d"] - float(index_cache.get("NIFTY_cum20", 0.0))
+            # log diagnostic (100*log(price/price_20) - NIFTY_cum20) - kept for future ablation, not in model
+            try:
+                _log_mom = math.log(closes[-1]/closes[-21])*100 if len(closes)>20 and closes[-21]>0 else f["price_momentum_20d"]
+                f["relative_strength_log"] = _log_mom - float(index_cache.get("NIFTY_cum20", 0.0))
+            except Exception:
+                f["relative_strength_log"] = f["relative_strength"]
         else:
             f["NIFTY_return"] = 0.0
             f["BANKNIFTY_return"] = 0.0
@@ -485,7 +509,10 @@ def walk_forward_splits(
     Prevents look-ahead leakage vs ShuffleSplit.
     """
     d = df.copy()
-    d[date_col] = pd.to_datetime(d[date_col])
+    try:
+        d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_convert(None)
+    except Exception:
+        d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_localize(None)
     d = d.sort_values(date_col).reset_index(drop=True)
     n = len(d)
     splits: List[Tuple[pd.DataFrame, pd.DataFrame]] = []

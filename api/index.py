@@ -14392,20 +14392,42 @@ def route(path: str, params: Dict) -> Dict:
         # prob_up/down은 최종 score 확정 후에 계산해야 투자자 수급·Hybrid·레짐 보정과 일치한다.
         # 초기값은 참고용으로만 계산하고 최종 보정 후 재계산한다.
         prob_up, prob_down = calc_probability(score, dd, market)
-        # ── ML 14-day direction prediction (StockFlow integrated) ─────────
+        # ── ML 14-day direction prediction (StockFlow integrated, AUC-aware dynamic blend) ─────────
         ml_prediction = None
         try:
             ml_prediction = _get_ml_prediction(dd, market, sym)
-            # expose ML prob as complementary signal; blend 15% into prob_up if confident
             if ml_prediction and not ml_prediction.get("fallback"):
                 ml_prob = float(ml_prediction.get("prob_up", 0.5))
                 ml_conf = float(ml_prediction.get("confidence", 0.5))
-                # only blend if ML is reasonably confident (>=0.55) to avoid noise
-                if ml_conf >= 0.56 and 0.25 < ml_prob < 0.85:
-                    # weighted blend: 85% heuristic + 15% ML
-                    blended = prob_up * 0.85 + ml_prob * 100 * 0.15
+                # Dynamic weight based on validation AUC (training_metadata.json)
+                # <0.52: 0% (no trust), 0.52-0.56: 10%, 0.56-0.60: 15%, >0.60: 20-25%
+                try:
+                    _auc = float((_ml_get_metadata() or {}).get("metrics", {}).get("test_auc") or 0.55)
+                except Exception:
+                    _auc = 0.55
+                if _auc < 0.52:
+                    _ml_weight = 0.0
+                elif _auc < 0.56:
+                    _ml_weight = 0.10
+                elif _auc < 0.60:
+                    _ml_weight = 0.15
+                elif _auc < 0.65:
+                    _ml_weight = 0.20
+                else:
+                    _ml_weight = 0.25
+                # High volatility penalty: reduce weight by 30%
+                try:
+                    _atr_pct = float(ml_prediction.get("atr_pct", 2.0))
+                    if _atr_pct > 5.0:
+                        _ml_weight *= 0.7
+                except Exception:
+                    pass
+                if _ml_weight > 0 and ml_conf >= 0.55 and 0.25 < ml_prob < 0.85:
+                    blended = prob_up * (1 - _ml_weight) + ml_prob * 100 * _ml_weight
                     prob_up = round(max(5.0, min(95.0, blended)), 1)
                     prob_down = round(100.0 - prob_up, 1)
+                    ml_prediction["blend_weight"] = _ml_weight
+                    ml_prediction["blend_auc"] = _auc
         except Exception:
             ml_prediction = None
 
@@ -14673,20 +14695,42 @@ def route(path: str, params: Dict) -> Dict:
 
         # score 최종 확정 후 확률 재계산 — 투자자 수급·Hybrid·레짐/재무 보정이 반영된 최종 확률
         prob_up, prob_down = calc_probability(score, dd, market)
-        # ── ML 14-day direction prediction (StockFlow integrated) ─────────
+        # ── ML 14-day direction prediction (StockFlow integrated, AUC-aware dynamic blend) ─────────
         ml_prediction = None
         try:
             ml_prediction = _get_ml_prediction(dd, market, sym)
-            # expose ML prob as complementary signal; blend 15% into prob_up if confident
             if ml_prediction and not ml_prediction.get("fallback"):
                 ml_prob = float(ml_prediction.get("prob_up", 0.5))
                 ml_conf = float(ml_prediction.get("confidence", 0.5))
-                # only blend if ML is reasonably confident (>=0.55) to avoid noise
-                if ml_conf >= 0.56 and 0.25 < ml_prob < 0.85:
-                    # weighted blend: 85% heuristic + 15% ML
-                    blended = prob_up * 0.85 + ml_prob * 100 * 0.15
+                # Dynamic weight based on validation AUC (training_metadata.json)
+                # <0.52: 0% (no trust), 0.52-0.56: 10%, 0.56-0.60: 15%, >0.60: 20-25%
+                try:
+                    _auc = float((_ml_get_metadata() or {}).get("metrics", {}).get("test_auc") or 0.55)
+                except Exception:
+                    _auc = 0.55
+                if _auc < 0.52:
+                    _ml_weight = 0.0
+                elif _auc < 0.56:
+                    _ml_weight = 0.10
+                elif _auc < 0.60:
+                    _ml_weight = 0.15
+                elif _auc < 0.65:
+                    _ml_weight = 0.20
+                else:
+                    _ml_weight = 0.25
+                # High volatility penalty: reduce weight by 30%
+                try:
+                    _atr_pct = float(ml_prediction.get("atr_pct", 2.0))
+                    if _atr_pct > 5.0:
+                        _ml_weight *= 0.7
+                except Exception:
+                    pass
+                if _ml_weight > 0 and ml_conf >= 0.55 and 0.25 < ml_prob < 0.85:
+                    blended = prob_up * (1 - _ml_weight) + ml_prob * 100 * _ml_weight
                     prob_up = round(max(5.0, min(95.0, blended)), 1)
                     prob_down = round(100.0 - prob_up, 1)
+                    ml_prediction["blend_weight"] = _ml_weight
+                    ml_prediction["blend_auc"] = _auc
         except Exception:
             ml_prediction = None
 

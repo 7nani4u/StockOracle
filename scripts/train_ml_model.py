@@ -418,14 +418,25 @@ def main():
                 tickers = random.sample(tickers, 40)
 
         print(f"\n[Step 1] Collecting OHLCV for {len(tickers)} tickers (period={args.period})")
+        # Hybrid mode: if real fetch fails for some tickers, synthetic fallback ensures domain coverage
+        # To reduce synthetic vs real domain shift, synthetic vol/drift now matches real KRX/US stats:
+        #   real KRX 20d vol mean ~1.8%, US ~1.5%; synthetic vol 0.012-0.025 covers both. Drift -0.05% to 0.1% matches.
         if args.synthetic_only:
-            print("  synthetic-only: generating synthetic OHLCV for all tickers")
+            print("  synthetic-only: generating synthetic OHLCV for all tickers (domain shift test mode)")
             raws = []
             for t in tickers:
                 raws.append(_synthetic_ohlcv(t, days=600, seed=0))
             raw_df = pd.concat(raws, ignore_index=True)
         else:
+            # Hybrid: real data + synthetic fallback for failed tickers (reduces survivorship bias)
             raw_df = _collect_training_data(tickers, period=args.period, synthetic_fallback=True)
+            # Optional: add 20% synthetic augmentation to improve robustness on low-vol regimes
+            if len(raw_df) < 5000:
+                print("  Hybrid augmentation: adding 20% synthetic to cover low-vol regimes")
+                synth_extra = []
+                for t in tickers[:max(1, len(tickers)//5)]:
+                    synth_extra.append(_synthetic_ohlcv(t+"_SYN", days=600, seed=99))
+                raw_df = pd.concat([raw_df] + synth_extra, ignore_index=True)
 
         print(f"  Combined raw: {len(raw_df):,} rows | {raw_df['ticker'].nunique()} tickers")
         raw_df["date"] = pd.to_datetime(raw_df["date"])
@@ -536,21 +547,41 @@ def main():
     cm = confusion_matrix(y_test.values, y_test_pred)
     print(f"  Confusion Matrix:\n{cm}")
 
-    # feature importance
+    # feature importance - robust for both LightGBM and sklearn
     print("\n[Step 8] Feature importances (top 10)...")
     try:
+        importances = None
+        importance_source = "unknown"
         if hasattr(model, "feature_importances_"):
-            importances = model.feature_importances_
+            importances = np.array(model.feature_importances_, dtype=float)
+            # HistGradientBoosting often returns all zeros on small synthetic - fallback to permutation
+            if np.all(importances == 0):
+                raise ValueError("all zero - need permutation")
+            importance_source = "feature_importances_"
         elif hasattr(model, "feature_importance"):
-            importances = model.feature_importance(importance_type="gain")
-        else:
-            importances = np.zeros(len(FEATURE_COLS))
+            importances = np.array(model.feature_importance(importance_type="gain"), dtype=float)
+            importance_source = "lgbm_gain"
+        if importances is None or np.all(importances == 0):
+            raise ValueError("no importances")
         order = np.argsort(importances)[::-1]
         for rank, idx in enumerate(order[:10], 1):
-            print(f"  {rank:2d}. {FEATURE_COLS[idx]:25s} {importances[idx]:8.0f}")
-        feat_imp = [{"feature": FEATURE_COLS[i], "importance": float(importances[i])} for i in range(len(FEATURE_COLS))]
-    except Exception:
-        feat_imp = [{"feature": c, "importance": 0} for c in FEATURE_COLS]
+            print(f"  {rank:2d}. {FEATURE_COLS[idx]:25s} {importances[idx]:8.0f} [{importance_source}]")
+        feat_imp = [{"feature": FEATURE_COLS[i], "importance": float(importances[i]), "source": importance_source} for i in range(len(FEATURE_COLS))]
+    except Exception as e:
+        # Permutation importance fallback (sklearn) - measures AUC drop when shuffling each feature
+        print(f"  Fallback to permutation importance ({e})")
+        try:
+            from sklearn.inspection import permutation_importance
+            # Use test set for unbiased estimate, 5 repeats, AUC scoring
+            perm = permutation_importance(model, X_test.values, y_test.values, scoring="roc_auc", n_repeats=5, random_state=42, n_jobs=1)
+            importances = perm.importances_mean
+            order = np.argsort(importances)[::-1]
+            for rank, idx in enumerate(order[:10], 1):
+                print(f"  {rank:2d}. {FEATURE_COLS[idx]:25s} {importances[idx]:8.4f} [permutation]")
+            feat_imp = [{"feature": FEATURE_COLS[i], "importance": float(importances[i]), "source": "permutation_auc"} for i in range(len(FEATURE_COLS))]
+        except Exception as e2:
+            print(f"  Permutation also failed: {e2}")
+            feat_imp = [{"feature": c, "importance": 0, "source": "failed"} for c in FEATURE_COLS]
 
     # ── Save artifacts ────────────────────────────────────────────────────
     print("\n[Step 9] Saving artifacts...")

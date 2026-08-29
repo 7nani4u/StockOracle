@@ -97,7 +97,10 @@ def time_based_split(
     Leakage-safe: sorted by date, no shuffle, future not in train.
     """
     d = df.copy()
-    d[date_col] = pd.to_datetime(d[date_col])
+    try:
+        d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_convert(None)
+    except Exception:
+        d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_localize(None)
     d = d.sort_values(date_col).reset_index(drop=True)
     cols = feature_cols or FEATURE_COLS
     missing = [c for c in cols if c not in d.columns]
@@ -224,7 +227,13 @@ def check_data_leakage(df: pd.DataFrame, date_col: str = "date", label_col: str 
     passed: List[str] = []
 
     d = df.copy()
-    d[date_col] = pd.to_datetime(d[date_col])
+    try:
+        d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_convert(None)
+    except Exception:
+        try:
+            d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_localize(None)
+        except Exception:
+            d[date_col] = pd.to_datetime(d[date_col].astype(str), errors='coerce')
     if not d[date_col].is_monotonic_increasing:
         # check globally sorted?
         if d.sort_values(date_col)[date_col].is_monotonic_increasing:

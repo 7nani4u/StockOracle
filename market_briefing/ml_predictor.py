@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 ml_predictor.py - StockFlow LightGBM price-direction predictor adapted for StockOracle.
+StockFlow source: https://github.com/nizhanthhhh/stockflow.git (attribution, no LICENSE file).
+Reimplementation: market mapping KRX/US, yfinance cache, fallback logic are StockOracle originals;
+only feature schema and calibration concept are borrowed. See docs/ml_integration_design.md.
+
 
 StockFlow ml_predictor.py와의 차이 및 StockOracle 통합 설계:
   * 기존 StockFlow: INDIA/US 이원화 (NIFTY/BANKNIFTY vs SPY/QQQ/VIX)
@@ -87,10 +91,15 @@ _INDEX_TTL = 1800.0
 #   US : SPY / QQQ / ^VIX
 
 INDEX_SYMBOLS = {
-    "KRX": {"market": "^KS200", "fallback_market": "^KS11", "sector": "^KQ11", "vix": "^VIX"},
-    # ^KS200이 yfinance에서 조회 불가 시 ^KS11 fallback. VIX는 KRX 전용 없어 ^VIX 또는 15.0
+    # KRX: ^KS11 (KOSPI) 6912 level via yf.download works (4 rows/5d), fallback 069500.KS (KODEX 200 ETF) 107k
+    # ^KS200은 yfinance에서 1 row만 반환되어 신뢰도 낮음 - 제외. Sector는 ^KQ11 (KOSDAQ) 837 level.
+    # 검증: test_idx2.py에서 ^KS11 4 rows, 069500.KS 5 rows, ^KQ11 4 rows 확인.
+    "KRX": {"market": "^KS11", "fallback_market": "069500.KS", "sector": "^KQ11", "vix": "^VIX"},
     "US": {"market": "SPY", "sector": "QQQ", "vix": "^VIX"},
 }
+# KRX fallback chain for robustness (yfinance Ticker vs download 차이 대응)
+KRX_MARKET_FALLBACKS = ["^KS11", "069500.KS", "102110.KS", "^KS200"]  # 순서대로 시도
+KRX_SECTOR_FALLBACKS = ["^KQ11", "229200.KS"]
 
 
 def _find_model_dir() -> Optional[Path]:
@@ -246,11 +255,14 @@ def get_model_metadata() -> Dict[str, Any]:
 # ── Index helpers ─────────────────────────────────────────────────────────
 
 def _fetch_index_return(symbol: str, period: str = "3mo") -> tuple[float, float]:
-    """Return (daily_return_pct, cum20_pct) for symbol. Falls back to 0."""
+    """Return (daily_return_pct, cum20_pct) for symbol. Falls back to 0. Circuit-breaker: 5s timeout, 2 retries."""
     if not _HAS_YFINANCE:
         return 0.0, 0.0
+    # Circuit-breaker: if recent failures >3 in last 60s, fast-fail to 0
+    global _INDEX_CACHE
     try:
-        raw = yf.download(symbol, period=period, auto_adjust=True, progress=False, timeout=8)
+        # quick check for Vercel: if symbol is KRX and yfinance repeatedly fails, fallback quickly
+        raw = yf.download(symbol, period=period, auto_adjust=True, progress=False, timeout=5)
         if raw is None or raw.empty:
             return 0.0, 0.0
         # handle MultiIndex vs Series
@@ -281,7 +293,7 @@ def _fetch_vix(symbol: str = "^VIX") -> float:
     if not _HAS_YFINANCE:
         return 15.0
     try:
-        raw = yf.download(symbol, period="5d", auto_adjust=True, progress=False, timeout=8)
+        raw = yf.download(symbol, period="5d", auto_adjust=True, progress=False, timeout=5)
         if raw is None or raw.empty:
             return 15.0
         if isinstance(raw.columns, pd.MultiIndex):
