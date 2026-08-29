@@ -1,10 +1,10 @@
 {
   "model_type": "LightGBM",
-  "trained_at": "2026-08-29T14:35:21.980622",
-  "train_rows": 9862,
-  "test_rows": 2437,
-  "train_split_date": "2026-03-09T00:00:00",
-  "train_period": "2y",
+  "trained_at": "2026-08-29T14:53:13.239989",
+  "train_rows": 847,
+  "test_rows": 207,
+  "train_split_date": "2026-06-08T00:00:00",
+  "train_period": "1y",
   "features": [
     "RSI_14",
     "RSI_21",
@@ -42,157 +42,191 @@
     "relative_strength"
   ],
   "metrics": {
-    "train_auc": 0.6756580876354794,
-    "test_auc": 0.5513176078538063,
-    "test_accuracy": 0.5469839967172754,
-    "test_balanced_accuracy": 0.5295830677002332,
-    "test_precision": 0.5542234332425068,
-    "test_recall": 0.7805065234075211,
-    "test_f1": 0.6481835564053537
+    "train_auc": 0.7937985179957657,
+    "test_auc": 0.6091036414565827,
+    "test_accuracy": 0.5700483091787439,
+    "test_balanced_accuracy": 0.5715686274509804,
+    "test_precision": 0.552,
+    "test_recall": 0.6764705882352942,
+    "test_f1": 0.6079295154185022
   },
   "calibration": {
     "method": "Platt scaling (logit)",
     "params": {
-      "a": -4.035715761643862,
-      "b": 0.43949053090953044
+      "a": 16.85653384613238,
+      "b": -7.675803262701738
     }
   },
   "feature_importance": [
     {
-      "feature": "OBV_ratio",
-      "importance": 13.0
-    },
-    {
-      "feature": "ATR_14",
-      "importance": 9.0
+      "feature": "MACD",
+      "importance": 1.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "MACD_signal",
-      "importance": 6.0
-    },
-    {
-      "feature": "BB_lower",
-      "importance": 5.0
-    },
-    {
-      "feature": "BB_upper",
-      "importance": 5.0
-    },
-    {
-      "feature": "stochastic_k",
-      "importance": 5.0
-    },
-    {
-      "feature": "India_VIX",
-      "importance": 5.0
-    },
-    {
-      "feature": "SMA_50",
-      "importance": 4.0
-    },
-    {
-      "feature": "price_momentum_10d",
-      "importance": 4.0
-    },
-    {
-      "feature": "volatility_20d",
-      "importance": 4.0
-    },
-    {
-      "feature": "ADX",
-      "importance": 4.0
-    },
-    {
-      "feature": "MACD",
-      "importance": 3.0
+      "importance": 1.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "BB_width",
-      "importance": 3.0
+      "importance": 1.0,
+      "source": "feature_importances_"
     },
     {
-      "feature": "RSI_21",
-      "importance": 2.0
+      "feature": "volatility_20d",
+      "importance": 1.0,
+      "source": "feature_importances_"
     },
     {
-      "feature": "EMA_12",
-      "importance": 2.0
-    },
-    {
-      "feature": "price_momentum_20d",
-      "importance": 2.0
+      "feature": "India_VIX",
+      "importance": 1.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "RSI_14",
-      "importance": 1.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "RSI_21",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "MACD_hist",
-      "importance": 1.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "BB_lower",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "BB_middle",
-      "importance": 1.0
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
-      "feature": "EMA_26",
-      "importance": 1.0
-    },
-    {
-      "feature": "price_momentum_5d",
-      "importance": 1.0
-    },
-    {
-      "feature": "close_to_high_ratio",
-      "importance": 1.0
-    },
-    {
-      "feature": "BANKNIFTY_return",
-      "importance": 1.0
+      "feature": "BB_upper",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "SMA_20",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "SMA_50",
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "EMA_12",
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "EMA_26",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "SMA_cross",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "price_above_bb",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "price_momentum_5d",
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "price_momentum_10d",
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "price_momentum_20d",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "volume_momentum_5d",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "volatility_ratio",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "high_low_range",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "close_to_high_ratio",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "volume_ratio_20d",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "ATR_14",
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "ADX",
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "stochastic_k",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "stochastic_d",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "VWAP_distance",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "OBV_ratio",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "NIFTY_return",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "BANKNIFTY_return",
+      "importance": 0.0,
+      "source": "feature_importances_"
     },
     {
       "feature": "relative_strength",
-      "importance": 0.0
+      "importance": 0.0,
+      "source": "feature_importances_"
     }
   ],
   "leakage_safeguards": [

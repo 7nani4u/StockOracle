@@ -152,11 +152,13 @@ from market_briefing.dynamic_rsi import (
 )
 try:
     from market_briefing.investment_charm import compute_charm_scores, get_key_metrics
+    from market_briefing.charm_ranking import enrich_charm_with_ranks
     _CHARM_AVAILABLE = True
 except Exception:
     _CHARM_AVAILABLE = False
     compute_charm_scores = lambda info, naver, market: {"smart_score": None, "sub_scores": {}, "available_count": 0}
     get_key_metrics = lambda info, naver, market: {"per": None, "psr": None, "roe": None, "dy": None, "per_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
+    enrich_charm_with_ranks = lambda charm, symbol, market: charm
 
 # ── ML predictor (StockFlow leakage-safe pipeline) ──────────────────────────
 try:
@@ -14921,6 +14923,7 @@ def route(path: str, params: Dict) -> Dict:
                 # info_for_charm은 yfinance info (KRX/US 모두)
                 # For KRX, naver already has per/roe etc., but yfinance info is more complete for PSR/DY
                 investment_charm = compute_charm_scores(info_for_charm or {}, naver_for_charm, market)
+                investment_charm = enrich_charm_with_ranks(investment_charm, sym, market)
                 key_metrics = get_key_metrics(info_for_charm or {}, naver_for_charm, market)
             else:
                 investment_charm = {"smart_score": None, "sub_scores": {}, "available_count": 0, "smart_score_str": "N/A"}
@@ -16131,6 +16134,8 @@ input::placeholder{color:#484f58}
 .charm-metric-val.na{color:#484f58;font-weight:400}
 .charm-radar-wrap{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;display:flex;flex-direction:column;align-items:center;gap:12px}
 .charm-radar-canvas{width:100%;max-width:320px;height:auto;aspect-ratio:1}
+.charm-legacy-section{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
+.charm-legacy-title{font-size:12px;font-weight:700;color:#cdd9e5;margin-bottom:10px}
 .charm-detail-list{display:flex;flex-direction:column;gap:8px}
 .charm-detail-row{display:flex;align-items:center;gap:12px;padding:10px 12px;background:#0d1117;border:1px solid #21262d;border-radius:10px}
 .charm-detail-name{font-size:12px;font-weight:600;color:#cdd9e5;flex:0 0 80px}
@@ -19435,14 +19440,14 @@ function renderDiagnosis(d, isKrx) {
   const diagEl = document.getElementById('ai-diagnosis-chart');
   if (!diagEl) return;
 
-  // ── 신규 투자매력 진단이 있으면 ChoiceStock 스타일로 렌더, 없으면 기존 기술 진단 fallback ──
+  // 재무 데이터가 일부만 있어도 N/A를 명시한 스마트스코어 영역을 유지하고,
+  // 기존 기술·수급 진단을 아래에 함께 표시한다.
   const charm = d.investment_charm;
   const km = d.key_metrics;
-  // 재무 축이 충분하지 않으면 빈 스마트스코어 카드가 기존 기술 진단을
-  // 가리지 않도록 기존 진단 렌더링으로 즉시 fallback한다.
+  const hasCharmPayload = charm && typeof charm === 'object';
   const hasUsableCharm = charm && charm.smart_score != null &&
     Number.isFinite(Number(charm.smart_score)) && Number(charm.available_count) >= 3;
-  if (hasUsableCharm) {
+  if (hasCharmPayload) {
     // ── 신규: 종합 스마트스코어 + 4지표 + 레이더 + 5세부 ──
     const isFiniteValue = v => v != null && v !== '' && Number.isFinite(Number(v));
     const smart = isFiniteValue(charm.smart_score) ? Number(charm.smart_score) : null;
@@ -19452,15 +19457,12 @@ function renderDiagnosis(d, isKrx) {
     const stars = charm.overall_stars || ['☆☆☆☆☆', 0];
     const sub = charm.sub_scores || {};
     const subStars = charm.stars || {};
-    const industry = charm.industry || 'N/A';
-    const isKrxLocal = isKrx;
-
-    // 4대 지표
-    const fmtMetric = (v, isPct) => {
-      if (v == null || v === 'N/A' || isNaN(v)) return 'N/A';
-      if (isPct) return Number(v).toFixed(2) + '%';
-      return Number(v).toFixed(2);
-    };
+    const rankingMeta = charm.ranking_meta || {};
+    const industry = rankingMeta.industry || charm.industry || 'N/A';
+    const comparisonLabel = rankingMeta.coverage_label || '재무 비교 유니버스';
+    const rankingStatusNote = rankingMeta.status === 'fresh'
+      ? `${comparisonLabel} · 기준 ${String(rankingMeta.generated_at || '').slice(0, 10)} · ${Number(rankingMeta.eligible_scored_count || 0)}개 점수 산출 종목`
+      : (rankingMeta.reason || '비교 유니버스 데이터를 준비 중입니다.');
     const perVal = km ? km.per_str : 'N/A';
     const psrVal = km ? km.psr_str : 'N/A';
     const roeVal = km ? km.roe_str : 'N/A';
@@ -19489,13 +19491,6 @@ function renderDiagnosis(d, isKrx) {
       return isFiniteValue(v) ? Math.max(0, Math.min(100, Number(v))) : null;
     });
 
-    // 별점 헬퍼
-    const starHtml = (score) => {
-      if (score == null) return '<span style="color:#484f58">N/A</span>';
-      const s = subStars[Object.keys(subStars).find(k => sub[k]===score)] || ['☆☆☆☆☆',0];
-      // Actually subStars is map key-> [starsStr, count]
-      return '';
-    };
     // subStars는 {growth: [starsStr, count]} 형태
     const getStars = (key) => {
       const entry = subStars[key];
@@ -19512,14 +19507,14 @@ function renderDiagnosis(d, isKrx) {
 
     // 레이더 차트 HTML (Canvas)
     const radarId = 'charm-radar-' + Math.random().toString(36).slice(2,8);
-    const hasRadarData = subScoresForRadar.some(v => v != null);
+    const hasCompleteRadarData = subScoresForRadar.every(v => v != null);
     const rankOrNa = v => isFiniteValue(v) ? `${Number(v).toLocaleString('ko-KR')}위` : 'N/A';
     const percentileOrNa = v => isFiniteValue(v) ? `상위 ${Number(v).toFixed(2)}%` : 'N/A';
     const universeOrNa = v => isFiniteValue(v) ? `${Number(v).toLocaleString('ko-KR')}개` : '데이터 부족';
 
     // 상세 목록 HTML
     const detailRows = subDefs.map(sd => {
-      const score = sub[sd.key];
+      const score = isFiniteValue(sub[sd.key]) ? Math.max(0, Math.min(100, Number(sub[sd.key]))) : null;
       const stars = getStars(sd.key);
       const color = getStarColor(score);
       const pct = percentileOrNa((charm.sub_percentiles || {})[sd.key]);
@@ -19547,16 +19542,16 @@ function renderDiagnosis(d, isKrx) {
                 <div class="charm-score-label">${smart == null ? '데이터 부족' : `${stars[0]} · ${smart >= 80 ? '최우수' : smart >= 60 ? '우수' : smart >= 40 ? '보통' : '주의'}`}</div>
               </div>
             </div>
-            <div style="font-size:10px;color:#484f58;margin-top:8px">5개 항목 평균 · ${Number(charm.available_count || 0)}/5 가용</div>
+            <div style="font-size:10px;color:#484f58;margin-top:8px">5개 항목 평균 · ${Number(charm.available_count || 0)}/5 가용${hasUsableCharm ? '' : ' · 데이터 부족'}</div>
           </div>
           <div class="charm-rank-card">
-            <div class="charm-rank-row"><span class="charm-rank-label">전체 종목 내 순위</span><span class="charm-rank-val">${rankOrNa(charm.overall_rank)}</span></div>
-            <div class="charm-rank-row"><span class="charm-rank-label">전체 상위 비율</span><span class="charm-rank-val">${percentileOrNa(charm.overall_percentile)}</span></div>
-            <div class="charm-rank-row"><span class="charm-rank-label">전체 비교 대상</span><span class="charm-rank-val">${universeOrNa(charm.universe_size)}</span></div>
+            <div class="charm-rank-row"><span class="charm-rank-label">비교 유니버스 순위</span><span class="charm-rank-val">${rankOrNa(charm.overall_rank)}</span></div>
+            <div class="charm-rank-row"><span class="charm-rank-label">비교 유니버스 상위</span><span class="charm-rank-val">${percentileOrNa(charm.overall_percentile)}</span></div>
+            <div class="charm-rank-row"><span class="charm-rank-label">비교 대상</span><span class="charm-rank-val">${universeOrNa(charm.universe_size)}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">동일 업종 내 순위</span><span class="charm-rank-val">${rankOrNa(charm.industry_rank)}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">동일 업종 상위 비율</span><span class="charm-rank-val">${percentileOrNa(charm.industry_percentile)}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">업종</span><span class="charm-rank-val" style="font-size:12px">${industry}</span></div>
-            <div style="font-size:10px;color:#484f58;margin-top:4px">비교 모집단 부족 시 N/A로 표시 (가짜 순위 생성 금지)</div>
+            <div style="font-size:10px;color:#484f58;margin-top:4px">${rankingStatusNote}</div>
           </div>
         </div>
         <div class="charm-metrics-grid">
@@ -19567,25 +19562,29 @@ function renderDiagnosis(d, isKrx) {
         </div>
         <div class="charm-radar-wrap">
           <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
-          <canvas id="${radarId}" class="charm-radar-canvas" width="320" height="320"></canvas>
+          ${hasCompleteRadarData
+            ? `<canvas id="${radarId}" class="charm-radar-canvas" width="320" height="320"></canvas>`
+            : `<div class="empty-note" style="text-align:center">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
           <div style="font-size:10px;color:#484f58">중앙 스마트스코어 ${smartDisplay} · 축 순서: 미래성장성 → 사업독점력 → 재무안전성 → 수익성 → 현금창출력</div>
         </div>
         <div class="charm-detail-list">${detailRows}</div>
+        <div style="font-size:10px;color:#484f58;line-height:1.5">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
         <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px">
           <div style="font-size:11px;color:#8b949e;margin-bottom:6px">🧠 AI 종합 진단</div>
           <div style="font-size:12px;color:#cdd9e5;line-height:1.6">${aiText}</div>
         </div>
-        <div style="font-size:10px;color:#484f58;margin-top:8px">※ 순위·백분위는 전체 모집단 미확보로 N/A 표시. 재무 데이터 부족 시 해당 항목은 N/A로 제외하고 평균 산출.</div>
-      </div>
-      <div style="margin-top:14px">
-        <div style="font-size:11px;color:#484f58;margin-bottom:8px">— 기술적 진단 (기존) —</div>
+        <div style="font-size:10px;color:#484f58;margin-top:8px">※ 순위·백분위는 전체 상장사 순위가 아닌 실제 재무 데이터가 수집된 비교 유니버스 기준입니다. 재무 데이터 부족 시 해당 항목은 N/A로 제외합니다.</div>
+        <div class="charm-legacy-section">
+          <div class="charm-legacy-title">기술적·수급 진단</div>
+          <div id="legacy-tech-diagnosis"></div>
+        </div>
       </div>
     `;
 
     // 레이더 그리기
     setTimeout(() => {
       const canvas = document.getElementById(radarId);
-      if (!canvas || !hasRadarData) return;
+      if (!canvas || !hasCompleteRadarData) return;
       const ctx = canvas.getContext('2d');
       const W = canvas.width, H = canvas.height, CX = W/2, CY = H/2, R = Math.min(W,H)*0.38;
       const labels = ['미래성장성','사업독점력','재무안전성','수익성','현금창출력'];
@@ -19683,35 +19682,21 @@ function renderDiagnosis(d, isKrx) {
       ctx.fillText('스마트스코어', CX, CY+8);
     }, 30);
 
-    // 기존 기술 진단도 아래에 추가 (접기 가능)
-    const oldTechHtml = (() => {
-      try {
-        // 기존 기술 점수 계산 로직을 간소화하여 재사용 - 기존 diagEl의 기술 부분은 아래에 축소 표시
-        return `<details style="margin-top:14px;background:#0d1117;border:1px solid #21262d;border-radius:10px;padding:10px"><summary style="font-size:12px;color:#8b949e;cursor:pointer">기술적 진단 상세 (기존) 보기</summary><div style="margin-top:10px;font-size:11px;color:#484f58">기존 기술적 추세·모멘텀·변동성·수급·패턴 점수는 하단에서 확인하세요. <span style="color:#58a6ff">AI 진단 탭 하단의 기존 차트와 동일</span></div></details>`;
-      } catch(e) { return ''; }
-    })();
-    // Append collapsed old diagnosis after new
-    // Instead of replacing, we will keep the new HTML and inject the old technical details via a separate fetch of original render
-    // For now, inject a placeholder that will be filled by legacy render if needed
-    // To avoid duplication, we call the legacy logic and append its dim bars in a collapsed section
-    setTimeout(() => {
-      try {
-        const legacyContainer = document.createElement('div');
-        legacyContainer.id = 'legacy-tech-diagnosis';
-        legacyContainer.style.display = 'none';
-        diagEl.appendChild(legacyContainer);
-        // Render legacy into hidden container then move its dims
-        // Simplified: just show a note that technical details are in forecast tab
-      } catch(e) {}
-    }, 100);
+    const legacyEl = document.getElementById('legacy-tech-diagnosis');
+    if (legacyEl) renderTechnicalDiagnosis(d, isKrx, legacyEl);
     return;
   }
 
-  // Fallback: 기존 기술 진단 (신규 데이터 부족 시)
+  renderTechnicalDiagnosis(d, isKrx, diagEl);
+}
 
+function renderTechnicalDiagnosis(d, isKrx, diagEl) {
+  // 재무 데이터가 없을 때의 fallback과 스마트스코어 하단의 기존 진단이 같은 렌더러를 공유한다.
+  if (!diagEl) return;
 
-  const score  = d.score   || 50;
-  const rsi    = d.rsi     || 50;
+  const finiteOr = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const score  = finiteOr(d.score, 50);
+  const rsi    = finiteOr(d.rsi, 50);
   const bp     = d.buy_price;
   const flow   = d.investor_flow;
   const patterns = d.candlestick_patterns || [];
