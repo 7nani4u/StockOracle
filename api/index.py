@@ -11076,7 +11076,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             anchor_label = (
                 nearest_anchor[2]
                 if nearest_anchor and abs(nearest_anchor[0] - price) <= max(width * 0.45, atr_d * 0.30)
-                else "ATR·위험 분포"
+                else ""
             )
             result.append({
                 "stage": _idx + 1,
@@ -17056,7 +17056,6 @@ input::placeholder{color:#484f58}
       <div id="tab-forecast" style="display:none">
         <div class="card">
           <div class="card-title">🔮 핵심 판단과 현재 상태</div>
-          <div class="forecast-guide"><b>읽는 순서:</b> ① 맨 위 ‘핵심 판단’에서 지금 방향과 대기 조건 확인 → ② ‘진입 전략’에서 1차(소액 테스트) → 2차(본 진입) 가격대 확인 → ③ ‘리스크 관리’에서 손절가 먼저 확인. 확률·예상 기간은 과거 움직임 기반 참고 추정치이며 확정 예측이 아닙니다.</div>
           <div id="prediction-overview-section"></div>
           <div id="prediction-context-section"></div>
         </div>
@@ -17069,7 +17068,6 @@ input::placeholder{color:#484f58}
         <!-- 리스크 관리와 목표 청산 -->
         <div class="card">
           <div class="card-title">🛡️ 리스크 관리와 목표 청산</div>
-          <div class="forecast-guide"><b>실행 순서:</b> 목표가보다 손절가(손실 제한 가격)를 먼저 확인하세요. 보수적(안정형)·중립적(균형형)·공격적(도전형) 중 하나만 골라, 목표가(TP)는 TP1→TP2→TP3처럼 나눠서 파는 기준으로 보세요.</div>
           <div id="buy-risk-notes-section"></div>
           <div class="risk-grid" id="risk-grid"></div>
         </div>
@@ -20135,7 +20133,7 @@ function renderForecast(d, isKrx) {
           const stepTitle = `${stepBasis} · ${s.price_range_basis || '단계별 주문 허용 범위'}${periodBasis} · 단계 배분 ${s.allocation_pct || 0}%`;
           return `<div class="buy-stage-row" role="row" title="${stepTitle}" aria-label="${s.label}, 매수 가격 범위 ${priceText}, 현재가 대비 ${declineText}, 도달 확률 ${probabilityText}, 예상 ${periodText}, 단계 배분 ${s.allocation_pct || 0}%">
             <span class="buy-stage-name" role="cell" style="color:${bc}">${s.label}</span>
-            <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;line-height:1.25;margin-top:1px">${_escPrediction(stepBasis)}</small></span>
+            <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}</span>
             <span class="buy-stage-drop" role="cell">${declineText}</span>
             <span class="buy-stage-prob ${hasProbability ? '' : 'buy-stage-unavailable'}" role="cell" style="color:${probabilityColor}">${probabilityText}</span>
             <span class="buy-stage-days ${s.days_min == null ? 'buy-stage-unavailable' : ''}" role="cell">${periodText}</span>
@@ -20349,8 +20347,6 @@ function renderForecast(d, isKrx) {
           <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
           ${sc.tp_levels && sc.tp_levels.length ? `
           <div role="table" aria-label="${sc.label} 목표가 레벨별 도달 가능성" style="margin-top:8px;padding-top:8px;${DIVIDER}">
-            <div style="font-size:10px;color:#8b949e;margin-bottom:2px">📊 목표가 레벨별 도달 가능성 · 참고 추정</div>
-              <div style="font-size:9px;color:#6e7681;margin-bottom:6px">목표가(TP)는 한 번에 팔지 말고 나눠 파는 단계입니다. 가격 범위=목표 구간, 수익률=진입가 대비 참고치, 도달 가능성·기간=하루 평균 움직임·추세·거래량 등을 함께 본 참고치입니다.</div>
             <div class="risk-tp-level risk-tp-head" role="row">
               <span role="columnheader">단계</span>
               <span role="columnheader">목표 가격 범위</span>
@@ -20372,7 +20368,7 @@ function renderForecast(d, isKrx) {
                 : 'background:#0d1117;';
               return `<div class="risk-tp-level" role="row" style="${levelBackground}border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
-                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction(lv.basis || '구조 목표')}">${levelPriceText}<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis || '구조 목표')}</small></span>
+                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction(lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '')}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
                 <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>

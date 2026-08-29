@@ -468,9 +468,9 @@ def test_scalp_period_ui_keeps_period_recommendation_without_forecast_gate():
     assert "⛔ 차단 사유 ${hardBlockers.length}개" in HTML
     assert "detailsWasOpen" in HTML
     assert "scalp-rec-chip" in HTML
-    assert "읽는 순서:" in forecast_html
+    assert "읽는 순서:" not in forecast_html
     assert "진입 원칙:" in forecast_html
-    assert "실행 순서:" in forecast_html
+    assert "실행 순서:" not in forecast_html
 
 
 def _base_kwargs(market="KRX", symbol="005930.KS", flags=None, signal_confidence=None):
