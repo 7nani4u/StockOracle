@@ -19991,12 +19991,6 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
       <div style="display:flex;flex-direction:column;gap:8px">${accordionContent}</div>
     </div>`;
 
-  const sectionTitle = (index, title, desc = '') => `
-    <div style="margin-top:${index === 1 ? 0 : 20}px;margin-bottom:10px;padding-top:${index === 1 ? 0 : 16}px;border-top:${index === 1 ? '0' : '1px solid #30363d'}">
-      <div style="font-size:14px;font-weight:800;color:#e6edf3">${index}. ${title}</div>
-      ${desc ? `<div style="font-size:11px;color:#8b949e;margin-top:3px;line-height:1.5">${desc}</div>` : ''}
-    </div>`;
-
   const supplyLabel = isKrx ? '수급 흐름' : '시장 심리';
   const supplyDetail = isKrx
     ? `${dimBar('💰', supplyLabel, supplyScore, supplyDesc, {clickable: true})}
@@ -20025,20 +20019,19 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
       : '<div style="font-size:12px;color:#8b949e">시장 심리 데이터가 부족합니다.</div>');
 
   diagEl.innerHTML = `
-    ${sectionTitle(1, '현재 상태', '먼저 종목의 전체 신호 상태와 현재 가격 흐름 단계를 확인합니다.')}
     <div class="diag-grade-row">
       <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${gradeHtml}</div>
       <div class="diag-grade-info" style="flex:1">
         <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· ${activeItemCount}항목 평균 ${avg}점</span></div>
         <div class="diag-grade-sub">${gradeDesc}</div>
       </div>
+      <span id="flow-rec-badge" class="rec-badge-lg" style="flex-shrink:0;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
     </div>
+    <div id="flow-rationale" class="flow-rationale-text" style="margin-top:8px"></div>
     <div class="diag-dims">${pbTopHtml}</div>
 
-    ${sectionTitle(2, '핵심 데이터·근거', '재무 체력과 비교 유니버스 내 상대 위치입니다. 기술적 판단의 근거와는 구분해 읽습니다.')}
-    ${fundamentalHtml || '<div style="font-size:12px;color:#8b949e">비교 가능한 재무 데이터가 부족해 핵심 재무 근거를 표시할 수 없습니다.</div>'}
+    ${fundamentalHtml ? `${fundamentalHtml}` : ''}
 
-    ${sectionTitle(3, '기술적 분석', '개별 지표의 관측값과 신호입니다. 여기서는 결론을 반복하지 않고 근거만 제시합니다.')}
     <div class="diag-dims">
       ${dimBar('📊', '기술적 추세', techScore, techDesc, {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도', momentumScore, rsiLabel, {accordionId:'dim-mom', accordionContent: buildStepHtml(stepMom)})}
@@ -20049,26 +20042,17 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
       ${renderHybridSection(d)}
     </div>
 
-    ${sectionTitle(4, '수급 분석', isKrx ? '투자자별 순매수·순매도 원본 데이터와 그 방향성을 확인합니다.' : '미국 종목은 제공되는 시장 심리 데이터를 수급 대체 맥락으로 사용합니다.')}
     <div class="diag-dims">${supplyDetail}</div>
 
-    ${sectionTitle(5, '기술·수급 종합 해석', '기술과 수급의 근거를 합쳐 한 번만 해석합니다.')}
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px">
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px">
       <div style="font-size:13px;font-weight:800;color:${techDirection === supplyDirection && techDirection !== '중립' ? gradeColor : '#d29922'}">${alignmentTitle}</div>
       <div style="font-size:12px;color:#cdd9e5;line-height:1.6;margin-top:5px">${alignmentDesc}</div>
     </div>
 
-    ${sectionTitle(6, '위험 및 확인 요소', '진입 판단을 바꾸는 눌림목 조건, 흔들림 패턴, 구조 붕괴 조건을 마지막으로 점검합니다.')}
-    ${pbBottomHtml ? `<div class="diag-dims">${pbBottomHtml}</div>` : '<div style="font-size:12px;color:#8b949e">위험 조건을 점검할 눌림목 분석 데이터가 부족합니다.</div>'}
+    ${pbBottomHtml ? `<div class="diag-dims" style="margin-top:12px">${pbBottomHtml}</div>` : ''}
 
-    ${sectionTitle(7, 'AI 종합 진단', '앞선 상태·근거·위험 확인을 바탕으로 생성된 AI 요약입니다.')}
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;font-size:12px;color:#cdd9e5;line-height:1.6">${aiDiagnosisHtml}</div>
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px;font-size:12px;color:#cdd9e5;line-height:1.6">${aiDiagnosisHtml}</div>
 
-    ${sectionTitle(8, '최종 판단', '기술·수급·위험 조건을 반영한 실행 우선순위입니다.')}
-    <div style="background:${gradeBg};border:1px solid ${gradeColor};border-radius:10px;padding:12px">
-      <span id="flow-rec-badge" class="rec-badge-lg" style="display:block;text-align:center;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
-      <div id="flow-rationale" class="flow-rationale-text" style="margin-top:8px">최종 판단 근거를 정리 중입니다.</div>
-    </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
       ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 각 항목을 클릭하면 원본 지표와 상세 분석을 확인할 수 있습니다.
     </div>`;
