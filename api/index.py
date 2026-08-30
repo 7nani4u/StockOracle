@@ -19635,7 +19635,7 @@ function renderDiagnosis(d, isKrx) {
       ctx.setTransform(dpr,0,0,dpr,0,0);
       const scores = subScoresForRadar;
       const axisLabels = ['성장성','독점력','안정성','수익성','현금력'];
-      const labels = axisLabels.map((label, index) => `${label} ${Math.round(scores[index])}점`);
+      const axisScores = scores.map(score => Math.round(score));
       const CX = W/2, CY = 195, R = 100;
       // 배경 그리드
       ctx.clearRect(0,0,W,H);
@@ -19692,17 +19692,15 @@ function renderDiagnosis(d, isKrx) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
-      // 짧은 축 라벨과 넉넉한 여백으로 확대된 레이더에서도 잘림을 방지한다.
-      ctx.fillStyle = '#e6edf3';
-      ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif';
+      // 축 이름과 실제 점수를 분리해 숫자를 더 크게 읽을 수 있게 한다.
       ctx.shadowColor = 'rgba(0,0,0,0.45)';
       ctx.shadowBlur = 0;
       const labelOffsets = [
-        { d: 30, align: 'center', baseline: 'bottom' }, // 성장성 (상단)
-        { d: 24, align: 'left',   baseline: 'middle' }, // 독점력 (우상)
-        { d: 24, align: 'left',   baseline: 'top' },    // 안정성 (우하)
-        { d: 20, align: 'right',  baseline: 'top' },    // 수익성 (좌하)
-        { d: 24, align: 'right',  baseline: 'middle' }, // 현금력 (좌상)
+        { d: 30, align: 'center' }, // 성장성 (상단)
+        { d: 24, align: 'left' },   // 독점력 (우상)
+        { d: 24, align: 'left' },   // 안정성 (우하)
+        { d: 20, align: 'right' },  // 수익성 (좌하)
+        { d: 24, align: 'right' },  // 현금력 (좌상)
       ];
       for (let i=0;i<5;i++) {
         const ang = -Math.PI/2 + i*2*Math.PI/5;
@@ -19710,21 +19708,18 @@ function renderDiagnosis(d, isKrx) {
         const x = CX + Math.cos(ang)*(R + lo.d);
         const y = CY + Math.sin(ang)*(R + lo.d);
         ctx.textAlign = lo.align;
-        ctx.textBaseline = lo.baseline;
-        // 라벨 배경 글로우로 가독성 확보 - 배경이 어두워도 선명
-        ctx.fillText(labels[i], x, y);
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#cdd9e5';
+        ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif';
+        ctx.fillText(axisLabels[i], x, y - 7);
+        ctx.fillStyle = smartColor;
+        ctx.font = '700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.fillText(String(axisScores[i]), x, y + 8);
       }
       ctx.shadowBlur = 0;
-      // 중앙에는 숫자 점수만 표시한다.
-      ctx.fillStyle = '#0d1117';
-      ctx.beginPath();
-      ctx.arc(CX,CY,24,0,Math.PI*2);
-      ctx.fill();
-      ctx.strokeStyle = smartColor;
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      // 중앙에는 원형 장식 없이 숫자 점수만 표시한다.
       ctx.fillStyle = smartColor;
-      ctx.font = 'bold 15px sans-serif';
+      ctx.font = 'bold 20px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(smartDisplay, CX, CY);
