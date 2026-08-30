@@ -19600,7 +19600,6 @@ ${hasCompleteRadarData
         </div>
         <div class="charm-detail-list">${detailRows}</div>
         <div style="font-size:10px;color:#484f58;line-height:1.5">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
-        <div style="font-size:10px;color:#484f58;margin-top:8px">※ 순위·백분위는 전체 상장사 순위가 아닌 실제 재무 데이터가 수집된 비교 유니버스 기준입니다. 재무 데이터 부족 시 해당 항목은 N/A로 제외합니다.</div>
       </div>
     `;
 
@@ -19908,26 +19907,6 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
   const volumeDesc = stepSummary(stepVolume, '거래량 분석 데이터 없음');
   const crossDesc = stepSummary(stepPat.filter(st => st.step.startsWith('6.')), '교차 지표 분석 데이터 없음');
 
-  // 기술과 수급은 각각의 근거 섹션에서는 따로 읽고, 여기에서만 일치/엇갈림을 해석한다.
-  const technicalComposite = Math.round((techScore + momentumScore + volScore + patScore) / 4);
-  const directionFromScore = value => value >= 60 ? '강세' : value <= 40 ? '약세' : '중립';
-  const techDirection = directionFromScore(technicalComposite);
-  const supplyDirection = directionFromScore(supplyScore);
-  let alignmentTitle, alignmentDesc;
-  if (!hasSupply) {
-    alignmentTitle = '수급 데이터 확인 필요';
-    alignmentDesc = `기술 신호는 ${techDirection}(${technicalComposite}점)이나, 수급 데이터가 없어 방향 일치 여부를 판단할 수 없습니다.`;
-  } else if (techDirection === supplyDirection && techDirection !== '중립') {
-    alignmentTitle = `기술·수급 ${techDirection} 신호 일치`;
-    alignmentDesc = `기술 ${technicalComposite}점과 수급 ${supplyScore}점이 모두 ${techDirection} 방향입니다. 개별 지표의 상세 근거를 확인한 뒤 판단 강도를 높일 수 있습니다.`;
-  } else if (techDirection === '중립' && supplyDirection === '중립') {
-    alignmentTitle = '기술·수급 모두 중립';
-    alignmentDesc = `기술 ${technicalComposite}점, 수급 ${supplyScore}점으로 뚜렷한 우위가 없습니다. 방향 확인 전에는 관망이 우선입니다.`;
-  } else {
-    alignmentTitle = '기술·수급 신호 엇갈림';
-    alignmentDesc = `기술은 ${techDirection}(${technicalComposite}점), 수급은 ${supplyDirection}(${supplyScore}점)입니다. 한쪽 신호만으로 추세를 확정하지 말고 확인 조건을 우선합니다.`;
-  }
-
   const aiLines = (d.ai_strategy && d.ai_strategy.result)
     ? String(d.ai_strategy.result).split(' | ').filter(line => line.trim()).slice(0, 3)
     : [];
@@ -20042,11 +20021,6 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
     </div>
 
     <div class="diag-dims">${supplyDetail}</div>
-
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px">
-      <div style="font-size:13px;font-weight:800;color:${techDirection === supplyDirection && techDirection !== '중립' ? gradeColor : '#d29922'}">${alignmentTitle}</div>
-      <div style="font-size:12px;color:#cdd9e5;line-height:1.6;margin-top:5px">${alignmentDesc}</div>
-    </div>
 
     ${pbBottomHtml ? `<div class="diag-dims" style="margin-top:12px">${pbBottomHtml}</div>` : ''}
 
