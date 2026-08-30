@@ -19574,7 +19574,7 @@ function renderDiagnosis(d, isKrx) {
           <div class="charm-radar-wrap">
             <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
  ${hasCompleteRadarData
-              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="420" height="390"></canvas>`
+              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="460" height="420"></canvas>`
               : `<div class="empty-note" style="text-align:center;color:#8b949e;padding:24px 12px">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
             <div style="font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px">중앙 스마트스코어 ${smartDisplay} · 축: 성장성 · 독점력 · 안정성 · 수익성 · 현금력</div>
           </div>
@@ -19601,14 +19601,14 @@ function renderDiagnosis(d, isKrx) {
       if (!canvas || !hasCompleteRadarData) return false;
       const ctx = canvas.getContext('2d');
       if (!ctx) return false;
-      const W = 420, H = 390;
+      const W = 460, H = 420;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = W * dpr;
       canvas.height = H * dpr;
       canvas.style.width = '100%';
       canvas.style.height = 'auto';
       ctx.setTransform(dpr,0,0,dpr,0,0);
-      const CX = W/2, CY = 195, R = 105;
+      const CX = W/2, CY = 210, R = 118;
       const labels = ['성장성','독점력','안정성','수익성','현금력'];
       const scores = subScoresForRadar;
       // 배경 그리드
