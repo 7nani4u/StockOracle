@@ -16126,7 +16126,7 @@ input::placeholder{color:#484f58}
 .charm-score-inner{width:100%;height:100%;max-width:140px;max-height:140px;border-radius:50%;background:#161b22;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px;box-sizing:border-box}
 .charm-score-val{font-size:36px;font-weight:800;color:var(--score-color, #58a6ff);line-height:1}
 .charm-score-label{font-size:10px;color:#8b949e;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.charm-rank-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.charm-rank-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:10px 14px 6px;display:flex;flex-direction:column;gap:6px}
 .charm-rank-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#161b22;border-radius:8px}
 .charm-rank-label{font-size:11px;color:#8b949e}
 .charm-rank-val{font-size:13px;font-weight:700;color:#e6edf3}
@@ -17026,8 +17026,8 @@ input::placeholder{color:#484f58}
 .us-reco-reason::before{display:none}
 
 /* AI 진단 레이더 반응형 override: 축 점수 라벨이 좁은 화면에서도 잘리지 않도록 한다. */
-.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:0;min-height:0;width:100%;max-width:420px;aspect-ratio:420/390;display:flex;align-items:center;justify-content:center;justify-self:center;align-self:center;box-sizing:border-box;overflow:hidden}
-.charm-radar-summary-card .charm-radar-canvas{width:100%;height:100%;max-width:none;min-width:0;margin:0;aspect-ratio:auto}
+.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:0;min-height:0;width:100%;aspect-ratio:420/390;display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch;box-sizing:border-box;overflow:hidden}
+.charm-radar-summary-card .charm-radar-canvas{width:100%;height:100%;max-width:none;min-width:0;margin:0;aspect-ratio:auto;display:block}
 .charm-radar-title{font-size:12px;font-weight:700;color:#cdd9e5}
 .charm-radar-caption{font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px}
 @media(min-width:961px){
@@ -17038,7 +17038,7 @@ input::placeholder{color:#484f58}
   .charm-top{grid-template-columns:1fr 1fr}
 }
 @media(max-width:600px){
-  .charm-radar-summary-card{min-height:0;padding:0}
+  .charm-radar-summary-card{min-height:0;padding:0;max-width:none}
   .charm-radar-summary-card .charm-radar-canvas{max-width:none}
   .charm-radar-detail-grid{grid-template-columns:1fr;gap:14px}
   .charm-radar-detail-grid .charm-detail-list{width:100%;max-width:none}
@@ -17046,7 +17046,7 @@ input::placeholder{color:#484f58}
   .charm-radar-canvas{max-width:320px;min-width:0}
 }
 @media(max-width:480px){
-  .charm-radar-summary-card{max-width:360px}
+  .charm-radar-summary-card{max-width:none}
   .charm-radar-summary-card .charm-radar-canvas{max-width:none}
   .charm-radar-detail-grid{gap:12px}
   .charm-radar-wrap{padding:14px 8px}
@@ -19590,10 +19590,10 @@ ${hasCompleteRadarData
             <div class="charm-rank-row"><span class="charm-rank-label">동일 업종 내 순위</span><span class="charm-rank-val">${rankOrNa(charm.industry_rank)}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">동일 업종 상위 비율</span><span class="charm-rank-val">${percentileOrNa(charm.industry_percentile)}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">업종</span><span class="charm-rank-val" style="font-size:12px">${industry}</span></div>
-            <div style="font-size:10px;color:#484f58;margin-top:4px">${rankingStatusNote}</div>
+            <div style="font-size:9px;color:#484f58;margin-top:2px;line-height:1.3">${rankingStatusNote}</div>
           </div>
         </div>
-        <div class="charm-metrics-grid">
+        <div class="charm-metrics-grid" style="margin-top:0">
           <div class="charm-metric"><div class="charm-metric-label">PER</div><div class="charm-metric-val" style="color:${perColor}">${perVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PSR</div><div class="charm-metric-val" style="color:${psrColor}">${psrVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">ROE</div><div class="charm-metric-val" style="color:${roeColor}">${roeVal}</div></div>
