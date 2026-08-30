@@ -17026,25 +17026,28 @@ input::placeholder{color:#484f58}
 .us-reco-reason::before{display:none}
 
 /* AI 진단 레이더 반응형 override: 축 점수 라벨이 좁은 화면에서도 잘리지 않도록 한다. */
-.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:12px;min-height:300px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;overflow:visible}
-.charm-radar-summary-card .charm-radar-canvas{max-width:300px;min-width:0;margin:0}
+.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:0;min-height:0;width:100%;max-width:420px;aspect-ratio:420/390;display:flex;align-items:center;justify-content:center;justify-self:center;align-self:center;box-sizing:border-box;overflow:hidden}
+.charm-radar-summary-card .charm-radar-canvas{width:100%;height:100%;max-width:none;min-width:0;margin:0;aspect-ratio:auto}
 .charm-radar-title{font-size:12px;font-weight:700;color:#cdd9e5}
 .charm-radar-caption{font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px}
 @media(min-width:961px){
   .charm-radar-canvas{max-width:400px;min-width:320px;aspect-ratio:420/390}
   .charm-radar-detail-grid{grid-template-columns:minmax(420px,1.1fr) minmax(340px,.9fr)}
 }
+@media(min-width:481px) and (max-width:640px){
+  .charm-top{grid-template-columns:1fr 1fr}
+}
 @media(max-width:600px){
-  .charm-radar-summary-card{min-height:280px;padding:10px}
-  .charm-radar-summary-card .charm-radar-canvas{max-width:280px}
+  .charm-radar-summary-card{min-height:0;padding:0}
+  .charm-radar-summary-card .charm-radar-canvas{max-width:none}
   .charm-radar-detail-grid{grid-template-columns:1fr;gap:14px}
   .charm-radar-detail-grid .charm-detail-list{width:100%;max-width:none}
   .charm-radar-wrap{padding:16px 10px}
   .charm-radar-canvas{max-width:320px;min-width:0}
 }
 @media(max-width:480px){
-  .charm-radar-summary-card{min-height:260px}
-  .charm-radar-summary-card .charm-radar-canvas{max-width:250px}
+  .charm-radar-summary-card{max-width:360px}
+  .charm-radar-summary-card .charm-radar-canvas{max-width:none}
   .charm-radar-detail-grid{gap:12px}
   .charm-radar-wrap{padding:14px 8px}
   .charm-radar-canvas{max-width:290px}
@@ -19623,7 +19626,7 @@ ${hasCompleteRadarData
       canvas.width = W * dpr;
       canvas.height = H * dpr;
       canvas.style.width = '100%';
-      canvas.style.height = 'auto';
+      canvas.style.height = canvas.closest('.charm-radar-summary-card') ? '100%' : 'auto';
       ctx.setTransform(dpr,0,0,dpr,0,0);
       const scores = subScoresForRadar;
       const axisLabels = ['성장성','독점력','안정성','수익성','현금력'];
