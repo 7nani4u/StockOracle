@@ -19599,7 +19599,7 @@ ${hasCompleteRadarData
           <div class="charm-metric"><div class="charm-metric-label">DY</div><div class="charm-metric-val" style="color:${dyColor}">${dyVal}</div></div>
         </div>
         <div class="charm-detail-list">${detailRows}</div>
-        <div style="font-size:10px;color:#484f58;line-height:1.5">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
+        <div style="font-size:10px;color:#484f58;line-height:1.5;margin-bottom:22px">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
       </div>
     `;
 
