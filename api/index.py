@@ -19574,9 +19574,9 @@ function renderDiagnosis(d, isKrx) {
           <div class="charm-radar-wrap">
             <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
  ${hasCompleteRadarData
-              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="360" height="340"></canvas>`
+              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="420" height="390"></canvas>`
               : `<div class="empty-note" style="text-align:center;color:#8b949e;padding:24px 12px">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
-            <div style="font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:320px">중앙 스마트스코어 ${smartDisplay} · 축 순서: 미래성장성 → 사업독점력 → 재무안전성 → 수익성 → 현금창출력</div>
+            <div style="font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px">중앙 스마트스코어 ${smartDisplay} · 축: 성장성 · 독점력 · 안정성 · 수익성 · 현금력</div>
           </div>
           <div class="charm-detail-list">${detailRows}</div>
         </div>
@@ -19601,15 +19601,15 @@ function renderDiagnosis(d, isKrx) {
       if (!canvas || !hasCompleteRadarData) return false;
       const ctx = canvas.getContext('2d');
       if (!ctx) return false;
-      const W = 360, H = 340;
+      const W = 420, H = 390;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = W * dpr;
       canvas.height = H * dpr;
       canvas.style.width = '100%';
       canvas.style.height = 'auto';
       ctx.setTransform(dpr,0,0,dpr,0,0);
-      const CX = W/2, CY = 170, R = 80;
-      const labels = ['미래성장성','사업독점력','재무안전성','수익성','현금창출력'];
+      const CX = W/2, CY = 195, R = 105;
+      const labels = ['성장성','독점력','안정성','수익성','현금력'];
       const scores = subScoresForRadar;
       // 배경 그리드
       ctx.clearRect(0,0,W,H);
@@ -19666,18 +19666,17 @@ function renderDiagnosis(d, isKrx) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
-      // 라벨 - 여백 확보로 글자 잘림/사라짐 방지 (좌우 24px, 상하 18px 여유)
-      // 외곽 라벨이 캔버스 경계에 닿지 않도록 R 80 + 오프셋 18~20 로 조정, 배경과 대비되는 밝은 색 유지
+      // 짧은 축 라벨과 넉넉한 여백으로 확대된 레이더에서도 잘림을 방지한다.
       ctx.fillStyle = '#e6edf3';
       ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif';
       ctx.shadowColor = 'rgba(0,0,0,0.45)';
       ctx.shadowBlur = 0;
       const labelOffsets = [
-        { d: 28, align: 'center', baseline: 'bottom' }, // 미래성장성 (상단)
-        { d: 22, align: 'left',   baseline: 'middle' }, // 사업독점력 (우상)
-        { d: 20, align: 'left',   baseline: 'top' },    // 재무안전성 (우하)
+        { d: 30, align: 'center', baseline: 'bottom' }, // 성장성 (상단)
+        { d: 24, align: 'left',   baseline: 'middle' }, // 독점력 (우상)
+        { d: 24, align: 'left',   baseline: 'top' },    // 안정성 (우하)
         { d: 20, align: 'right',  baseline: 'top' },    // 수익성 (좌하)
-        { d: 22, align: 'right',  baseline: 'middle' }, // 현금창출력 (좌상)
+        { d: 24, align: 'right',  baseline: 'middle' }, // 현금력 (좌상)
       ];
       for (let i=0;i<5;i++) {
         const ang = -Math.PI/2 + i*2*Math.PI/5;
