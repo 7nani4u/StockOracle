@@ -16112,9 +16112,13 @@ input::placeholder{color:#484f58}
 .score-bar-fill{height:8px;border-radius:6px;transition:width .6s ease}
 
 /* AI 진단 레이아웃 */
-.ai-diagnosis-layout{display:flex;flex-direction:column;gap:14px;align-items:stretch}
+.ai-diagnosis-layout{display:flex;flex-direction:column;gap:14px;align-items:stretch;width:100%;box-sizing:border-box}
+#ai-diagnosis-chart{width:100%;box-sizing:border-box}
+#tab-ai{width:100%;box-sizing:border-box}
+#tab-ai .card{width:100%;box-sizing:border-box}
+#tab-ai .charm-header{width:100%}
 /* ── 투자매력 진단 (ChoiceStock 참고, StockOracle 재구현) ── */
-.charm-header{display:flex;flex-direction:column;gap:12px}
+.charm-header{display:flex;flex-direction:column;gap:14px;width:100%;box-sizing:border-box}
 .charm-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:stretch}
 @media(max-width:640px){.charm-top{grid-template-columns:1fr}}
 .charm-score-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;text-align:center;position:relative;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center}
@@ -16132,21 +16136,24 @@ input::placeholder{color:#484f58}
 .charm-metric-label{font-size:10px;color:#8b949e;margin-bottom:4px;letter-spacing:0.02em}
 .charm-metric-val{font-size:15px;font-weight:700;color:#e6edf3}
 .charm-metric-val.na{color:#484f58;font-weight:400}
-.charm-radar-wrap{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;display:flex;flex-direction:column;align-items:center;gap:12px;width:100%}
-.charm-radar-canvas{display:block;width:100%;max-width:320px;height:320px;aspect-ratio:1;margin:0 auto}
-.charm-radar-detail-grid{display:grid;grid-template-columns:minmax(320px,.8fr) minmax(0,1.2fr);gap:12px;align-items:stretch;width:100%}
-.charm-radar-detail-grid .charm-detail-list{height:100%}
-@media(max-width:900px){.charm-radar-detail-grid{grid-template-columns:1fr}}
+.charm-radar-wrap{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:20px 14px 16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;width:100%;box-sizing:border-box;overflow:visible}
+.charm-radar-canvas{display:block;width:100%;max-width:340px;min-width:280px;height:auto;aspect-ratio:360/340;margin:0 auto;overflow:visible}
+.charm-radar-detail-grid{display:grid;grid-template-columns:360px minmax(300px,1fr);gap:18px;align-items:center;width:100%;box-sizing:border-box}
+.charm-radar-detail-grid .charm-detail-list{display:flex;flex-direction:column;gap:10px;height:auto;box-sizing:border-box;align-self:center;width:100%}
+@media(max-width:960px){.charm-radar-detail-grid{grid-template-columns:300px minmax(260px,1fr);gap:16px}.charm-radar-wrap{padding:18px 12px}.charm-radar-canvas{max-width:300px;min-width:220px}}
+@media(max-width:680px){.charm-radar-detail-grid{grid-template-columns:220px minmax(180px,1fr);gap:12px}.charm-radar-wrap{padding:16px 10px}.charm-radar-canvas{max-width:220px;min-width:0}.charm-detail-row{padding:10px 12px;min-height:48px}.charm-detail-name{flex:0 0 78px;font-size:11px}.charm-detail-stars{flex:0 0 70px;font-size:11px}.charm-detail-pct{flex:0 0 68px;font-size:10px}}
+@media(max-width:480px){.charm-radar-detail-grid{grid-template-columns:1fr;gap:14px}.charm-radar-wrap{padding:16px 12px}.charm-radar-canvas{max-width:300px}}
 .charm-legacy-section{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
 .charm-legacy-title{font-size:12px;font-weight:700;color:#cdd9e5;margin-bottom:10px}
-.charm-detail-list{display:flex;flex-direction:column;gap:8px}
-.charm-detail-row{display:flex;align-items:center;gap:12px;padding:10px 12px;background:#0d1117;border:1px solid #21262d;border-radius:10px}
-.charm-detail-name{font-size:12px;font-weight:600;color:#cdd9e5;flex:0 0 80px}
-.charm-detail-stars{font-size:13px;letter-spacing:1px;flex:0 0 80px;text-align:center}
-.charm-detail-bar{flex:1;height:6px;background:#21262d;border-radius:3px;overflow:hidden}
-.charm-detail-fill{height:100%;border-radius:3px;transition:width .4s}
-.charm-detail-pct{font-size:11px;color:#8b949e;flex:0 0 70px;text-align:right}
-@media(max-width:480px){.charm-detail-row{flex-wrap:wrap}.charm-detail-name{flex:0 0 100%}.charm-detail-stars{flex:0 0 auto}.charm-detail-pct{flex:0 0 auto;margin-left:auto}}
+.charm-detail-list{display:flex;flex-direction:column;gap:10px;width:100%}
+.charm-detail-row{display:flex;align-items:center;gap:10px;padding:12px 14px;background:#0d1117;border:1px solid #21262d;border-radius:10px;min-height:52px;box-sizing:border-box;transition:border-color .2s}
+.charm-detail-row:hover{border-color:#30363d}
+.charm-detail-name{font-size:12px;font-weight:600;color:#cdd9e5;flex:0 0 92px;white-space:nowrap}
+.charm-detail-stars{font-size:12px;letter-spacing:1px;flex:0 0 80px;text-align:center;white-space:nowrap}
+.charm-detail-bar{flex:1;min-width:70px;height:7px;background:#21262d;border-radius:4px;overflow:hidden}
+.charm-detail-fill{height:100%;border-radius:4px;transition:width .4s ease}
+.charm-detail-pct{font-size:11px;color:#8b949e;flex:0 0 74px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+@media(max-width:540px){.charm-detail-row{display:grid;grid-template-columns:auto auto 1fr;grid-template-areas:"name stars pct" "bar bar bar";gap:8px 8px;padding:12px 12px;align-items:center;min-height:auto}.charm-detail-name{grid-area:name;font-size:12px;flex:unset}.charm-detail-stars{grid-area:stars;font-size:12px;text-align:left;flex:unset}.charm-detail-pct{grid-area:pct;text-align:right;font-size:11px;flex:unset}.charm-detail-bar{grid-area:bar;width:100%;height:7px;min-width:0}}
 .ai-top-grid{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);gap:14px;align-items:stretch}
 .ai-bottom-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
 .ai-score-card,.ai-patterns-card,.ai-report-card{margin-bottom:0;height:100%}
@@ -19566,10 +19573,10 @@ function renderDiagnosis(d, isKrx) {
         <div class="charm-radar-detail-grid">
           <div class="charm-radar-wrap">
             <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
-${hasCompleteRadarData
-              ? `<canvas id="${radarId}" class="charm-radar-canvas"></canvas>`
-              : `<div class="empty-note" style="text-align:center">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
-            <div style="font-size:10px;color:#484f58">중앙 스마트스코어 ${smartDisplay} · 축 순서: 미래성장성 → 사업독점력 → 재무안전성 → 수익성 → 현금창출력</div>
+ ${hasCompleteRadarData
+              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="360" height="340"></canvas>`
+              : `<div class="empty-note" style="text-align:center;color:#8b949e;padding:24px 12px">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
+            <div style="font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:320px">중앙 스마트스코어 ${smartDisplay} · 축 순서: 미래성장성 → 사업독점력 → 재무안전성 → 수익성 → 현금창출력</div>
           </div>
           <div class="charm-detail-list">${detailRows}</div>
         </div>
@@ -19586,17 +19593,22 @@ ${hasCompleteRadarData
       </div>
     `;
 
-// 레이더 그리기
-    setTimeout(() => {
+// 레이더 그리기 - 탭 숨김 상태에서도 고정 크기로 렌더링, 전환 시 재시도
+    // 전역 캐시로 탭 전환 시에도 다시 그릴 수 있도록 보관
+    window._lastRadar = { radarId, hasCompleteRadarData, subScoresForRadar: [...subScoresForRadar], smartColor, smartDisplay };
+    const _drawRadarNow = () => {
       const canvas = document.getElementById(radarId);
-      if (!canvas || !hasCompleteRadarData) return;
+      if (!canvas || !hasCompleteRadarData) return false;
       const ctx = canvas.getContext('2d');
-      const W = 320, H = 320;
+      if (!ctx) return false;
+      const W = 360, H = 340;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = W * dpr;
       canvas.height = H * dpr;
-      ctx.scale(dpr, dpr);
-      const CX = W/2, CY = H/2, R = Math.min(W,H)*0.33;
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+      const CX = W/2, CY = 170, R = 80;
       const labels = ['미래성장성','사업독점력','재무안전성','수익성','현금창출력'];
       const scores = subScoresForRadar;
       // 배경 그리드
@@ -19654,34 +19666,51 @@ ${hasCompleteRadarData
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
-      // 라벨 - 거리 증가로 잘림 방지
-      ctx.fillStyle = '#cdd9e5';
-      ctx.font = '11px sans-serif';
+      // 라벨 - 여백 확보로 글자 잘림/사라짐 방지 (좌우 24px, 상하 18px 여유)
+      // 외곽 라벨이 캔버스 경계에 닿지 않도록 R 80 + 오프셋 18~20 로 조정, 배경과 대비되는 밝은 색 유지
+      ctx.fillStyle = '#e6edf3';
+      ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif';
+      ctx.shadowColor = 'rgba(0,0,0,0.45)';
+      ctx.shadowBlur = 0;
+      const labelOffsets = [
+        { d: 28, align: 'center', baseline: 'bottom' }, // 미래성장성 (상단)
+        { d: 22, align: 'left',   baseline: 'middle' }, // 사업독점력 (우상)
+        { d: 20, align: 'left',   baseline: 'top' },    // 재무안전성 (우하)
+        { d: 20, align: 'right',  baseline: 'top' },    // 수익성 (좌하)
+        { d: 22, align: 'right',  baseline: 'middle' }, // 현금창출력 (좌상)
+      ];
       for (let i=0;i<5;i++) {
         const ang = -Math.PI/2 + i*2*Math.PI/5;
-        const x = CX + Math.cos(ang)*(R+28);
-        const y = CY + Math.sin(ang)*(R+28);
-        ctx.textAlign = Math.cos(ang) > 0.3 ? 'left' : Math.cos(ang) < -0.3 ? 'right' : 'center';
-        ctx.textBaseline = Math.sin(ang) > 0.3 ? 'top' : Math.sin(ang) < -0.3 ? 'bottom' : 'middle';
+        const lo = labelOffsets[i];
+        const x = CX + Math.cos(ang)*(R + lo.d);
+        const y = CY + Math.sin(ang)*(R + lo.d);
+        ctx.textAlign = lo.align;
+        ctx.textBaseline = lo.baseline;
+        // 라벨 배경 글로우로 가독성 확보 - 배경이 어두워도 선명
         ctx.fillText(labels[i], x, y);
       }
+      ctx.shadowBlur = 0;
       // 중앙 스마트스코어 - 텍스트 크기 축소
       ctx.fillStyle = '#0d1117';
       ctx.beginPath();
-      ctx.arc(CX,CY,28,0,Math.PI*2);
+      ctx.arc(CX,CY,24,0,Math.PI*2);
       ctx.fill();
       ctx.strokeStyle = smartColor;
       ctx.lineWidth = 2;
       ctx.stroke();
       ctx.fillStyle = smartColor;
-      ctx.font = 'bold 16px sans-serif';
+      ctx.font = 'bold 15px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(smartDisplay, CX, CY-6);
+      ctx.fillText(smartDisplay, CX, CY-5);
       ctx.fillStyle = '#8b949e';
-      ctx.font = '7px sans-serif';
-      ctx.fillText('스마트스코어', CX, CY+8);
-    }, 50);
+      ctx.font = '700 7.5px sans-serif';
+      ctx.fillText('스마트스코어', CX, CY+7);
+      return true;
+    };
+    // 초기 2회 시도 + 탭 전환 시에도 재시도 (숨김 상태에서 캔버스 0 크기 대비)
+    setTimeout(() => { _drawRadarNow(); setTimeout(_drawRadarNow, 200); }, 60);
+    window._redrawRadar = _drawRadarNow;
 
     const legacyEl = document.getElementById('legacy-tech-diagnosis');
     if (legacyEl) renderTechnicalDiagnosis(d, isKrx, legacyEl);
@@ -21449,6 +21478,10 @@ function switchTab(tab) {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === tab ? 'block' : 'none';
   });
+  // AI 진단 탭: 레이더가 숨김 상태에서 그려졌다면 전환 시 다시 그려 글자 사라짐 방지
+  if (tab === 'ai' && typeof window._redrawRadar === 'function') {
+    requestAnimationFrame(() => setTimeout(() => { try { window._redrawRadar(); } catch(e){} }, 40));
+  }
   // 버튼 active 상태 (display:none 버튼도 포함)
   document.querySelectorAll('#result-tabs .tab-btn').forEach(btn => {
     const onclick = btn.getAttribute('onclick') || '';
