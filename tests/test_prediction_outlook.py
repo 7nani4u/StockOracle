@@ -684,19 +684,24 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     buy_pos = forecast_html.index('id="buy-price-section"')
     scenario_pos = forecast_html.index('id="prediction-scenarios-section"')
     risk_pos = forecast_html.index('id="risk-grid"')
+    status_pos = forecast_html.index('id="prediction-status-section"')
+    market_pos = forecast_html.index('id="prediction-market-context-section"')
+    ai_pos = forecast_html.index('id="prediction-ai-context-section"')
 
-    assert overview_pos < buy_pos < risk_pos < scenario_pos
+    assert overview_pos < buy_pos < risk_pos < status_pos < market_pos < ai_pos < scenario_pos
     assert "분석 흐름" not in forecast_html
     assert "📈 목표 가격 범위" not in forecast_html
     assert 'id="target-price-section"' not in forecast_html
     assert 'id="ai-strategy-section"' not in forecast_html
     assert "AI 진단 탭의 추가 근거" not in forecast_html
     assert 'class="prediction-context-inline"' not in forecast_html
-    assert 'id="prediction-context-section"' in forecast_html
+    assert 'id="prediction-context-section"' not in forecast_html
+    assert 'id="prediction-market-context-section"' in forecast_html
+    assert 'id="prediction-ai-context-section"' in forecast_html
     assert "시장·AI 판단 근거 상세 보기" not in forecast_html
     assert "<details" not in forecast_html
     assert "시장·업종·수급" in HTML
-    assert "AI 진단 · 세력 흔들림 재활용" in HTML
+    assert "AI·패턴 보조 진단" in HTML
     assert '<div class="card forecast-scenario-group">' in forecast_html
 
 
@@ -775,8 +780,11 @@ def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
     assert "동적 RSI 구매 타이밍" in renderer
     assert "dynamic-rsi-condition-grid" in renderer
     assert "추격 제한 참고가" in renderer
+    assert "const isExpired = /유효 기간 초과|없음/" in renderer
     assert "이 단계 수는 상승확률이나 적중률이 아닙니다" in renderer
     assert forecast_html.index('id="prediction-overview-section"') < forecast_html.index('id="buy-price-section"')
+    assert forecast_html.index('id="prediction-status-section"') > forecast_html.index('id="risk-grid"')
+    assert "127봉 전 신호" not in renderer
 
 
 def test_analysis_loader_has_timeout_cancellation_and_retry_path():

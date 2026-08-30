@@ -17343,7 +17343,6 @@ input::placeholder{color:#484f58}
         <div class="card">
           <div class="card-title">🔮 핵심 판단과 현재 상태</div>
           <div id="prediction-overview-section"></div>
-          <div id="prediction-context-section"></div>
         </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
         <div class="card forecast-entry-group">
@@ -17356,6 +17355,18 @@ input::placeholder{color:#484f58}
           <div class="card-title">🛡️ 리스크 관리와 목표 청산</div>
           <div id="risk-event-banner"></div>
           <div class="risk-grid" id="risk-grid"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">📊 기술적 현재 상태</div>
+          <div id="prediction-status-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">🌐 시장·업종·수급</div>
+          <div id="prediction-market-context-section"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">🧠 AI·패턴 보조 진단</div>
+          <div id="prediction-ai-context-section"></div>
         </div>
         <div class="card forecast-scenario-group">
           <div class="card-title">🧭 조건부 시나리오와 무효화 조건</div>
@@ -20286,12 +20297,15 @@ function _predictionLiveFacts(d, isKrx) {
 function renderPredictionSections(d, isKrx) {
   const p = d.prediction_outlook || null;
   const overviewEl = document.getElementById('prediction-overview-section');
+  const statusEl = document.getElementById('prediction-status-section');
   const scenariosEl = document.getElementById('prediction-scenarios-section');
-  const contextEl = document.getElementById('prediction-context-section');
-  if (!overviewEl || !scenariosEl || !contextEl) return;
+  const marketContextEl = document.getElementById('prediction-market-context-section');
+  const aiContextEl = document.getElementById('prediction-ai-context-section');
+  if (!overviewEl || !statusEl || !scenariosEl || !marketContextEl || !aiContextEl) return;
   if (!p || !p.decision) {
     const fallback = '<p style="color:#8b949e;font-size:12px">현재 앱에서 확보한 데이터가 부족해 상세 조건부 시나리오를 만들 수 없습니다.</p>';
-    overviewEl.innerHTML = fallback; scenariosEl.innerHTML = fallback; contextEl.innerHTML = fallback;
+    overviewEl.innerHTML = fallback; statusEl.innerHTML = fallback; scenariosEl.innerHTML = fallback;
+    marketContextEl.innerHTML = fallback; aiContextEl.innerHTML = fallback;
     return;
   }
 
@@ -20322,7 +20336,8 @@ function renderPredictionSections(d, isKrx) {
     // 상태 머신: 각 조건의 met 여부로 완료/대기 구분, 날짜는 보조 정보로만
     const stageItems = (timing.conditions || []).map(item => {
       const isDone = !!item.met;
-      const isWaiting = !isDone && timing.conditions.findIndex(c=>!c.met) === (timing.conditions || []).indexOf(item);
+      const isExpired = /유효 기간 초과|없음/.test(String(item.detail || ''));
+      const isWaiting = !isDone && !isExpired && timing.conditions.findIndex(c=>!c.met) === (timing.conditions || []).indexOf(item);
       const stateIcon = isDone ? '✓' : (isWaiting ? '●' : '○');
       const stateColor = isDone ? '#3fb950' : (isWaiting ? '#d29922' : '#6e7681');
       const stateText = isDone ? '완료' : (isWaiting ? '진행·대기' : '미충족');
@@ -20336,7 +20351,8 @@ function renderPredictionSections(d, isKrx) {
     // 헤더: 기능명(동적 RSI 구매 타이밍)은 섹션 제목으로 낮추고, 현재 상태(상승 다이버전스 확인 대기 등)를 메인으로
     const featureName = '동적 RSI 구매 타이밍';
     const stateLabel = _escPrediction(timing.label || '관망');
-    const subInfo = `${_escPrediction(dynamicRsi.market || d.market)} ${_escPrediction(dynamicRsi.timeframe_label || '일봉')} · 기준 ${_escPrediction(dynamicRsi.as_of || '최근 종가')} · 동적 하단 ${Number(dynamicRsi.lower).toFixed(1)} / RSI ${Number(dynamicRsi.rsi).toFixed(1)} / 동적 상단 ${Number(dynamicRsi.upper).toFixed(1)}`;
+    const rsiMetric = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1) : '미확보';
+    const subInfo = `${_escPrediction(dynamicRsi.market || d.market)} ${_escPrediction(dynamicRsi.timeframe_label || '일봉')} · 기준 ${_escPrediction(dynamicRsi.as_of || '최근 종가')} · 동적 하단 ${rsiMetric(dynamicRsi.lower)} / RSI ${rsiMetric(dynamicRsi.rsi)} / 동적 상단 ${rsiMetric(dynamicRsi.upper)}`;
     // ③ 다음 확인 조건: 실행용 카드 (추격/손절)는 신호 확정 전임을 명확히
     const chaseText = timing.max_chase_price != null ? fmt(timing.max_chase_price, isKrx) : null;
     const stopText = timing.stop != null ? fmt(timing.stop, isKrx) : null;
@@ -20387,11 +20403,8 @@ function renderPredictionSections(d, isKrx) {
   }).join('');
   const technicalHtml = `<div class="prediction-status-grid">${statusHtml}</div>`;
 
-  overviewEl.innerHTML = `<div class="prediction-stack">
-    ${decisionHtml}
-    ${stagesHtml}
-    ${technicalHtml}
-  </div>`;
+  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${stagesHtml}</div>`;
+  statusEl.innerHTML = technicalHtml;
 
   // ── ③/④ 조건부 시나리오: 시간축 명확화 + 중복 제거 ──
   const horizonNote = _escPrediction(p.scenario_note || '');
@@ -20457,23 +20470,12 @@ function renderPredictionSections(d, isKrx) {
   const gapsHtml = (marketContext.data_gaps || []).map(x => `<div>• ${_escPrediction(x)}</div>`).join('');
   // 무효화 조건과 과거 이력 분리
   const invalidationNote = timing.invalidation ? `<div style="margin-top:6px;font-size:10px;color:#f85149;background:#2d0d0d55;border-left:3px solid #f85149;padding:4px 6px;border-radius:0 6px 6px 0">무효화: ${_escPrediction(timing.invalidation)}</div>` : '';
-  const historyNote = (() => {
-    const total = timing.conditions_total || 3;
-    const met = timing.conditions_met || 0;
-    // 과거 신호 이력은 현재 판단과 분리하여 낮은 우선순위
-    const lastSignal = timing.window ? _escPrediction(timing.window) : '';
-    return lastSignal ? `<div style="margin-top:6px;font-size:9px;color:#6e7681;border-top:1px solid #21262d;padding-top:6px">과거 참고: ${lastSignal} · 127봉 전 신호 등은 현재 진행 중인 조건과 별도</div>` : '';
-  })();
-  contextEl.innerHTML = `<div class="prediction-context-grid">
-    <div class="prediction-context-card"><div class="prediction-context-title">시장·업종·수급 <span style="font-size:10px;font-weight:400;color:#8b949e">· 직접/참고 구분</span></div><div class="prediction-facts">${factsHtml}</div><div class="prediction-scope" style="font-size:10px;color:#6e7681">${_escPrediction(marketContext.basis || '')}</div>${gapsHtml ? `<div class="prediction-mini-list" style="margin-top:7px;border-top:1px solid #21262d;padding-top:6px"><div style="font-size:9px;color:#6e7681;margin-bottom:3px">데이터 보완 필요</div>${gapsHtml}</div>` : ''}</div>
-    <div class="prediction-context-card"><div class="prediction-context-title">AI 진단 · 세력 흔들림 재활용 <span style="font-size:10px;font-weight:400;color:#8b949e">· 의심 패턴 · 보조</span></div>
-      <div style="font-size:11px;font-weight:800;color:${patternColor};margin-bottom:4px">${patternHeader}</div>
-      <div class="prediction-pattern-alert" style="border-color:${patternColor};color:${patternColor};font-size:11px">${pattern.manipulation_detected ? `지지 종가 유지 확인 시에만 반등 유효 · 무효화 구분` : '패턴 근거 부족 — 가격·거래량 기본 조건 우선'}</div>
-      <div class="prediction-mini-list" style="margin-top:6px">${patternEvidence || ''}${wickHtml}${aiEvidenceFiltered ? `<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">${aiEvidenceFiltered}</div>` : ''}</div>
-      ${invalidationNote}
-      ${historyNote}
-      <div style="margin-top:6px;font-size:9px;color:#6e7681">패턴 감지 → 근거 → 확인(지지·거래량) → 무효화(이탈) → 영향 → 행동 순으로 판단</div>
-    </div>
+  marketContextEl.innerHTML = `<div class="prediction-context-card"><div class="prediction-facts">${factsHtml}</div><div class="prediction-scope" style="font-size:10px;color:#6e7681">${_escPrediction(marketContext.basis || '')}</div>${gapsHtml ? `<div class="prediction-mini-list" style="margin-top:7px;border-top:1px solid #21262d;padding-top:6px"><div style="font-size:9px;color:#6e7681;margin-bottom:3px">데이터 보완 필요</div>${gapsHtml}</div>` : ''}</div>`;
+  aiContextEl.innerHTML = `<div class="prediction-context-card">
+    <div style="font-size:11px;font-weight:800;color:${patternColor};margin-bottom:4px">${patternHeader}</div>
+    <div class="prediction-pattern-alert" style="border-color:${patternColor};color:${patternColor};font-size:11px">${pattern.manipulation_detected ? '지지 종가와 거래량 회복이 함께 확인될 때만 반등 근거로 사용' : '패턴 근거 부족 — 가격·거래량 기본 조건 우선'}</div>
+    <div class="prediction-mini-list" style="margin-top:6px">${patternEvidence || ''}${wickHtml}${aiEvidenceFiltered ? `<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">${aiEvidenceFiltered}</div>` : ''}</div>
+    ${invalidationNote}
   </div>`;
 }
 
