@@ -19636,7 +19636,7 @@ ${hasCompleteRadarData
           </div>
         </div>
         <div class="charm-metrics-grid" style="margin-top:0">
-          <div class="charm-metric"><div class="charm-metric-label">시가총액</div><div class="charm-metric-val" style="font-size:11px;line-height:1.3;word-break:keep-all;overflow-wrap:anywhere">${fMktcapDisplay}</div></div>
+          <div class="charm-metric"><div class="charm-metric-label">시가총액</div><div class="charm-metric-val">${fMktcapDisplay}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PER</div><div class="charm-metric-val" style="color:${fPerColor}">${fPerVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PBR</div><div class="charm-metric-val" style="color:${fPbrColor}">${fPbrVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PSR</div><div class="charm-metric-val" style="color:${psrColor}">${psrVal}</div></div>
