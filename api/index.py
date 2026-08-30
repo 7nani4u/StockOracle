@@ -19572,10 +19572,9 @@ function renderDiagnosis(d, isKrx) {
       </div>`;
     }).join('');
 
-    // AI 종합 진단 텍스트
-    const aiText = (d.ai_strategy && d.ai_strategy.result) ? String(d.ai_strategy.result).split(' | ').slice(0,3).join('<br>') : 'AI가 생성한 종합 진단이 여기에 표시됩니다.';
-
-    diagEl.innerHTML = `
+    // 재무 데이터는 현재 상태 뒤의 "핵심 데이터/근거"에 삽입한다.
+    // AI 요약과 기술·수급 판단은 renderTechnicalDiagnosis에서 한 번만 렌더링한다.
+    const fundamentalHtml = `
       <div class="charm-header">
         <div class="charm-top">
           <div class="charm-radar-summary-card">
@@ -19601,17 +19600,11 @@ ${hasCompleteRadarData
         </div>
         <div class="charm-detail-list">${detailRows}</div>
         <div style="font-size:10px;color:#484f58;line-height:1.5">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
-        <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px">
-          <div style="font-size:11px;color:#8b949e;margin-bottom:6px">🧠 AI 종합 진단</div>
-          <div style="font-size:12px;color:#cdd9e5;line-height:1.6">${aiText}</div>
-        </div>
         <div style="font-size:10px;color:#484f58;margin-top:8px">※ 순위·백분위는 전체 상장사 순위가 아닌 실제 재무 데이터가 수집된 비교 유니버스 기준입니다. 재무 데이터 부족 시 해당 항목은 N/A로 제외합니다.</div>
-        <div class="charm-legacy-section">
-          <div class="charm-legacy-title">기술적·수급 진단</div>
-          <div id="legacy-tech-diagnosis"></div>
-        </div>
       </div>
     `;
+
+    renderTechnicalDiagnosis(d, isKrx, diagEl, fundamentalHtml);
 
 // 레이더 그리기 - 탭 숨김 상태에서도 고정 크기로 렌더링, 전환 시 재시도
     // 전역 캐시로 탭 전환 시에도 다시 그릴 수 있도록 보관
@@ -19724,8 +19717,6 @@ ${hasCompleteRadarData
     setTimeout(() => { _drawRadarNow(); setTimeout(_drawRadarNow, 200); }, 60);
     window._redrawRadar = _drawRadarNow;
 
-    const legacyEl = document.getElementById('legacy-tech-diagnosis');
-    if (legacyEl) renderTechnicalDiagnosis(d, isKrx, legacyEl);
     return;
   }
 
@@ -19733,8 +19724,9 @@ ${hasCompleteRadarData
 }
 
 function renderTechnicalDiagnosis(d, isKrx, diagEl) {
-  // 재무 데이터가 없을 때의 fallback과 스마트스코어 하단의 기존 진단이 같은 렌더러를 공유한다.
+  // 네 번째 인자는 스마트스코어의 원본 근거 블록이다. 재무 데이터가 없을 때도 같은 흐름을 쓴다.
   if (!diagEl) return;
+  const fundamentalHtml = arguments[3] || '';
 
   const finiteOr = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   const score  = finiteOr(d.score, 50);
@@ -19908,6 +19900,41 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
   const stepVolume = allSteps.filter(st => st.step.startsWith('4.'));
   const stepPat    = allSteps.filter(st => !st.step.match(/^[1234]\./));
 
+  const stepSummary = (steps, fallback) => {
+    const result = steps[0] && steps[0].result;
+    if (!result) return fallback;
+    return String(result).split(' | ').filter(Boolean).slice(0, 2).join(' · ');
+  };
+  const volumeDesc = stepSummary(stepVolume, '거래량 분석 데이터 없음');
+  const crossDesc = stepSummary(stepPat.filter(st => st.step.startsWith('6.')), '교차 지표 분석 데이터 없음');
+
+  // 기술과 수급은 각각의 근거 섹션에서는 따로 읽고, 여기에서만 일치/엇갈림을 해석한다.
+  const technicalComposite = Math.round((techScore + momentumScore + volScore + patScore) / 4);
+  const directionFromScore = value => value >= 60 ? '강세' : value <= 40 ? '약세' : '중립';
+  const techDirection = directionFromScore(technicalComposite);
+  const supplyDirection = directionFromScore(supplyScore);
+  let alignmentTitle, alignmentDesc;
+  if (!hasSupply) {
+    alignmentTitle = '수급 데이터 확인 필요';
+    alignmentDesc = `기술 신호는 ${techDirection}(${technicalComposite}점)이나, 수급 데이터가 없어 방향 일치 여부를 판단할 수 없습니다.`;
+  } else if (techDirection === supplyDirection && techDirection !== '중립') {
+    alignmentTitle = `기술·수급 ${techDirection} 신호 일치`;
+    alignmentDesc = `기술 ${technicalComposite}점과 수급 ${supplyScore}점이 모두 ${techDirection} 방향입니다. 개별 지표의 상세 근거를 확인한 뒤 판단 강도를 높일 수 있습니다.`;
+  } else if (techDirection === '중립' && supplyDirection === '중립') {
+    alignmentTitle = '기술·수급 모두 중립';
+    alignmentDesc = `기술 ${technicalComposite}점, 수급 ${supplyScore}점으로 뚜렷한 우위가 없습니다. 방향 확인 전에는 관망이 우선입니다.`;
+  } else {
+    alignmentTitle = '기술·수급 신호 엇갈림';
+    alignmentDesc = `기술은 ${techDirection}(${technicalComposite}점), 수급은 ${supplyDirection}(${supplyScore}점)입니다. 한쪽 신호만으로 추세를 확정하지 말고 확인 조건을 우선합니다.`;
+  }
+
+  const aiLines = (d.ai_strategy && d.ai_strategy.result)
+    ? String(d.ai_strategy.result).split(' | ').filter(line => line.trim()).slice(0, 3)
+    : [];
+  const aiDiagnosisHtml = aiLines.length
+    ? aiLines.map(line => `<div style="margin-bottom:4px">${line}</div>`).join('')
+    : 'AI가 생성한 종합 진단이 여기에 표시됩니다.';
+
   // ── dim 점수 → 색상·레이블 헬퍼 (5단계) ────────────────────────────
   // 75+:우수(초록) / 55+:양호(파랑) / 40+:보통(노랑) / 25+:주의(주황) / 0+:위험(빨강)
   const _dg = v => v >= 75 ? { c:'#3fb950', lbl:'우수'  }
@@ -19953,23 +19980,27 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
     </div>`;
   };
 
-  diagEl.innerHTML = `
-    <div class="diag-grade-row">
-      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${gradeHtml}</div>
-      <div class="diag-grade-info" style="flex:1">
-        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· ${activeItemCount}항목 평균 ${avg}점</span></div>
-        <div class="diag-grade-sub">${gradeDesc}</div>
+  const evidenceBlock = (emoji, label, desc, accordionId, accordionContent) => `
+    <div class="diag-dim diag-dim-clickable" onclick="toggleDimAccordion('${accordionId}')">
+      <div class="diag-dim-head">
+        <span class="diag-dim-label">${emoji} ${label} <span id="arrow-${accordionId}" style="font-size:11px;color:#8b949e;display:inline-block;transition:transform .25s">▼</span></span>
       </div>
-      <span id="flow-rec-badge" class="rec-badge-lg" style="flex-shrink:0;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
+      <div class="diag-dim-desc">${desc}</div>
     </div>
-    <div id="flow-rationale" style="display:none"></div>
-    <div class="diag-dims">
-      ${pbTopHtml}
-      ${dimBar('📊', '기술적 추세',   techScore,    techDesc,  {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
-      ${dimBar('⚡', '모멘텀 강도',   momentumScore, rsiLabel, {accordionId:'dim-mom',  accordionContent: buildStepHtml(stepMom)})}
-      ${dimBar('🌊', '변동성 수준',   volScore,      volDesc,   {accordionId:'dim-vol',  accordionContent: buildStepHtml(stepVol)})}
-      ${isKrx ? dimBar('💰', '수급 흐름', supplyScore, supplyDesc, {clickable: true}) : ''}
-      ${isKrx ? `<div id="investor-flow-accordion" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
+    <div id="${accordionId}" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
+      <div style="display:flex;flex-direction:column;gap:8px">${accordionContent}</div>
+    </div>`;
+
+  const sectionTitle = (index, title, desc = '') => `
+    <div style="margin-top:${index === 1 ? 0 : 20}px;margin-bottom:10px;padding-top:${index === 1 ? 0 : 16}px;border-top:${index === 1 ? '0' : '1px solid #30363d'}">
+      <div style="font-size:14px;font-weight:800;color:#e6edf3">${index}. ${title}</div>
+      ${desc ? `<div style="font-size:11px;color:#8b949e;margin-top:3px;line-height:1.5">${desc}</div>` : ''}
+    </div>`;
+
+  const supplyLabel = isKrx ? '수급 흐름' : '시장 심리';
+  const supplyDetail = isKrx
+    ? `${dimBar('💰', supplyLabel, supplyScore, supplyDesc, {clickable: true})}
+      <div id="investor-flow-accordion" style="display:none;padding:12px;background:#0d1117;border-radius:10px;border:1px solid #30363d;margin-top:-2px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <span style="font-size:12px;color:#8b949e;font-weight:600">💰 투자자 수급 <span style="font-size:10px;color:#484f58;font-weight:400">· 토스증권 기준</span></span>
           <button id="investor-flow-retry" onclick="retryInvestorFlow()" style="display:none;background:none;border:1px solid #30363d;border-radius:6px;padding:3px 8px;color:#8b949e;font-size:11px;cursor:pointer">🔄 재시도</button>
@@ -19988,13 +20019,58 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
           </div>
         </div>
         <div id="investor-flow-content"></div>
-      </div>` : ''}
-      ${dimBar('🕯️', '캔들·차트 패턴 신호', patScore, patDesc, {accordionId:'dim-pat', accordionContent: buildStepHtml(stepPat)})}
+      </div>`
+    : (hasSupply ? dimBar('🌐', supplyLabel, supplyScore,
+      `상승 심리 ${Number((((d.us_enriched || {}).sentiment || {}).bullish_pct || 0))}%`, {})
+      : '<div style="font-size:12px;color:#8b949e">시장 심리 데이터가 부족합니다.</div>');
+
+  diagEl.innerHTML = `
+    ${sectionTitle(1, '현재 상태', '먼저 종목의 전체 신호 상태와 현재 가격 흐름 단계를 확인합니다.')}
+    <div class="diag-grade-row">
+      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${gradeHtml}</div>
+      <div class="diag-grade-info" style="flex:1">
+        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· ${activeItemCount}항목 평균 ${avg}점</span></div>
+        <div class="diag-grade-sub">${gradeDesc}</div>
+      </div>
+    </div>
+    <div class="diag-dims">${pbTopHtml}</div>
+
+    ${sectionTitle(2, '핵심 데이터·근거', '재무 체력과 비교 유니버스 내 상대 위치입니다. 기술적 판단의 근거와는 구분해 읽습니다.')}
+    ${fundamentalHtml || '<div style="font-size:12px;color:#8b949e">비교 가능한 재무 데이터가 부족해 핵심 재무 근거를 표시할 수 없습니다.</div>'}
+
+    ${sectionTitle(3, '기술적 분석', '개별 지표의 관측값과 신호입니다. 여기서는 결론을 반복하지 않고 근거만 제시합니다.')}
+    <div class="diag-dims">
+      ${dimBar('📊', '기술적 추세', techScore, techDesc, {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
+      ${dimBar('⚡', '모멘텀 강도', momentumScore, rsiLabel, {accordionId:'dim-mom', accordionContent: buildStepHtml(stepMom)})}
+      ${dimBar('🌊', '변동성 수준', volScore, volDesc, {accordionId:'dim-vol', accordionContent: buildStepHtml(stepVol)})}
+      ${evidenceBlock('📦', '거래량 확인', volumeDesc, 'dim-volume', buildStepHtml(stepVolume))}
+      ${dimBar('🕯️', '캔들·차트 패턴 신호', patScore, patDesc, {accordionId:'dim-pat', accordionContent: buildStepHtml(stepPat.filter(st => st.step.startsWith('5.')))})}
+      ${evidenceBlock('🔗', '교차 지표 정합', crossDesc, 'dim-cross', buildStepHtml(stepPat.filter(st => st.step.startsWith('6.'))))}
       ${renderHybridSection(d)}
-      ${pbBottomHtml}
+    </div>
+
+    ${sectionTitle(4, '수급 분석', isKrx ? '투자자별 순매수·순매도 원본 데이터와 그 방향성을 확인합니다.' : '미국 종목은 제공되는 시장 심리 데이터를 수급 대체 맥락으로 사용합니다.')}
+    <div class="diag-dims">${supplyDetail}</div>
+
+    ${sectionTitle(5, '기술·수급 종합 해석', '기술과 수급의 근거를 합쳐 한 번만 해석합니다.')}
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px">
+      <div style="font-size:13px;font-weight:800;color:${techDirection === supplyDirection && techDirection !== '중립' ? gradeColor : '#d29922'}">${alignmentTitle}</div>
+      <div style="font-size:12px;color:#cdd9e5;line-height:1.6;margin-top:5px">${alignmentDesc}</div>
+    </div>
+
+    ${sectionTitle(6, '위험 및 확인 요소', '진입 판단을 바꾸는 눌림목 조건, 흔들림 패턴, 구조 붕괴 조건을 마지막으로 점검합니다.')}
+    ${pbBottomHtml ? `<div class="diag-dims">${pbBottomHtml}</div>` : '<div style="font-size:12px;color:#8b949e">위험 조건을 점검할 눌림목 분석 데이터가 부족합니다.</div>'}
+
+    ${sectionTitle(7, 'AI 종합 진단', '앞선 상태·근거·위험 확인을 바탕으로 생성된 AI 요약입니다.')}
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;font-size:12px;color:#cdd9e5;line-height:1.6">${aiDiagnosisHtml}</div>
+
+    ${sectionTitle(8, '최종 판단', '기술·수급·위험 조건을 반영한 실행 우선순위입니다.')}
+    <div style="background:${gradeBg};border:1px solid ${gradeColor};border-radius:10px;padding:12px">
+      <span id="flow-rec-badge" class="rec-badge-lg" style="display:block;text-align:center;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
+      <div id="flow-rationale" class="flow-rationale-text" style="margin-top:8px">최종 판단 근거를 정리 중입니다.</div>
     </div>
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
-      ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 각 항목을 클릭하면 단계별 상세 분석을 확인할 수 있습니다.
+      ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 각 항목을 클릭하면 원본 지표와 상세 분석을 확인할 수 있습니다.
     </div>`;
 }
 
@@ -22187,7 +22263,7 @@ function renderFlowTab(d) {
 
   // sell 계열이면 신뢰도 대신 리스크 강조
   const confText = (rec==='sell' || rec==='weak_sell')
-    ? (confLabel === '높음' ? '리스크 높음' : confLabel === '보통' ? '리스크 보통' : '리스크 주의')
+    ? ('신호 일관성 ' + confLabel)
     : ('신뢰도 ' + confLabel);
 
   // ── 근거 문구 ──
@@ -22234,12 +22310,9 @@ function renderFlowTab(d) {
   if (flowRecBadge) {
     const _gc  = flowRecBadge.dataset.gradeColor;
     const _gb  = flowRecBadge.dataset.gradeBg;
-    const _bt  = flowRecBadge.dataset.badgeText; // 등급 행동 지침 포함 초기 텍스트
-    // 등급 행동 지침(좌측) + 종합점수(중간) + 신뢰도(우측)
-    // ex) "관망 유지 · 종합 47점 · 신뢰도 보통"
-    const _action = _bt ? _bt.split(' · ')[0] : recLbl;
+    // 최종 판단은 초기 등급 문구가 아니라 기술·뉴스·눌림목·위험을 다시 합산한 결과를 사용한다.
     flowRecBadge.className = 'rec-badge-lg';
-    flowRecBadge.textContent = `${_action} · 종합 ${effScore.toFixed(1)}점 · ${confText}`;
+    flowRecBadge.textContent = `${recLbl} · 종합 ${effScore.toFixed(1)}점 · ${confText}`;
     if (_gc) {
       flowRecBadge.style.color       = _gc;
       flowRecBadge.style.borderColor = _gc;
