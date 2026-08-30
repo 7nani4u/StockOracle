@@ -17026,6 +17026,8 @@ input::placeholder{color:#484f58}
 .us-reco-reason::before{display:none}
 
 /* AI 진단 레이더 반응형 override: 축 점수 라벨이 좁은 화면에서도 잘리지 않도록 한다. */
+.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:12px;min-height:300px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;overflow:visible}
+.charm-radar-summary-card .charm-radar-canvas{max-width:300px;min-width:0;margin:0}
 .charm-radar-title{font-size:12px;font-weight:700;color:#cdd9e5}
 .charm-radar-caption{font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px}
 @media(min-width:961px){
@@ -17033,12 +17035,16 @@ input::placeholder{color:#484f58}
   .charm-radar-detail-grid{grid-template-columns:minmax(420px,1.1fr) minmax(340px,.9fr)}
 }
 @media(max-width:600px){
+  .charm-radar-summary-card{min-height:280px;padding:10px}
+  .charm-radar-summary-card .charm-radar-canvas{max-width:280px}
   .charm-radar-detail-grid{grid-template-columns:1fr;gap:14px}
   .charm-radar-detail-grid .charm-detail-list{width:100%;max-width:none}
   .charm-radar-wrap{padding:16px 10px}
   .charm-radar-canvas{max-width:320px;min-width:0}
 }
 @media(max-width:480px){
+  .charm-radar-summary-card{min-height:260px}
+  .charm-radar-summary-card .charm-radar-canvas{max-width:250px}
   .charm-radar-detail-grid{gap:12px}
   .charm-radar-wrap{padding:14px 8px}
   .charm-radar-canvas{max-width:290px}
@@ -19569,18 +19575,13 @@ function renderDiagnosis(d, isKrx) {
     diagEl.innerHTML = `
       <div class="charm-header">
         <div class="charm-top">
-          <div class="charm-score-card" style="--score:${smartForUi};--score-color:${smartColor}">
-            <div style="font-size:11px;color:#8b949e;letter-spacing:0.04em;margin-bottom:8px">스마트스코어</div>
-            <div class="charm-score-ring">
-              <div class="charm-score-inner">
-                <div class="charm-score-val">${smartDisplay}</div>
-                <div class="charm-score-label">${smart == null ? '데이터 부족' : `${stars[0]} · ${smart >= 80 ? '최우수' : smart >= 60 ? '우수' : smart >= 40 ? '보통' : '주의'}`}</div>
-              </div>
-            </div>
-            <div style="font-size:10px;color:#484f58;margin-top:8px">5개 항목 평균 · ${Number(charm.available_count || 0)}/5 가용${hasUsableCharm ? '' : ' · 데이터 부족'}</div>
+          <div class="charm-radar-summary-card">
+${hasCompleteRadarData
+              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="420" height="390"></canvas>`
+              : `<div class="empty-note" style="text-align:center;color:#8b949e;padding:24px 12px">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
           </div>
           <div class="charm-rank-card">
-            <div class="charm-rank-row"><span class="charm-rank-label">비교 유니버스 순위</span><span class="charm-rank-val">${rankOrNa(charm.overall_rank)}</span></div>
+            <div class="charm-rank-row"><span class="charm-rank-label">스마트스코어</span><span class="charm-rank-val">${smartDisplay}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">비교 유니버스 상위</span><span class="charm-rank-val">${percentileOrNa(charm.overall_percentile)}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">비교 대상</span><span class="charm-rank-val">${universeOrNa(charm.universe_size)}</span></div>
             <div class="charm-rank-row"><span class="charm-rank-label">동일 업종 내 순위</span><span class="charm-rank-val">${rankOrNa(charm.industry_rank)}</span></div>
@@ -19595,16 +19596,7 @@ function renderDiagnosis(d, isKrx) {
           <div class="charm-metric"><div class="charm-metric-label">ROE</div><div class="charm-metric-val" style="color:${roeColor}">${roeVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">DY</div><div class="charm-metric-val" style="color:${dyColor}">${dyVal}</div></div>
         </div>
-        <div class="charm-radar-detail-grid">
-          <div class="charm-radar-wrap">
-            <div class="charm-radar-title">5축 진단 레이더</div>
- ${hasCompleteRadarData
-              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="420" height="390"></canvas>`
-              : `<div class="empty-note" style="text-align:center;color:#8b949e;padding:24px 12px">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
-            <div class="charm-radar-caption">중앙 점수 ${smartDisplay} · 축: 성장성 · 독점력 · 안정성 · 수익성 · 현금력</div>
-          </div>
-          <div class="charm-detail-list">${detailRows}</div>
-        </div>
+        <div class="charm-detail-list">${detailRows}</div>
         <div style="font-size:10px;color:#484f58;line-height:1.5">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
         <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px">
           <div style="font-size:11px;color:#8b949e;margin-bottom:6px">🧠 AI 종합 진단</div>
