@@ -688,7 +688,7 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     market_pos = forecast_html.index('id="prediction-market-context-section"')
     ai_pos = forecast_html.index('id="prediction-ai-context-section"')
 
-    assert overview_pos < buy_pos < risk_pos < status_pos < market_pos < ai_pos < scenario_pos
+    assert overview_pos < status_pos < market_pos < ai_pos < buy_pos < risk_pos < scenario_pos
     assert "분석 흐름" not in forecast_html
     assert "📈 목표 가격 범위" not in forecast_html
     assert 'id="target-price-section"' not in forecast_html
@@ -698,6 +698,8 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     assert 'id="prediction-context-section"' not in forecast_html
     assert 'id="prediction-market-context-section"' in forecast_html
     assert 'id="prediction-ai-context-section"' in forecast_html
+    assert 'id="forecast-entry-title"' in forecast_html
+    assert 'id="forecast-risk-title"' in forecast_html
     assert "시장·AI 판단 근거 상세 보기" not in forecast_html
     assert "<details" not in forecast_html
     assert "시장·업종·수급" in HTML
@@ -781,10 +783,25 @@ def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
     assert "dynamic-rsi-condition-grid" in renderer
     assert "추격 제한 참고가" in renderer
     assert "const isExpired = /유효 기간 초과|없음/" in renderer
+    assert "설정 유효 기간" in renderer
+    assert "watch: '관찰'" in renderer
+    assert "${_escPrediction(timing.state || '')}" not in renderer
     assert "이 단계 수는 상승확률이나 적중률이 아닙니다" in renderer
-    assert forecast_html.index('id="prediction-overview-section"') < forecast_html.index('id="buy-price-section"')
-    assert forecast_html.index('id="prediction-status-section"') > forecast_html.index('id="risk-grid"')
+    assert forecast_html.index('id="prediction-overview-section"') < forecast_html.index('id="prediction-status-section"')
+    assert forecast_html.index('id="prediction-ai-context-section"') < forecast_html.index('id="buy-price-section"')
     assert "127봉 전 신호" not in renderer
+
+
+def test_forecast_wait_state_reduces_inactive_price_tables_and_keeps_risk_copy_precise():
+    renderer = HTML.split("function renderForecast", 1)[1].split(
+        "function renderTechnicalSignals", 1
+    )[0]
+
+    assert "가까운 참고 구간" in renderer
+    assert "매수 승인이 아닙니다." in renderer
+    assert "daysToEarnings >= 0 && daysToEarnings <= 5" in renderer
+    assert "현재가 대비 ${_stopPct}%" in renderer
+    assert "목표 청산 범위는 진입 조건이 확인된 뒤에만 표시합니다." in renderer
 
 
 def test_analysis_loader_has_timeout_cancellation_and_retry_path():

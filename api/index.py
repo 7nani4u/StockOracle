@@ -17344,18 +17344,6 @@ input::placeholder{color:#484f58}
           <div class="card-title">🔮 핵심 판단과 현재 상태</div>
           <div id="prediction-overview-section"></div>
         </div>
-        <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
-        <div class="card forecast-entry-group">
-          <div class="card-title">🎯 진입 전략: 탐색 후 주 진입</div>
-          <div class="forecast-guide"><b>진입 원칙:</b> 1차는 가볍게 반등을 확인하는 소액 구간, 2차는 버티는 힘이 재확인되면 비중을 늘리는 본격 구간입니다. 두 구간 모두 ‘하루 마감가가 가격을 지키고 + 거래량이 다시 늘 때’만 단계적으로 접근하세요.</div>
-          <div id="buy-price-section"></div>
-        </div>
-        <!-- 리스크 관리와 목표 청산 -->
-        <div class="card">
-          <div class="card-title">🛡️ 리스크 관리와 목표 청산</div>
-          <div id="risk-event-banner"></div>
-          <div class="risk-grid" id="risk-grid"></div>
-        </div>
         <div class="card">
           <div class="card-title">📊 기술적 현재 상태</div>
           <div id="prediction-status-section"></div>
@@ -17367,6 +17355,18 @@ input::placeholder{color:#484f58}
         <div class="card">
           <div class="card-title">🧠 AI·패턴 보조 진단</div>
           <div id="prediction-ai-context-section"></div>
+        </div>
+        <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
+        <div class="card forecast-entry-group">
+          <div class="card-title" id="forecast-entry-title">🎯 진입 전략</div>
+          <div class="forecast-guide"><b>진입 원칙:</b> 1차는 가볍게 반등을 확인하는 소액 구간, 2차는 버티는 힘이 재확인되면 비중을 늘리는 본격 구간입니다. 두 구간 모두 ‘하루 마감가가 가격을 지키고 + 거래량이 다시 늘 때’만 단계적으로 접근하세요.</div>
+          <div id="buy-price-section"></div>
+        </div>
+        <!-- 리스크 관리와 목표 청산 -->
+        <div class="card">
+          <div class="card-title" id="forecast-risk-title">🛡️ 리스크 관리와 목표 청산</div>
+          <div id="risk-event-banner"></div>
+          <div class="risk-grid" id="risk-grid"></div>
         </div>
         <div class="card forecast-scenario-group">
           <div class="card-title">🧭 조건부 시나리오와 무효화 조건</div>
@@ -20351,6 +20351,10 @@ function renderPredictionSections(d, isKrx) {
     // 헤더: 기능명(동적 RSI 구매 타이밍)은 섹션 제목으로 낮추고, 현재 상태(상승 다이버전스 확인 대기 등)를 메인으로
     const featureName = '동적 RSI 구매 타이밍';
     const stateLabel = _escPrediction(timing.label || '관망');
+    const stateBadge = {
+      confirmed: '매수 확인', active: '관리 중', risk: '매수 보류',
+      armed: '매수 준비', watch: '관찰', neutral: '관망',
+    }[timing.state] || stateLabel;
     const rsiMetric = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1) : '미확보';
     const subInfo = `${_escPrediction(dynamicRsi.market || d.market)} ${_escPrediction(dynamicRsi.timeframe_label || '일봉')} · 기준 ${_escPrediction(dynamicRsi.as_of || '최근 종가')} · 동적 하단 ${rsiMetric(dynamicRsi.lower)} / RSI ${rsiMetric(dynamicRsi.rsi)} / 동적 상단 ${rsiMetric(dynamicRsi.upper)}`;
     // ③ 다음 확인 조건: 실행용 카드 (추격/손절)는 신호 확정 전임을 명확히
@@ -20369,13 +20373,13 @@ function renderPredictionSections(d, isKrx) {
     stagesHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="${_escPrediction(timing.state)}" aria-label="동적 RSI 현재 진행 단계" aria-live="polite">
       <div class="dynamic-rsi-timing-head">
         <div><div style="font-size:10px;color:#8b949e;letter-spacing:0.04em">${featureName} · 현재 진행 단계</div><div style="font-size:15px;font-weight:900;color:${timingColor};margin-top:2px">${stateLabel}</div><div class="dynamic-rsi-timing-sub" style="margin-top:4px">${subInfo}</div></div>
-        <span class="dynamic-rsi-state" style="color:${timingColor};border-color:${timingColor}55">${_escPrediction(timing.state || '')}</span>
+        <span class="dynamic-rsi-state" style="color:${timingColor};border-color:${timingColor}55">${stateBadge}</span>
       </div>
       ${timing.window ? `<div class="dynamic-rsi-window" style="margin-top:8px;font-size:11px;color:#8b949e">${_escPrediction(timing.window)}</div>` : ''}
       ${timing.action ? `<div class="dynamic-rsi-action" style="font-size:12px;color:#cdd9e5;background:#0d1117;border-radius:6px;padding:6px 8px">${_escPrediction(timing.action)}</div>` : ''}
       <div class="dynamic-rsi-condition-grid" style="margin-top:10px">${stageItems}</div>
       <div class="dynamic-rsi-execution" style="margin-top:10px">
-        <div><div class="dynamic-rsi-execution-label">다음 확인</div><div class="dynamic-rsi-execution-value" style="color:${timingColor}">${_escPrediction(validText)}</div><div style="font-size:9px;color:#6e7681">${validDetail}</div></div>
+        <div><div class="dynamic-rsi-execution-label">${timing.valid_for_bars != null ? '설정 유효 기간' : '조건 진행 현황'}</div><div class="dynamic-rsi-execution-value" style="color:${timingColor}">${_escPrediction(validText)}</div><div style="font-size:9px;color:#6e7681">${validDetail}</div></div>
         <div><div class="dynamic-rsi-execution-label">추격 제한 참고가</div>${chaseHtml}</div>
         <div><div class="dynamic-rsi-execution-label">동적 손절 참고가</div>${stopHtml}</div>
       </div>
@@ -20482,6 +20486,8 @@ function renderPredictionSections(d, isKrx) {
 function renderForecast(d, isKrx) {
   const risk = d.risk_scenarios;
   const bp   = d.buy_price;
+  const entryTitleEl = document.getElementById('forecast-entry-title');
+  const riskTitleEl = document.getElementById('forecast-risk-title');
 
   renderPredictionSections(d, isKrx);
   // ── 매수 전략 섹션 ──
@@ -20490,6 +20496,7 @@ function renderForecast(d, isKrx) {
   if (bpEl) {
     if (!bp) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
+      if (entryTitleEl) entryTitleEl.textContent = '🎯 진입 전략: 데이터 확인 필요';
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
     } else {
       const sr = bp.strategy_rec || {};
@@ -20747,6 +20754,9 @@ function renderForecast(d, isKrx) {
       const activeBands = sr.active_bands || ['A','B','C'];
       const bandColor   = ['#f97316','#d29922','#3fb950'];
       const isWaitMode = ['wait', 'wait_support', 'wait_breakdown'].includes(sr.action_key);
+      if (entryTitleEl) entryTitleEl.textContent = isWaitMode
+        ? '🎯 진입 전략: 현재는 대기'
+        : '🎯 진입 전략: 탐색 후 주 진입';
 
       // ── "🔗 연계 밴드"(피보나치 연동) · 핵심 구간(저항대/방어) · 분할 매수 단계(1~4차)
       //    설명은 모두 매수 구간 카드에서 폐지됨 → 카드에는 밴드 가격대/근거만 표시한다.
@@ -20866,7 +20876,27 @@ function renderForecast(d, isKrx) {
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${aggBandsHtml}${recBandsHtml}</div>`;
+      const closestWaitBand = isWaitMode ? [
+        ...(bp.aggressive_bands || []).map(b => ({band: b, recommended: false})),
+        ...(bp.recommended_bands || []).map(b => ({band: b, recommended: true})),
+      ].filter(item => item.band && item.band.is_available !== false)
+        .sort((a, b) => {
+          const distance = item => {
+            const range = item.band.range || [];
+            if (range.length !== 2 || cur == null) return Number.POSITIVE_INFINITY;
+            const low = Number(range[0]); const high = Number(range[1]);
+            return cur < low ? low - cur : cur > high ? cur - high : 0;
+          };
+          return distance(a) - distance(b);
+        })[0] : null;
+      const entryBandsHtml = isWaitMode
+        ? (closestWaitBand ? `<div class="buy-card aggressive" style="padding:12px 14px">
+            <div style="font-size:13px;font-weight:800;color:#cdd9e5;margin-bottom:5px">가까운 참고 구간</div>
+            <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:9px">매수 승인이 아닙니다. 반등과 거래량 확인 전에는 이 가격대에서도 주문하지 않습니다.</div>
+            <div class="buy-bands-row">${renderBandCard(closestWaitBand.band, 0, closestWaitBand.recommended)}</div>
+          </div>` : '<div class="buy-card aggressive" style="padding:12px 14px;color:#8b949e;font-size:11px">현재 확인 가능한 참고 매수 구간이 없습니다.</div>')
+        : `${aggBandsHtml}${recBandsHtml}`;
+      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml}</div>`;
       if (buyRiskNotesEl) {
         buyRiskNotesEl.innerHTML = eventRiskHtml;
       }
@@ -20881,6 +20911,10 @@ function renderForecast(d, isKrx) {
     // buy-price에서 계산된 eventRiskHtml을 재사용하되, risk 카드와 동일한 소스(d.event_risk || risk.event_risk)로 재생성하여
     // 매수 구간과 리스크 관리 간의 결합도를 낮춘다. 점수 0이면 배너 숨김.
     const _erForRisk = d.event_risk || risk.event_risk || null;
+    const daysToEarnings = Number(_erForRisk && _erForRisk.days_to_earnings);
+    const nearEarningsHtml = Number.isFinite(daysToEarnings) && daysToEarnings >= 0 && daysToEarnings <= 5
+      ? `<div style="font-size:10px;color:#d29922;margin-top:6px">다음 실적까지 D-${daysToEarnings} — 발표 전후 갭 위험으로 비중 축소 권장</div>`
+      : '';
     const _riskEventHtml = (_erForRisk && _erForRisk.score > 0) ? `
         <div style="grid-column:1/-1;background:#2d1515;border:1px solid #f8514966;border-radius:8px;padding:10px 12px;margin-bottom:12px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
@@ -20890,10 +20924,16 @@ function renderForecast(d, isKrx) {
           <div style="font-size:11px;color:#cdd9e5;line-height:1.5">
             ${(_erForRisk.reasons || []).slice(0,3).map(r => `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:2px"><span style="color:#f85149;flex-shrink:0">•</span><span>${r}</span></div>`).join('')}
           </div>
-          ${_erForRisk.days_to_earnings != null ? `<div style="font-size:10px;color:#d29922;margin-top:6px">다음 실적까지 D-${_erForRisk.days_to_earnings} — 발표 전후 갭 위험으로 비중 축소 권장</div>` : ''}
+          ${nearEarningsHtml}
         </div>` : '';
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = _riskEventHtml;
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
+    const entryIsWaiting = ['wait', 'wait_support', 'wait_breakdown'].includes(
+      ((d.buy_price || {}).strategy_rec || {}).action_key
+    );
+    if (riskTitleEl) riskTitleEl.textContent = entryIsWaiting
+      ? '🛡️ 리스크 관리: 현재는 진입 대기'
+      : '🛡️ 리스크 관리와 목표 청산';
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     // 📌 눌림목 분석 기반 정밀 가격 — 시나리오 카드에 통합 (별도 섹션 폐지)
     // 고대비 구분선 — 카드 배경(녹/적 틴트·다크·라이트)에 무관하게 항상 보이도록
@@ -20919,14 +20959,18 @@ function renderForecast(d, isKrx) {
       <div style="grid-column:1 / -1;background:#0d1117;border-radius:8px;padding:11px 14px;border:1px solid #f85149">
         <div style="font-size:10px;color:#8b949e;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em">손절가</div>
         <div style="font-size:17px;font-weight:800;color:#f85149">${fmt(_stopVal, isKrx)}</div>
-        <div style="font-size:11px;color:#d29922;margin-top:4px">${_stopPct != null ? _stopPct + '% 범위 · ' : ''}종가 이탈과 거래량 증가가 함께 나타나면 손실 제한 우선</div>
+        <div style="font-size:11px;color:#d29922;margin-top:4px">${_stopPct != null ? `현재가 대비 ${_stopPct}% · ` : ''}종가 이탈과 거래량 증가가 함께 나타나면 손실 제한 우선</div>
         <div style="font-size:10px;color:#8b949e;margin-top:5px">현재 변동성: ${risk.vol_state || '확인 중'} · ${risk.vol_trend || '추세 확인 중'}<br>변동성이 클수록 정상 가격 진폭도 커져 ATR 손절 폭이 넓어지며, 저변동성에서는 기준이 좁아질 수 있습니다.</div>
         ${warningZoneHtml}
         ${riskTriggerHtml ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #30363d"><div style="font-size:10px;color:#f85149;font-weight:700;margin-bottom:4px">리스크 확대 조건</div><div style="font-size:10px;color:#8b949e;line-height:1.5">${riskTriggerHtml}</div></div>` : ''}
       </div>`;
+    const targetPendingHtml = entryIsWaiting
+      ? '<div style="grid-column:1/-1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 12px;font-size:11px;color:#8b949e;line-height:1.5">목표 청산 범위는 진입 조건이 확인된 뒤에만 표시합니다. 현재는 손절가와 리스크 확대 조건을 우선 확인하세요.</div>'
+      : '';
     rgEl.innerHTML = `
       ${commonStopHtml}
-      ${riskEntries.map(sc => {
+      ${targetPendingHtml}
+      ${entryIsWaiting ? '' : riskEntries.map(sc => {
         // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
         const pbHtml = (() => {
           const pa = d.pullback_analysis || null;
