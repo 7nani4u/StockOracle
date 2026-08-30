@@ -13322,9 +13322,9 @@ def build_prediction_outlook(
     volume_now_text = f"현재 {volume_ratio:.2f}배" if volume_available else "현재 거래량 데이터 미확보"
     rsi_now_text = f"현재 RSI {rsi:.1f}" if rsi_available else "현재 RSI 데이터 미확보"
 
-    manipulation_up = ("세력 흔들림 패턴 감지 시에도 종가가 주요 지지선을 유지해야 반등 시나리오 유효"
+    manipulation_up = ("세력 흔들림 의심 패턴 감지 시에도 종가가 주요 지지선을 유지해야 반등 시나리오 유효"
                        if flags else "주요 지지선 유지 후 저항 돌파 시 반등 신뢰 상승")
-    manipulation_down = ("흔들림 패턴 이후 지지 회복에 실패하면 단순 손절 유도가 아닌 추세 이탈로 재평가"
+    manipulation_down = ("의심 패턴 이후 지지 회복에 실패하면 단순 손절 유도가 아닌 추세 이탈로 재평가"
                          if flags else "지지선 이탈 후 1~2개 봉 안에 회복하지 못하면 하락 시나리오 강화")
 
     scenarios = [
@@ -13405,7 +13405,7 @@ def build_prediction_outlook(
                         if flow_bias >= 4 else " 외국인·기관 동반 순매도로 진입 확인 기준을 높입니다."
                         if flow_bias <= -4 else " 외국인·기관 수급은 혼조입니다.")
     if flags:
-        decision_summary = (f"세력 흔들림 패턴 {len(flags)}건이 감지되었습니다. "
+        decision_summary = (f"세력 흔들림 의심 패턴 {len(flags)}건이 감지되었습니다. "
                             f"{support_label} {_price_label(support_price)} 종가 유지와 거래량 회복이 함께 확인될 때만 "
                             f"단기 반등 시나리오를 유효하게 봅니다.{flow_summary}")
     else:
@@ -13530,7 +13530,7 @@ def build_prediction_outlook(
         "scenarios": scenarios,
         "scenario_note": f"{horizon_label} 분석 범위 · 시나리오 비중은 추세·거래량·RSI·MACD·수급·변동성·위험 신호를 종합한 상대 비교이며 확정 확률이 아닙니다.",
         "market_context": {"facts": market_facts, "data_gaps": data_gaps,
-                           "basis": "기존 분석 요청과 홈에서 이미 받은 시장 데이터를 재사용"},
+                           "basis": "시장 지표는 현재 분석 요청 시점에 확보된 데이터 기준이며, 일부는 홈 화면 데이터 재사용이 포함될 수 있습니다 (실시간 시세 아님)"},
         "pattern_context": {
             "manipulation_detected": bool(flags), "manipulation_count": len(flags),
             "items": flags[:4], "candles": candle_names, "wick_note": wick_note,
@@ -19548,27 +19548,7 @@ function renderDiagnosis(d, isKrx) {
     // ── 펀더멘털 6종: 상단 네이버 3종(시가총액·PER·PBR) + 하단 charm 3종(PSR·ROE·DY) 통합 (PER 불일치 해소, 산업 제외) ──
     const naverFund = d.naver || {};
     const fMktcapVal = naverFund.market_cap || 'N/A';
-    const fMktcapRawFmt = naverFund.market_cap_raw_fmt || (naverFund.market_cap_raw != null ? Number(naverFund.market_cap_raw).toLocaleString('ko-KR') : null);
-    const _parseMktcapRaw = (txt) => {
-      try {
-        if (!txt || txt==='N/A' || txt==='-') return null;
-        const t = String(txt).replace(/,/g,'');
-        let jo=0,eok=0,rest=0;
-        const mJo = t.match(/(\d+)\s*조/);
-        if (mJo) {
-          jo = parseInt(mJo[1],10)||0;
-          const afterJo = t.split('조')[1]||'';
-          const mEok = afterJo.match(/(\d+)\s*억/);
-          if (mEok) { eok = parseInt(mEok[1],10)||0; const afterEok = afterJo.split('억')[1]||''; const mRest = afterEok.match(/(\d+)/); if (mRest) rest = parseInt(mRest[1],10)||0; }
-          else { const mRest = afterJo.match(/(\d+)/); if (mRest) rest = parseInt(mRest[1],10)||0; }
-        } else if (t.includes('억')) { const mEok = t.match(/(\d+)\s*억/); if (mEok) eok = parseInt(mEok[1],10)||0; }
-        else { const mRest = t.match(/(\d+)/); if (mRest) rest = parseInt(mRest[1].replace(/[^0-9]/g,''),10)||0; }
-        const raw = jo*1e12 + eok*1e8 + rest;
-        return raw>0 ? raw.toLocaleString('ko-KR') : null;
-      } catch(e){ return null; }
-    };
-    const fMktcapRawFmtEffective = fMktcapRawFmt || _parseMktcapRaw(fMktcapVal);
-    const fMktcapDisplay = (fMktcapVal && fMktcapVal!=='N/A' && fMktcapVal!=='-') ? (fMktcapRawFmtEffective ? `${fMktcapVal}원(₩${fMktcapRawFmtEffective})` : `${fMktcapVal}원`) : 'N/A';
+    const fMktcapDisplay = (fMktcapVal && fMktcapVal!=='N/A' && fMktcapVal!=='-') ? `${fMktcapVal}원` : 'N/A';
     const fPerRaw = (()=>{ const v=parseFloat(String(naverFund.per||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
     const fPerVal = naverFund.per || 'N/A';
     const fPbrRaw = (()=>{ const v=parseFloat(String(naverFund.pbr||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
@@ -20315,98 +20295,184 @@ function renderPredictionSections(d, isKrx) {
     return;
   }
 
+  // ── ① 현재 최종 판단 (가장 먼저) ──
+  const decision = p.decision || {};
+  const decisionColor = _predictionTone(decision.tone || 'neutral');
+  const decisionLabel = _escPrediction(decision.label || '관망');
+  const decisionDir = _escPrediction(decision.direction || '');
+  const decisionSummary = _escPrediction(decision.summary || '');
+  const decisionConf = decision.confidence != null ? Number(decision.confidence).toFixed(1) + '%' : null;
+  const decisionConfNote = _escPrediction(decision.confidence_note || '');
+  const decisionHtml = `<div style="background:#0d1117;border:1px solid ${decisionColor}55;border-radius:10px;padding:14px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <span style="background:${decisionColor};color:#0d1117;font-size:11px;font-weight:900;padding:3px 8px;border-radius:999px">${decisionLabel}</span>
+      ${decisionDir ? `<span style="color:${decisionColor};font-size:12px;font-weight:700">${decisionDir}</span>` : ''}
+      ${decisionConf ? `<span style="margin-left:auto;font-size:11px;color:#8b949e">참고 신뢰도 ${decisionConf}</span>` : ''}
+    </div>
+    <div style="font-size:13px;color:#cdd9e5;line-height:1.6">${decisionSummary}</div>
+    ${decisionConfNote ? `<div style="font-size:10px;color:#6e7681;margin-top:6px">${decisionConfNote} · 방향 신뢰도와 목표가 신뢰도는 분리 산정</div>` : ''}
+  </div>`;
+
+  // ── ② 현재 진행 단계: 3단계 상태 머신 (완료/대기/미충족 명확) ──
   const dynamicRsi = p.dynamic_rsi || d.dynamic_rsi || {};
   const timing = dynamicRsi.purchase_timing || {};
   const timingColor = _predictionTone(timing.tone || 'neutral');
-  let dynamicTimingHtml = '';
+  let stagesHtml = '';
   if (dynamicRsi.available && timing.state) {
-    const timingConditions = (timing.conditions || []).map(item => `
-      <div class="dynamic-rsi-condition ${item.met ? 'met' : ''}">
-        <div class="dynamic-rsi-condition-name"><span style="color:${item.met ? '#3fb950' : '#6e7681'}">${item.met ? '✓' : '○'}</span> ${_escPrediction(item.label)}</div>
-        <div class="dynamic-rsi-condition-detail">${_escPrediction(item.detail || '')}${item.date ? ` · ${_escPrediction(item.date)}` : ''}</div>
-      </div>`).join('');
+    // 상태 머신: 각 조건의 met 여부로 완료/대기 구분, 날짜는 보조 정보로만
+    const stageItems = (timing.conditions || []).map(item => {
+      const isDone = !!item.met;
+      const isWaiting = !isDone && timing.conditions.findIndex(c=>!c.met) === (timing.conditions || []).indexOf(item);
+      const stateIcon = isDone ? '✓' : (isWaiting ? '●' : '○');
+      const stateColor = isDone ? '#3fb950' : (isWaiting ? '#d29922' : '#6e7681');
+      const stateText = isDone ? '완료' : (isWaiting ? '진행·대기' : '미충족');
+      // 날짜/봉수는 보조로, 시각적 강도 낮춤
+      const timeNote = item.date ? `<span style="font-size:9px;color:#6e7681">· ${ _escPrediction(item.date)} · ${_escPrediction(item.detail || '').split('·').pop() || ''}</span>` : '';
+      return `<div class="dynamic-rsi-condition ${isDone ? 'met' : ''}" style="border-left:3px solid ${stateColor}55">
+        <div class="dynamic-rsi-condition-name"><span style="color:${stateColor};font-weight:900">${stateIcon}</span> ${_escPrediction(item.label)} <span style="font-size:9px;color:${stateColor};border:1px solid ${stateColor}55;border-radius:999px;padding:1px 5px">${stateText}</span></div>
+        <div class="dynamic-rsi-condition-detail">${_escPrediction(item.detail || '').split('·')[0] || ''} ${timeNote}</div>
+      </div>`;
+    }).join('');
+    // 헤더: 기능명(동적 RSI 구매 타이밍)은 섹션 제목으로 낮추고, 현재 상태(상승 다이버전스 확인 대기 등)를 메인으로
+    const featureName = '동적 RSI 구매 타이밍';
+    const stateLabel = _escPrediction(timing.label || '관망');
+    const subInfo = `${_escPrediction(dynamicRsi.market || d.market)} ${_escPrediction(dynamicRsi.timeframe_label || '일봉')} · 기준 ${_escPrediction(dynamicRsi.as_of || '최근 종가')} · 동적 하단 ${Number(dynamicRsi.lower).toFixed(1)} / RSI ${Number(dynamicRsi.rsi).toFixed(1)} / 동적 상단 ${Number(dynamicRsi.upper).toFixed(1)}`;
+    // ③ 다음 확인 조건: 실행용 카드 (추격/손절)는 신호 확정 전임을 명확히
+    const chaseText = timing.max_chase_price != null ? fmt(timing.max_chase_price, isKrx) : null;
+    const stopText = timing.stop != null ? fmt(timing.stop, isKrx) : null;
+    const chaseHtml = chaseText
+      ? `<div style="font-size:12px;color:#cdd9e5;font-weight:700">${chaseText}</div><div style="font-size:9px;color:#8b949e">신호 확정 시 추격 상한</div>`
+      : `<div style="font-size:11px;color:#8b949e">계산 전</div><div style="font-size:9px;color:#6e7681">신호 확정 후 산출</div>`;
+    const stopHtml = stopText
+      ? `<div style="font-size:12px;color:#f85149;font-weight:700">${stopText}</div><div style="font-size:9px;color:#8b949e">동적 손절 기준</div>`
+      : `<div style="font-size:11px;color:#8b949e">계산 전</div><div style="font-size:9px;color:#6e7681">진입 확정 후 산출</div>`;
     const validText = timing.valid_for_bars != null
-      ? `${Number(timing.valid_for_bars).toFixed(0)}봉 이내 조건 유효`
-      : `${Number(timing.conditions_met || 0).toFixed(0)}/${Number(timing.conditions_total || 3).toFixed(0)} 조건 충족`;
-    const chaseText = timing.max_chase_price != null ? fmt(timing.max_chase_price, isKrx) : '신호 확정 후 계산';
-    const stopText = timing.stop != null ? fmt(timing.stop, isKrx) : '진입 확정 후 계산';
-    dynamicTimingHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="${_escPrediction(timing.state)}" aria-label="동적 RSI 매수 타이밍" aria-live="polite">
+      ? `${Number(timing.valid_for_bars).toFixed(0)}봉 이내 유효`
+      : `${Number(timing.conditions_met || 0).toFixed(0)}/${Number(timing.conditions_total || 3).toFixed(0)} 충족`;
+    const validDetail = timing.valid_for_bars != null ? '조건 유효 기간' : '진행 현황';
+    stagesHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="${_escPrediction(timing.state)}" aria-label="동적 RSI 현재 진행 단계" aria-live="polite">
       <div class="dynamic-rsi-timing-head">
-        <div><div class="dynamic-rsi-timing-title">동적 RSI 구매 타이밍</div><div class="dynamic-rsi-timing-sub">${_escPrediction(dynamicRsi.market || d.market)} ${_escPrediction(dynamicRsi.timeframe_label || '일봉')} · 기준 ${_escPrediction(dynamicRsi.as_of || '최근 종가')} · 동적 하단 ${Number(dynamicRsi.lower).toFixed(1)} / RSI ${Number(dynamicRsi.rsi).toFixed(1)} / 동적 상단 ${Number(dynamicRsi.upper).toFixed(1)}</div></div>
-        <span class="dynamic-rsi-state" style="color:${timingColor}">${_escPrediction(timing.label || '관망')}</span>
+        <div><div style="font-size:10px;color:#8b949e;letter-spacing:0.04em">${featureName} · 현재 진행 단계</div><div style="font-size:15px;font-weight:900;color:${timingColor};margin-top:2px">${stateLabel}</div><div class="dynamic-rsi-timing-sub" style="margin-top:4px">${subInfo}</div></div>
+        <span class="dynamic-rsi-state" style="color:${timingColor};border-color:${timingColor}55">${_escPrediction(timing.state || '')}</span>
       </div>
-      <div class="dynamic-rsi-window">${_escPrediction(timing.window || '')}</div>
-      <div class="dynamic-rsi-action">${_escPrediction(timing.action || '')}</div>
-      <div class="dynamic-rsi-condition-grid">${timingConditions}</div>
-      <div class="dynamic-rsi-execution">
-        <div><div class="dynamic-rsi-execution-label">조건 진행</div><div class="dynamic-rsi-execution-value" style="color:${timingColor}">${_escPrediction(validText)}</div></div>
-        <div><div class="dynamic-rsi-execution-label">추격 제한 참고가</div><div class="dynamic-rsi-execution-value">${chaseText}</div></div>
-        <div><div class="dynamic-rsi-execution-label">동적 손절 참고가</div><div class="dynamic-rsi-execution-value" style="color:#f85149">${stopText}</div></div>
+      ${timing.window ? `<div class="dynamic-rsi-window" style="margin-top:8px;font-size:11px;color:#8b949e">${_escPrediction(timing.window)}</div>` : ''}
+      ${timing.action ? `<div class="dynamic-rsi-action" style="font-size:12px;color:#cdd9e5;background:#0d1117;border-radius:6px;padding:6px 8px">${_escPrediction(timing.action)}</div>` : ''}
+      <div class="dynamic-rsi-condition-grid" style="margin-top:10px">${stageItems}</div>
+      <div class="dynamic-rsi-execution" style="margin-top:10px">
+        <div><div class="dynamic-rsi-execution-label">다음 확인</div><div class="dynamic-rsi-execution-value" style="color:${timingColor}">${_escPrediction(validText)}</div><div style="font-size:9px;color:#6e7681">${validDetail}</div></div>
+        <div><div class="dynamic-rsi-execution-label">추격 제한 참고가</div>${chaseHtml}</div>
+        <div><div class="dynamic-rsi-execution-label">동적 손절 참고가</div>${stopHtml}</div>
       </div>
-      <div class="dynamic-rsi-footnote">${_escPrediction(timing.execution_rule || '')} · ${_escPrediction(timing.market_note || '')}<br>${_escPrediction(timing.invalidation || '')} · 이 단계 수는 상승확률이나 적중률이 아닙니다.</div>
+      <div class="dynamic-rsi-footnote" style="margin-top:8px">${_escPrediction(timing.execution_rule || '')}${timing.market_note ? ` · ${_escPrediction(timing.market_note)}` : ''}<br>${_escPrediction(timing.invalidation || '')} · 이 단계 수는 상승확률이나 적중률이 아닙니다.</div>
     </section>`;
   } else {
-    dynamicTimingHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="unavailable" aria-label="동적 RSI 매수 타이밍">
-      <div class="dynamic-rsi-timing-title">동적 RSI 구매 타이밍</div>
-      <div class="dynamic-rsi-action">${_escPrediction(dynamicRsi.reason || '동적 RSI 계산에 필요한 과거 데이터가 부족합니다.')}</div>
+    stagesHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="unavailable" aria-label="동적 RSI 현재 진행 단계">
+      <div style="font-size:10px;color:#8b949e">동적 RSI 전략 · 현재 진행 단계</div>
+      <div style="font-size:14px;font-weight:800;color:#8b949e;margin-top:4px">계산 불가</div>
+      <div class="dynamic-rsi-action" style="margin-top:6px">${_escPrediction(dynamicRsi.reason || '동적 RSI 계산에 필요한 과거 데이터가 부족합니다.')}</div>
     </section>`;
   }
+
+  // ── ⑤ 기술적 상태 요약: 5개 카드 (대표 상태 → 핵심 수치 → 짧은 해석) ──
   const statusHtml = (p.status || []).map(item => {
     const color = _predictionTone(item.tone);
+    // 각 카드의 detail에서 불필요한 지표 나열을 줄이고, 핵심만
+    const detail = _escPrediction(item.detail || '');
+    const shortDetail = detail.split('·').slice(0,2).join(' · ');
     return `<div class="prediction-status-card">
       <div class="prediction-status-label">${_escPrediction(item.label)} <span class="prediction-help" title="${_escPrediction(item.help || '')}">?</span></div>
-      <div class="prediction-status-value" style="color:${color}">${_escPrediction(item.value)}</div>
-      <div class="prediction-status-detail">${_escPrediction(item.detail)}</div>
+      <div class="prediction-status-value" style="color:${color};font-size:13px">${_escPrediction(item.value)}</div>
+      <div class="prediction-status-detail" style="font-size:10px;color:#8b949e">${shortDetail}</div>
     </div>`;
   }).join('');
+  const technicalHtml = `<div class="prediction-status-grid">${statusHtml}</div>`;
+
   overviewEl.innerHTML = `<div class="prediction-stack">
-    ${dynamicTimingHtml}
-    <div class="prediction-status-grid">${statusHtml}</div>
+    ${decisionHtml}
+    ${stagesHtml}
+    ${technicalHtml}
   </div>`;
 
+  // ── ③/④ 조건부 시나리오: 시간축 명확화 + 중복 제거 ──
+  const horizonNote = _escPrediction(p.scenario_note || '');
   scenariosEl.innerHTML = `<div class="prediction-scenario-grid">${(p.scenarios || []).map(sc => {
     const color = _predictionTone(sc.tone);
     const range = sc.price_range || [];
     const rangeText = range.length === 2 ? `${fmt(range[0], isKrx)} ~ ${fmt(range[1], isKrx)}` : '가격 범위 확인 필요';
+    // 조건은 2개만, 시간축은 별도 라벨로 분리
     const conditions = (sc.conditions || []).slice(0, 2).map(x => `<div class="prediction-condition"><span style="color:${color}">•</span><span>${_escPrediction(x)}</span></div>`).join('');
     const priceChecks = (sc.checks || []).filter(x => /가격|지지|저항|상단|하단|주의|손실|손절|거래량/.test(String(x.label || ''))).slice(0, 2);
     const checks = priceChecks.map(x => {
       const value = x.value != null ? `${_escPrediction(x.note || '')} ${fmt(x.value, isKrx)}`.trim() : _escPrediction(x.text || x.note || '');
       return `<div class="prediction-check"><span class="prediction-check-label">${_escPrediction(x.label)}</span><span class="prediction-check-value">${value}</span></div>`;
     }).join('');
+    // 시간축: expected_days를 명확히 라벨링
+    const days = sc.expected_days || [];
+    const daysText = days.length===2 ? `${days[0]}~${days[1]}거래일 내` : '';
     const response = sc.key === 'upside'
-      ? '대응: 저항 돌파와 거래량 증가가 함께 확인될 때만 분할 접근하고, 확인 전 추격은 보류합니다.'
+      ? '대응: 저항 종가 돌파 + 거래량 1.2배 확인 시 분할 접근, 그 전 추격 보류.'
       : sc.key === 'downside'
-        ? '대응: 지지선 종가 이탈 시 매수 시나리오를 무효화하고 손절 기준을 우선합니다.'
-        : '대응: 지지·저항 사이에서는 신규 진입을 보류하고 지지 확인 후 소액 접근합니다.';
+        ? '대응: 지지 종가 이탈 시 매수 무효화, 손절·현금 비중 우선.'
+        : '대응: 박스권 내에서는 지지 확인 후 소액, 저항 접근 시 관망.';
     return `<div class="prediction-scenario ${_escPrediction(sc.tone || 'neutral')}">
       <div class="prediction-scenario-head"><div class="prediction-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="prediction-prob" style="color:${color};border-color:${color}55">상대 비중 ${Number(sc.probability || 0).toFixed(0)}%</div></div>
-      <div class="prediction-price-range">${rangeText}</div>
+      <div class="prediction-price-range">${rangeText} ${daysText ? `<span style="font-size:10px;color:#8b949e">· ${daysText}</span>` : ''}</div>
       <div class="prediction-condition-list">${conditions}</div>
       <div class="prediction-checks">${checks}</div>
       <div class="prediction-scenario-action" style="border-left:3px solid ${color}">${response}</div>
     </div>`;
-  }).join('')}</div>`;
+  }).join('')}</div>${horizonNote ? `<div style="font-size:10px;color:#6e7681;margin-top:8px">${horizonNote}</div>` : ''}`;
 
+  // ── ⑥ 시장 환경: 직접 사용되는 데이터와 참고 데이터 구분, 신선도 명확화 ──
   const marketContext = p.market_context || {};
   const factMap = new Map();
   (marketContext.facts || []).forEach(f => factMap.set(f.label, f));
   _predictionLiveFacts(d, isKrx).forEach(f => factMap.set(f.label, f));
   const factsHtml = [...factMap.values()].map(f => {
     const color = _predictionTone(f.tone);
-    return `<div class="prediction-fact"><div class="prediction-fact-head"><span class="prediction-fact-label">${_escPrediction(f.label)}</span><span class="prediction-fact-value" style="color:${color}">${_escPrediction(f.value)}</span></div><div class="prediction-fact-detail">${_escPrediction(f.detail)}</div></div>`;
+    // 직접 판단에 쓰이는지 여부에 따라 아이콘 구분 (사실상 모두 참고지만, 외국인·기관은 직접)
+    const isDirect = /외국인·기관|종목 중기 구조/.test(f.label);
+    const badge = isDirect ? '<span style="font-size:9px;background:#3fb95022;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:1px 5px;margin-left:4px">판단 반영</span>' : '<span style="font-size:9px;background:#21262d;color:#8b949e;border-radius:999px;padding:1px 5px;margin-left:4px">참고</span>';
+    return `<div class="prediction-fact"><div class="prediction-fact-head"><span class="prediction-fact-label">${_escPrediction(f.label)}${badge}</span><span class="prediction-fact-value" style="color:${color}">${_escPrediction(f.value)}</span></div><div class="prediction-fact-detail">${_escPrediction(f.detail)}</div></div>`;
   }).join('') || '<div class="prediction-mini-list">시장 데이터가 부족해 종목 내부 신호를 우선합니다.</div>';
 
+  // ── ⑦ 패턴/AI 보조 진단: 논리 순서 재구성 + 세력 표현 완화 ──
   const pattern = p.pattern_context || {};
   const patternColor = pattern.manipulation_detected ? '#d29922' : '#3fb950';
-  const patternItems = (pattern.items || []).map(x => `<div style="margin-bottom:5px"><b style="color:${patternColor}">${_escPrediction(x.pattern || '패턴')}</b><br>${_escPrediction(x.desc || '')}<br><span style="color:#cdd9e5">조건: ${_escPrediction(x.action || '')}</span></div>`).join('');
-  const aiHtml = (p.ai_evidence || []).slice(0,4).map(x => `<div>• ${_escPrediction(x)}</div>`).join('');
+  // 패턴 감지 → 근거 → 확인 조건 → 무효화 → 영향 → 행동
+  const patternHeader = pattern.manipulation_detected
+    ? `의심 패턴 ${pattern.manipulation_count || 0}건 감지`
+    : '의심 패턴 없음';
+  const patternEvidence = (pattern.items || []).map(x => `<div style="margin-bottom:6px"><b style="color:${patternColor}">${_escPrediction(x.pattern || '패턴')}</b> <span style="font-size:10px;color:#8b949e">· 유사 패턴</span><br><span style="font-size:11px;color:#8b949e">${_escPrediction(x.desc || '')}</span><br><span style="font-size:10px;color:#cdd9e5">확인: ${_escPrediction(x.action || '지지 유지 여부 확인')}</span></div>`).join('');
+  const wickHtml = pattern.wick_note ? `<div style="margin-bottom:6px;font-size:11px"><b style="color:${patternColor}">캔들 근거</b> · ${_escPrediction(pattern.wick_note)}</div>` : '';
+  // SELL 등 최종 판단과 충돌하지 않도록 단기 신호로 명확화
+  const aiEvidenceFiltered = (p.ai_evidence || []).slice(0,4).map(x => {
+    const txt = String(x);
+    // SELL이 최종 매도가 아닌 단기 위험 신호임을 명시
+    if (/\bSELL\b/i.test(txt) && decision.tone !== 'negative') {
+      return `• ${ _escPrediction(txt)} <span style="font-size:9px;color:#f85149;border:1px solid #f8514955;border-radius:999px;padding:1px 4px">단기 매도 압력(보조)</span>`;
+    }
+    return `• ${_escPrediction(x)}`;
+  }).join('<br>');
   const gapsHtml = (marketContext.data_gaps || []).map(x => `<div>• ${_escPrediction(x)}</div>`).join('');
+  // 무효화 조건과 과거 이력 분리
+  const invalidationNote = timing.invalidation ? `<div style="margin-top:6px;font-size:10px;color:#f85149;background:#2d0d0d55;border-left:3px solid #f85149;padding:4px 6px;border-radius:0 6px 6px 0">무효화: ${_escPrediction(timing.invalidation)}</div>` : '';
+  const historyNote = (() => {
+    const total = timing.conditions_total || 3;
+    const met = timing.conditions_met || 0;
+    // 과거 신호 이력은 현재 판단과 분리하여 낮은 우선순위
+    const lastSignal = timing.window ? _escPrediction(timing.window) : '';
+    return lastSignal ? `<div style="margin-top:6px;font-size:9px;color:#6e7681;border-top:1px solid #21262d;padding-top:6px">과거 참고: ${lastSignal} · 127봉 전 신호 등은 현재 진행 중인 조건과 별도</div>` : '';
+  })();
   contextEl.innerHTML = `<div class="prediction-context-grid">
-    <div class="prediction-context-card"><div class="prediction-context-title">시장·업종·수급</div><div class="prediction-facts">${factsHtml}</div><div class="prediction-scope">${_escPrediction(marketContext.basis || '')}</div>${gapsHtml ? `<div class="prediction-mini-list" style="margin-top:7px">${gapsHtml}</div>` : ''}</div>
-    <div class="prediction-context-card"><div class="prediction-context-title">AI 진단 · 세력 흔들림 재활용</div>
-      <div class="prediction-pattern-alert" style="border-color:${patternColor};color:${patternColor}">${pattern.manipulation_detected ? `세력 흔들림 패턴 ${pattern.manipulation_count || 0}건 감지 — 지지 유지 여부를 조건으로 판단` : '뚜렷한 세력 흔들림 패턴 없음 — 가격·거래량 기본 조건 우선'}</div>
-      <div class="prediction-mini-list">${patternItems || ''}${pattern.wick_note ? `<div style="margin-bottom:6px">캔들: ${_escPrediction(pattern.wick_note)}</div>` : ''}${aiHtml}</div>
+    <div class="prediction-context-card"><div class="prediction-context-title">시장·업종·수급 <span style="font-size:10px;font-weight:400;color:#8b949e">· 직접/참고 구분</span></div><div class="prediction-facts">${factsHtml}</div><div class="prediction-scope" style="font-size:10px;color:#6e7681">${_escPrediction(marketContext.basis || '')}</div>${gapsHtml ? `<div class="prediction-mini-list" style="margin-top:7px;border-top:1px solid #21262d;padding-top:6px"><div style="font-size:9px;color:#6e7681;margin-bottom:3px">데이터 보완 필요</div>${gapsHtml}</div>` : ''}</div>
+    <div class="prediction-context-card"><div class="prediction-context-title">AI 진단 · 세력 흔들림 재활용 <span style="font-size:10px;font-weight:400;color:#8b949e">· 의심 패턴 · 보조</span></div>
+      <div style="font-size:11px;font-weight:800;color:${patternColor};margin-bottom:4px">${patternHeader}</div>
+      <div class="prediction-pattern-alert" style="border-color:${patternColor};color:${patternColor};font-size:11px">${pattern.manipulation_detected ? `지지 종가 유지 확인 시에만 반등 유효 · 무효화 구분` : '패턴 근거 부족 — 가격·거래량 기본 조건 우선'}</div>
+      <div class="prediction-mini-list" style="margin-top:6px">${patternEvidence || ''}${wickHtml}${aiEvidenceFiltered ? `<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">${aiEvidenceFiltered}</div>` : ''}</div>
+      ${invalidationNote}
+      ${historyNote}
+      <div style="margin-top:6px;font-size:9px;color:#6e7681">패턴 감지 → 근거 → 확인(지지·거래량) → 무효화(이탈) → 영향 → 행동 순으로 판단</div>
     </div>
   </div>`;
 }
