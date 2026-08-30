@@ -16137,9 +16137,9 @@ input::placeholder{color:#484f58}
 .charm-metric-val{font-size:15px;font-weight:700;color:#e6edf3}
 .charm-metric-val.na{color:#484f58;font-weight:400}
 .charm-radar-wrap{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:20px 14px 16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;width:100%;box-sizing:border-box;overflow:visible}
-.charm-radar-canvas{display:block;width:100%;max-width:340px;min-width:280px;height:auto;aspect-ratio:360/340;margin:0 auto;overflow:visible}
-.charm-radar-detail-grid{display:grid;grid-template-columns:360px minmax(300px,1fr);gap:18px;align-items:center;width:100%;box-sizing:border-box}
-.charm-radar-detail-grid .charm-detail-list{display:flex;flex-direction:column;gap:10px;height:auto;box-sizing:border-box;align-self:center;width:100%}
+.charm-radar-canvas{display:block;width:100%;max-width:440px;min-width:360px;height:auto;aspect-ratio:460/420;margin:0 auto;overflow:visible}
+.charm-radar-detail-grid{display:grid;grid-template-columns:minmax(460px,1.2fr) minmax(340px,.8fr);gap:18px;align-items:center;width:100%;box-sizing:border-box}
+.charm-radar-detail-grid .charm-detail-list{display:flex;flex-direction:column;gap:10px;height:auto;box-sizing:border-box;align-self:center;width:min(100%,520px);justify-self:start}
 @media(max-width:960px){.charm-radar-detail-grid{grid-template-columns:300px minmax(260px,1fr);gap:16px}.charm-radar-wrap{padding:18px 12px}.charm-radar-canvas{max-width:300px;min-width:220px}}
 @media(max-width:680px){.charm-radar-detail-grid{grid-template-columns:220px minmax(180px,1fr);gap:12px}.charm-radar-wrap{padding:16px 10px}.charm-radar-canvas{max-width:220px;min-width:0}.charm-detail-row{padding:10px 12px;min-height:48px}.charm-detail-name{flex:0 0 78px;font-size:11px}.charm-detail-stars{flex:0 0 70px;font-size:11px}.charm-detail-pct{flex:0 0 68px;font-size:10px}}
 @media(max-width:480px){.charm-radar-detail-grid{grid-template-columns:1fr;gap:14px}.charm-radar-wrap{padding:16px 12px}.charm-radar-canvas{max-width:300px}}
