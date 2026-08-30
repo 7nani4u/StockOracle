@@ -398,12 +398,19 @@ def score_cash(info: Dict[str, Any]) -> Optional[float]:
 
 def get_key_metrics(info: Dict[str, Any], naver: Dict[str, Any], market: str) -> Dict[str, Any]:
     """PER, PSR, ROE, DY를 안전하게 추출. N/A 처리."""
-    # PER: trailingPE 우선, 없으면 forwardPE, KRX는 naver per
-    per = _safe_float(info.get("trailingPE"))
-    if per is None:
-        per = _safe_float(info.get("forwardPE"))
-    if per is None:
+    # PER: KRX는 네이버(실시간) 우선으로 일관성 유지, US는 yfinance 우선
+    if str(market).upper() == "KRX":
         per = _safe_float(naver.get("per"))
+        if per is None:
+            per = _safe_float(info.get("trailingPE"))
+        if per is None:
+            per = _safe_float(info.get("forwardPE"))
+    else:
+        per = _safe_float(info.get("trailingPE"))
+        if per is None:
+            per = _safe_float(info.get("forwardPE"))
+        if per is None:
+            per = _safe_float(naver.get("per"))
     # PSR: priceToSalesTrailing12Months 또는 marketCap/totalRevenue
     psr = _safe_float(info.get("priceToSalesTrailing12Months"))
     if psr is None:

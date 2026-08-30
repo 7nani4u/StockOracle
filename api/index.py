@@ -18841,16 +18841,10 @@ function renderResult(d) {
   // 📐 피보나치 되돌림 기준 카드 및 "🔗 연계 밴드" 연동 표시는 모두 폐지됨.
   //    (ATR 밴드 가격과 피보나치 레벨 가격이 독립 계산되어 정합이 어려움 — renderForecast 참조)
 
-  // 펀더멘털
-  if (isKrx && d.naver) {
-    document.getElementById('r-naver-fund').style.display = 'block';
-    document.getElementById('f-mktcap').textContent = d.naver.market_cap || '-';
-    document.getElementById('f-per').textContent = d.naver.per || '-';
-    document.getElementById('f-pbr').textContent = d.naver.pbr || '-';
-    document.getElementById('f-industry').textContent = d.naver.industry || d.naver.sector || '-';
-  } else {
-    document.getElementById('r-naver-fund').style.display = 'none';
-  }
+  // 펀더멘털 (상단 카드는 AI 진단 하단 4그리드로 통합 — 중복 및 PER 불일치 해소)
+  // 상단에서는 숨기고 AI 진단 탭 하단에서 동일한 네이버 원천으로 렌더링
+  const _fundEl = document.getElementById('r-naver-fund');
+  if (_fundEl) _fundEl.style.display = 'none';
 
   // AI 진단
   renderAI(d, isKrx);
@@ -19507,18 +19501,22 @@ function renderDiagnosis(d, isKrx) {
     const rankingStatusNote = rankingMeta.status === 'fresh'
       ? `${comparisonLabel} · 기준 ${String(rankingMeta.generated_at || '').slice(0, 10)} · ${Number(rankingMeta.eligible_scored_count || 0)}개 점수 산출 종목`
       : (rankingMeta.reason || '비교 유니버스 데이터를 준비 중입니다.');
-    const perVal = km ? km.per_str : 'N/A';
+    // ── 펀더멘털 6종: 상단 네이버 3종(시가총액·PER·PBR) + 하단 charm 3종(PSR·ROE·DY) 통합 (PER 불일치 해소, 산업 제외) ──
+    const naverFund = d.naver || {};
+    const fMktcapVal = naverFund.market_cap || 'N/A';
+    const fPerRaw = (()=>{ const v=parseFloat(String(naverFund.per||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
+    const fPerVal = naverFund.per || 'N/A';
+    const fPbrRaw = (()=>{ const v=parseFloat(String(naverFund.pbr||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
+    const fPbrVal = naverFund.pbr || 'N/A';
+    const fPerColor = fPerRaw == null ? '#484f58' : fPerRaw < 0 ? '#f85149' : fPerRaw <= 10 ? '#3fb950' : fPerRaw <= 20 ? '#58a6ff' : fPerRaw <= 30 ? '#d29922' : '#f85149';
+    const fPbrColor = fPbrRaw == null ? '#484f58' : fPbrRaw < 0 ? '#f85149' : fPbrRaw <= 1 ? '#3fb950' : fPbrRaw <= 2 ? '#58a6ff' : fPbrRaw <= 3 ? '#d29922' : '#f85149';
     const psrVal = km ? km.psr_str : 'N/A';
     const roeVal = km ? km.roe_str : 'N/A';
     const dyVal = km ? km.dy_str : 'N/A';
-    const perRaw = km ? km.per : null;
     const psrRaw = km ? km.psr : null;
     const roeRaw = km ? km.roe : null;
     const dyRaw = km ? km.dy : null;
-
-    // PER/PSR 낮을수록 좋음, ROE/DY 높을수록 좋음 — 색상 힌트
-    const perColor = perRaw == null || perRaw === 'N/A' ? '#484f58' : perRaw < 0 ? '#f85149' : perRaw <= 10 ? '#3fb950' : perRaw <= 20 ? '#58a6ff' : perRaw <= 30 ? '#d29922' : '#f85149';
-    const psrColor = psrRaw == null || psrRaw === 'N/A' ? '#484f58' : psrRaw <= 1 ? '#3fb950' : psrRaw <= 3 ? '#58a6ff' : psrRaw <= 6 ? '#d29922' : '#f85149';
+    const psrColor = psrRaw == null ? '#484f58' : psrRaw <= 1 ? '#3fb950' : psrRaw <= 3 ? '#58a6ff' : psrRaw <= 6 ? '#d29922' : '#f85149';
     const roeColor = roeRaw == null ? '#484f58' : roeRaw < 0 ? '#f85149' : roeRaw >= 15 ? '#3fb950' : roeRaw >= 8 ? '#58a6ff' : '#d29922';
     const dyColor = dyRaw == null ? '#484f58' : dyRaw >= 2 ? '#3fb950' : dyRaw >= 1 ? '#58a6ff' : dyRaw > 0 ? '#d29922' : '#484f58';
 
@@ -19593,7 +19591,9 @@ ${hasCompleteRadarData
           </div>
         </div>
         <div class="charm-metrics-grid" style="margin-top:0">
-          <div class="charm-metric"><div class="charm-metric-label">PER</div><div class="charm-metric-val" style="color:${perColor}">${perVal}</div></div>
+          <div class="charm-metric"><div class="charm-metric-label">시가총액</div><div class="charm-metric-val" style="font-size:13px">${fMktcapVal}</div></div>
+          <div class="charm-metric"><div class="charm-metric-label">PER</div><div class="charm-metric-val" style="color:${fPerColor}">${fPerVal}</div></div>
+          <div class="charm-metric"><div class="charm-metric-label">PBR</div><div class="charm-metric-val" style="color:${fPbrColor}">${fPbrVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PSR</div><div class="charm-metric-val" style="color:${psrColor}">${psrVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">ROE</div><div class="charm-metric-val" style="color:${roeColor}">${roeVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">DY</div><div class="charm-metric-val" style="color:${dyColor}">${dyVal}</div></div>
