@@ -20876,26 +20876,7 @@ function renderForecast(d, isKrx) {
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
 
-      const closestWaitBand = isWaitMode ? [
-        ...(bp.aggressive_bands || []).map(b => ({band: b, recommended: false})),
-        ...(bp.recommended_bands || []).map(b => ({band: b, recommended: true})),
-      ].filter(item => item.band && item.band.is_available !== false)
-        .sort((a, b) => {
-          const distance = item => {
-            const range = item.band.range || [];
-            if (range.length !== 2 || cur == null) return Number.POSITIVE_INFINITY;
-            const low = Number(range[0]); const high = Number(range[1]);
-            return cur < low ? low - cur : cur > high ? cur - high : 0;
-          };
-          return distance(a) - distance(b);
-        })[0] : null;
-      const entryBandsHtml = isWaitMode
-        ? (closestWaitBand ? `<div class="buy-card aggressive" style="padding:12px 14px">
-            <div style="font-size:13px;font-weight:800;color:#cdd9e5;margin-bottom:5px">가까운 참고 구간</div>
-            <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:9px">매수 승인이 아닙니다. 반등과 거래량 확인 전에는 이 가격대에서도 주문하지 않습니다.</div>
-            <div class="buy-bands-row">${renderBandCard(closestWaitBand.band, 0, closestWaitBand.recommended)}</div>
-          </div>` : '<div class="buy-card aggressive" style="padding:12px 14px;color:#8b949e;font-size:11px">현재 확인 가능한 참고 매수 구간이 없습니다.</div>')
-        : `${aggBandsHtml}${recBandsHtml}`;
+      const entryBandsHtml = `${aggBandsHtml}${recBandsHtml}`;
       bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml}</div>`;
       if (buyRiskNotesEl) {
         buyRiskNotesEl.innerHTML = eventRiskHtml;

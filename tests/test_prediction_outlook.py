@@ -792,13 +792,13 @@ def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
     assert "127봉 전 신호" not in renderer
 
 
-def test_forecast_wait_state_keeps_detailed_risk_forecasts_and_precise_copy():
+def test_forecast_wait_state_keeps_all_entry_bands_and_detailed_risk_forecasts():
     renderer = HTML.split("function renderForecast", 1)[1].split(
         "function renderTechnicalSignals", 1
     )[0]
 
-    assert "가까운 참고 구간" in renderer
-    assert "매수 승인이 아닙니다." in renderer
+    assert "const entryBandsHtml = `${aggBandsHtml}${recBandsHtml}`;" in renderer
+    assert "closestWaitBand" not in renderer
     assert "daysToEarnings >= 0 && daysToEarnings <= 5" in renderer
     assert "현재가 대비 ${_stopPct}%" in renderer
     assert "const riskEntries = ['conservative', 'balanced', 'aggressive']" in renderer
