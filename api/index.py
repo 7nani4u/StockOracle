@@ -19007,7 +19007,7 @@ function _getPullbackDimsHtml(d, isKrx) {
       pbDimBar('✅', '눌림목 조건 점검', pbVal,
           `${pa.pullback_grade} · ${pa.pullback_pass_count}/${(pa.pullback_checks||[]).length} 조건 충족 · ${pa.pullback_desc ? pa.pullback_desc.substring(0,35) + (pa.pullback_desc.length > 35 ? '…' : '') : ''}`,
           'pb-check', checkAccContent)
-    + pbDimBar('🎭', `세력 흔들림 패턴 점검${pa.bb_squeeze ? ' · 볼린저 수축' : ''}`, mfVal,
+    + pbDimBar('🎭', '세력 흔들림 패턴 점검', mfVal,
           mfCount > 0 ? `${mfCount}개 패턴 감지 — 속임수 가능성 확인 필요` : '세력 흔들림 패턴 미감지 — 구조 유지 중',
           'pb-manip', mfAccContent)
     + pbDimBar('🛑', '구조 붕괴 · 손절 기준 점검', slVal,
@@ -20027,12 +20027,11 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
       </div>
       <span id="flow-rec-badge" class="rec-badge-lg" style="flex-shrink:0;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
     </div>
-    <div id="flow-rationale" class="flow-rationale-text" style="margin-top:8px"></div>
-    <div class="diag-dims">${pbTopHtml}</div>
 
     ${fundamentalHtml ? `${fundamentalHtml}` : ''}
 
     <div class="diag-dims">
+      ${pbTopHtml}
       ${dimBar('📊', '기술적 추세', techScore, techDesc, {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도', momentumScore, rsiLabel, {accordionId:'dim-mom', accordionContent: buildStepHtml(stepMom)})}
       ${dimBar('🌊', '변동성 수준', volScore, volDesc, {accordionId:'dim-vol', accordionContent: buildStepHtml(stepVol)})}
@@ -22305,8 +22304,6 @@ function renderFlowTab(d) {
       flowRecBadge.className = 'rec-badge-lg ' + recCls;
     }
   }
-  const flowRationale = document.getElementById('flow-rationale');
-  if (flowRationale) flowRationale.textContent = rationale;
 
 }
 
