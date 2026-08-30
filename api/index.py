@@ -2893,6 +2893,50 @@ def fetch_naver(code: str):
             # 네이버 시가총액(#_market_sum)은 '1,882조\n\n5,017'처럼 내부 개행/공백을
             # 포함한다 → 단일 공백으로 정규화해 줄바꿈 깨짐 방지.
             r[k] = re.sub(r"\s+", " ", e.text).strip() if e else "-"
+        # 시가총액 원시값(원) 파싱 — "1,502조 4,936" → 1502000000004936 등, 원화 표기용
+        try:
+            txt = r.get("market_cap") or ""
+            if txt and txt not in ("-", "N/A", ""):
+                txt_nocomma = txt.replace(",", "")
+                jo = 0
+                eok = 0
+                rest = 0
+                m_jo = re.search(r"(\d+)\s*조", txt_nocomma)
+                if m_jo:
+                    jo = int(m_jo.group(1))
+                    after_jo = txt_nocomma.split("조", 1)[1] if "조" in txt_nocomma else ""
+                    m_eok = re.search(r"(\d+)\s*억", after_jo)
+                    if m_eok:
+                        eok = int(m_eok.group(1))
+                        after_eok = after_jo.split("억", 1)[1] if "억" in after_jo else ""
+                        m_rest = re.search(r"(\d+)", after_eok)
+                        if m_rest:
+                            rest = int(m_rest.group(1))
+                    else:
+                        m_rest = re.search(r"(\d+)", after_jo)
+                        if m_rest:
+                            rest = int(m_rest.group(1))
+                elif "억" in txt_nocomma:
+                    m_eok = re.search(r"(\d+)\s*억", txt_nocomma)
+                    if m_eok:
+                        eok = int(m_eok.group(1))
+                else:
+                    m_rest = re.search(r"(\d+)", txt_nocomma)
+                    if m_rest:
+                        rest = int(re.sub(r"[^0-9]", "", m_rest.group(1)) or 0)
+                raw = jo * 1_000_000_000_000 + eok * 100_000_000 + rest
+                if raw > 0:
+                    r["market_cap_raw"] = raw
+                    r["market_cap_raw_fmt"] = f"{raw:,}"
+                else:
+                    r["market_cap_raw"] = None
+                    r["market_cap_raw_fmt"] = None
+            else:
+                r["market_cap_raw"] = None
+                r["market_cap_raw_fmt"] = None
+        except Exception:
+            r["market_cap_raw"] = None
+            r["market_cap_raw_fmt"] = None
             
         # 뉴스 섹션
         for item in soup.select(".news_section ul li")[:5]:
@@ -19504,6 +19548,27 @@ function renderDiagnosis(d, isKrx) {
     // ── 펀더멘털 6종: 상단 네이버 3종(시가총액·PER·PBR) + 하단 charm 3종(PSR·ROE·DY) 통합 (PER 불일치 해소, 산업 제외) ──
     const naverFund = d.naver || {};
     const fMktcapVal = naverFund.market_cap || 'N/A';
+    const fMktcapRawFmt = naverFund.market_cap_raw_fmt || (naverFund.market_cap_raw != null ? Number(naverFund.market_cap_raw).toLocaleString('ko-KR') : null);
+    const _parseMktcapRaw = (txt) => {
+      try {
+        if (!txt || txt==='N/A' || txt==='-') return null;
+        const t = String(txt).replace(/,/g,'');
+        let jo=0,eok=0,rest=0;
+        const mJo = t.match(/(\d+)\s*조/);
+        if (mJo) {
+          jo = parseInt(mJo[1],10)||0;
+          const afterJo = t.split('조')[1]||'';
+          const mEok = afterJo.match(/(\d+)\s*억/);
+          if (mEok) { eok = parseInt(mEok[1],10)||0; const afterEok = afterJo.split('억')[1]||''; const mRest = afterEok.match(/(\d+)/); if (mRest) rest = parseInt(mRest[1],10)||0; }
+          else { const mRest = afterJo.match(/(\d+)/); if (mRest) rest = parseInt(mRest[1],10)||0; }
+        } else if (t.includes('억')) { const mEok = t.match(/(\d+)\s*억/); if (mEok) eok = parseInt(mEok[1],10)||0; }
+        else { const mRest = t.match(/(\d+)/); if (mRest) rest = parseInt(mRest[1].replace(/[^0-9]/g,''),10)||0; }
+        const raw = jo*1e12 + eok*1e8 + rest;
+        return raw>0 ? raw.toLocaleString('ko-KR') : null;
+      } catch(e){ return null; }
+    };
+    const fMktcapRawFmtEffective = fMktcapRawFmt || _parseMktcapRaw(fMktcapVal);
+    const fMktcapDisplay = (fMktcapVal && fMktcapVal!=='N/A' && fMktcapVal!=='-') ? (fMktcapRawFmtEffective ? `${fMktcapVal}원(₩${fMktcapRawFmtEffective})` : `${fMktcapVal}원`) : 'N/A';
     const fPerRaw = (()=>{ const v=parseFloat(String(naverFund.per||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
     const fPerVal = naverFund.per || 'N/A';
     const fPbrRaw = (()=>{ const v=parseFloat(String(naverFund.pbr||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
@@ -19591,7 +19656,7 @@ ${hasCompleteRadarData
           </div>
         </div>
         <div class="charm-metrics-grid" style="margin-top:0">
-          <div class="charm-metric"><div class="charm-metric-label">시가총액</div><div class="charm-metric-val" style="font-size:13px">${fMktcapVal}</div></div>
+          <div class="charm-metric"><div class="charm-metric-label">시가총액</div><div class="charm-metric-val" style="font-size:11px;line-height:1.3;word-break:keep-all;overflow-wrap:anywhere">${fMktcapDisplay}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PER</div><div class="charm-metric-val" style="color:${fPerColor}">${fPerVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PBR</div><div class="charm-metric-val" style="color:${fPbrColor}">${fPbrVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">PSR</div><div class="charm-metric-val" style="color:${psrColor}">${psrVal}</div></div>
