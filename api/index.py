@@ -16119,14 +16119,14 @@ input::placeholder{color:#484f58}
 #tab-ai .charm-header{width:100%}
 /* ── 투자매력 진단 (ChoiceStock 참고, StockOracle 재구현) ── */
 .charm-header{display:flex;flex-direction:column;gap:14px;width:100%;box-sizing:border-box}
-.charm-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
-@media(max-width:640px){.charm-top{grid-template-columns:1fr}}
+.charm-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:stretch;grid-auto-rows:1fr}
+@media(max-width:640px){.charm-top{grid-template-columns:1fr;grid-auto-rows:auto}}
 .charm-score-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;text-align:center;position:relative;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .charm-score-ring{width:100%;aspect-ratio:1;max-width:220px;border-radius:50%;margin:0 auto 10px;position:relative;display:flex;align-items:center;justify-content:center;background:conic-gradient(var(--score-color, #58a6ff) calc(var(--score, 50) * 3.6deg), #21262d 0)}
 .charm-score-inner{width:100%;height:100%;max-width:140px;max-height:140px;border-radius:50%;background:#161b22;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px;box-sizing:border-box}
 .charm-score-val{font-size:36px;font-weight:800;color:var(--score-color, #58a6ff);line-height:1}
 .charm-score-label{font-size:10px;color:#8b949e;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.charm-rank-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:10px 14px 6px;display:flex;flex-direction:column;gap:6px}
+.charm-rank-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:10px 14px 6px;display:flex;flex-direction:column;gap:6px;height:100%;justify-content:space-between;box-sizing:border-box}
 .charm-rank-row{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#161b22;border-radius:8px}
 .charm-rank-label{font-size:11px;color:#8b949e}
 .charm-rank-val{font-size:13px;font-weight:700;color:#e6edf3}
@@ -17026,8 +17026,8 @@ input::placeholder{color:#484f58}
 .us-reco-reason::before{display:none}
 
 /* AI 진단 레이더 반응형 override: 축 점수 라벨이 좁은 화면에서도 잘리지 않도록 한다. */
-.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:12px;min-height:0;width:100%;display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch;box-sizing:border-box;overflow:hidden}
-.charm-radar-summary-card .charm-radar-canvas{width:100%;height:auto;max-width:340px;max-height:280px;aspect-ratio:420/340;display:block;margin:0 auto}
+.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:12px;min-height:300px;width:100%;height:100%;display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch;box-sizing:border-box;overflow:hidden}
+.charm-radar-summary-card .charm-radar-canvas{width:100%;height:auto;max-width:380px;max-height:320px;aspect-ratio:420/340;display:block;margin:0 auto}
 .charm-radar-title{font-size:12px;font-weight:700;color:#cdd9e5}
 .charm-radar-caption{font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px}
 @media(min-width:961px){
@@ -19631,7 +19631,7 @@ ${hasCompleteRadarData
       const scores = subScoresForRadar;
       const axisLabels = ['성장성','독점력','안정성','수익성','현금력'];
       const axisScores = scores.map(score => Math.round(score));
-      const CX = W/2, CY = 170, R = 100;
+      const CX = W/2, CY = 170, R = 108;
       // 배경 그리드
       ctx.clearRect(0,0,W,H);
       for (let lvl=1; lvl<=5; lvl++) {
