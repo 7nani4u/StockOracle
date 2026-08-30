@@ -20928,12 +20928,7 @@ function renderForecast(d, isKrx) {
         </div>` : '';
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = _riskEventHtml;
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
-    const entryIsWaiting = ['wait', 'wait_support', 'wait_breakdown'].includes(
-      ((d.buy_price || {}).strategy_rec || {}).action_key
-    );
-    if (riskTitleEl) riskTitleEl.textContent = entryIsWaiting
-      ? '🛡️ 리스크 관리: 현재는 진입 대기'
-      : '🛡️ 리스크 관리와 목표 청산';
+    if (riskTitleEl) riskTitleEl.textContent = '🛡️ 리스크 관리와 목표 청산';
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     // 📌 눌림목 분석 기반 정밀 가격 — 시나리오 카드에 통합 (별도 섹션 폐지)
     // 고대비 구분선 — 카드 배경(녹/적 틴트·다크·라이트)에 무관하게 항상 보이도록
@@ -20964,13 +20959,9 @@ function renderForecast(d, isKrx) {
         ${warningZoneHtml}
         ${riskTriggerHtml ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #30363d"><div style="font-size:10px;color:#f85149;font-weight:700;margin-bottom:4px">리스크 확대 조건</div><div style="font-size:10px;color:#8b949e;line-height:1.5">${riskTriggerHtml}</div></div>` : ''}
       </div>`;
-    const targetPendingHtml = entryIsWaiting
-      ? '<div style="grid-column:1/-1;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 12px;font-size:11px;color:#8b949e;line-height:1.5">목표 청산 범위는 진입 조건이 확인된 뒤에만 표시합니다. 현재는 손절가와 리스크 확대 조건을 우선 확인하세요.</div>'
-      : '';
     rgEl.innerHTML = `
       ${commonStopHtml}
-      ${targetPendingHtml}
-      ${entryIsWaiting ? '' : riskEntries.map(sc => {
+      ${riskEntries.map(sc => {
         // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
         const pbHtml = (() => {
           const pa = d.pullback_analysis || null;

@@ -792,7 +792,7 @@ def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
     assert "127봉 전 신호" not in renderer
 
 
-def test_forecast_wait_state_reduces_inactive_price_tables_and_keeps_risk_copy_precise():
+def test_forecast_wait_state_keeps_detailed_risk_forecasts_and_precise_copy():
     renderer = HTML.split("function renderForecast", 1)[1].split(
         "function renderTechnicalSignals", 1
     )[0]
@@ -801,7 +801,9 @@ def test_forecast_wait_state_reduces_inactive_price_tables_and_keeps_risk_copy_p
     assert "매수 승인이 아닙니다." in renderer
     assert "daysToEarnings >= 0 && daysToEarnings <= 5" in renderer
     assert "현재가 대비 ${_stopPct}%" in renderer
-    assert "목표 청산 범위는 진입 조건이 확인된 뒤에만 표시합니다." in renderer
+    assert "const riskEntries = ['conservative', 'balanced', 'aggressive']" in renderer
+    assert "${riskEntries.map(sc => {" in renderer
+    assert "목표 청산 범위는 진입 조건이 확인된 뒤에만 표시합니다." not in renderer
 
 
 def test_analysis_loader_has_timeout_cancellation_and_retry_path():
