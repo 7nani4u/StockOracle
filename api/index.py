@@ -16119,7 +16119,7 @@ input::placeholder{color:#484f58}
 #tab-ai .charm-header{width:100%}
 /* ── 투자매력 진단 (ChoiceStock 참고, StockOracle 재구현) ── */
 .charm-header{display:flex;flex-direction:column;gap:14px;width:100%;box-sizing:border-box}
-.charm-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:stretch}
+.charm-top{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
 @media(max-width:640px){.charm-top{grid-template-columns:1fr}}
 .charm-score-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:16px;text-align:center;position:relative;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .charm-score-ring{width:100%;aspect-ratio:1;max-width:220px;border-radius:50%;margin:0 auto 10px;position:relative;display:flex;align-items:center;justify-content:center;background:conic-gradient(var(--score-color, #58a6ff) calc(var(--score, 50) * 3.6deg), #21262d 0)}
@@ -17026,8 +17026,8 @@ input::placeholder{color:#484f58}
 .us-reco-reason::before{display:none}
 
 /* AI 진단 레이더 반응형 override: 축 점수 라벨이 좁은 화면에서도 잘리지 않도록 한다. */
-.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:0;min-height:0;width:100%;aspect-ratio:420/390;display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch;box-sizing:border-box;overflow:hidden}
-.charm-radar-summary-card .charm-radar-canvas{width:100%;height:100%;max-width:none;min-width:0;margin:0;aspect-ratio:auto;display:block}
+.charm-radar-summary-card{background:#0d1117;border:1px solid #30363d;border-radius:12px;padding:12px;min-height:0;width:100%;display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch;box-sizing:border-box;overflow:hidden}
+.charm-radar-summary-card .charm-radar-canvas{width:100%;height:auto;max-width:340px;max-height:280px;aspect-ratio:420/340;display:block;margin:0 auto}
 .charm-radar-title{font-size:12px;font-weight:700;color:#cdd9e5}
 .charm-radar-caption{font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px}
 @media(min-width:961px){
@@ -19580,7 +19580,7 @@ function renderDiagnosis(d, isKrx) {
         <div class="charm-top">
           <div class="charm-radar-summary-card">
 ${hasCompleteRadarData
-              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="420" height="390"></canvas>`
+              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="420" height="340"></canvas>`
               : `<div class="empty-note" style="text-align:center;color:#8b949e;padding:24px 12px">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
           </div>
           <div class="charm-rank-card">
@@ -19621,17 +19621,17 @@ ${hasCompleteRadarData
       if (!canvas || !hasCompleteRadarData) return false;
       const ctx = canvas.getContext('2d');
       if (!ctx) return false;
-      const W = 420, H = 390;
+      const W = 420, H = 340;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = W * dpr;
       canvas.height = H * dpr;
       canvas.style.width = '100%';
-      canvas.style.height = canvas.closest('.charm-radar-summary-card') ? '100%' : 'auto';
+      canvas.style.height = 'auto';
       ctx.setTransform(dpr,0,0,dpr,0,0);
       const scores = subScoresForRadar;
       const axisLabels = ['성장성','독점력','안정성','수익성','현금력'];
       const axisScores = scores.map(score => Math.round(score));
-      const CX = W/2, CY = 195, R = 100;
+      const CX = W/2, CY = 170, R = 100;
       // 배경 그리드
       ctx.clearRect(0,0,W,H);
       for (let lvl=1; lvl<=5; lvl++) {
