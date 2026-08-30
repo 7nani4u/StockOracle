@@ -17024,6 +17024,31 @@ input::placeholder{color:#484f58}
 .kr-lt-fund-tag{font-size:10px;padding:2px 7px;background:#21262d;border:1px solid #30363d;border-radius:10px;color:#8b949e;font-variant-numeric:tabular-nums}
 .kr-lt-theme-badge{font-size:10px;padding:1px 7px;border-radius:10px;background:rgba(56,139,253,.15);color:#58a6ff;border:1px solid rgba(56,139,253,.3);font-weight:600}
 .us-reco-reason::before{display:none}
+
+/* AI 진단 레이더 반응형 override: 축 점수 라벨이 좁은 화면에서도 잘리지 않도록 한다. */
+.charm-radar-title{font-size:12px;font-weight:700;color:#cdd9e5}
+.charm-radar-caption{font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px}
+@media(min-width:961px){
+  .charm-radar-canvas{max-width:400px;min-width:320px;aspect-ratio:420/390}
+  .charm-radar-detail-grid{grid-template-columns:minmax(420px,1.1fr) minmax(340px,.9fr)}
+}
+@media(max-width:600px){
+  .charm-radar-detail-grid{grid-template-columns:1fr;gap:14px}
+  .charm-radar-detail-grid .charm-detail-list{width:100%;max-width:none}
+  .charm-radar-wrap{padding:16px 10px}
+  .charm-radar-canvas{max-width:320px;min-width:0}
+}
+@media(max-width:480px){
+  .charm-radar-detail-grid{gap:12px}
+  .charm-radar-wrap{padding:14px 8px}
+  .charm-radar-canvas{max-width:290px}
+  .charm-radar-title{font-size:11px}
+  .charm-radar-caption{font-size:9px;max-width:300px}
+}
+@media(max-width:360px){
+  .charm-radar-canvas{max-width:260px}
+  .charm-radar-caption{font-size:8.5px}
+}
 </style>
 </head>
 <body>
@@ -19572,11 +19597,11 @@ function renderDiagnosis(d, isKrx) {
         </div>
         <div class="charm-radar-detail-grid">
           <div class="charm-radar-wrap">
-            <div style="font-size:12px;font-weight:700;color:#cdd9e5">5축 진단 레이더</div>
+            <div class="charm-radar-title">5축 진단 레이더</div>
  ${hasCompleteRadarData
-              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="460" height="420"></canvas>`
+              ? `<canvas id="${radarId}" class="charm-radar-canvas" width="420" height="390"></canvas>`
               : `<div class="empty-note" style="text-align:center;color:#8b949e;padding:24px 12px">5개 축 중 ${Number(charm.available_count || 0)}/5개만 계산되어 레이더 차트는 표시하지 않습니다.</div>`}
-            <div style="font-size:10px;color:#8b949e;text-align:center;line-height:1.5;word-break:keep-all;max-width:360px">중앙 스마트스코어 ${smartDisplay} · 축: 성장성 · 독점력 · 안정성 · 수익성 · 현금력</div>
+            <div class="charm-radar-caption">중앙 점수 ${smartDisplay} · 축: 성장성 · 독점력 · 안정성 · 수익성 · 현금력</div>
           </div>
           <div class="charm-detail-list">${detailRows}</div>
         </div>
@@ -19601,16 +19626,17 @@ function renderDiagnosis(d, isKrx) {
       if (!canvas || !hasCompleteRadarData) return false;
       const ctx = canvas.getContext('2d');
       if (!ctx) return false;
-      const W = 460, H = 420;
+      const W = 420, H = 390;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = W * dpr;
       canvas.height = H * dpr;
       canvas.style.width = '100%';
       canvas.style.height = 'auto';
       ctx.setTransform(dpr,0,0,dpr,0,0);
-      const CX = W/2, CY = 210, R = 118;
-      const labels = ['성장성','독점력','안정성','수익성','현금력'];
       const scores = subScoresForRadar;
+      const axisLabels = ['성장성','독점력','안정성','수익성','현금력'];
+      const labels = axisLabels.map((label, index) => `${label} ${Math.round(scores[index])}점`);
+      const CX = W/2, CY = 195, R = 100;
       // 배경 그리드
       ctx.clearRect(0,0,W,H);
       for (let lvl=1; lvl<=5; lvl++) {
@@ -19668,7 +19694,7 @@ function renderDiagnosis(d, isKrx) {
       }
       // 짧은 축 라벨과 넉넉한 여백으로 확대된 레이더에서도 잘림을 방지한다.
       ctx.fillStyle = '#e6edf3';
-      ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif';
+      ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif';
       ctx.shadowColor = 'rgba(0,0,0,0.45)';
       ctx.shadowBlur = 0;
       const labelOffsets = [
@@ -19689,7 +19715,7 @@ function renderDiagnosis(d, isKrx) {
         ctx.fillText(labels[i], x, y);
       }
       ctx.shadowBlur = 0;
-      // 중앙 스마트스코어 - 텍스트 크기 축소
+      // 중앙에는 숫자 점수만 표시한다.
       ctx.fillStyle = '#0d1117';
       ctx.beginPath();
       ctx.arc(CX,CY,24,0,Math.PI*2);
@@ -19701,10 +19727,7 @@ function renderDiagnosis(d, isKrx) {
       ctx.font = 'bold 15px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(smartDisplay, CX, CY-5);
-      ctx.fillStyle = '#8b949e';
-      ctx.font = '700 7.5px sans-serif';
-      ctx.fillText('스마트스코어', CX, CY+7);
+      ctx.fillText(smartDisplay, CX, CY);
       return true;
     };
     // 초기 2회 시도 + 탭 전환 시에도 재시도 (숨김 상태에서 캔버스 0 크기 대비)
