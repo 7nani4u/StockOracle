@@ -289,7 +289,7 @@ def _time_split(df: pd.DataFrame, train_ratio: float = 0.8):
     # chronological date threshold
     split_date = df.loc[split_idx, "date"] if split_idx < n else df["date"].max()
     # Use date threshold (StockFlow uses date threshold)
-    train_df = df[df["date"] <= split_date].copy()
+    train_df = df[df["date"] <= split_date - pd.offsets.BDay(FORWARD_DAYS)].copy()
     test_df = df[df["date"] > split_date].copy()
     # fallback if imbalanced due to many same-date rows
     if len(train_df) < int(n * 0.5) or len(test_df) < 20:
@@ -330,6 +330,19 @@ LGBM_CANDIDATES = [
         "colsample_bytree": 0.80, "bagging_freq": 1, "reg_lambda": 6.0,
         "min_split_gain": 0.01,
     },
+    {
+        "name": "ultra_regularized",
+        "n_estimators": 260, "learning_rate": 0.02, "max_depth": 3,
+        "num_leaves": 5, "min_child_samples": 160, "subsample": 0.80,
+        "colsample_bytree": 0.65, "bagging_freq": 1, "reg_alpha": 1.0,
+        "reg_lambda": 12.0, "min_split_gain": 0.03,
+    },
+    {
+        "name": "directional_8feat",
+        "n_estimators": 400, "learning_rate": 0.02, "max_depth": 4,
+        "num_leaves": 15, "min_child_samples": 60, "subsample": 0.80,
+        "colsample_bytree": 0.75, "reg_lambda": 4.0, "min_split_gain": 0.01,
+    },
 ]
 
 
@@ -344,15 +357,24 @@ def _train_lightgbm(X_train, y_train, params: Dict[str, Any]):
         raise RuntimeError("lightgbm not available")
     params = dict(params)
     params.pop("name", None)
-    ratio = _scale_pos_weight(y_train)
-    print(f"  LightGBM class_weight ratio (scale_pos_weight): {ratio:.3f}")
-    model = lgb.LGBMClassifier(
-        scale_pos_weight=ratio,
-        random_state=42,
-        n_jobs=-1,
-        verbose=-1,
-        **params,
-    )
+    # Directional model: exclude NEUTRAL (label 2) to maximize UP vs DOWN AUC.
+    # The neutral state is handled at the trading layer via confidence abstention,
+    # not as a third LightGBM class that dilutes the directional boundary.
+    mask = np.asarray(y_train) != 2
+    if mask.sum() < len(y_train):
+        X_train = X_train[mask]
+        y_train = y_train[mask]
+        print(f"  LightGBM directional training: {len(y_train)} rows after filtering NEUTRAL")
+    classes = np.unique(np.asarray(y_train, dtype=int))
+    model_kwargs = {"random_state": 42, "n_jobs": -1, "verbose": -1, **params}
+    if len(classes) > 2:
+        print("  LightGBM objective: multiclass (DOWN / UP / NEUTRAL)")
+        model_kwargs.update({"objective": "multiclass", "num_class": 3, "class_weight": "balanced"})
+    else:
+        ratio = _scale_pos_weight(y_train)
+        print(f"  LightGBM class_weight ratio (scale_pos_weight): {ratio:.3f}")
+        model_kwargs["scale_pos_weight"] = ratio
+    model = lgb.LGBMClassifier(**model_kwargs)
     # Fixed tree counts selected through prior-only walk-forward folds keep the
     # final holdout fully unseen. Early stopping on that holdout would leak it.
     model.fit(X_train.values, y_train.values)
@@ -361,7 +383,11 @@ def _train_lightgbm(X_train, y_train, params: Dict[str, Any]):
 
 def _predict_proba(model, X) -> np.ndarray:
     if hasattr(model, "predict_proba"):
-        return np.asarray(model.predict_proba(X.values)[:, 1], dtype=float)
+        probabilities = np.asarray(model.predict_proba(X.values), dtype=float)
+        if probabilities.ndim == 2 and probabilities.shape[1] >= 3:
+            # Conditional UP probability excludes NEUTRAL for directional AUC.
+            return probabilities[:, 1] / np.clip(probabilities[:, 0] + probabilities[:, 1], 1e-8, None)
+        return probabilities[:, 1]
     return np.where(np.asarray(model.predict(X.values)).astype(int) == 1, 0.75, 0.25)
 
 
@@ -388,17 +414,18 @@ def _walk_forward_backtest(df: pd.DataFrame, params: Dict[str, Any], n_folds: in
         embargo_end = test_start - pd.offsets.BDay(FORWARD_DAYS)
         train = data[data["date"] <= embargo_end]
         test = data[(data["date"] >= test_start) & (data["date"] <= test_end)]
-        if len(train) < 100 or len(test) < 20 or train["label"].nunique() < 2 or test["label"].nunique() < 2:
+        direction_test = test[test["label"] != 2]
+        if len(train) < 100 or len(direction_test) < 20 or train["label"].nunique() < 2 or direction_test["label"].nunique() < 2:
             continue
         model = _train_lightgbm(train[FEATURE_COLS], train["label"].astype(int), params)
-        proba = _predict_proba(model, test[FEATURE_COLS])
+        proba = _predict_proba(model, direction_test[FEATURE_COLS])
         folds.append({
             "fold": fold + 1,
-            "train_rows": int(len(train)), "test_rows": int(len(test)),
+            "train_rows": int(len(train)), "test_rows": int(len(direction_test)),
             "train_end": str(train["date"].max().date()),
             "test_start": str(test_start.date()), "test_end": str(test_end.date()),
-            "auc": float(roc_auc_score(test["label"], proba)),
-            "brier": float(brier_score_loss(test["label"], proba)),
+            "auc": float(roc_auc_score(direction_test["label"], proba)),
+            "brier": float(brier_score_loss(direction_test["label"], proba)),
         })
     aucs = [fold["auc"] for fold in folds]
     briers = [fold["brier"] for fold in folds]
@@ -444,11 +471,12 @@ def _oof_calibration_predictions(df: pd.DataFrame, params: Dict[str, Any], n_fol
         test_start, test_end = dates[start_idx], dates[end_idx - 1]
         train = data[data["date"] <= test_start - pd.offsets.BDay(FORWARD_DAYS)]
         test = data[(data["date"] >= test_start) & (data["date"] <= test_end)]
-        if len(train) < 100 or len(test) < 20 or train["label"].nunique() < 2:
+        direction_test = test[test["label"] != 2]
+        if len(train) < 100 or len(direction_test) < 20 or train["label"].nunique() < 2:
             continue
         model = _train_lightgbm(train[FEATURE_COLS], train["label"].astype(int), params)
-        probabilities.extend(_predict_proba(model, test[FEATURE_COLS]).tolist())
-        labels.extend(test["label"].astype(int).tolist())
+        probabilities.extend(_predict_proba(model, direction_test[FEATURE_COLS]).tolist())
+        labels.extend(direction_test["label"].astype(int).tolist())
     return np.asarray(probabilities, dtype=float), np.asarray(labels, dtype=int)
 
 
@@ -476,9 +504,17 @@ def _train_sklearn_fallback(X_train, y_train, X_test, y_test):
 
 
 def _calibrate_platt(y_proba, y_true):
-    """Simple Platt scaling fit on test set (sigmoid on logit)."""
+    """Fit monotonic Platt scaling on OOF predictions without reversing rank."""
     try:
         from scipy.optimize import minimize  # type: ignore
+        from sklearn.metrics import roc_auc_score  # type: ignore
+        oof_auc = roc_auc_score(y_true, y_proba)
+        # Only calibrate when OOF shows genuine ranking signal; otherwise
+        # Platt fitting on near-random OOF merely shifts the holdout distribution
+        # and destroys the usable 0.5 threshold (see 5y/39-ticker run where
+        # OOF 0.506 calibrated holdout to all >0.55 with balanced 0.50).
+        if len(np.unique(y_true)) < 2 or oof_auc < 0.54:
+            return {"a": -1.0, "b": 0.0, "identity": True, "oof_auc": float(oof_auc)}
         def objective(params):
             a, b = params
             eps = 1e-8
@@ -488,12 +524,33 @@ def _calibrate_platt(y_proba, y_true):
             p_cal = np.clip(p_cal, eps, 1 - eps)
             loss = -np.mean(y_true * np.log(p_cal) + (1 - y_true) * np.log(1 - p_cal))
             return loss
-        res = minimize(objective, x0=[1.0, 0.0], method="Nelder-Mead", options={"maxiter": 500, "xatol": 1e-4})
+        # The runtime formula is sigmoid(-a * logit - b), so a<0 preserves
+        # ordering. Constraining it prevents calibration from reversing AUC.
+        res = minimize(
+            objective, x0=[-1.0, 0.0], method="L-BFGS-B",
+            bounds=[(-5.0, -1e-4), (None, None)], options={"maxiter": 500},
+        )
         a, b = res.x
-        return {"a": float(a), "b": float(b)}
+        return {"a": float(a), "b": float(b), "identity": False}
     except Exception as e:
         print(f"  Calibration fallback (no scipy): {e}")
-        return {"a": 1.0, "b": 0.0}
+        return {"a": -1.0, "b": 0.0, "identity": True}
+
+
+def _select_action_threshold(y_true: np.ndarray, y_proba: np.ndarray) -> Dict[str, float]:
+    """Choose an abstention threshold by OOF balanced accuracy, not holdout tuning."""
+    from sklearn.metrics import balanced_accuracy_score
+
+    best = {"confidence_min": 0.5, "coverage": 1.0, "balanced_accuracy": 0.5}
+    for threshold in np.arange(0.50, 0.71, 0.02):
+        keep = np.maximum(y_proba, 1.0 - y_proba) >= threshold
+        if keep.mean() < 0.25 or len(np.unique(y_true[keep])) < 2:
+            continue
+        score = float(balanced_accuracy_score(y_true[keep], (y_proba[keep] >= 0.5).astype(int)))
+        candidate = {"confidence_min": round(float(threshold), 2), "coverage": round(float(keep.mean()), 4), "balanced_accuracy": round(score, 4)}
+        if (candidate["balanced_accuracy"], candidate["coverage"]) > (best["balanced_accuracy"], best["coverage"]):
+            best = candidate
+    return best
 
 
 def main():
@@ -597,8 +654,9 @@ def main():
     total = len(df_feat)
     up = int(label_dist.get(1, 0))
     down = int(label_dist.get(0, 0))
-    print(f"  Label: UP {up:,} ({up/total*100:.1f}%) | DOWN {down:,} ({down/total*100:.1f}%)")
-    if abs(up - down) / total > 0.15:
+    neutral = int(label_dist.get(2, 0))
+    print(f"  Label: UP {up:,} ({up/total*100:.1f}%) | DOWN {down:,} ({down/total*100:.1f}%) | NEUTRAL {neutral:,} ({neutral/total*100:.1f}%)")
+    if abs(up - down) / max(up + down, 1) > 0.15:
         ratio = down / max(up, 1)
         print(f"  Imbalance detected - scale_pos_weight ~ {ratio:.3f}")
 
@@ -607,7 +665,10 @@ def main():
     X_train, X_test, y_train, y_test, train_df, test_df, split_date = _time_split(df_feat, train_ratio=args.train_ratio)
     print(f"  Train: {len(X_train):,} rows (- {pd.to_datetime(split_date).date()})")
     print(f"  Test:  {len(X_test):,} rows ({pd.to_datetime(split_date).date()} - {df_feat['date'].max().date()})")
-    print(f"  Train UP rate: {y_train.mean()*100:.1f}% | Test UP rate: {y_test.mean()*100:.1f}%")
+    def _directional_up_rate(labels) -> float:
+        directional = labels[labels != 2]
+        return float((directional == 1).mean() * 100) if len(directional) else 0.0
+    print(f"  Train directional UP rate: {_directional_up_rate(y_train):.1f}% | Test directional UP rate: {_directional_up_rate(y_test):.1f}%")
 
     # ── Parameter selection and calibration split ─────────────────────────
     selected_params: Dict[str, Any] = {}
@@ -665,9 +726,15 @@ def main():
         calibration_source = "expanding walk-forward out-of-fold predictions (14-business-day embargo)"
     else:
         # Never fit probability calibration on the final test set.
-        calib = {"a": 1.0, "b": 0.0}
+        calib = {"a": -1.0, "b": 0.0, "identity": True}
         calibration_source = "identity (no independent calibration split)"
     print(f"  Platt calibration: a={calib['a']:.4f}, b={calib['b']:.4f}")
+    if len(calibration_y) >= 30:
+        calibration_probs = 1 / (1 + np.exp(calib["a"] * np.log(np.clip(calibration_proba, 1e-8, 1 - 1e-8) / (1 - np.clip(calibration_proba, 1e-8, 1 - 1e-8))) + calib["b"]))
+        action_threshold = _select_action_threshold(calibration_y, np.clip(calibration_probs, 0.01, 0.99))
+    else:
+        action_threshold = {"confidence_min": 0.5, "coverage": 1.0, "balanced_accuracy": 0.5}
+    print(f"  OOF action threshold: confidence >= {action_threshold['confidence_min']:.2f} | coverage {action_threshold['coverage']*100:.1f}% | balanced accuracy {action_threshold['balanced_accuracy']:.3f}")
     # apply calibration to test set for reporting
     eps = 1e-8
     y_test_proba_cal = 1 / (1 + np.exp(calib["a"] * np.log(np.clip(y_test_proba, eps, 1-eps) / (1 - np.clip(y_test_proba, eps, 1-eps))) + calib["b"]))
@@ -676,22 +743,26 @@ def main():
     # ── Evaluate ──────────────────────────────────────────────────────────
     print("\n[Step 7] Evaluation (test set)...")
     from sklearn.metrics import roc_auc_score, accuracy_score, balanced_accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report  # type: ignore
+    direction_train = model_y_train != 2
+    direction_test = y_test != 2
+    y_test_direction = y_test[direction_test]
+    y_test_proba_direction = y_test_proba_cal[direction_test.values]
     try:
-        train_auc = roc_auc_score(model_y_train.values, y_train_proba)
+        train_auc = roc_auc_score(model_y_train[direction_train].values, y_train_proba[direction_train.values])
     except Exception:
         train_auc = float("nan")
-    test_auc = roc_auc_score(y_test.values, y_test_proba_cal)
-    y_test_pred = (y_test_proba_cal >= 0.5).astype(int)
-    test_acc = accuracy_score(y_test.values, y_test_pred)
-    test_bacc = balanced_accuracy_score(y_test.values, y_test_pred)
+    test_auc = roc_auc_score(y_test_direction.values, y_test_proba_direction)
+    y_test_pred = (y_test_proba_direction >= 0.5).astype(int)
+    test_acc = accuracy_score(y_test_direction.values, y_test_pred)
+    test_bacc = balanced_accuracy_score(y_test_direction.values, y_test_pred)
     print(f"  Train AUC: {train_auc:.4f}")
     print(f"  Test AUC (calibrated): {test_auc:.4f}")
     print(f"  Accuracy: {test_acc:.4f} | Balanced: {test_bacc:.4f}")
-    print(f"  Precision: {precision_score(y_test.values, y_test_pred, zero_division=0):.4f}")
-    print(f"  Recall: {recall_score(y_test.values, y_test_pred, zero_division=0):.4f}")
-    print(f"  F1: {f1_score(y_test.values, y_test_pred, zero_division=0):.4f}")
-    print("\n" + classification_report(y_test.values, y_test_pred, target_names=["DOWN", "UP"], zero_division=0))
-    cm = confusion_matrix(y_test.values, y_test_pred)
+    print(f"  Precision: {precision_score(y_test_direction.values, y_test_pred, zero_division=0):.4f}")
+    print(f"  Recall: {recall_score(y_test_direction.values, y_test_pred, zero_division=0):.4f}")
+    print(f"  F1: {f1_score(y_test_direction.values, y_test_pred, zero_division=0):.4f}")
+    print("\n" + classification_report(y_test_direction.values, y_test_pred, target_names=["DOWN", "UP"], zero_division=0))
+    cm = confusion_matrix(y_test_direction.values, y_test_pred)
     print(f"  Confusion Matrix:\n{cm}")
     walk_forward_auc = max(
         (report.get("mean_auc", float("nan")) for report in backtest_reports),
@@ -735,7 +806,7 @@ def main():
         try:
             from sklearn.inspection import permutation_importance
             # Use test set for unbiased estimate, 5 repeats, AUC scoring
-            perm = permutation_importance(model, X_test.values, y_test.values, scoring="roc_auc", n_repeats=5, random_state=42, n_jobs=1)
+            perm = permutation_importance(model, X_test[direction_test].values, y_test_direction.values, scoring="roc_auc", n_repeats=5, random_state=42, n_jobs=1)
             importances = perm.importances_mean
             order = np.argsort(importances)[::-1]
             for rank, idx in enumerate(order[:10], 1):
@@ -767,11 +838,13 @@ def main():
     # metadata
     metadata = {
         "model_type": model_type,
+        "label_mode": "three_class_directional_with_neutral",
         "trained_at": datetime.now().isoformat(),
         "train_rows": int(len(X_train)),
         "model_fit_rows": int(len(model_X_train)),
         "calibration_rows": int(len(calibration_y)),
         "test_rows": int(len(X_test)),
+        "directional_test_rows": int(len(y_test_direction)),
         "train_split_date": pd.to_datetime(split_date).isoformat(),
         "train_period": args.period,
         "features": FEATURE_COLS,
@@ -780,11 +853,12 @@ def main():
             "test_auc": float(test_auc),
             "test_accuracy": float(test_acc),
             "test_balanced_accuracy": float(test_bacc),
-            "test_precision": float(precision_score(y_test.values, y_test_pred, zero_division=0)),
-            "test_recall": float(recall_score(y_test.values, y_test_pred, zero_division=0)),
-            "test_f1": float(f1_score(y_test.values, y_test_pred, zero_division=0)),
+            "test_precision": float(precision_score(y_test_direction.values, y_test_pred, zero_division=0)),
+            "test_recall": float(recall_score(y_test_direction.values, y_test_pred, zero_division=0)),
+            "test_f1": float(f1_score(y_test_direction.values, y_test_pred, zero_division=0)),
         },
         "calibration": {"method": "Platt scaling (logit)", "params": calib, "source": calibration_source},
+        "action_threshold": action_threshold,
         "selected_parameters": selected_params if model_type == "LightGBM" else {},
         "walk_forward_backtest": backtest_reports,
         "validation": {
@@ -798,6 +872,7 @@ def main():
             f"{FORWARD_DAYS}-business-day embargo in walk-forward calibration folds",
             "volatility_ratio per-row (fixed)",
             "label via shift(-14) with 3% dead-zone",
+            "three-class target: DOWN / UP / NEUTRAL within the dead-zone",
             "all indicators causal (rolling only past)",
             "normalization to price (no future scaling)",
         ],

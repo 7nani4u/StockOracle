@@ -76,6 +76,7 @@ _CALIB_PARAMS: Optional[Dict[str, float]] = None  # {"a":..., "b":...} Platt sca
 _MODEL_AVAILABLE: bool = False
 _MODEL_TYPE: str = "none"  # lightgbm | sklearn | none
 _MODEL_META: Dict[str, Any] = {}
+_ACTION_CONFIDENCE_MIN: float = 0.5
 
 # ── Index cache (market-aware) ────────────────────────────────────────────
 # 한 세션에서 지수 데이터는 한 번만 조회, TTL 30분
@@ -170,7 +171,7 @@ def load_model(force_reload: bool = False) -> bool:
     탐색 경로에서 모델과 메타데이터를 로드. 성공 시 True.
     lightgbm -> sklearn 순으로 시도. 둘 다 실패 시 dummy baseline (0.5)로 fallback.
     """
-    global _MODEL, _FEATURE_COLS, _CALIB_PARAMS, _MODEL_AVAILABLE, _MODEL_TYPE, _MODEL_META
+    global _MODEL, _FEATURE_COLS, _CALIB_PARAMS, _MODEL_AVAILABLE, _MODEL_TYPE, _MODEL_META, _ACTION_CONFIDENCE_MIN
     if _MODEL_AVAILABLE and not force_reload and _MODEL is not None:
         return True
 
@@ -232,8 +233,11 @@ def load_model(force_reload: bool = False) -> bool:
     try:
         with open(model_dir / METADATA_FILENAME, encoding="utf-8") as f:
             _MODEL_META = json.load(f)
+            threshold = (_MODEL_META.get("action_threshold") or {}).get("confidence_min", 0.5)
+            _ACTION_CONFIDENCE_MIN = min(0.70, max(0.5, float(threshold)))
     except Exception:
         _MODEL_META = {"model_type": _MODEL_TYPE, "features": _FEATURE_COLS}
+        _ACTION_CONFIDENCE_MIN = 0.5
     logger.info(f"[ML] Model loaded ({_MODEL_TYPE}) - {len(_FEATURE_COLS)} features from {model_dir}")
     return True
 
@@ -278,7 +282,7 @@ def _fetch_index_return(symbol: str, period: str = "3mo") -> tuple[float, float]
         if len(close) < 2:
             return 0.0, 0.0
         daily = float(close.pct_change().iloc[-1] * 100) if len(close) >= 2 else 0.0
-        cum20 = float(close.pct_change().rolling(20).sum().iloc[-1]) if len(close) >= 20 else float(close.pct_change().iloc[-1] * 100)
+        cum20 = float(close.pct_change().rolling(20).sum().iloc[-1] * 100) if len(close) >= 20 else float(close.pct_change().iloc[-1] * 100)
         if not np.isfinite(daily):
             daily = 0.0
         if not np.isfinite(cum20):
@@ -469,6 +473,8 @@ def _predict_proba(feature_vec: List[float]) -> float:
                 # LGBMClassifier has predict_proba
                 proba = _MODEL.predict_proba(X)
                 if isinstance(proba, np.ndarray) and proba.ndim == 2 and proba.shape[1] >= 2:
+                    if proba.shape[1] >= 3:
+                        return float(proba[0, 1] / max(proba[0, 0] + proba[0, 1], 1e-8))
                     return float(proba[0, 1])
                 # fallback: Booster predict returns margin
                 raw = _MODEL.predict(X)
@@ -488,6 +494,8 @@ def _predict_proba(feature_vec: List[float]) -> float:
             # sklearn or generic joblib
             if hasattr(_MODEL, "predict_proba"):
                 proba = _MODEL.predict_proba(X)
+                if proba.shape[1] >= 3:
+                    return float(proba[0, 1] / max(proba[0, 0] + proba[0, 1], 1e-8))
                 return float(proba[0, 1]) if proba.shape[1] > 1 else float(proba[0, 0])
             elif hasattr(_MODEL, "decision_function"):
                 score = float(_MODEL.decision_function(X)[0])
@@ -644,10 +652,13 @@ def predict_from_ohlcv(
             confidence = 0.5 + (confidence - 0.5) * 0.9
     except Exception:
         pass
+    if confidence < _ACTION_CONFIDENCE_MIN:
+        direction = "NEUTRAL"
 
     return {
         "direction": direction,
         "confidence": round(float(confidence), 3),
+        "action_confidence_min": round(float(_ACTION_CONFIDENCE_MIN), 2),
         "prob_up": round(float(prob_up), 3),
         "prob_up_raw": round(float(prob_up_raw), 3) if 'prob_up_raw' in locals() else round(float(prob_up), 3),
         "prob_down": round(float(prob_down), 3),

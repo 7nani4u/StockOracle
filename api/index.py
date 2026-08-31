@@ -204,6 +204,19 @@ def _get_ml_prediction(dd, market: str, ticker: str) -> dict | None:
     return None
 
 
+def _ml_validation_status() -> tuple[bool, str]:
+    """Only blend models with an explicitly approved untouched holdout result."""
+    try:
+        validation = (_ml_get_metadata() or {}).get("validation") or {}
+        if validation.get("passed") is True:
+            return True, "validated"
+        if validation:
+            return False, str(validation.get("reason") or "holdout_validation_failed")
+    except Exception:
+        pass
+    return False, "missing_holdout_validation"
+
+
 # yfinance 타임아웃 및 차단 방지를 위한 전역 설정 (session 래핑 제거)
 import yfinance.utils
 import yfinance.data

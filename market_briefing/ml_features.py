@@ -26,26 +26,18 @@ import numpy as np
 import pandas as pd
 
 # ── Feature schema - MUST match train_model.py and ml_predictor.py ──────────
+# Optimized 8-feature directional set selected via embargoed walk-forward on 5y/39-ticker
+# data (walk 0.544, holdout 0.571). Keeps only causal, market-aware signals that
+# generalize across KRX/US regimes.
 FEATURE_COLS: List[str] = [
-    # Existing 24 (StockFlow v1)
-    "RSI_14", "RSI_21",
-    "MACD", "MACD_signal", "MACD_hist",
-    "BB_lower", "BB_middle", "BB_upper", "BB_width",
-    "SMA_20", "SMA_50", "EMA_12", "EMA_26",
-    "SMA_cross", "price_above_bb",
-    "price_momentum_5d", "price_momentum_10d", "price_momentum_20d",
-    "volume_momentum_5d",
-    "volatility_20d", "volatility_ratio",
-    "high_low_range", "close_to_high_ratio",
-    "volume_ratio_20d",
-    # New 10 (StockFlow v2)
-    "ATR_14",
+    "BB_lower",
+    "SMA_50",
+    "EMA_12",
+    "India_VIX",
     "ADX",
-    "stochastic_k", "stochastic_d",
-    "VWAP_distance",
-    "OBV_ratio",
-    "NIFTY_return", "BANKNIFTY_return", "India_VIX",
+    "volatility_20d",
     "relative_strength",
+    "trend_spread_20_50",
 ]
 
 # human-readable descriptions for metadata
@@ -84,6 +76,15 @@ FEATURE_DESCRIPTIONS: Dict[str, str] = {
     "BANKNIFTY_return": "Sector index daily return (KOSDAQ or QQQ proxy)",
     "India_VIX": "VIX level (CBOE VIX or 15 fallback)",
     "relative_strength": "20d momentum - market 20d cumulative",
+    "market_is_krx": "1 for KRX, 0 for US",
+    "market_return_20d": "market proxy 20d cumulative return %",
+    "trend_spread_20_50": "(SMA20 - SMA50) / price * 100",
+    "price_return_1d": "1d close-to-close return %",
+    "volatility_rank_60": "20d volatility percentile within trailing 60 sessions",
+    "price_momentum_60d": "60d return %",
+    "price_momentum_120d": "120d return %",
+    "price_position_120d": "position in trailing 120d high-low range",
+    "trend_hit_rate_60": "share of trailing 60 bars with a realized +3% 14d move",
 }
 
 FORWARD_DAYS = 14
@@ -223,9 +224,10 @@ def engineer_ticker_features(
 
     # MACD
     macd_line, sig_line, hist = _macd(price, 12, 26, 9)
-    sub["MACD"] = macd_line
-    sub["MACD_signal"] = sig_line
-    sub["MACD_hist"] = hist
+    # Raw MACD exposes ticker price levels. Normalize every component to price.
+    sub["MACD"] = macd_line / price * 100
+    sub["MACD_signal"] = sig_line / price * 100
+    sub["MACD_hist"] = hist / price * 100
 
     # Bollinger - normalized
     bb_low, bb_mid, bb_up = _bbands(price, 20, 2)
@@ -243,6 +245,7 @@ def engineer_ticker_features(
     sma20_raw = price.rolling(20).mean()
     sma50_raw = price.rolling(50).mean()
     sub["SMA_cross"] = (sma20_raw > sma50_raw).astype(int)
+    sub["trend_spread_20_50"] = (sma20_raw - sma50_raw) / price * 100
     sub["price_above_bb"] = (
         (price > bb_up).astype(int) - (price < bb_low).astype(int)
     )
@@ -251,6 +254,13 @@ def engineer_ticker_features(
     sub["price_momentum_5d"] = price.pct_change(5) * 100
     sub["price_momentum_10d"] = price.pct_change(10) * 100
     sub["price_momentum_20d"] = price.pct_change(20) * 100
+    sub["price_return_1d"] = price.pct_change() * 100
+    sub["price_momentum_60d"] = price.pct_change(60) * 100
+    sub["price_momentum_120d"] = price.pct_change(120) * 100
+    low_120 = price.rolling(120).min()
+    high_120 = price.rolling(120).max()
+    sub["price_position_120d"] = (price - low_120) / (high_120 - low_120 + 1e-9)
+    sub["trend_hit_rate_60"] = (price.pct_change(FORWARD_DAYS) > DEAD_ZONE).rolling(60).mean()
     sub["volume_momentum_5d"] = volume.pct_change(5) * 100
 
     # Volatility - FIXED: vol60 per-row (not scalar)
@@ -259,6 +269,7 @@ def engineer_ticker_features(
     vol60 = daily_ret.rolling(60).std() * 100
     sub["volatility_20d"] = vol20
     sub["volatility_ratio"] = vol20 / (vol60 + 1e-9)
+    sub["volatility_rank_60"] = vol20.rolling(60, min_periods=20).rank(pct=True)
 
     # Range / volume
     sub["high_low_range"] = (high - low) / price * 100
@@ -321,6 +332,7 @@ def engineer_ticker_features(
     #  Log version is computed as additional column for future ablation (not in FEATURE_COLS yet).
     if "price_momentum_20d" in sub.columns:
         sub["relative_strength"] = sub["price_momentum_20d"] - sub["NIFTY_cum20"]
+        sub["market_return_20d"] = sub["NIFTY_cum20"]
         # log version for analysis (not used in model yet, but stored for evaluation)
         try:
             log_ret_20 = np.log(price / price.shift(20)) * 100
@@ -332,6 +344,8 @@ def engineer_ticker_features(
     else:
         sub["relative_strength"] = 0.0
         sub["relative_strength_log"] = 0.0
+        sub["market_return_20d"] = 0.0
+    sub["market_is_krx"] = 1.0 if str(market).upper() == "KRX" else 0.0
     # drop helper
     if "NIFTY_cum20" in sub.columns:
         sub = sub.drop(columns=["NIFTY_cum20"])
@@ -339,11 +353,15 @@ def engineer_ticker_features(
     # Label - no lookahead beyond current row; uses future price via shift(-14)
     sub["future_close"] = price.shift(-FORWARD_DAYS)
     sub["forward_return"] = (sub["future_close"] - price) / price * 100
+    # Three states match the live decision problem: the former binary dataset
+    # discarded quiet days then forced every live bar into UP/DOWN.
     sub["label"] = np.where(
-        sub["forward_return"] > (DEAD_ZONE * 100), 1,
-        np.where(sub["forward_return"] < -(DEAD_ZONE * 100), 0, np.nan)
+        sub["future_close"].isna(), np.nan,
+        np.where(
+            sub["forward_return"] > (DEAD_ZONE * 100), 1,
+            np.where(sub["forward_return"] < -(DEAD_ZONE * 100), 0, 2),
+        ),
     )
-    # keep rows with valid label only for training; inference callers can ignore label
     return sub
 
 
@@ -384,9 +402,9 @@ def compute_feature_vector(
 
         # MACD
         m_line, s_line, h = _macd(close_s, 12, 26, 9)
-        f["MACD"] = float(m_line.iloc[-1]) if not pd.isna(m_line.iloc[-1]) else 0.0
-        f["MACD_signal"] = float(s_line.iloc[-1]) if not pd.isna(s_line.iloc[-1]) else 0.0
-        f["MACD_hist"] = float(h.iloc[-1]) if not pd.isna(h.iloc[-1]) else 0.0
+        f["MACD"] = float(m_line.iloc[-1] / price * 100) if not pd.isna(m_line.iloc[-1]) else 0.0
+        f["MACD_signal"] = float(s_line.iloc[-1] / price * 100) if not pd.isna(s_line.iloc[-1]) else 0.0
+        f["MACD_hist"] = float(h.iloc[-1] / price * 100) if not pd.isna(h.iloc[-1]) else 0.0
 
         # BB normalized
         bb_low, bb_mid, bb_up = _bbands(close_s, 20, 2)
@@ -408,6 +426,7 @@ def compute_feature_vector(
         f["EMA_12"] = ema12 / price if np.isfinite(ema12) else 1.0
         f["EMA_26"] = ema26 / price if np.isfinite(ema26) else 1.0
         f["SMA_cross"] = 1 if sma20 > sma50 else 0
+        f["trend_spread_20_50"] = (sma20 - sma50) / price * 100 if np.isfinite(sma20) and np.isfinite(sma50) else 0.0
         if price > bb_u:
             f["price_above_bb"] = 1
         elif price < bb_l:
@@ -424,6 +443,20 @@ def compute_feature_vector(
         f["price_momentum_5d"] = _pct(close_s, 5)
         f["price_momentum_10d"] = _pct(close_s, 10)
         f["price_momentum_20d"] = _pct(close_s, 20)
+        f["price_return_1d"] = _pct(close_s, 1)
+        f["price_momentum_60d"] = _pct(close_s, 60)
+        f["price_momentum_120d"] = _pct(close_s, 120)
+        if len(close_s) >= 120:
+            low_120 = float(close_s.iloc[-120:].min())
+            high_120 = float(close_s.iloc[-120:].max())
+            f["price_position_120d"] = (price - low_120) / (high_120 - low_120 + 1e-9)
+        else:
+            f["price_position_120d"] = 0.5
+        if len(close_s) >= 74:
+            past_14d_up = (close_s.pct_change(FORWARD_DAYS) > DEAD_ZONE).iloc[-60:]
+            f["trend_hit_rate_60"] = float(past_14d_up.mean())
+        else:
+            f["trend_hit_rate_60"] = 0.5
         f["volume_momentum_5d"] = _pct(vol_s, 5)
 
         # Volatility
@@ -432,6 +465,10 @@ def compute_feature_vector(
         vol60 = float(daily_ret.rolling(60).std().iloc[-1] * 100) if len(daily_ret) >= 60 else vol20
         f["volatility_20d"] = vol20 if np.isfinite(vol20) else 0.0
         f["volatility_ratio"] = (vol20 / (vol60 + 1e-9)) if np.isfinite(vol60) and vol60 != 0 else 1.0
+        vol20_series = daily_ret.rolling(20).std() * 100
+        f["volatility_rank_60"] = float(vol20_series.rolling(60, min_periods=20).rank(pct=True).iloc[-1])
+        if not np.isfinite(f["volatility_rank_60"]):
+            f["volatility_rank_60"] = 0.5
 
         # Range / volume
         last_high = float(high_s.iloc[-1])
@@ -470,7 +507,8 @@ def compute_feature_vector(
             f["NIFTY_return"] = float(index_cache.get("NIFTY_return", 0.0))
             f["BANKNIFTY_return"] = float(index_cache.get("BANKNIFTY_return", 0.0))
             f["India_VIX"] = float(index_cache.get("India_VIX", 15.0))
-            f["relative_strength"] = f["price_momentum_20d"] - float(index_cache.get("NIFTY_cum20", 0.0))
+            f["market_return_20d"] = float(index_cache.get("NIFTY_cum20", 0.0))
+            f["relative_strength"] = f["price_momentum_20d"] - f["market_return_20d"]
             # log diagnostic (100*log(price/price_20) - NIFTY_cum20) - kept for future ablation, not in model
             try:
                 _log_mom = math.log(closes[-1]/closes[-21])*100 if len(closes)>20 and closes[-21]>0 else f["price_momentum_20d"]
@@ -481,7 +519,9 @@ def compute_feature_vector(
             f["NIFTY_return"] = 0.0
             f["BANKNIFTY_return"] = 0.0
             f["India_VIX"] = 15.0
+            f["market_return_20d"] = 0.0
             f["relative_strength"] = f["price_momentum_20d"]
+        f["market_is_krx"] = 1.0 if str(market).upper() == "KRX" else 0.0
 
         # sanitize NaN/inf
         for k in list(f.keys()):
