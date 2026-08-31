@@ -11209,9 +11209,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     }
     aggressive_bands = []
     _strategy_meta = {
-        "A": ("conservative", "보수적", "가까운 지지의 종가 회복을 우선 확인"),
-        "B": ("balanced", "중립적", "현재 변동성과 지지 구조를 균형 있게 반영"),
-        "C": ("aggressive", "공격적", "더 깊은 조정까지 허용하되 확인 조건을 강화"),
+        "A": ("conservative", "밴드 A", "가까운 지지의 종가 회복을 우선 확인"),
+        "B": ("balanced", "밴드 B", "현재 변동성과 지지 구조를 균형 있게 반영"),
+        "C": ("aggressive", "밴드 C", "더 깊은 조정까지 허용하되 확인 조건을 강화"),
     }
     _base_depth_offset = 0.20 if _mkt == "KRX" else 0.15
     _allocation_scale = float((learning_adjustment or {}).get("allocation_scale") or 1.0)
@@ -14450,6 +14450,8 @@ def route(path: str, params: Dict) -> Dict:
         try:
             ml_prediction = _get_ml_prediction(dd, market, sym)
             if ml_prediction and not ml_prediction.get("fallback"):
+                _ml_approved, _ml_validation_reason = _ml_validation_status()
+                ml_prediction["validation_status"] = _ml_validation_reason
                 ml_prob = float(ml_prediction.get("prob_up", 0.5))
                 ml_conf = float(ml_prediction.get("confidence", 0.5))
                 # Dynamic weight based on validation AUC (training_metadata.json)
@@ -14458,7 +14460,7 @@ def route(path: str, params: Dict) -> Dict:
                     _auc = float((_ml_get_metadata() or {}).get("metrics", {}).get("test_auc") or 0.55)
                 except Exception:
                     _auc = 0.55
-                if _auc < 0.52:
+                if not _ml_approved or _auc < 0.52:
                     _ml_weight = 0.0
                 elif _auc < 0.56:
                     _ml_weight = 0.10
@@ -14580,6 +14582,23 @@ def route(path: str, params: Dict) -> Dict:
                     "profitMargins": ov.get("profit_margin"),
                     "marketCap": ov.get("market_cap"),
                 }
+            except Exception:
+                pass
+        elif market == "US" and us_enriched:
+            # Keep the primary yfinance response, but fill missing fundamentals
+            # from Alpha Vantage so the common KRX/US metric panel is complete.
+            try:
+                ov = us_enriched.get("overview") or {}
+                overview_map = {
+                    "marketCap": ov.get("market_cap"),
+                    "trailingPE": ov.get("per"),
+                    "priceToBook": ov.get("pbr"),
+                    "returnOnEquity": ov.get("roe"),
+                    "profitMargins": ov.get("profit_margin"),
+                }
+                for key, value in overview_map.items():
+                    if info_for_charm.get(key) in (None, "", "-", "None") and value not in (None, "", "-", "None"):
+                        info_for_charm[key] = value
             except Exception:
                 pass
 
@@ -14769,6 +14788,8 @@ def route(path: str, params: Dict) -> Dict:
         try:
             ml_prediction = _get_ml_prediction(dd, market, sym)
             if ml_prediction and not ml_prediction.get("fallback"):
+                _ml_approved, _ml_validation_reason = _ml_validation_status()
+                ml_prediction["validation_status"] = _ml_validation_reason
                 ml_prob = float(ml_prediction.get("prob_up", 0.5))
                 ml_conf = float(ml_prediction.get("confidence", 0.5))
                 # Dynamic weight based on validation AUC (training_metadata.json)
@@ -14777,7 +14798,7 @@ def route(path: str, params: Dict) -> Dict:
                     _auc = float((_ml_get_metadata() or {}).get("metrics", {}).get("test_auc") or 0.55)
                 except Exception:
                     _auc = 0.55
-                if _auc < 0.52:
+                if not _ml_approved or _auc < 0.52:
                     _ml_weight = 0.0
                 elif _auc < 0.56:
                     _ml_weight = 0.10
@@ -14971,10 +14992,10 @@ def route(path: str, params: Dict) -> Dict:
                 key_metrics = get_key_metrics(info_for_charm or {}, naver_for_charm, market)
             else:
                 investment_charm = {"smart_score": None, "sub_scores": {}, "available_count": 0, "smart_score_str": "N/A"}
-                key_metrics = {"per_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
+                key_metrics = {"market_cap_str": "N/A", "per_str": "N/A", "pbr_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
         except Exception as _charm_e:
             investment_charm = {"smart_score": None, "sub_scores": {}, "available_count": 0, "smart_score_str": "N/A", "error": str(_charm_e)}
-            key_metrics = {"per_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
+            key_metrics = {"market_cap_str": "N/A", "per_str": "N/A", "pbr_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
 
         response = {
             "symbol": sym, "company": company or sym, "market": market,
@@ -19556,14 +19577,13 @@ function renderDiagnosis(d, isKrx) {
     const rankingStatusNote = rankingMeta.status === 'fresh'
       ? `${comparisonLabel} · 기준 ${String(rankingMeta.generated_at || '').slice(0, 10)} · ${Number(rankingMeta.eligible_scored_count || 0)}개 점수 산출 종목`
       : (rankingMeta.reason || '비교 유니버스 데이터를 준비 중입니다.');
-    // ── 펀더멘털 6종: 상단 네이버 3종(시가총액·PER·PBR) + 하단 charm 3종(PSR·ROE·DY) 통합 (PER 불일치 해소, 산업 제외) ──
+    // ── 펀더멘털 6종: KRX/US 공통 key_metrics만 사용해 소스별 누락을 방지한다. ──
     const naverFund = d.naver || {};
-    const fMktcapVal = naverFund.market_cap || 'N/A';
-    const fMktcapDisplay = (fMktcapVal && fMktcapVal!=='N/A' && fMktcapVal!=='-') ? `${fMktcapVal}원` : 'N/A';
-    const fPerRaw = (()=>{ const v=parseFloat(String(naverFund.per||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
-    const fPerVal = naverFund.per || 'N/A';
-    const fPbrRaw = (()=>{ const v=parseFloat(String(naverFund.pbr||'').replace(/,/g,'')); return Number.isFinite(v)?v:null; })();
-    const fPbrVal = naverFund.pbr || 'N/A';
+    const fMktcapDisplay = km ? (km.market_cap_str || 'N/A') : (naverFund.market_cap || 'N/A');
+    const fPerRaw = km && isFiniteValue(km.per) ? Number(km.per) : null;
+    const fPerVal = km ? (km.per_str || 'N/A') : (naverFund.per || 'N/A');
+    const fPbrRaw = km && isFiniteValue(km.pbr) ? Number(km.pbr) : null;
+    const fPbrVal = km ? (km.pbr_str || 'N/A') : (naverFund.pbr || 'N/A');
     const fPerColor = fPerRaw == null ? '#484f58' : fPerRaw < 0 ? '#f85149' : fPerRaw <= 10 ? '#3fb950' : fPerRaw <= 20 ? '#58a6ff' : fPerRaw <= 30 ? '#d29922' : '#f85149';
     const fPbrColor = fPbrRaw == null ? '#484f58' : fPbrRaw < 0 ? '#f85149' : fPbrRaw <= 1 ? '#3fb950' : fPbrRaw <= 2 ? '#58a6ff' : fPbrRaw <= 3 ? '#d29922' : '#f85149';
     const psrVal = km ? km.psr_str : 'N/A';
@@ -20854,7 +20874,7 @@ function renderForecast(d, isKrx) {
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
           </div>` : '';
 
-      const aggTitle = '⚡ 1차 탐색 구간(하루 평균 움직임 기준) · 소액 테스트';
+      const aggTitle = '⚡ 1차 탐색 구간 · 소액 테스트';
       const aggNote = isWaitMode
         ? '지금은 대기 · 반등 신호 확인 전에는 실행하지 않습니다'
         : '과거 검증 + 이벤트 위험 반영';

@@ -396,8 +396,27 @@ def score_cash(info: Dict[str, Any]) -> Optional[float]:
 
 # ── 핵심 지표 (PER/PSR/ROE/DY) 헬퍼 ───────────────────────────────────────
 
+def _format_market_cap(value: Optional[float], market: str) -> str:
+    """Format a raw market capitalization without mixing KRW and USD units."""
+    if value is None or not math.isfinite(value) or value <= 0:
+        return "N/A"
+    if str(market).upper() == "KRX":
+        jo = int(value // 1_000_000_000_000)
+        eok = int((value % 1_000_000_000_000) // 100_000_000)
+        if jo:
+            return f"{jo:,}조" + (f" {eok:,}억" if eok else "")
+        return f"{eok:,}억"
+    if value >= 1_000_000_000_000:
+        return f"${value / 1_000_000_000_000:.2f}T"
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.2f}B"
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    return f"${value:,.0f}"
+
+
 def get_key_metrics(info: Dict[str, Any], naver: Dict[str, Any], market: str) -> Dict[str, Any]:
-    """PER, PSR, ROE, DY를 안전하게 추출. N/A 처리."""
+    """Extract the six fundamental metrics shown by both KRX and US views."""
     # PER: KRX는 네이버(실시간) 우선으로 일관성 유지, US는 yfinance 우선
     if str(market).upper() == "KRX":
         per = _safe_float(naver.get("per"))
@@ -411,6 +430,15 @@ def get_key_metrics(info: Dict[str, Any], naver: Dict[str, Any], market: str) ->
             per = _safe_float(info.get("forwardPE"))
         if per is None:
             per = _safe_float(naver.get("per"))
+    # PBR: KRX uses Naver's current value; US uses yfinance/Alpha Vantage.
+    if str(market).upper() == "KRX":
+        pbr = _safe_float(naver.get("pbr"))
+        if pbr is None:
+            pbr = _safe_float(info.get("priceToBook"))
+    else:
+        pbr = _safe_float(info.get("priceToBook"))
+        if pbr is None:
+            pbr = _safe_float(naver.get("pbr"))
     # PSR: priceToSalesTrailing12Months 또는 marketCap/totalRevenue
     psr = _safe_float(info.get("priceToSalesTrailing12Months"))
     if psr is None:
@@ -418,6 +446,14 @@ def get_key_metrics(info: Dict[str, Any], naver: Dict[str, Any], market: str) ->
         rev = _safe_float(info.get("totalRevenue"))
         if mc is not None and rev is not None and rev != 0:
             psr = mc / rev
+    if str(market).upper() == "KRX":
+        market_cap = _safe_float(naver.get("market_cap_raw"))
+        if market_cap is None:
+            market_cap = _safe_float(info.get("marketCap"))
+    else:
+        market_cap = _safe_float(info.get("marketCap"))
+        if market_cap is None:
+            market_cap = _safe_float(naver.get("market_cap_raw"))
     # ROE
     roe = _safe_float(info.get("returnOnEquity"))
     if roe is None:
@@ -457,7 +493,10 @@ def get_key_metrics(info: Dict[str, Any], naver: Dict[str, Any], market: str) ->
             return "N/A"
 
     return {
+        "market_cap": market_cap,
+        "market_cap_str": _format_market_cap(market_cap, market),
         "per": per, "per_str": fmt_or_na(per),
+        "pbr": pbr, "pbr_str": fmt_or_na(pbr),
         "psr": psr, "psr_str": fmt_or_na(psr),
         "roe": roe, "roe_str": fmt_or_na(roe, "{:.2f}%") if roe is not None else "N/A",
         "dy": dy, "dy_str": fmt_or_na(dy, "{:.2f}%") if dy is not None else "N/A",

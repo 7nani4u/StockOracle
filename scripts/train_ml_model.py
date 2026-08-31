@@ -28,7 +28,7 @@ import math
 import random
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -36,7 +36,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from market_briefing.ml_features import FEATURE_COLS, engineer_ticker_features, walk_forward_splits
+from market_briefing.ml_features import FEATURE_COLS, FORWARD_DAYS, engineer_ticker_features
 from market_briefing.ml_evaluate import evaluate_predictions, walk_forward_evaluate
 
 # ── Try imports for training backends ─────────────────────────────────────
@@ -195,17 +195,19 @@ def _collect_training_data(tickers: List[str], period: str = "5y", synthetic_fal
 
 
 def _fetch_index_df(start: str, end: str) -> Optional[pd.DataFrame]:
-    """Fetch KOSPI/SPY index data for index features; fallback synthetic."""
+    """Fetch market-matched KRX and US index data for ticker feature engineering."""
     if not _HAS_YFINANCE:
         return None
     try:
-        # Try KOSPI 200 and SPY; prefer KOSPI for KRX universes but combine?
-        # We build a minimal index_df with NIFTY_return etc matching StockFlow
-        # For simplicity, fetch SPY as market proxy and QQQ as sector proxy, VIX
+        # Keep the legacy feature slot names at the model boundary, but retain
+        # separate source columns here so KRX rows never learn from SPY/QQQ.
         start_dt = pd.to_datetime(start) - pd.Timedelta(days=90)
         end_dt = pd.to_datetime(end) + pd.Timedelta(days=1)
         dfs = {}
-        for sym, key in [("SPY", "NIFTY_return"), ("QQQ", "BANKNIFTY_return")]:
+        for sym, key in [
+            ("069500.KS", "KRX_NIFTY_return"), ("^KQ11", "KRX_BANKNIFTY_return"),
+            ("SPY", "US_NIFTY_return"), ("QQQ", "US_BANKNIFTY_return"),
+        ]:
             try:
                 raw = yf.download(sym, start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d"), auto_adjust=True, progress=False)
                 if raw is None or raw.empty:
@@ -235,14 +237,15 @@ def _fetch_index_df(start: str, end: str) -> Optional[pd.DataFrame]:
         idx.index.name = "date"
         idx = idx.reset_index()
         idx["date"] = pd.to_datetime(idx["date"])
-        # NIFTY_cum20
-        if "NIFTY_return" in idx.columns:
-            s = idx.set_index("date")["NIFTY_return"]
-            cum = s.rolling(20).sum()
-            cum.index = pd.to_datetime(cum.index).tz_localize(None)
-            cum_df = cum.rename("NIFTY_cum20").reset_index()
-            cum_df.columns = ["date", "NIFTY_cum20"]
-            idx = idx.merge(cum_df, on="date", how="left")
+        for prefix in ("KRX", "US"):
+            source = f"{prefix}_NIFTY_return"
+            if source in idx.columns:
+                s = idx.set_index("date")[source]
+                cum = s.rolling(20).sum()
+                cum.index = pd.to_datetime(cum.index).tz_localize(None)
+                cum_df = cum.rename(f"{prefix}_NIFTY_cum20").reset_index()
+                cum_df.columns = ["date", f"{prefix}_NIFTY_cum20"]
+                idx = idx.merge(cum_df, on="date", how="left")
         return idx
     except Exception:
         return None
@@ -299,35 +302,154 @@ def _time_split(df: pd.DataFrame, train_ratio: float = 0.8):
     return X_train, X_test, y_train, y_test, train_df, test_df, split_date
 
 
-def _train_lightgbm(X_train, y_train, X_test, y_test):
+LGBM_CANDIDATES = [
+    {
+        "name": "legacy",
+        "n_estimators": 800, "learning_rate": 0.03, "max_depth": 6,
+        "num_leaves": 31, "min_child_samples": 80, "subsample": 0.85,
+        "colsample_bytree": 0.85, "bagging_freq": 5,
+    },
+    {
+        "name": "regularized_shallow",
+        "n_estimators": 420, "learning_rate": 0.025, "max_depth": 4,
+        "num_leaves": 12, "min_child_samples": 55, "subsample": 0.80,
+        "colsample_bytree": 0.75, "bagging_freq": 1, "reg_lambda": 4.0,
+        "min_split_gain": 0.01,
+    },
+    {
+        "name": "compact",
+        "n_estimators": 300, "learning_rate": 0.03, "max_depth": 3,
+        "num_leaves": 7, "min_child_samples": 45, "subsample": 0.85,
+        "colsample_bytree": 0.70, "bagging_freq": 1, "reg_lambda": 2.0,
+        "min_split_gain": 0.02,
+    },
+    {
+        "name": "balanced_regularized",
+        "n_estimators": 500, "learning_rate": 0.02, "max_depth": 5,
+        "num_leaves": 16, "min_child_samples": 70, "subsample": 0.80,
+        "colsample_bytree": 0.80, "bagging_freq": 1, "reg_lambda": 6.0,
+        "min_split_gain": 0.01,
+    },
+]
+
+
+def _scale_pos_weight(y) -> float:
+    positives = float(np.asarray(y).sum())
+    negatives = float(len(y) - positives)
+    return negatives / positives if positives > 0 else 1.0
+
+
+def _train_lightgbm(X_train, y_train, params: Dict[str, Any]):
     if not _HAS_LGBM:
         raise RuntimeError("lightgbm not available")
-    from sklearn.utils.class_weight import compute_class_weight
-    classes = np.array([0, 1])
-    weights = compute_class_weight('balanced', classes=classes, y=y_train)
-    ratio = float(weights[1] / weights[0]) if weights[0] != 0 else 1.0
+    params = dict(params)
+    params.pop("name", None)
+    ratio = _scale_pos_weight(y_train)
     print(f"  LightGBM class_weight ratio (scale_pos_weight): {ratio:.3f}")
     model = lgb.LGBMClassifier(
-        n_estimators=800,
-        learning_rate=0.03,
-        max_depth=6,
-        num_leaves=31,
-        min_child_samples=80,
-        subsample=0.85,
-        colsample_bytree=0.85,
         scale_pos_weight=ratio,
         random_state=42,
         n_jobs=-1,
         verbose=-1,
-        bagging_freq=5,
+        **params,
     )
-    model.fit(
-        X_train.values, y_train.values,
-        eval_set=[(X_test.values, y_test.values)],
-        eval_metric="auc",
-        callbacks=[lgb.early_stopping(stopping_rounds=80, verbose=False), lgb.log_evaluation(period=0)]
-    )
+    # Fixed tree counts selected through prior-only walk-forward folds keep the
+    # final holdout fully unseen. Early stopping on that holdout would leak it.
+    model.fit(X_train.values, y_train.values)
     return model
+
+
+def _predict_proba(model, X) -> np.ndarray:
+    if hasattr(model, "predict_proba"):
+        return np.asarray(model.predict_proba(X.values)[:, 1], dtype=float)
+    return np.where(np.asarray(model.predict(X.values)).astype(int) == 1, 0.75, 0.25)
+
+
+def _walk_forward_backtest(df: pd.DataFrame, params: Dict[str, Any], n_folds: int = 3) -> Dict[str, Any]:
+    """Evaluate one candidate with chronological folds and a label-horizon embargo."""
+    from sklearn.metrics import brier_score_loss, roc_auc_score
+
+    data = df.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"]).copy()
+    data["date"] = pd.to_datetime(data["date"])
+    data = data.sort_values("date")
+    dates = pd.Index(data["date"].drop_duplicates().sort_values())
+    if len(dates) < 120:
+        return {"candidate": params["name"], "folds": [], "mean_auc": float("nan"), "mean_brier": float("nan")}
+
+    first_start = int(len(dates) * 0.50)
+    fold_width = max(20, int((len(dates) - first_start) / n_folds))
+    folds = []
+    for fold in range(n_folds):
+        start_idx = first_start + fold * fold_width
+        end_idx = min(len(dates), start_idx + fold_width)
+        if end_idx - start_idx < 10:
+            continue
+        test_start, test_end = dates[start_idx], dates[end_idx - 1]
+        embargo_end = test_start - pd.offsets.BDay(FORWARD_DAYS)
+        train = data[data["date"] <= embargo_end]
+        test = data[(data["date"] >= test_start) & (data["date"] <= test_end)]
+        if len(train) < 100 or len(test) < 20 or train["label"].nunique() < 2 or test["label"].nunique() < 2:
+            continue
+        model = _train_lightgbm(train[FEATURE_COLS], train["label"].astype(int), params)
+        proba = _predict_proba(model, test[FEATURE_COLS])
+        folds.append({
+            "fold": fold + 1,
+            "train_rows": int(len(train)), "test_rows": int(len(test)),
+            "train_end": str(train["date"].max().date()),
+            "test_start": str(test_start.date()), "test_end": str(test_end.date()),
+            "auc": float(roc_auc_score(test["label"], proba)),
+            "brier": float(brier_score_loss(test["label"], proba)),
+        })
+    aucs = [fold["auc"] for fold in folds]
+    briers = [fold["brier"] for fold in folds]
+    return {
+        "candidate": params["name"], "folds": folds,
+        "mean_auc": float(np.mean(aucs)) if aucs else float("nan"),
+        "std_auc": float(np.std(aucs)) if aucs else float("nan"),
+        "mean_brier": float(np.mean(briers)) if briers else float("nan"),
+    }
+
+
+def _select_lgbm_params(train_df: pd.DataFrame) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Pick the most stable AUC candidate using only data preceding the final test set."""
+    reports = []
+    for params in LGBM_CANDIDATES:
+        print(f"  Walk-forward backtest: {params['name']}")
+        report = _walk_forward_backtest(train_df, params)
+        reports.append(report)
+        print(f"    mean AUC={report['mean_auc']:.4f}, std={report.get('std_auc', float('nan')):.4f}, Brier={report['mean_brier']:.4f}")
+    valid = [report for report in reports if np.isfinite(report["mean_auc"])]
+    if not valid:
+        return LGBM_CANDIDATES[0], reports
+    # A modest stability penalty prevents selecting a high-variance fold winner.
+    best = max(valid, key=lambda report: (report["mean_auc"] - 0.10 * report.get("std_auc", 0.0), -report["mean_brier"]))
+    return next(params for params in LGBM_CANDIDATES if params["name"] == best["candidate"]), reports
+
+
+def _oof_calibration_predictions(df: pd.DataFrame, params: Dict[str, Any], n_folds: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+    """Return embargoed out-of-fold probabilities for calibration without test leakage."""
+    data = df.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"]).copy()
+    data["date"] = pd.to_datetime(data["date"])
+    data = data.sort_values("date")
+    dates = pd.Index(data["date"].drop_duplicates().sort_values())
+    first_start = int(len(dates) * 0.50)
+    fold_width = max(20, int((len(dates) - first_start) / n_folds))
+    probabilities: List[float] = []
+    labels: List[int] = []
+    for fold in range(n_folds):
+        start_idx = first_start + fold * fold_width
+        end_idx = min(len(dates), start_idx + fold_width)
+        if end_idx - start_idx < 10:
+            continue
+        test_start, test_end = dates[start_idx], dates[end_idx - 1]
+        train = data[data["date"] <= test_start - pd.offsets.BDay(FORWARD_DAYS)]
+        test = data[(data["date"] >= test_start) & (data["date"] <= test_end)]
+        if len(train) < 100 or len(test) < 20 or train["label"].nunique() < 2:
+            continue
+        model = _train_lightgbm(train[FEATURE_COLS], train["label"].astype(int), params)
+        probabilities.extend(_predict_proba(model, test[FEATURE_COLS]).tolist())
+        labels.extend(test["label"].astype(int).tolist())
+    return np.asarray(probabilities, dtype=float), np.asarray(labels, dtype=int)
 
 
 def _train_sklearn_fallback(X_train, y_train, X_test, y_test):
@@ -382,6 +504,7 @@ def main():
     parser.add_argument("--input", type=str, default="", help="Prebuilt training_features.parquet path to reuse")
     parser.add_argument("--output-dir", type=str, default=str(MODELS_DIR), help="Model output directory")
     parser.add_argument("--train-ratio", type=float, default=0.8, help="Time-based train ratio")
+    parser.add_argument("--skip-tuning", action="store_true", help="Use the legacy LightGBM parameters without walk-forward selection")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -486,13 +609,35 @@ def main():
     print(f"  Test:  {len(X_test):,} rows ({pd.to_datetime(split_date).date()} - {df_feat['date'].max().date()})")
     print(f"  Train UP rate: {y_train.mean()*100:.1f}% | Test UP rate: {y_test.mean()*100:.1f}%")
 
+    # ── Parameter selection and calibration split ─────────────────────────
+    selected_params: Dict[str, Any] = {}
+    backtest_reports: List[Dict[str, Any]] = []
+    calibration_proba = np.asarray([], dtype=float)
+    calibration_y = np.asarray([], dtype=int)
+    fit_train_df = train_df.copy()
+    if _HAS_LGBM:
+        print("\n[Step 5] Walk-forward parameter backtest (training period only)...")
+        if args.skip_tuning:
+            selected_params = dict(LGBM_CANDIDATES[0])
+            print("  Tuning skipped; using legacy parameters")
+        else:
+            selected_params, backtest_reports = _select_lgbm_params(train_df)
+            print(f"  Selected: {selected_params['name']}")
+
+        # OOF calibration fits each calibration probability with a model that
+        # predates it. The final model can then use all pre-test data safely.
+        calibration_proba, calibration_y = _oof_calibration_predictions(train_df, selected_params)
+        print(f"  Final model rows: {len(fit_train_df):,} | OOF calibration rows: {len(calibration_y):,} | untouched test rows: {len(test_df):,}")
+
     # ── Train ─────────────────────────────────────────────────────────────
     print("\n[Step 5] Training model...")
     model = None
     model_type = "none"
     if _HAS_LGBM:
         try:
-            model = _train_lightgbm(X_train, y_train, X_test, y_test)
+            model = _train_lightgbm(
+                fit_train_df[FEATURE_COLS], fit_train_df["label"].astype(int), selected_params or LGBM_CANDIDATES[0],
+            )
             model_type = "LightGBM"
             print("  - LightGBM trained")
         except Exception as e:
@@ -511,15 +656,17 @@ def main():
 
     # ── Predict & calibrate ───────────────────────────────────────────────
     print("\n[Step 6] Predictions & calibration...")
-    if hasattr(model, "predict_proba"):
-        y_train_proba = model.predict_proba(X_train.values)[:, 1]
-        y_test_proba = model.predict_proba(X_test.values)[:, 1]
+    model_X_train = fit_train_df[FEATURE_COLS] if model_type == "LightGBM" else X_train
+    model_y_train = fit_train_df["label"].astype(int) if model_type == "LightGBM" else y_train
+    y_train_proba = _predict_proba(model, model_X_train)
+    y_test_proba = _predict_proba(model, X_test)
+    if len(calibration_y) >= 30 and len(np.unique(calibration_y)) == 2 and model_type == "LightGBM":
+        calib = _calibrate_platt(calibration_proba, calibration_y)
+        calibration_source = "expanding walk-forward out-of-fold predictions (14-business-day embargo)"
     else:
-        # fallback
-        y_train_proba = np.where(model.predict(X_train.values) == 1, 0.75, 0.25)
-        y_test_proba = np.where(model.predict(X_test.values) == 1, 0.75, 0.25)
-
-    calib = _calibrate_platt(y_test_proba, y_test.values)
+        # Never fit probability calibration on the final test set.
+        calib = {"a": 1.0, "b": 0.0}
+        calibration_source = "identity (no independent calibration split)"
     print(f"  Platt calibration: a={calib['a']:.4f}, b={calib['b']:.4f}")
     # apply calibration to test set for reporting
     eps = 1e-8
@@ -530,7 +677,7 @@ def main():
     print("\n[Step 7] Evaluation (test set)...")
     from sklearn.metrics import roc_auc_score, accuracy_score, balanced_accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report  # type: ignore
     try:
-        train_auc = roc_auc_score(y_train.values, y_train_proba)
+        train_auc = roc_auc_score(model_y_train.values, y_train_proba)
     except Exception:
         train_auc = float("nan")
     test_auc = roc_auc_score(y_test.values, y_test_proba_cal)
@@ -546,6 +693,21 @@ def main():
     print("\n" + classification_report(y_test.values, y_test_pred, target_names=["DOWN", "UP"], zero_division=0))
     cm = confusion_matrix(y_test.values, y_test_pred)
     print(f"  Confusion Matrix:\n{cm}")
+    walk_forward_auc = max(
+        (report.get("mean_auc", float("nan")) for report in backtest_reports),
+        default=float("nan"),
+    )
+    validation_passed = bool(
+        test_auc >= 0.54
+        and test_bacc >= 0.52
+        and (not backtest_reports or (np.isfinite(walk_forward_auc) and walk_forward_auc >= 0.54))
+    )
+    validation_reason = (
+        "passed_untouched_holdout_and_walk_forward"
+        if validation_passed else
+        "rejected: require holdout AUC >= 0.54, balanced accuracy >= 0.52, and walk-forward AUC >= 0.54"
+    )
+    print(f"  Deployment validation: {'PASS' if validation_passed else 'REJECT'} ({validation_reason})")
 
     # feature importance - robust for both LightGBM and sklearn
     print("\n[Step 8] Feature importances (top 10)...")
@@ -607,6 +769,8 @@ def main():
         "model_type": model_type,
         "trained_at": datetime.now().isoformat(),
         "train_rows": int(len(X_train)),
+        "model_fit_rows": int(len(model_X_train)),
+        "calibration_rows": int(len(calibration_y)),
         "test_rows": int(len(X_test)),
         "train_split_date": pd.to_datetime(split_date).isoformat(),
         "train_period": args.period,
@@ -620,10 +784,18 @@ def main():
             "test_recall": float(recall_score(y_test.values, y_test_pred, zero_division=0)),
             "test_f1": float(f1_score(y_test.values, y_test_pred, zero_division=0)),
         },
-        "calibration": {"method": "Platt scaling (logit)", "params": calib},
+        "calibration": {"method": "Platt scaling (logit)", "params": calib, "source": calibration_source},
+        "selected_parameters": selected_params if model_type == "LightGBM" else {},
+        "walk_forward_backtest": backtest_reports,
+        "validation": {
+            "passed": validation_passed,
+            "reason": validation_reason,
+            "requirements": {"holdout_auc_min": 0.54, "holdout_balanced_accuracy_min": 0.52, "walk_forward_auc_min": 0.54},
+        },
         "feature_importance": sorted(feat_imp, key=lambda x: x["importance"], reverse=True),
         "leakage_safeguards": [
             "time-based split (no shuffle)",
+            f"{FORWARD_DAYS}-business-day embargo in walk-forward calibration folds",
             "volatility_ratio per-row (fixed)",
             "label via shift(-14) with 3% dead-zone",
             "all indicators causal (rolling only past)",

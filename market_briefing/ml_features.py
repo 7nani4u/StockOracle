@@ -286,16 +286,18 @@ def engineer_ticker_features(
     obv_mean20 = obv_raw.rolling(20).mean().abs()
     sub["OBV_ratio"] = obv_raw / (obv_mean20 + 1e-9)
 
-    # Index features - merge if provided, else fallback
+    # Index features - select the row's own market before mapping to the
+    # legacy-compatible slot names. KRX rows must not inherit SPY/QQQ returns.
     if index_df is not None and not index_df.empty:
         idx = index_df.copy()
         idx["date"] = pd.to_datetime(idx["date"])
-        # expects columns: date, NIFTY_return, BANKNIFTY_return, India_VIX, NIFTY_cum20 (optional)
-        # compute NIFTY_cum20 if missing
-        if "NIFTY_cum20" not in idx.columns and "NIFTY_return" in idx.columns:
-            idx = idx.sort_values("date")
-            idx["NIFTY_cum20"] = idx["NIFTY_return"].rolling(20).sum()
-        # merge
+        prefix = "KRX" if str(market).upper() == "KRX" else "US"
+        source_map = {
+            f"{prefix}_NIFTY_return": "NIFTY_return",
+            f"{prefix}_BANKNIFTY_return": "BANKNIFTY_return",
+            f"{prefix}_NIFTY_cum20": "NIFTY_cum20",
+        }
+        idx = idx.rename(columns={source: target for source, target in source_map.items() if source in idx.columns})
         merge_cols = [c for c in ["NIFTY_return", "BANKNIFTY_return", "India_VIX", "NIFTY_cum20"] if c in idx.columns]
         sub = sub.merge(idx[["date"] + merge_cols], on="date", how="left")
     else:
