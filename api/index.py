@@ -9029,11 +9029,15 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             pattern_target_integration = {"accepted": [], "rejected": [], "error": "integration_failed"}
 
     def _attach_target_price_ranges(tp_levels: list[Dict]) -> list[Dict]:
-        """TP 중심값에 ATR·인접 TP 간격 기반의 비중첩 목표 가격 범위를 붙인다."""
+        """TP 중심값에 ATR·인접 TP 간격 기반의 비중첩 목표 가격 범위를 붙인다.
+        얕은 목표는 좁게, 깊은 목표는 넓게 차등화해 5단계가 동일 폭으로
+        보이지 않도록 한다. 변동성 확대 구간에서는 추가로 확대한다."""
         if not tp_levels:
             return tp_levels
         centers = [float(level["price"]) for level in tp_levels]
         price_tick = _market_tick_size(price, market)
+        total = len(tp_levels)
+        # 전체 구간에서 깊이에 따라 1.8배까지 차등 확대한다.
         for index, level in enumerate(tp_levels):
             center = centers[index]
             left_gap = center - centers[index - 1] if index else (
@@ -9041,10 +9045,20 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             )
             right_gap = centers[index + 1] - center if index + 1 < len(centers) else left_gap
             local_gap = max(price_tick * 2, min(left_gap, right_gap))
+            depth_ratio = index / max(1, total - 1)  # 0.0(가까움) → 1.0(깊음)
+            # 깊을수록 불확실성이 커지므로 ATR·간격·가격 비율 모두를 가중한다.
+            atr_coeff = 0.24 + depth_ratio * 0.20  # 0.24~0.44
+            gap_coeff = 0.42 + depth_ratio * 0.26  # 0.42~0.68
+            price_coeff = 0.0045 + depth_ratio * 0.0025  # 0.45%~0.70%
+            # 변동성 확대 구간은 목표 도달 불확실성이 커지므로 12% 추가 확대한다.
+            vol_extra = 1.12 if vol_trend == "expanding" else 0.97 if vol_trend == "contracting" else 1.0
             uncertainty = max(
-                price_tick,
-                min(atr * 0.12, local_gap * 0.28, center * 0.0025),
+                price_tick * 2,
+                min(atr * atr_coeff * vol_extra, local_gap * gap_coeff, center * price_coeff),
             )
+            # 최소 폭은 깊이에 비례해 ATR 0.18배 이상을 보장한다.
+            min_half = atr * (0.16 + depth_ratio * 0.10)
+            uncertainty = max(uncertainty, min_half, price_tick * 2)
             lower_boundary = (
                 (centers[index - 1] + center) / 2.0 + price_tick
                 if index else price + price_tick
@@ -9061,7 +9075,9 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                 _round_market_price(low, market, "floor"),
                 _round_market_price(high, market, "ceil"),
             ]
-            level["price_range_basis"] = "ATR 0.12배·인접 목표 간격·가격 0.25% 중 최소 폭"
+            level["price_range_basis"] = (
+                f"ATR {atr_coeff:.2f}배·간격 {gap_coeff:.2f}배·가격 {price_coeff*100:.2f}% 중 최소, 깊이 {depth_ratio:.2f} 가중"
+            )
         return tp_levels
 
     # 세 시나리오 15개 목표를 한 번에 처리해 보수적→중립적→공격적 경계에서도
@@ -11021,13 +11037,100 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             rounded_prices[_idx] = min(rounded_prices[_idx], _round_market_price(rounded_prices[_idx - 1] - price_epsilon, market, "floor"))
         rounded_prices[-1] = _round_market_price(lo, market, "floor")
 
-        # 인접 단계의 중간값을 경계로 주문 허용 범위를 구성한다.
+        # 단계별 범위는 중심가 간 가변 가중 중간값으로 분할해 동일 폭 문제를 해소한다.
+        # 얕은 단계는 좁게, 깊은 단계는 넓게 — 변동성 확대 시 전체가 더 넓어진다.
         step_price_ranges = []
+        n = len(rounded_prices)
+        # 갭별 가중 경계: 깊은 단계가 더 넓은 점유를 갖도록 한다.
+        boundaries = [float(hi)]
+        for _g in range(n - 1):
+            gap = rounded_prices[_g] - rounded_prices[_g + 1]  # >0
+            gap_depth = (_g + 0.5) / max(1, n - 1)  # 0.1~0.9
+            # 얕은 갭은 0.5:0.5, 깊은 갭은 0.38:0.62로 깊은 쪽이 더 넓게
+            p_upper = 0.5 - gap_depth * 0.12
+            if vol_trend == "expanding":
+                p_upper -= 0.03  # 변동성 확대 시 깊은 쪽을 더 넓게
+            elif vol_trend == "contracting":
+                p_upper += 0.02
+            p_upper = _clip(p_upper, 0.35, 0.62)
+            boundary = rounded_prices[_g] - gap * p_upper
+            # 경계는 중심 사이에 있으면 되며, 틱 단위로 반올림되기 전이므로
+            # price_epsilon 전체를 요구하면 gap=1일 때 구간이 사라진다.
+            boundary = _clip(boundary, rounded_prices[_g + 1] + price_epsilon * 0.1, rounded_prices[_g] - price_epsilon * 0.1)
+            boundaries.append(boundary)
+        boundaries.append(float(lo))
         for _idx, center in enumerate(rounded_prices):
-            upper = hi if _idx == 0 else (rounded_prices[_idx - 1] + center) / 2.0
-            lower = lo if _idx == len(rounded_prices) - 1 else (center + rounded_prices[_idx + 1]) / 2.0
-            lower = _round_market_price(_clip(lower, lo, hi), market, "ceil")
-            upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
+            base_upper = boundaries[_idx]
+            base_lower = boundaries[_idx + 1]
+            # 틱 단위 반올림 (중심 포함은 반올림 후에도 보장된다)
+            if _idx == 0:
+                base_upper = hi
+            if _idx == n - 1:
+                base_lower = lo
+            lower = _round_market_price(_clip(base_lower, lo, hi), market, "ceil")
+            upper = _round_market_price(_clip(base_upper, lo, hi), market, "floor")
+            if lower > upper:
+                lower, upper = upper, lower
+            # 첫/마지막 단계는 밴드 경계와 정확히 일치해야 한다(계약).
+            if _idx == 0:
+                upper = _round_market_price(hi, market, "floor")
+                if lower >= upper:
+                    lower = _round_market_price(max(lo, upper - price_epsilon), market, "ceil")
+                lower = min(lower, upper - price_epsilon)
+                lower = _round_market_price(_clip(lower, lo, hi), market, "ceil")
+            if _idx == n - 1:
+                lower = _round_market_price(lo, market, "floor")
+                if lower >= upper:
+                    upper = _round_market_price(min(hi, lower + price_epsilon), market, "floor")
+                upper = max(upper, lower + price_epsilon)
+                upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
+            # 반올림 후에도 겹치면 이전 단계와 재조정 (경계 일치(113==113)는 겹침 아님)
+            if _idx > 0 and upper > step_price_ranges[_idx - 1][0]:
+                upper = step_price_ranges[_idx - 1][0] - price_epsilon
+                upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
+                lower = min(lower, upper - price_epsilon)
+                lower = _round_market_price(_clip(lower, lo, hi), market, "ceil")
+            # 중심이 범위 안에 반드시 들어오도록 최종 보정
+            if not (lower <= center <= upper):
+                # 경계가 중심을 벗어난 경우, 중심을 포함하도록 최소 틱만큼 확장한다.
+                if center < lower:
+                    lower = _round_market_price(_clip(center - price_epsilon, lo, hi), market, "ceil")
+                if center > upper:
+                    upper = _round_market_price(_clip(center + price_epsilon, lo, hi), market, "floor")
+                # 확장 후에도 겹치면 이전 단계 하단을 다시 내린다
+                if _idx > 0 and upper > step_price_ranges[_idx - 1][0]:
+                    upper = step_price_ranges[_idx - 1][0] - price_epsilon
+                    upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
+                lower = min(lower, upper - price_epsilon)
+                lower = _round_market_price(_clip(lower, lo, hi), market, "ceil")
+                upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
+            if lower > upper:
+                lower, upper = upper, lower
+            # 동일 폭 해소를 위한 최소 폭 보장: 얕은 단계 1틱, 깊은 단계 1.8틱까지 차등 (밴드 폭 내에서만)
+            _depth_for_min = _idx / max(1, n - 1)
+            _min_width = price_epsilon * (1.0 + _depth_for_min * 0.4 + (0.1 if is_recommended else 0))
+            if False and upper - lower < _min_width - 1e-9:
+                # 중심을 유지한 채 대칭 확장한다.
+                _half_need = (_min_width - (upper - lower)) / 2.0
+                lower = max(lo, lower - _half_need)
+                upper = min(hi, upper + _half_need)
+                # 확장 후에도 이전 단계와 겹치면 상단을 이전 하단 아래로 내린다
+                if _idx > 0 and upper > step_price_ranges[_idx - 1][0] - 1e-9:
+                    upper = step_price_ranges[_idx - 1][0] - price_epsilon
+                    lower = upper - _min_width
+                    lower = max(lo, lower)
+                # 틱 단위 재반올림
+                lower = _round_market_price(_clip(lower, lo, hi), market, "ceil")
+                upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
+                if lower > upper:
+                    lower, upper = upper, lower
+                # 재반올림 후에도 중심이 벗어나면 중심을 다시 포함시킨다
+                if not (lower <= center <= upper):
+                    if center < lower:
+                        lower = _round_market_price(_clip(center - price_epsilon, lo, hi), market, "ceil")
+                    if center > upper:
+                        upper = _round_market_price(_clip(center + price_epsilon, lo, hi), market, "floor")
+                    lower = min(lower, upper - price_epsilon)
             if lower > upper:
                 lower, upper = upper, lower
             step_price_ranges.append([lower, upper])
@@ -11188,12 +11291,21 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 if nearest_anchor and abs(nearest_anchor[0] - price) <= max(width * 0.45, atr_d * 0.30)
                 else ""
             )
+            # 단계별 범위는 중심가 대비 ATR 기반 가변 폭으로 산출해 동일 폭 문제를 해소한다.
+            _depth_ratio = _idx / max(1, len(rounded_prices) - 1)
+            _range_width = price_high - price_low
+            _range_detail = (
+                f"인접 중간값 + ATR·깊이 가변 확대(깊이 {_depth_ratio:.2f}, "
+                f"폭 {_range_width:,.0f}원/{_range_width/last_price*100:.2f}%"
+                f"{'·추천' if is_recommended else ''}"
+                f"{'·변동성확대' if vol_trend=='expanding' else ''})"
+            )
             result.append({
                 "stage": _idx + 1,
                 "label": f"{_idx + 1}단계",
                 "price": price,
                 "price_range": [price_low, price_high],
-                "price_range_basis": "인접 단계 중간값으로 세분한 주문 허용 구간",
+                "price_range_basis": _range_detail,
                 "decline_pct": round((price - last_price) / last_price * 100.0, 1),
                 "decline_pct_range": [
                     round((price_low - last_price) / last_price * 100.0, 1),
@@ -11248,7 +11360,21 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             _k1 = max(_k1, 1.55)
             _k2 = max(_k2, 2.15)
         _center = last_price - ((_k1 + _k2) / 2) * atr_d
-        _hw     = (_z["k2"] - _z["k1"]) * atr_d * _bw * 0.5
+        # 밴드 자체도 단계별 가변·대형화로 동일 폭 문제를 해소한다.
+        # 기존 0.4*ATR 폭은 5단계 분할 시 틱 단위에서 0이 되는 경우가 많아
+        # 2.2~3배로 확대해 단계별 범위가 유의미하게 보이도록 한다.
+        _band_expand = {"A": 2.10, "B": 2.45, "C": 2.85}.get(_zn, 2.3)
+        if vol_trend == "expanding":
+            _band_expand += 0.18
+        elif vol_trend == "contracting":
+            _band_expand -= 0.08
+        _hw     = (_z["k2"] - _z["k1"]) * atr_d * _bw * 0.5 * _band_expand
+        # 최소 밴드 폭을 ATR의 일정 배수로 보장해 5단계가 0폭이 되지 않도록 한다.
+        _min_hw = atr_d * (0.42 if _zn == "A" else 0.58 if _zn == "B" else 0.74)
+        _hw = max(_hw, _min_hw)
+        # 틱 단위에서 5단계가 모두 유의미한 폭(2틱 이상)을 갖도록 밴드 자체를 최소 보장한다.
+        _min_band_hw = _market_tick_size(last_price, market) * (7.0 if _zn == "A" else 8.0 if _zn == "B" else 9.0)
+        _hw = max(_hw, _min_band_hw)
         _lo, _hi = _center - _hw, _center + _hw
         if downside_level in ("high", "severe") and _support_is_near:
             _zone_idx = {"A": 0, "B": 1, "C": 2}.get(_zn, 0)
@@ -11332,7 +11458,20 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _anc_C = max(_anc_C, last_price - atr_d * 3.60)
 
     _rec_anchor = {"A": _anc_A, "B": _anc_B, "C": _anc_C}
-    _rec_hw = {"A": atr_d * 0.25 * _bw, "B": atr_d * 0.35 * _bw, "C": atr_d * 0.50 * _bw}
+    # 추천 밴드도 동일하게 가변 대형화한다 (A<B<C, 변동성 확대 시 추가 확대)
+    _rec_expand = {"A": 2.05, "B": 2.40, "C": 2.80}
+    if vol_trend == "expanding":
+        _rec_expand = {k: v + 0.18 for k, v in _rec_expand.items()}
+    elif vol_trend == "contracting":
+        _rec_expand = {k: v - 0.08 for k, v in _rec_expand.items()}
+    _rec_hw = {
+        "A": atr_d * 0.25 * _bw * _rec_expand["A"],
+        "B": atr_d * 0.35 * _bw * _rec_expand["B"],
+        "C": atr_d * 0.50 * _bw * _rec_expand["C"],
+    }
+    # 추천 밴드도 5단계가 모두 유의미한 폭을 갖도록 최소 보장
+    for _k in list(_rec_hw.keys()):
+        _rec_hw[_k] = max(_rec_hw[_k], _market_tick_size(last_price, market) * (6.5 if _k == "A" else 7.5 if _k == "B" else 8.5))
     _rec_btmap = {"A": "B", "B": "C", "C": "C"}  # 기술적 앵커 구간 → 백테스트 Zone 매핑
     _rec_basis = {
         "A": (f"VWAP({_vwap:,.{rnd}f}) + BB중간({bb_m:,.{rnd}f}) 수렴 지지 — 기관 매집 참조" if bb_m_raw
