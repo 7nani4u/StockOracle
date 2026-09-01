@@ -159,7 +159,9 @@ _DD_COLS = ["Open", "High", "Low", "Close", "Volume", "RSI", "MACD", "Signal_Lin
 
 
 def to_dd(hist: pd.DataFrame) -> Dict[str, list]:
-    return {c: hist[c].tolist() for c in _DD_COLS if c in hist.columns}
+    payload = {c: hist[c].tolist() for c in _DD_COLS if c in hist.columns}
+    payload["Date"] = [pd.Timestamp(value).strftime("%Y-%m-%d") for value in hist.index]
+    return payload
 
 
 def eval_one_signal(ticker: str, market: str, df: pd.DataFrame, i: int) -> List[Record]:

@@ -1,238 +1,347 @@
 {
   "model_type": "LightGBM",
-  "trained_at": "2026-08-29T14:53:13.239989",
-  "train_rows": 847,
-  "test_rows": 207,
-  "train_split_date": "2026-06-08T00:00:00",
-  "train_period": "1y",
+  "label_mode": "three_class_directional_with_neutral",
+  "trained_at": "2026-09-01T00:52:24.552725",
+  "train_rows": 33891,
+  "model_fit_rows": 33891,
+  "calibration_rows": 11000,
+  "test_rows": 8560,
+  "directional_test_rows": 5739,
+  "train_split_date": "2025-09-17T00:00:00",
+  "train_period": "2y",
   "features": [
-    "RSI_14",
-    "RSI_21",
-    "MACD",
-    "MACD_signal",
-    "MACD_hist",
     "BB_lower",
-    "BB_middle",
-    "BB_upper",
-    "BB_width",
-    "SMA_20",
     "SMA_50",
     "EMA_12",
-    "EMA_26",
-    "SMA_cross",
-    "price_above_bb",
-    "price_momentum_5d",
-    "price_momentum_10d",
-    "price_momentum_20d",
-    "volume_momentum_5d",
-    "volatility_20d",
-    "volatility_ratio",
-    "high_low_range",
-    "close_to_high_ratio",
-    "volume_ratio_20d",
-    "ATR_14",
-    "ADX",
-    "stochastic_k",
-    "stochastic_d",
-    "VWAP_distance",
-    "OBV_ratio",
-    "NIFTY_return",
-    "BANKNIFTY_return",
     "India_VIX",
-    "relative_strength"
+    "ADX",
+    "volatility_20d",
+    "relative_strength",
+    "trend_spread_20_50"
   ],
   "metrics": {
-    "train_auc": 0.7937985179957657,
-    "test_auc": 0.6091036414565827,
-    "test_accuracy": 0.5700483091787439,
-    "test_balanced_accuracy": 0.5715686274509804,
-    "test_precision": 0.552,
-    "test_recall": 0.6764705882352942,
-    "test_f1": 0.6079295154185022
+    "train_auc": 0.7205097869096959,
+    "test_auc": 0.5691689391490486,
+    "test_accuracy": 0.5492246035894756,
+    "test_balanced_accuracy": 0.5553904029463592,
+    "test_precision": 0.6195402298850575,
+    "test_recall": 0.5035814388041109,
+    "test_f1": 0.5555746435320391
   },
   "calibration": {
     "method": "Platt scaling (logit)",
     "params": {
-      "a": 16.85653384613238,
-      "b": -7.675803262701738
+      "a": -1.0,
+      "b": 0.0,
+      "identity": true,
+      "oof_auc": 0.5146316630447436
+    },
+    "source": "expanding walk-forward out-of-fold predictions (14-business-day embargo)"
+  },
+  "action_threshold": {
+    "confidence_min": 0.62,
+    "coverage": 0.303,
+    "balanced_accuracy": 0.5264
+  },
+  "selected_parameters": {
+    "name": "directional_8feat",
+    "n_estimators": 400,
+    "learning_rate": 0.02,
+    "max_depth": 4,
+    "num_leaves": 15,
+    "min_child_samples": 60,
+    "subsample": 0.8,
+    "colsample_bytree": 0.75,
+    "reg_lambda": 4.0,
+    "min_split_gain": 0.01
+  },
+  "walk_forward_backtest": [
+    {
+      "candidate": "legacy",
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 16377,
+          "test_rows": 3531,
+          "train_end": "2023-11-03",
+          "test_start": "2023-11-23",
+          "test_end": "2024-06-25",
+          "auc": 0.5809868941175454,
+          "brier": 0.30627305850808023
+        },
+        {
+          "fold": 2,
+          "train_rows": 22046,
+          "test_rows": 3670,
+          "train_end": "2024-06-06",
+          "test_start": "2024-06-26",
+          "test_end": "2025-01-27",
+          "auc": 0.5110743362663224,
+          "brier": 0.2808338562538777
+        },
+        {
+          "fold": 3,
+          "train_rows": 27754,
+          "test_rows": 3799,
+          "train_end": "2025-01-08",
+          "test_start": "2025-01-28",
+          "test_end": "2025-08-27",
+          "auc": 0.5449138577881092,
+          "brier": 0.2639285173635842
+        }
+      ],
+      "mean_auc": 0.5456583627239923,
+      "std_auc": 0.02854653688307123,
+      "mean_brier": 0.28367847737518065
+    },
+    {
+      "candidate": "regularized_shallow",
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 16377,
+          "test_rows": 3531,
+          "train_end": "2023-11-03",
+          "test_start": "2023-11-23",
+          "test_end": "2024-06-25",
+          "auc": 0.5719322284320318,
+          "brier": 0.29332815053497846
+        },
+        {
+          "fold": 2,
+          "train_rows": 22046,
+          "test_rows": 3670,
+          "train_end": "2024-06-06",
+          "test_start": "2024-06-26",
+          "test_end": "2025-01-27",
+          "auc": 0.5200430182315363,
+          "brier": 0.2598285451519173
+        },
+        {
+          "fold": 3,
+          "train_rows": 27754,
+          "test_rows": 3799,
+          "train_end": "2025-01-08",
+          "test_start": "2025-01-28",
+          "test_end": "2025-08-27",
+          "auc": 0.5367944888902972,
+          "brier": 0.25013593107769116
+        }
+      ],
+      "mean_auc": 0.5429232451846219,
+      "std_auc": 0.02162242314657355,
+      "mean_brier": 0.26776420892152897
+    },
+    {
+      "candidate": "compact",
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 16377,
+          "test_rows": 3531,
+          "train_end": "2023-11-03",
+          "test_start": "2023-11-23",
+          "test_end": "2024-06-25",
+          "auc": 0.570506940314305,
+          "brier": 0.2878370661275597
+        },
+        {
+          "fold": 2,
+          "train_rows": 22046,
+          "test_rows": 3670,
+          "train_end": "2024-06-06",
+          "test_start": "2024-06-26",
+          "test_end": "2025-01-27",
+          "auc": 0.5172936387326057,
+          "brier": 0.2573559584585898
+        },
+        {
+          "fold": 3,
+          "train_rows": 27754,
+          "test_rows": 3799,
+          "train_end": "2025-01-08",
+          "test_start": "2025-01-28",
+          "test_end": "2025-08-27",
+          "auc": 0.5363205737457235,
+          "brier": 0.2475164558428754
+        }
+      ],
+      "mean_auc": 0.5413737175975447,
+      "std_auc": 0.02201612383983794,
+      "mean_brier": 0.26423649347634165
+    },
+    {
+      "candidate": "balanced_regularized",
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 16377,
+          "test_rows": 3531,
+          "train_end": "2023-11-03",
+          "test_start": "2023-11-23",
+          "test_end": "2024-06-25",
+          "auc": 0.5746128789307927,
+          "brier": 0.28942657963308643
+        },
+        {
+          "fold": 2,
+          "train_rows": 22046,
+          "test_rows": 3670,
+          "train_end": "2024-06-06",
+          "test_start": "2024-06-26",
+          "test_end": "2025-01-27",
+          "auc": 0.5192787062135857,
+          "brier": 0.2617222249773015
+        },
+        {
+          "fold": 3,
+          "train_rows": 27754,
+          "test_rows": 3799,
+          "train_end": "2025-01-08",
+          "test_start": "2025-01-28",
+          "test_end": "2025-08-27",
+          "auc": 0.5369291656716806,
+          "brier": 0.2517043453206759
+        }
+      ],
+      "mean_auc": 0.5436069169386863,
+      "std_auc": 0.023078300617137025,
+      "mean_brier": 0.26761771664368794
+    },
+    {
+      "candidate": "ultra_regularized",
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 16377,
+          "test_rows": 3531,
+          "train_end": "2023-11-03",
+          "test_start": "2023-11-23",
+          "test_end": "2024-06-25",
+          "auc": 0.5719448288574221,
+          "brier": 0.2717346113832971
+        },
+        {
+          "fold": 2,
+          "train_rows": 22046,
+          "test_rows": 3670,
+          "train_end": "2024-06-06",
+          "test_start": "2024-06-26",
+          "test_end": "2025-01-27",
+          "auc": 0.5140873691707438,
+          "brier": 0.25567789970579236
+        },
+        {
+          "fold": 3,
+          "train_rows": 27754,
+          "test_rows": 3799,
+          "train_end": "2025-01-08",
+          "test_start": "2025-01-28",
+          "test_end": "2025-08-27",
+          "auc": 0.5248951162124815,
+          "brier": 0.2490514077703121
+        }
+      ],
+      "mean_auc": 0.5369757714135491,
+      "std_auc": 0.02511743196685274,
+      "mean_brier": 0.2588213062864672
+    },
+    {
+      "candidate": "directional_8feat",
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 16377,
+          "test_rows": 3531,
+          "train_end": "2023-11-03",
+          "test_start": "2023-11-23",
+          "test_end": "2024-06-25",
+          "auc": 0.574654820346735,
+          "brier": 0.286691608516006
+        },
+        {
+          "fold": 2,
+          "train_rows": 22046,
+          "test_rows": 3670,
+          "train_end": "2024-06-06",
+          "test_start": "2024-06-26",
+          "test_end": "2025-01-27",
+          "auc": 0.52478833291252,
+          "brier": 0.25747092015532486
+        },
+        {
+          "fold": 3,
+          "train_rows": 27754,
+          "test_rows": 3799,
+          "train_end": "2025-01-08",
+          "test_start": "2025-01-28",
+          "test_end": "2025-08-27",
+          "auc": 0.5398947427390541,
+          "brier": 0.24800158489882893
+        }
+      ],
+      "mean_auc": 0.5464459653327697,
+      "std_auc": 0.020878306610147397,
+      "mean_brier": 0.2640547045233866
+    }
+  ],
+  "validation": {
+    "passed": true,
+    "reason": "passed_untouched_holdout_and_walk_forward",
+    "requirements": {
+      "holdout_auc_min": 0.54,
+      "holdout_balanced_accuracy_min": 0.52,
+      "walk_forward_auc_min": 0.54
     }
   },
   "feature_importance": [
     {
-      "feature": "MACD",
-      "importance": 1.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "MACD_signal",
-      "importance": 1.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "BB_width",
-      "importance": 1.0,
+      "feature": "India_VIX",
+      "importance": 986.0,
       "source": "feature_importances_"
     },
     {
       "feature": "volatility_20d",
-      "importance": 1.0,
+      "importance": 794.0,
       "source": "feature_importances_"
     },
     {
-      "feature": "India_VIX",
-      "importance": 1.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "RSI_14",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "RSI_21",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "MACD_hist",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "BB_lower",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "BB_middle",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "BB_upper",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "SMA_20",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "SMA_50",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "EMA_12",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "EMA_26",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "SMA_cross",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "price_above_bb",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "price_momentum_5d",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "price_momentum_10d",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "price_momentum_20d",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "volume_momentum_5d",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "volatility_ratio",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "high_low_range",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "close_to_high_ratio",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "volume_ratio_20d",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "ATR_14",
-      "importance": 0.0,
+      "feature": "trend_spread_20_50",
+      "importance": 741.0,
       "source": "feature_importances_"
     },
     {
       "feature": "ADX",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "stochastic_k",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "stochastic_d",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "VWAP_distance",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "OBV_ratio",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "NIFTY_return",
-      "importance": 0.0,
-      "source": "feature_importances_"
-    },
-    {
-      "feature": "BANKNIFTY_return",
-      "importance": 0.0,
+      "importance": 553.0,
       "source": "feature_importances_"
     },
     {
       "feature": "relative_strength",
-      "importance": 0.0,
+      "importance": 482.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "BB_lower",
+      "importance": 344.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "EMA_12",
+      "importance": 265.0,
+      "source": "feature_importances_"
+    },
+    {
+      "feature": "SMA_50",
+      "importance": 264.0,
       "source": "feature_importances_"
     }
   ],
   "leakage_safeguards": [
     "time-based split (no shuffle)",
+    "14-business-day embargo in walk-forward calibration folds",
     "volatility_ratio per-row (fixed)",
     "label via shift(-14) with 3% dead-zone",
+    "three-class target: DOWN / UP / NEUTRAL within the dead-zone",
     "all indicators causal (rolling only past)",
     "normalization to price (no future scaling)"
   ]

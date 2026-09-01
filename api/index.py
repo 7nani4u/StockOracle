@@ -1808,6 +1808,9 @@ def add_indicators(df: pd.DataFrame, market: str = "US") -> pd.DataFrame:
     df = add_dynamic_rsi_features(df, market=market)
     return df
 
+FIXED_ANALYSIS_PERIOD = "1y"
+
+
 @ttl_cache(120)   # 2분
 def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
     sym = ticker.strip().upper()
@@ -8612,11 +8615,147 @@ def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str
         },
     })
 
+def build_weekly_analysis_context(dd: Dict | None, market: str = "KRX") -> Dict:
+    """Aggregate one-year daily OHLCV into calendar weeks and derive MTF structure."""
+    if not dd:
+        return {"available": False, "reason": "일봉 데이터 없음"}
+
+    required = ("Open", "High", "Low", "Close", "Volume")
+    lengths = [len(dd.get(key) or []) for key in required]
+    row_count = min(lengths, default=0)
+    if row_count < 30:
+        return {"available": False, "reason": "주간 구조 산정에 필요한 일봉 부족"}
+
+    rows = {}
+    for key in required:
+        values = list(dd.get(key) or [])[-row_count:]
+        rows[key] = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy()
+
+    dates = list(dd.get("Date") or [])[-row_count:]
+    parsed_dates = pd.to_datetime(dates, errors="coerce") if len(dates) == row_count else None
+    has_calendar_dates = bool(parsed_dates is not None and not pd.isna(parsed_dates).any())
+    if has_calendar_dates:
+        index = pd.DatetimeIndex(parsed_dates)
+        if index.tz is not None:
+            index = index.tz_localize(None)
+        source = "calendar_week"
+    else:
+        # Direct callers and historical tests may omit Date. Align the synthetic
+        # business-day index from the end so five-session groups remain causal.
+        index = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=row_count)
+        source = "five_session_fallback"
+
+    frame = pd.DataFrame(rows, index=index).replace([np.inf, -np.inf], np.nan)
+    frame = frame.dropna(subset=["Open", "High", "Low", "Close"])
+    if len(frame) < 30:
+        return {"available": False, "reason": "유효 주간 OHLC 데이터 부족"}
+    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+    weekly = frame.resample("W-FRI", label="right", closed="right").agg({
+        "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum",
+    }).dropna(subset=["Open", "High", "Low", "Close"])
+    if len(weekly) < 8:
+        return {"available": False, "reason": "완성 주봉 8개 미만"}
+
+    last_session = frame.index[-1]
+    age_days = max(0, (pd.Timestamp.today().normalize() - last_session.normalize()).days)
+    partial_week = bool(
+        source == "calendar_week" and last_session.weekday() < 4 and age_days <= 6
+    )
+    completed = weekly.iloc[:-1] if partial_week and len(weekly) > 8 else weekly
+    current_price = float(frame["Close"].iloc[-1])
+
+    window_payload = {}
+    fib_keys = (("f236", 0.236), ("f382", 0.382), ("f500", 0.500),
+                ("f618", 0.618), ("f786", 0.786))
+    extension_keys = (("e236", 0.236), ("e382", 0.382), ("e618", 0.618),
+                      ("e1000", 1.000), ("e1272", 1.272), ("e1618", 1.618))
+    for weeks in (13, 26, 52):
+        subset = completed.tail(min(weeks, len(completed)))
+        minimum_weeks = {13: 10, 26: 20, 52: 40}[weeks]
+        if len(subset) < minimum_weeks:
+            continue
+        high = float(subset["High"].max())
+        low = float(subset["Low"].min())
+        span = max(high - low, current_price * 0.01)
+        window_payload[f"{weeks}w"] = {
+            "weeks": int(len(subset)),
+            "high": high,
+            "low": low,
+            "close": float(subset["Close"].iloc[-1]),
+            "retracements": {key: high - span * ratio for key, ratio in fib_keys},
+            "extensions": {key: high + span * ratio for key, ratio in extension_keys},
+        }
+
+    if not window_payload:
+        return {"available": False, "reason": "주간 피보나치 창 산정 불가"}
+
+    consensus_fib = {}
+    for key, _ratio in fib_keys:
+        values = [window["retracements"][key] for window in window_payload.values()]
+        consensus_fib[key] = float(np.median(values))
+
+    support_anchors = []
+    resistance_anchors = []
+    for label, window in window_payload.items():
+        for key, value in window["retracements"].items():
+            row = {"price": float(value), "label": f"{label} Fib {key[1:]}"}
+            if value < current_price:
+                support_anchors.append(row)
+            elif value > current_price:
+                resistance_anchors.append(row)
+        if window["high"] > current_price:
+            resistance_anchors.append({"price": window["high"], "label": f"{label} 주간 고점"})
+
+    support_anchors.sort(key=lambda row: abs(current_price - row["price"]))
+    resistance_anchors.sort(key=lambda row: abs(row["price"] - current_price))
+    weekly_closes = completed["Close"].astype(float)
+    sma13 = float(weekly_closes.tail(min(13, len(weekly_closes))).mean())
+    sma26 = float(weekly_closes.tail(min(26, len(weekly_closes))).mean())
+    slope_base = float(weekly_closes.iloc[-5]) if len(weekly_closes) >= 5 else float(weekly_closes.iloc[0])
+    slope_4w_pct = ((float(weekly_closes.iloc[-1]) / slope_base) - 1.0) * 100.0 if slope_base else 0.0
+    trend_score = sum((current_price >= sma13, sma13 >= sma26, slope_4w_pct > 0))
+    trend_score -= sum((current_price < sma13, sma13 < sma26, slope_4w_pct < 0))
+
+    previous_close = weekly_closes.shift(1)
+    true_range = pd.concat((
+        completed["High"] - completed["Low"],
+        (completed["High"] - previous_close).abs(),
+        (completed["Low"] - previous_close).abs(),
+    ), axis=1).max(axis=1)
+    weekly_atr = float(true_range.tail(min(14, len(true_range))).mean())
+
+    return {
+        "available": True,
+        "source": source,
+        "daily_bars": int(len(frame)),
+        "week_count": int(len(weekly)),
+        "completed_week_count": int(len(completed)),
+        "partial_week_excluded": partial_week,
+        "as_of": last_session.strftime("%Y-%m-%d"),
+        "windows": window_payload,
+        "consensus_fib": consensus_fib,
+        "support_anchors": support_anchors[:8],
+        "resistance_anchors": resistance_anchors[:8],
+        "nearest_resistance": resistance_anchors[0] if resistance_anchors else None,
+        "weekly_atr": weekly_atr,
+        "sma13": sma13,
+        "sma26": sma26,
+        "slope_4w_pct": round(slope_4w_pct, 3),
+        "trend_score": int(trend_score),
+        "trend_label": "상승" if trend_score >= 2 else "하락" if trend_score <= -2 else "중립",
+        "basis": "1년 일봉을 실제 달력 주 단위로 분할한 13·26·52주 피보나치·추세 구조",
+    }
+
+
 def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
               event_risk: Dict | None = None, learning_adjustment: Dict | None = None,
-              chart_patterns: list[Dict] | None = None) -> Dict:
+              chart_patterns: list[Dict] | None = None,
+              weekly_context: Dict | None = None) -> Dict:
     if not atr or np.isnan(atr): atr = price * 0.02
     rnd = 4 if market == "US" else 2
+    weekly_context = weekly_context or build_weekly_analysis_context(dd, market)
+    weekly_available = bool((weekly_context or {}).get("available"))
+    weekly_trend_score = int((weekly_context or {}).get("trend_score") or 0)
 
     # ── 변동성 동적 계수 산출 ──────────────────────────────────────────
     atr_pct = atr / price * 100  # ATR의 현재가 대비 비율(%)
@@ -8762,6 +8901,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         + (adx - 20.0) * 1.2
         + (vol_ratio_now - 1.0) * 25.0
         + (trend - 2) * 8.0
+        + weekly_trend_score * 2.0
         + (12.0 if near_resistance else -8.0)
         - (15.0 if rsi > 75 else 0.0)
     )), 1)
@@ -8797,6 +8937,12 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         (h60,  f"최근 60일 고점({h60:,.{rnd}f})") if h60 > price * 1.01 else None,
         (fib_ext["236"], f"피보나치 확장 23.6%({fib_ext['236']:,.{rnd}f})"),
     ]
+    weekly_resistance = (weekly_context or {}).get("nearest_resistance") or {}
+    if weekly_available and float(weekly_resistance.get("price") or 0) > price * 1.002:
+        cons_cands.append((
+            float(weekly_resistance["price"]),
+            f"주간 저항 {weekly_resistance.get('label')}({float(weekly_resistance['price']):,.{rnd}f})",
+        ))
     cons_cands = [c for c in cons_cands if c]
     cons_anchor, cons_basis_lbl = min(cons_cands, key=lambda t: t[0]) if cons_cands else (price * 1.02, "뚜렷한 저항 부재 — 최소 반등폭 기준")
     if trend <= 1 or vol_trend == "expanding":
@@ -8813,6 +8959,21 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         bal_fib_key = "382"
     bal_anchor = fib_ext[bal_fib_key]
     bal_basis_lbl = f"스윙(고 {h60:,.{rnd}f}/저 {l60:,.{rnd}f}) 확장 {_fib_label[bal_fib_key]} 목표"
+    weekly_window = (
+        ((weekly_context or {}).get("windows") or {}).get("26w")
+        or ((weekly_context or {}).get("windows") or {}).get("13w")
+        or ((weekly_context or {}).get("windows") or {}).get("52w")
+    )
+    if weekly_available and weekly_window:
+        weekly_key = {"382": "e382", "618": "e618", "1000": "e1000"}[bal_fib_key]
+        weekly_anchor = float((weekly_window.get("extensions") or {}).get(weekly_key) or 0)
+        if weekly_anchor > price:
+            weekly_weight = 0.30 if weekly_trend_score >= 2 else 0.18
+            bal_anchor = bal_anchor * (1.0 - weekly_weight) + weekly_anchor * weekly_weight
+            bal_basis_lbl += (
+                f" · {weekly_window['weeks']}주 Fib {weekly_key[1:]} "
+                f"{weekly_weight*100:.0f}% 결합"
+            )
     if h120 > h60 * 1.02 and h120 < bal_anchor:
         bal_anchor = h120
         bal_basis_lbl += f" · 120일 고점({h120:,.{rnd}f}) 상한 반영"
@@ -8822,6 +8983,11 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     # ── 공격적: 추세 지속/돌파 가정 — 중립적보다 한 단계 높은 피보나치 확장 ──
     agg_fib_key = "1618" if bal_fib_key == "1000" else "1272" if bal_fib_key == "618" else "1000"
     agg_anchor_full = fib_ext[agg_fib_key]
+    if weekly_available and weekly_window:
+        weekly_agg_key = {"1000": "e1000", "1272": "e1272", "1618": "e1618"}[agg_fib_key]
+        weekly_agg_anchor = float((weekly_window.get("extensions") or {}).get(weekly_agg_key) or 0)
+        if weekly_agg_anchor > price:
+            agg_anchor_full = agg_anchor_full * 0.75 + weekly_agg_anchor * 0.25
     if breakout_confirmed:
         agg_anchor = agg_anchor_full
         agg_basis_lbl = (f"저항 돌파 확인(거래량 {vol_ratio_now:.1f}배·ADX {adx:.0f}) — "
@@ -8905,6 +9071,47 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     _tp_rsi   = 4.0 if rsi < 40 else (-5.0 if rsi > 70 else 0.0)
     _base_days = 12.3 if _is_us else 13.0  # Zone B 평균 보유일 기준
     _target_quality = _prediction_quality_profile(dd, market)
+    _raw_hist_close = list((dd or {}).get("Close") or [])
+    _raw_hist_high = list((dd or {}).get("High") or [])
+    _raw_hist_low = list((dd or {}).get("Low") or [])
+    _raw_hist_atr = list((dd or {}).get("ATR") or [])
+    _hist_n = min(len(_raw_hist_close), len(_raw_hist_high), len(_raw_hist_low), len(_raw_hist_atr))
+
+    def _empirical_stop_first_rate(distance_atr: float, stop_atr: float) -> tuple[float | None, int]:
+        """Chronological 30-day target-first rate using only completed historical paths."""
+        if _hist_n < 80:
+            return None, 0
+        outcomes = []
+        start_index = max(20, _hist_n - 211)
+        for sample_index in range(start_index, _hist_n - 30):
+            try:
+                sample_close = float(_raw_hist_close[sample_index])
+                sample_atr = float(_raw_hist_atr[sample_index])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not np.isfinite(sample_close) or not np.isfinite(sample_atr) or sample_close <= 0 or sample_atr <= 0:
+                continue
+            target_price = sample_close + sample_atr * max(0.1, distance_atr)
+            stop_price = sample_close - sample_atr * max(0.1, stop_atr)
+            hit = False
+            resolved = False
+            for future_index in range(sample_index + 1, sample_index + 31):
+                try:
+                    future_low = float(_raw_hist_low[future_index])
+                    future_high = float(_raw_hist_high[future_index])
+                except (TypeError, ValueError, IndexError):
+                    break
+                # Same-bar ambiguity is resolved stop-first to avoid optimistic leakage.
+                if np.isfinite(future_low) and future_low <= stop_price:
+                    resolved = True
+                    break
+                if np.isfinite(future_high) and future_high >= target_price:
+                    hit = True
+                    resolved = True
+                    break
+            outcomes.append(1.0 if hit and resolved else 0.0)
+        return (float(np.mean(outcomes)) * 100.0, len(outcomes)) if outcomes else (None, 0)
+
     def _make_tp_from_tgt(tgt_range, profile: str, previous_ceiling: float | None = None):
         """시나리오 전용 가격 구간을 TP1~TP5로 나누고 도달 가능성·기간을 산출한다."""
         _, hi = tgt_range[0], tgt_range[1]
@@ -8916,7 +9123,11 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         else:
             segment_start = max(price, previous_ceiling + boundary_gap)
             progress_steps = [0.0, 0.25, 0.50, 0.75, 1.0]
-        minimum_span = max(atr * 0.5, price * 0.005, price_tick * 5)
+        # Five disjoint target ranges need enough exchange ticks to preserve
+        # visible uncertainty after rounding. Do not force 20 ticks on penny
+        # stocks where that would imply an unrealistic double-digit return.
+        resolution_span = price_tick * (20 if price_tick / max(price, 1e-9) <= 0.005 else 5)
+        minimum_span = max(atr * 0.5, price * 0.02, resolution_span)
         final_price = max(hi, segment_start + minimum_span)
         total_move = final_price - segment_start
         tp_prices = [_round_market_price(segment_start + total_move * progress, market) for progress in progress_steps]
@@ -8953,6 +9164,23 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                 raw_prob, market, profile, _target_quality,
                 qualified_us_entry=_us_entry_qualified,
             )
+            stop_atr = {
+                "conservative": cons_stp_mul,
+                "balanced": bal_stp_mul,
+                "aggressive": agg_stp_mul,
+            }[profile]
+            empirical_rate, empirical_sample_n = _empirical_stop_first_rate(dist_atr, stop_atr)
+            empirical_weight = 0.0
+            if empirical_rate is not None and empirical_sample_n >= 40:
+                empirical_weight = min(0.35, empirical_sample_n / 500.0)
+                probability_cap = _calibrate_target_probability(
+                    100.0, market, profile, _target_quality,
+                    qualified_us_entry=_us_entry_qualified,
+                )
+                prob = min(
+                    probability_cap,
+                    prob * (1.0 - empirical_weight) + empirical_rate * empirical_weight,
+                )
             if index:
                 prob = min(prob, previous_prob - 1.0)
             prob = round(max(5.0, prob), 1)
@@ -8991,6 +9219,13 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                 }],
                 "source_count":      1,
                 "basis":             "ATR 시나리오",
+                "probability_basis": (
+                    f"30거래일 손절 우선 과거 경로 {empirical_sample_n}건 "
+                    f"{empirical_weight*100:.0f}% 결합"
+                    if empirical_weight > 0 else "시장별 워크포워드 사전확률·기술 조건 보정"
+                ),
+                "empirical_sample_n": empirical_sample_n,
+                "empirical_hit_rate_pct": round(empirical_rate, 1) if empirical_rate is not None else None,
                 "highlight_primary_exit": bool(
                     _is_us and profile == "balanced" and index == 1
                 ),
@@ -9083,6 +9318,63 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     # 세 시나리오 15개 목표를 한 번에 처리해 보수적→중립적→공격적 경계에서도
     # 가격 범위가 겹치지 않도록 한다. 함수가 각 level dict를 제자리 갱신한다.
     _attach_target_price_ranges(cons_tp + bal_tp + agg_tp)
+
+    def _differentiate_tp_widths(levels: list[Dict], previous_ceiling: float,
+                                 next_floor: float | None) -> None:
+        """Use spare ticks to keep TP widths distinct without moving TP centers."""
+        used_widths: set[float] = set()
+        for index, level in enumerate(levels):
+            low, high = (float(value) for value in level["price_range"])
+            center = float(level["price"])
+            width_key = round(high - low, 8)
+            if width_key in used_widths:
+                tick = max(
+                    _market_tick_size(low, market),
+                    _market_tick_size(high, market),
+                    _market_tick_size(center, market),
+                )
+                lower_limit = (
+                    float(levels[index - 1]["price_range"][1])
+                    if index else float(previous_ceiling)
+                )
+                upper_limit = (
+                    float(levels[index + 1]["price_range"][0])
+                    if index + 1 < len(levels) else next_floor
+                )
+                raw_candidates = [
+                    (low - tick, high), (low, high + tick),
+                    (low + tick, high), (low, high - tick),
+                    (low - tick, high + tick),
+                ]
+                candidates = []
+                for candidate_low, candidate_high in raw_candidates:
+                    candidate_low = float(_round_market_price(candidate_low, market, "floor"))
+                    candidate_high = float(_round_market_price(candidate_high, market, "ceil"))
+                    candidate_width = round(candidate_high - candidate_low, 8)
+                    if (candidate_low <= center <= candidate_high
+                            and candidate_low > lower_limit
+                            and (upper_limit is None or candidate_high < float(upper_limit))
+                            and candidate_width not in used_widths):
+                        candidates.append((
+                            abs(candidate_width - width_key),
+                            candidate_low, candidate_high, candidate_width,
+                        ))
+                if candidates:
+                    _, low, high, width_key = min(candidates, key=lambda row: row[0])
+                    level["price_range"] = [
+                        _round_market_price(low, market),
+                        _round_market_price(high, market),
+                    ]
+                    level["price_range_basis"] += " · 카드 내 단계 폭 고유화"
+                else:
+                    level["range_resolution_limited"] = True
+            used_widths.add(width_key)
+
+    _differentiate_tp_widths(cons_tp, price, float(bal_tp[0]["price_range"][0]))
+    _differentiate_tp_widths(
+        bal_tp, float(cons_tp[-1]["price_range"][1]), float(agg_tp[0]["price_range"][0]),
+    )
+    _differentiate_tp_widths(agg_tp, float(bal_tp[-1]["price_range"][1]), None)
 
     def _validated_tp_levels(levels: list[Dict], previous_ceiling: float | None = None) -> list[Dict]:
         """반올림·패턴 병합 뒤에도 역전/중첩된 목표는 출력하지 않는다."""
@@ -9209,7 +9501,13 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             "breakout_probability_pct": breakout_probability_pct,
             "volatility_expanding": vol_trend == "expanding",
             "us_entry_qualified": _us_entry_qualified,
+            "weekly_trend_score": weekly_trend_score,
         },
+        "weekly_analysis": weekly_context,
+        "target_range_order_basis": (
+            "보수적→중립적→공격적 순으로 전체 청산 범위와 TP1~TP5를 분리하고 "
+            "ATR·인접 간격·목표 깊이에 따라 폭을 차등 산정"
+        ),
         "breakout_probability_pct": breakout_probability_pct,
         "downside_risk_level": downside_risk_level,
         "downside_risk_score": min(100, downside_points),
@@ -10564,13 +10862,16 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                    market_regime: str = "NEUTRAL",
                    reference_prev_close: float | None = None,
                    reference_pct_change: float | None = None,
-                   arty_dd: Dict | None = None) -> Dict:
+                   arty_dd: Dict | None = None,
+                   weekly_context: Dict | None = None) -> Dict:
     """매수 적정 가격 예측 — 다중 지표 기반 정밀 구간 산출"""
     lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
     highs    = [float(x) for x in dd.get("High",  []) if x is not None]
     closes   = [float(x) for x in dd.get("Close", []) if x is not None]
     opens    = [float(x) for x in dd.get("Open",  []) if x is not None]
     volumes  = [float(x) for x in dd.get("Volume",[]) if x is not None]
+    weekly_context = weekly_context or build_weekly_analysis_context(dd, market)
+    weekly_available = bool((weekly_context or {}).get("available"))
 
     def _last(k):
         a = dd.get(k, [])
@@ -10662,6 +10963,18 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     fib_500 = h60 - fib_range * 0.500
     fib_618 = h60 - fib_range * 0.618
     fib_786 = h60 - fib_range * 0.786
+    weekly_windows = (weekly_context or {}).get("windows") or {}
+    weekly_52 = weekly_windows.get("52w") or weekly_windows.get("26w") or {}
+    weekly_consensus = (weekly_context or {}).get("consensus_fib") or {}
+    if weekly_available and weekly_52:
+        h60 = float(weekly_52.get("high") or h60)
+        l60 = float(weekly_52.get("low") or l60)
+        fib_236 = float(weekly_consensus.get("f236") or fib_236)
+        fib_382 = float(weekly_consensus.get("f382") or fib_382)
+        fib_500 = float(weekly_consensus.get("f500") or fib_500)
+        fib_618 = float(weekly_consensus.get("f618") or fib_618)
+        fib_786 = float(weekly_consensus.get("f786") or fib_786)
+        fib_period_label = "1년·13/26/52주 피보나치 합의"
 
     # ── 거래량 가중 평균가 (최근 20일 VWAP 근사) ──────────────────────
     vwap_approx = None
@@ -10992,6 +11305,13 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             (fib_500 if last_price * 0.70 < fib_500 < last_price else None,
              1.05 if is_recommended else 0.55, "Fib 50%"),
         ]
+        if weekly_available:
+            for weekly_anchor in ((weekly_context or {}).get("support_anchors") or [])[:5]:
+                raw.append((
+                    weekly_anchor.get("price"),
+                    1.35 if is_recommended else 0.95,
+                    weekly_anchor.get("label") or "주간 Fib",
+                ))
         result = []
         for value, weight, label in raw:
             try:
@@ -11106,31 +11426,6 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
             if lower > upper:
                 lower, upper = upper, lower
-            # 동일 폭 해소를 위한 최소 폭 보장: 얕은 단계 1틱, 깊은 단계 1.8틱까지 차등 (밴드 폭 내에서만)
-            _depth_for_min = _idx / max(1, n - 1)
-            _min_width = price_epsilon * (1.0 + _depth_for_min * 0.4 + (0.1 if is_recommended else 0))
-            if False and upper - lower < _min_width - 1e-9:
-                # 중심을 유지한 채 대칭 확장한다.
-                _half_need = (_min_width - (upper - lower)) / 2.0
-                lower = max(lo, lower - _half_need)
-                upper = min(hi, upper + _half_need)
-                # 확장 후에도 이전 단계와 겹치면 상단을 이전 하단 아래로 내린다
-                if _idx > 0 and upper > step_price_ranges[_idx - 1][0] - 1e-9:
-                    upper = step_price_ranges[_idx - 1][0] - price_epsilon
-                    lower = upper - _min_width
-                    lower = max(lo, lower)
-                # 틱 단위 재반올림
-                lower = _round_market_price(_clip(lower, lo, hi), market, "ceil")
-                upper = _round_market_price(_clip(upper, lo, hi), market, "floor")
-                if lower > upper:
-                    lower, upper = upper, lower
-                # 재반올림 후에도 중심이 벗어나면 중심을 다시 포함시킨다
-                if not (lower <= center <= upper):
-                    if center < lower:
-                        lower = _round_market_price(_clip(center - price_epsilon, lo, hi), market, "ceil")
-                    if center > upper:
-                        upper = _round_market_price(_clip(center + price_epsilon, lo, hi), market, "floor")
-                    lower = min(lower, upper - price_epsilon)
             if lower > upper:
                 lower, upper = upper, lower
             step_price_ranges.append([lower, upper])
@@ -11352,6 +11647,94 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         rounded_lo = min(rounded_lo, rounded_hi - tick * 4)
         rounded_lo = float(_round_market_price(max(tick, rounded_lo), market, "floor"))
         return rounded_lo, rounded_hi
+
+    def _order_band_family(bands: list[Dict], is_recommended: bool) -> None:
+        """Make A/B/C card prices strictly lower with distinct range widths."""
+        previous_band = None
+        used_widths: list[float] = []
+        for band in bands:
+            lo, hi = (float(value) for value in band["range"])
+            width = hi - lo
+            if previous_band is not None:
+                previous_lo, previous_hi = (float(value) for value in previous_band["range"])
+                previous_width = previous_hi - previous_lo
+                tick = max(
+                    _market_tick_size(previous_hi, market),
+                    _market_tick_size(hi, market),
+                )
+                # 상단은 앞 카드보다 낮추고, 폭은 앞 카드보다 최소 1호가 넓힌다.
+                # 그러면 상·하단이 모두 A > B > C가 되며 동일 범위도 사라진다.
+                hi = min(hi, previous_hi - tick)
+                width = max(width, previous_width + tick)
+                lo = hi - width
+
+            lo, hi = _floor_band(lo, hi)
+            lo, hi = _ensure_orderable_band(lo, hi, "floor" if is_recommended else "ceil")
+            steps = _build_buy_steps(lo, hi, is_recommended, float(band["allocation_pct"]))
+
+            # 기술적 앵커의 밀도 차이와 호가 반올림으로 같은 단계 가격이 같아질 수
+            # 있으므로 카드 전체를 아래로 이동해 중심가와 범위 양끝도 엄격히 분리한다.
+            if previous_band is not None:
+                previous_steps = previous_band.get("steps") or []
+                for _attempt in range(6):
+                    required_shift = 0.0
+                    for previous_step, current_step in zip(previous_steps, steps):
+                        previous_values = (
+                            float(previous_step["price"]),
+                            float(previous_step["price_range"][0]),
+                            float(previous_step["price_range"][1]),
+                        )
+                        current_values = (
+                            float(current_step["price"]),
+                            float(current_step["price_range"][0]),
+                            float(current_step["price_range"][1]),
+                        )
+                        for previous_value, current_value in zip(previous_values, current_values):
+                            gap = max(
+                                _market_tick_size(previous_value, market),
+                                _market_tick_size(current_value, market),
+                            )
+                            required_shift = max(
+                                required_shift,
+                                current_value - (previous_value - gap),
+                            )
+                    if required_shift <= 1e-9:
+                        break
+                    candidate_lo = lo - required_shift
+                    candidate_hi = hi - required_shift
+                    if candidate_lo < _band_floor:
+                        break
+                    lo, hi = candidate_lo, candidate_hi
+                    lo, hi = _ensure_orderable_band(lo, hi, "floor")
+                    steps = _build_buy_steps(
+                        lo, hi, is_recommended, float(band["allocation_pct"]),
+                    )
+
+            # 이동 과정에서 호가 구간이 바뀌어 폭이 다시 같아지는 경우까지 최종
+            # 제거한다. 상단을 낮추면 앞 카드와의 가격 순서도 더 명확해진다.
+            tick = _market_tick_size(hi, market)
+            while any(abs((hi - lo) - used_width) <= 1e-9 for used_width in used_widths):
+                candidate_hi = float(_round_market_price(hi - tick, market, "floor"))
+                if candidate_hi <= lo:
+                    break
+                hi = candidate_hi
+                steps = _build_buy_steps(
+                    lo, hi, is_recommended, float(band["allocation_pct"]),
+                )
+
+            band["range"] = [lo, hi]
+            band["pct"] = [
+                round((lo - last_price) / last_price * 100, 2),
+                round((hi - last_price) / last_price * 100, 2),
+            ]
+            band["steps"] = steps
+            band["range_order_basis"] = (
+                "밴드 A→B→C 순으로 중심가·범위 상하단을 최소 1호가씩 낮추고 "
+                "카드별 전체 폭을 다르게 산정"
+            )
+            used_widths.append(hi - lo)
+            previous_band = band
+
     for _zn in ["A", "B", "C"]:
         _z = _btz[_zn]
         _k1 = _z["k1"] + _base_depth_offset + depth_shift
@@ -11394,7 +11777,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "range": [_lo, _hi],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
-            "steps": _build_buy_steps(_lo, _hi, False, _band_allocation),
+            "steps": [],
             "atr_basis": f"ATR×{_k1:.2f}~{_k2:.2f} 보수 눌림 (기본 {_z['k1']:.2f}~{_z['k2']:.2f} + 시장/위험 보정 {(_base_depth_offset + depth_shift):.2f})",
             "tech_note": _agg_tech[_zn],
             "risk_note": f"{downside_label}: 확률 -{_risk_penalty:.1f}pp 반영",
@@ -11408,6 +11791,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "loss_prob_pct": _los,
             "avg_failed_loss_pct": _z["floss"],
         })
+
+    _order_band_family(aggressive_bands, False)
 
     # ── 추천 매수 밴드 A/B/C ─────────────────────────────────────────
     # 개념: 기술적 지표 앵커(VWAP·BB·MA·Fib) 기반 고확률 진입 구간
@@ -11521,7 +11906,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "range": [_lo, _hi],
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
-            "steps": _build_buy_steps(_lo, _hi, True, _band_allocation),
+            "steps": [],
             "basis":         _rec_basis[_zn],
             "hold_note":     _rec_hold[_zn],
             "risk_note":     f"{downside_label}: 지지선 확인 전 상단 추격 제한",
@@ -11534,6 +11919,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "win_prob_pct":  _win,
             "avg_hold_days": _z["hold"],
         })
+
+    _order_band_family(recommended_bands, True)
 
     # 최종 출력 전 가격 구간의 방향·중첩을 검증한다. 2차 주 진입은 같은 전략의
     # 1차 탐색보다 실제로 더 깊은 구조가 확인될 때만 표시한다. 데이터가 이를
@@ -11551,26 +11938,53 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 return False
         return True
 
+    def _validate_band_family(bands: list[Dict]) -> bool:
+        widths = [
+            float(band["range"][1]) - float(band["range"][0])
+            for band in bands
+            if len(band.get("range") or []) == 2
+        ]
+        if len(widths) != len(bands) or len({round(width, 8) for width in widths}) != len(widths):
+            return False
+        for previous, current in zip(bands, bands[1:]):
+            previous_range = previous.get("range") or []
+            current_range = current.get("range") or []
+            if (len(previous_range) != 2 or len(current_range) != 2
+                    or previous_range[0] <= current_range[0]
+                    or previous_range[1] <= current_range[1]):
+                return False
+            previous_steps = previous.get("steps") or []
+            current_steps = current.get("steps") or []
+            if len(previous_steps) != len(current_steps):
+                return False
+            for previous_step, current_step in zip(previous_steps, current_steps):
+                if (previous_step["price"] <= current_step["price"]
+                        or previous_step["price_range"][0] <= current_step["price_range"][0]
+                        or previous_step["price_range"][1] <= current_step["price_range"][1]):
+                    return False
+        return True
+
     for _band in aggressive_bands:
         _band["is_available"] = _validate_entry_steps(_band)
         if not _band["is_available"]:
             _band["availability_note"] = "독립적인 탐색 가격 구조를 확인하지 못해 표시를 보류했습니다."
-    _exploration_floor = min(
-        (float((band.get("range") or [0])[0] or 0) for band in aggressive_bands),
-        default=0.0,
-    )
+            _band["steps"] = []
     for _core in recommended_bands:
         _core["is_available"] = _validate_entry_steps(_core)
-        _core_ceiling = float((_core.get("range") or [0, 0])[1] or 0)
-        if False and _core_ceiling >= _exploration_floor:
-            _core["is_available"] = False
-            _core["availability_note"] = (
-                "1차 탐색 구간 전체보다 깊은 독립 지지 구조가 확인되지 않아 "
-                "주 진입 가격을 임의로 생성하지 않았습니다."
-            )
-            _core["steps"] = []
-        elif not _core["is_available"]:
+        if not _core["is_available"]:
             _core["availability_note"] = "독립적인 주 진입 가격 구조를 확인하지 못해 표시를 보류했습니다."
+            _core["steps"] = []
+
+    if not _validate_band_family(aggressive_bands):
+        for _band in aggressive_bands:
+            _band["is_available"] = False
+            _band["steps"] = []
+            _band["availability_note"] = "밴드 A·B·C의 탐색 가격 순서를 분리하지 못해 표시를 보류했습니다."
+    if not _validate_band_family(recommended_bands):
+        for _band in recommended_bands:
+            _band["is_available"] = False
+            _band["steps"] = []
+            _band["availability_note"] = "밴드 A·B·C의 주 진입 가격 순서를 분리하지 못해 표시를 보류했습니다."
 
     # ── 타이밍 산출 ──────────────────────────────────────────────────
     now = dt.now()
@@ -11789,6 +12203,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "vol_trend": vol_trend,
         "market": _mkt,
         "prediction_profile": _profile,
+        "weekly_analysis": weekly_context,
         "downside_risk": {
             "score": downside_score,
             "level": downside_level,
@@ -12335,7 +12750,8 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
     }
 
 
-def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, market: str = "KRX") -> Dict:
+def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, market: str = "KRX",
+                      weekly_context: Dict | None = None) -> Dict:
     """
     향후 주가 상승 가능 범위(목표가) 예측.
 
@@ -12362,6 +12778,8 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
 
     rnd = 4 if market == "US" else 2
     _profile = _prediction_feature_profile(dd, last_price, atr, market)
+    weekly_context = weekly_context or build_weekly_analysis_context(dd, market)
+    weekly_trend_score = int((weekly_context or {}).get("trend_score") or 0)
 
     # ── 추세 강도 분석 (0 ~ 4, RSI 과매수 시 -1 보정) ──────────────────
     trend_strength = (
@@ -12371,6 +12789,10 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         + (1 if rsi > 50 else 0)
         - (1 if rsi > 70 else 0)   # 과매수 패널티
     )
+    trend_strength = int(_clip(
+        trend_strength + (1 if weekly_trend_score >= 2 else -1 if weekly_trend_score <= -2 else 0),
+        0, 4,
+    ))
 
     # ── period 기반 기본 목표가 산출 ──────────────────────────────────
     if period in ("1d", "3d", "1wk"):
@@ -12414,6 +12836,10 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
     _mid = last_price + max(atr * 0.35, (_raw_mid - last_price) * _bias_mul)
     if _resistance > last_price and _resistance < max_target + atr * 2.0:
         _mid = _mid * 0.65 + _resistance * 0.35
+    weekly_resistance = (weekly_context or {}).get("nearest_resistance") or {}
+    weekly_resistance_price = float(weekly_resistance.get("price") or 0)
+    if last_price < weekly_resistance_price < max_target + atr * 2.0:
+        _mid = _mid * 0.75 + weekly_resistance_price * 0.25
     _old_half = max(atr * 0.25, (max_target - min_target) / 2.0)
     _half = _clip(_old_half * _target_width_mult, atr * 0.28, last_price * (0.018 if market == "US" else 0.028) + atr * 0.90)
     min_target = max(last_price + atr * 0.25, _mid - _half)
@@ -12500,7 +12926,8 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         "risk_level":              risk_level,
         "risk_reason":             risk_reason,
         "prediction_profile":      _profile,
-        "precision_note":          "ATR, realized volatility, trend, volume, resistance, and swing-cycle context refined the target range",
+        "weekly_analysis":         weekly_context,
+        "precision_note":          "ATR, realized volatility, daily trend, and 13/26/52-week Fibonacci structure refined the target range",
     }
 
 
@@ -14512,7 +14939,7 @@ def route(path: str, params: Dict) -> Dict:
     # path는 항상 /api/stock 형식 (슬래시 없음)
     if path == "/api/stock":
         raw = params.get("ticker", "삼성전자")
-        period = params.get("period", "3d")
+        period = FIXED_ANALYSIS_PERIOD
         ticker, market, company = resolve_ticker(raw)
         if not ticker:
             return {"error": f"'{raw}' 종목을 찾을 수 없습니다."}
@@ -14873,9 +15300,10 @@ def route(path: str, params: Dict) -> Dict:
             _event_news += list(us_enriched.get("news") or [])
         event_risk = calc_event_risk(sym, market, _event_news, _event_disclosures)
         learning_adjustment = calc_learning_adjustment(market)
+        weekly_context = build_weekly_analysis_context(dd, market)
         risk             = calc_risk(
             last, atr_val, market, dd, event_risk, learning_adjustment,
-            chart_patterns=geo_patterns,
+            chart_patterns=geo_patterns, weekly_context=weekly_context,
         )
         # 단기 화면은 분봉을 사용하더라도 SMMA 21·50·200 전략은 항상 일봉으로 계산한다.
         # 이미 220개 이상의 일봉이 있으면 재사용하고, 아니면 캐시된 전용 일봉을 조회한다.
@@ -14979,6 +15407,7 @@ def route(path: str, params: Dict) -> Dict:
         buy_price        = calc_buy_price(
             dd, last, atr_val, score, indicator_signals, market, period,
             event_risk, learning_adjustment, regime, prev, pct, arty_dd=arty_dd,
+            weekly_context=weekly_context,
         )
 
         # ── Step 6: 신호 신뢰도 종합 엔진 (거시·섹터·실적·불일치·뉴스감정·신뢰구간) ──
@@ -15093,7 +15522,9 @@ def route(path: str, params: Dict) -> Dict:
             execution_quality=execution_quality,
         )
 
-        target_price = calc_target_price(dd, last, atr_val, period, market)
+        target_price = calc_target_price(
+            dd, last, atr_val, period, market, weekly_context=weekly_context,
+        )
         target_price = _apply_signal_confidence_to_target(target_price, signal_confidence, last, atr_val, market)
         target_price = _apply_learning_adjustment_to_target(target_price, learning_adjustment)
         if target_price:
@@ -15154,6 +15585,7 @@ def route(path: str, params: Dict) -> Dict:
             "period": period,
             "last_close": round(last, _price_rnd), "prev_close": round(prev, _price_rnd),
             "pct_change": round(pct, 2),
+            "weekly_analysis": weekly_context,
             "session_name": session_name,
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
             "volume": int(dd.get("Volume", [0])[-1] or 0),
@@ -16418,8 +16850,8 @@ input::placeholder{color:#484f58}
 #price-chart, #rsi-chart, #macd-chart, #forecast-chart{width:100%;border-radius:8px;overflow:hidden}
 
 /* 리스크 카드 */
-.risk-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-.risk-card{border-radius:12px;padding:16px;border:1px solid transparent}
+.risk-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.risk-card{box-sizing:border-box;min-width:0;border-radius:12px;padding:16px;border:1px solid transparent}
 .risk-card.conservative{background:#0a2d1a;border-color:#1a4730}
 .risk-card.balanced{background:#2d200a;border-color:#4d3615}
 .risk-card.aggressive{background:#2d0d0d;border-color:#4d1515}
@@ -17327,16 +17759,8 @@ input::placeholder{color:#484f58}
       <div id="ticker-suggestions" class="stock-suggestions" role="listbox" aria-label="종목 검색 결과"></div>
     </div>
     <span class="sb-label">분석 기간</span>
-    <select id="period-select" style="margin-bottom:6px" onchange="updatePeriodGuide()">
-      <option value="1d">초단기 (1일)</option>
-      <option value="3d" selected>초단기 (3일·단타 권장)</option>
-      <option value="1wk">초단기 (1주)</option>
-      <option value="1mo">단기 (1개월)</option>
-      <option value="3mo">중단기 (3개월)</option>
-      <option value="6mo">6개월</option>
-      <option value="1y">1년</option>
-      <option value="2y">2년</option>
-      <option value="5y">5년</option>
+    <select id="period-select" style="margin-bottom:6px" disabled aria-label="분석 기간 1년 고정">
+      <option value="1y" selected>1년 고정 · 일봉/주봉 다중 분석</option>
     </select>
     <div id="period-guide" style="font-size:10px;color:#8b949e;line-height:1.45;margin-bottom:10px"></div>
     <div id="scalp-period-recommendation" role="status" aria-live="polite"></div>
@@ -18502,7 +18926,7 @@ const _PERIOD_GUIDES = {
   '1mo':['1시간봉','월간 단기 흐름 · SMMA·동적 RSI는 별도 일봉 사용'],
   '3mo':['일봉 약 65개','중단기 추세 전환 확인용 · 신규 보완 단계'],
   '6mo':['일봉 약 130개','중기 추세 분석 · SMMA200 단독 계산에는 부족'],
-  '1y':['일봉 약 252개','SMMA200+20봉 기울기와 최근 시장 체제 확인용'],
+  '1y':['일봉 약 252개 + 완성 주봉 약 52개','13·26·52주 피보나치와 일봉 기술지표를 함께 분석'],
   '2y':['일봉 약 504개','장기 사이클·복수 시장 체제 비교용'],
   '5y':['일봉 약 1,260개','구조 연구용 · 모바일에서는 경량 전송 적용'],
 };
@@ -18512,7 +18936,7 @@ function updatePeriodGuide() {
   if (!select || !guide) return;
   const row = _PERIOD_GUIDES[select.value] || ['', ''];
   guide.textContent = `${row[0]} · ${row[1]}`;
-  guide.style.color = select.value === '3d' ? '#3fb950' : '#8b949e';
+  guide.style.color = select.value === '1y' ? '#3fb950' : '#8b949e';
   renderScalpPeriodRecommendation(_scalpPeriodRecommendation);
 }
 let _scalpPeriodRecommendation = null;
@@ -18537,12 +18961,12 @@ function renderScalpPeriodRecommendation(rec = null) {
   const row = rec || _scalpPeriodRecommendation;
   if (!row) {
     el.style.borderColor = '#30363d';
-    el.innerHTML = '<strong style="color:#58a6ff">단타 기본: 3일·15분봉</strong><br>분석 후 장 경과시간·20일 평균 거래대금·시장별 ATR로 1일/3일 최적 구간을 다시 추천합니다.';
+    el.innerHTML = '<strong style="color:#58a6ff">분석 기간: 1년 고정</strong><br>일봉 252개를 실제 주 단위로 재집계해 13·26·52주 피보나치와 추세를 함께 확인합니다.';
     return;
   }
   const recommended = String(row.recommended_period || '3d');
-  const matches = select.value === recommended;
-  const tone = matches ? '#3fb950' : '#d29922';
+  const matches = true;
+  const tone = '#3fb950';
   const turnover = _formatScalpTurnover(row.average_daily_turnover, row.turnover_currency);
   const threshold = _formatScalpTurnover(row.turnover_threshold, row.turnover_currency);
   const atrRange = Array.isArray(row.atr_range_pct) ? row.atr_range_pct.join('~') : '—';
@@ -18572,7 +18996,7 @@ function renderScalpPeriodRecommendation(rec = null) {
   el.innerHTML = `
     <div class="scalp-rec-head">
       <strong style="color:${tone}">${recommendationTitle}: ${_escPrediction(row.recommended_label || '3일')} · ${_escPrediction(row.recommended_interval || '15분봉')}</strong>
-      <span class="scalp-rec-match" style="color:${matches ? '#3fb950' : '#d29922'}">${matches ? '선택 일치' : '재분석 필요'}</span>
+      <span class="scalp-rec-match" style="color:#3fb950">1년 분석 내 실행 참고</span>
     </div>
     <div class="scalp-rec-brief">${quickFacts.map(fact => `<span class="scalp-rec-chip">${_escPrediction(fact)}</span>`).join('')}</div>
     ${hardBlockers.length ? `<div class="scalp-rec-block-count">⛔ 차단 사유 ${hardBlockers.length}개</div>` : ''}
@@ -18590,15 +19014,13 @@ function renderScalpPeriodRecommendation(rec = null) {
         ${hardBlockers.length ? `<div class="scalp-rec-detail-row" style="color:#f85149">${hardBlockers.map(reason => '⛔ ' + _escPrediction(reason)).join('<br>')}</div>` : ''}
       </div>
     </details>
-    ${matches || row.vi_blocked ? '' : `<button type="button" onclick="applyScalpPeriodRecommendation()" style="margin-top:6px;padding:5px 8px;width:auto;font-size:10px">추천 기간으로 재분석</button>`}
     <div class="scalp-rec-warning">기간 추천은 매수 승인이 아닙니다.</div>`;
 }
 
 function applyScalpPeriodRecommendation() {
-  if (!_scalpPeriodRecommendation) return;
   const select = document.getElementById('period-select');
   if (!select) return;
-  select.value = _scalpPeriodRecommendation.recommended_period || '3d';
+  select.value = '1y';
   updatePeriodGuide();
   if (currentData) analyze();
 }
@@ -18700,7 +19122,7 @@ async function analyze(tickerOverride = '') {
   closeSidebar();   // 모바일에서 분석 시작 시 사이드바 자동 닫기
   const inputValue = document.getElementById('ticker-input').value;
   const ticker = String(tickerOverride || _selectedStockTicker || inputValue).trim();
-  const period = document.getElementById('period-select').value;
+  const period = '1y';
   if (!ticker) return;
   const requestId = ++_analysisRequestId;
   if (_analysisController) _analysisController.abort();
@@ -18808,10 +19230,11 @@ function setState(s) {
 //   · 종목코드: KRX는 시장 접미사(.KS/.KQ) 제거, US는 티커 유지
 // ════════════════════════════════════════════════════════════════════════
 function _fmtKrNum(v) { return Number(v).toLocaleString('ko-KR', {maximumFractionDigits:0}); }
-// US: 모든 미국 주식 가격은 소수점 4자리 고정 표시(저가주·프리마켓 가격 정밀도 보존).
+// US: 거래소 호가와 동일하게 $1 미만은 4자리, $1 이상은 2자리로 통일한다.
 function _fmtUsNum(v) {
   const n = Number(v);
-  return n.toLocaleString('en-US', {minimumFractionDigits:4, maximumFractionDigits:4});
+  const digits = Math.abs(n) < 1 ? 4 : 2;
+  return n.toLocaleString('en-US', {minimumFractionDigits:digits, maximumFractionDigits:digits});
 }
 
 // 통화기호 포함 가격 (현재가·목표가·매수전략·ATR 리스크 등)
@@ -20993,11 +21416,14 @@ function renderForecast(d, isKrx) {
           </div>
           ${stepRows || '<div class="buy-stage-unavailable">분석 데이터 부족</div>'}
         </div>`;
+        const rangeOrderDetail = `<div class="buy-band-detail">• ${_escPrediction(b.range_order_basis || '밴드별 기술 지지와 변동성에 따라 서로 다른 가격 범위를 산정')}</div>`;
         const detailHtml = isRec
           ? `<div class="buy-band-detail">매수 가격 범위=주문을 나눠 넣는 구간 / 하락률=현재가보다 얼마나 아래인지 / 도달 확률·예상 기간=과거 변동성 기준 참고치</div>
+             ${rangeOrderDetail}
              <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
               <div class="buy-band-detail">• ${b.hold_note || '버티는 힘이 다시 확인되면 본 진입'}</div>`
           : `<div class="buy-band-detail">소액 탐색: 본 진입보다 적게 들어가 반등 여부를 가볍게 확인하는 단계입니다.</div>
+              ${rangeOrderDetail}
               <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
               <div class="buy-band-detail">• ${b.atr_basis}</div>`;
         return `<div class="buy-band-card" style="${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
@@ -21082,6 +21508,12 @@ function renderForecast(d, isKrx) {
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = _riskEventHtml;
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     if (riskTitleEl) riskTitleEl.textContent = '🛡️ 리스크 관리와 목표 청산';
+    const weeklyRisk = risk.weekly_analysis || d.weekly_analysis || {};
+    const weeklyRiskHtml = weeklyRisk.available
+      ? `<div style="grid-column:1/-1;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:9px 11px;font-size:10px;color:#8b949e;line-height:1.55">
+          <b style="color:#58a6ff">1년 주간 구조 분석</b> · 완성 주봉 ${Number(weeklyRisk.completed_week_count || 0)}개 · 13/26/52주 피보나치 · 주간 추세 ${_escPrediction(weeklyRisk.trend_label || '중립')} (${Number(weeklyRisk.slope_4w_pct || 0).toFixed(2)}%)<br>
+          ${_escPrediction(risk.target_range_order_basis || '시나리오별 전체 목표 범위와 단계 폭을 다르게 산정')}
+        </div>` : '';
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     // 📌 눌림목 분석 기반 정밀 가격 — 시나리오 카드에 통합 (별도 섹션 폐지)
     // 고대비 구분선 — 카드 배경(녹/적 틴트·다크·라이트)에 무관하게 항상 보이도록
@@ -21114,6 +21546,7 @@ function renderForecast(d, isKrx) {
       </div>`;
     rgEl.innerHTML = `
       ${commonStopHtml}
+      ${weeklyRiskHtml}
       ${riskEntries.map(sc => {
         // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
         const pbHtml = (() => {
@@ -21178,6 +21611,8 @@ function renderForecast(d, isKrx) {
           : sc.expected_value_pct != null
             ? `<div style="font-size:10px;color:#8b949e;margin:-2px 0 8px">비용 반영 기대값 <b style="color:${sc.expected_value_pct > 0 ? '#3fb950' : '#f85149'}">${sc.expected_value_pct > 0 ? '+' : ''}${sc.expected_value_pct}%</b> · ${_escPrediction(sc.entry_status || '')}</div>`
             : '';
+        const scenarioTargetRange = Array.isArray(sc.tp_range) && sc.tp_range.length === 2
+          ? sc.tp_range : sc.target;
         return `
         <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
           <div class="risk-icon">${sc.icon}</div>
@@ -21185,8 +21620,8 @@ function renderForecast(d, isKrx) {
           <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
           ${entryStatusHtml}
           <div class="risk-row" style="margin-bottom:4px">
-            <span class="risk-lbl">🎯 목표 가격 범위</span>
-            <span class="risk-tgt" style="font-size:12px">${fmt(sc.target[0], isKrx)} ~ ${fmt(sc.target[1], isKrx)}</span>
+            <span class="risk-lbl">🎯 전체 목표 청산 범위</span>
+            <span class="risk-tgt" style="font-size:12px">${fmt(scenarioTargetRange[0], isKrx)} ~ ${fmt(scenarioTargetRange[1], isKrx)}</span>
           </div>
           ${(sc.target_basis && sc.target_basis.length) ? `
           <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:6px">
@@ -21235,7 +21670,7 @@ function renderForecast(d, isKrx) {
                 : 'background:#0d1117;';
               return `<div class="risk-tp-level" role="row" style="${levelBackground}border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
-                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction(lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '')}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
+                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction([lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '', lv.probability_basis || '', lv.price_range_basis || ''].filter(Boolean).join(' · '))}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
                 <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
@@ -24609,7 +25044,7 @@ def replace_nan_with_none(obj):
         return obj.isoformat()
     return obj
 
-VALID_PERIODS = {"1d", "3d", "1wk", "1mo", "3mo", "6mo", "1y", "2y", "5y"}
+VALID_PERIODS = {FIXED_ANALYSIS_PERIOD}
 
 def _send(handler_self, data: Any, status: int = 200, content_type: str = "application/json"):
     path = getattr(handler_self, 'path', '/').split('?')[0].rstrip('/') or '/'
@@ -24866,15 +25301,13 @@ class handler(BaseHTTPRequestHandler):
             # Input Validation
             if path == "/api/stock":
                 ticker = params.get("ticker", "")
-                period = params.get("period", "3d")
+                period = FIXED_ANALYSIS_PERIOD
                 
                 if len(ticker) > 20 or (ticker and not re.match(r"^[a-zA-Z0-9가-힣.\-\s]+$", ticker)):
                      _send(self, {"error": "Invalid ticker format"}, 400)
                      return
 
-                if period not in VALID_PERIODS:
-                     _send(self, {"error": f"Invalid period. Allowed: {', '.join(VALID_PERIODS)}"}, 400)
-                     return
+                params["period"] = FIXED_ANALYSIS_PERIOD
 
             result = route(path, params)
             if result is None:
