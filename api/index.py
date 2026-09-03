@@ -153,12 +153,14 @@ from market_briefing.dynamic_rsi import (
 try:
     from market_briefing.investment_charm import compute_charm_scores, get_key_metrics
     from market_briefing.charm_ranking import enrich_charm_with_ranks
+    from market_briefing.peter_lynch import build_peter_lynch_assessment
     _CHARM_AVAILABLE = True
 except Exception:
     _CHARM_AVAILABLE = False
     compute_charm_scores = lambda info, naver, market: {"smart_score": None, "sub_scores": {}, "available_count": 0}
     get_key_metrics = lambda info, naver, market: {"per": None, "psr": None, "roe": None, "dy": None, "per_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
     enrich_charm_with_ranks = lambda charm, symbol, market: charm
+    build_peter_lynch_assessment = lambda info, naver, market, annual_income=None: {"status": "unavailable", "eligible": False, "criteria": []}
 
 # ── ML predictor (StockFlow leakage-safe pipeline) ──────────────────────────
 try:
@@ -276,6 +278,19 @@ def ttl_cache(ttl: int):
             return r
         return wrapper
     return deco
+
+
+@ttl_cache(21600)
+def fetch_annual_income_statement(symbol: str):
+    """Fetch reported annual fundamentals once per symbol for strict GARP checks."""
+    try:
+        ticker = yf.Ticker(symbol)
+        statement = ticker.get_income_stmt(freq="yearly")
+        if statement is not None and not statement.empty:
+            return statement
+        return ticker.income_stmt
+    except Exception:
+        return None
 
 # =============================================================================
 # 🔬 7단계 스캔 엔진 — 출력/선정 공통 설정 (한국·미국 동일 적용)
@@ -15564,6 +15579,7 @@ def route(path: str, params: Dict) -> Dict:
         # ── 투자매력 진단 (ChoiceStock 스마트스코어 참고) ──────────────────
         investment_charm = None
         key_metrics = None
+        peter_lynch = None
         try:
             if _CHARM_AVAILABLE:
                 # naver는 KRX dict, us_enriched는 US
@@ -15573,12 +15589,18 @@ def route(path: str, params: Dict) -> Dict:
                 investment_charm = compute_charm_scores(info_for_charm or {}, naver_for_charm, market)
                 investment_charm = enrich_charm_with_ranks(investment_charm, sym, market)
                 key_metrics = get_key_metrics(info_for_charm or {}, naver_for_charm, market)
+                peter_lynch = build_peter_lynch_assessment(
+                    info_for_charm or {}, naver_for_charm, market,
+                    fetch_annual_income_statement(sym),
+                )
             else:
                 investment_charm = {"smart_score": None, "sub_scores": {}, "available_count": 0, "smart_score_str": "N/A"}
                 key_metrics = {"market_cap_str": "N/A", "per_str": "N/A", "pbr_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
+                peter_lynch = {"status": "unavailable", "eligible": False, "criteria": []}
         except Exception as _charm_e:
             investment_charm = {"smart_score": None, "sub_scores": {}, "available_count": 0, "smart_score_str": "N/A", "error": str(_charm_e)}
             key_metrics = {"market_cap_str": "N/A", "per_str": "N/A", "pbr_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
+            peter_lynch = {"status": "unavailable", "eligible": False, "criteria": [], "error": str(_charm_e)}
 
         response = {
             "symbol": sym, "company": company or sym, "market": market,
@@ -15642,6 +15664,7 @@ def route(path: str, params: Dict) -> Dict:
             "security_status": security_status,
             "investment_charm": investment_charm,
             "key_metrics": key_metrics,
+            "peter_lynch": peter_lynch,
         }
         if str(params.get("lite") or "").lower() in {"1", "true", "yes"}:
             response = _compact_stock_response(response)
@@ -20171,6 +20194,50 @@ function renderDiagnosis(d, isKrx) {
     const roeColor = roeRaw == null ? '#484f58' : roeRaw < 0 ? '#f85149' : roeRaw >= 15 ? '#3fb950' : roeRaw >= 8 ? '#58a6ff' : '#d29922';
     const dyColor = dyRaw == null ? '#484f58' : dyRaw >= 2 ? '#3fb950' : dyRaw >= 1 ? '#58a6ff' : dyRaw > 0 ? '#d29922' : '#484f58';
 
+    // 원문 수치 기준을 별도 표시한다. 스마트스코어와 달리 이 평가는 5개
+    // 조건을 모두 충족해야만 통과이며, 누락값을 통과로 취급하지 않는다.
+    const lynch = d.peter_lynch;
+    const lynchCriteria = Array.isArray(lynch?.criteria) ? lynch.criteria : [];
+    const lynchStatus = lynch?.status || 'unavailable';
+    const lynchStatusMeta = lynchStatus === 'pass'
+      ? { text: '5개 기준 충족', color: '#3fb950' }
+      : lynchStatus === 'fail'
+        ? { text: '기준 미충족', color: '#f85149' }
+        : { text: '판정 보류', color: '#d29922' };
+    const formatLynchValue = criterion => {
+      const value = criterion?.value;
+      if (value == null || value === '' || !Number.isFinite(Number(value))) return 'N/A';
+      const n = Number(value);
+      if (criterion.key === 'market_cap') {
+        return isKrx ? `${(n / 1e12).toFixed(2)}조원` : `$${(n / 1e9).toFixed(2)}B`;
+      }
+      if (criterion.key === 'debt_to_equity' || criterion.key === 'eps_cagr_3y') return `${n.toFixed(2)}%`;
+      return `${n.toFixed(2)}배`;
+    };
+    const lynchCriteriaHtml = lynchCriteria.map(criterion => {
+      const meta = criterion.status === 'pass'
+        ? { label: '통과', color: '#3fb950' }
+        : criterion.status === 'fail'
+          ? { label: '미충족', color: '#f85149' }
+          : { label: '데이터 부족', color: '#d29922' };
+      const reason = criterion.unavailable_reason || criterion.source || '';
+      return `<div style="border:1px solid #30363d;border-radius:8px;padding:9px;background:#0d1117">
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;font-weight:700"><span>${criterion.label}</span><span style="color:${meta.color}">${meta.label}</span></div>
+        <div style="font-size:15px;font-weight:700;color:${meta.color};margin-top:4px">${formatLynchValue(criterion)}</div>
+        <div style="font-size:10px;color:#8b949e;margin-top:3px">기준 ${criterion.threshold}</div>
+        <div style="font-size:9px;color:#484f58;margin-top:3px">${reason}</div>
+      </div>`;
+    }).join('');
+    const lynchHtml = lynchCriteria.length ? `
+      <section style="margin-top:14px;padding:12px;border:1px solid #30363d;border-radius:10px;background:#161b22">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+          <div><div style="font-size:13px;font-weight:700">피터 린치 스타일 GARP 점검</div><div style="font-size:10px;color:#8b949e;margin-top:3px">원문 5개 수치 기준의 엄격한 개별 종목 필터, 매수 신호 아님</div></div>
+          <div style="font-size:12px;font-weight:700;color:${lynchStatusMeta.color}">${Number(lynch.passed_count || 0)}/5 ${lynchStatusMeta.text}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:7px;margin-top:10px">${lynchCriteriaHtml}</div>
+        <div style="font-size:9px;color:#484f58;line-height:1.5;margin-top:9px">${(lynch.notes || []).join(' ')}</div>
+      </section>` : '';
+
     // 5개 세부 항목 정의 (고정 순서)
     const subDefs = [
       { key: 'growth', label: '미래성장성', emoji: '🚀', desc: '매출·이익 성장률' },
@@ -20249,6 +20316,7 @@ ${hasCompleteRadarData
           <div class="charm-metric"><div class="charm-metric-label">ROE</div><div class="charm-metric-val" style="color:${roeColor}">${roeVal}</div></div>
           <div class="charm-metric"><div class="charm-metric-label">DY</div><div class="charm-metric-val" style="color:${dyColor}">${dyVal}</div></div>
         </div>
+        ${lynchHtml}
         <div class="charm-detail-list">${detailRows}</div>
         <div style="font-size:10px;color:#484f58;line-height:1.5;margin-bottom:22px">※ 사업독점력은 시장점유율이 아닌 이익률·ROE 기반의 사업 지속가능성 대체지표입니다.</div>
       </div>
@@ -23025,7 +23093,7 @@ function renderFlowTab(d) {
     const _gb  = flowRecBadge.dataset.gradeBg;
     // 최종 판단은 초기 등급 문구가 아니라 기술·뉴스·눌림목·위험을 다시 합산한 결과를 사용한다.
     flowRecBadge.className = 'rec-badge-lg';
-    flowRecBadge.textContent = `${recLbl} · 종합 ${effScore.toFixed(1)}점 · ${confText}`;
+    flowRecBadge.textContent = `${recLbl} · ${confText}`;
     if (_gc) {
       flowRecBadge.style.color       = _gc;
       flowRecBadge.style.borderColor = _gc;
@@ -23585,6 +23653,41 @@ async function loadKrLongterm(force) {
   }
 }
 
+function renderLongtermGarp(assessment) {
+  var garp = assessment || {};
+  var criteria = garp.criteria || [];
+  if (!criteria.length) {
+    return '<div style="margin-top:10px;padding:9px 10px;border:1px solid #30363d;border-radius:7px;color:#8b949e;font-size:11px">피터 린치 스타일 GARP 점검: 재무 데이터 확인 불가</div>';
+  }
+  var status = garp.eligible ? 'GARP 5/5 통과' : garp.status === 'fail' ? 'GARP 기준 미충족' : 'GARP 검토 보류';
+  var color = garp.eligible ? '#3fb950' : garp.status === 'fail' ? '#f85149' : '#d29922';
+  var formatValue = function(c) {
+    if (c.value == null) return 'N/A';
+    if (c.key === 'eps_cagr_3y' || c.key === 'debt_to_equity') return Number(c.value).toFixed(1) + '%';
+    if (c.key === 'per' || c.key === 'peg') return Number(c.value).toFixed(2) + '배';
+    if (c.key === 'market_cap') {
+      if (String(c.threshold).indexOf('조원') >= 0) {
+        return Number(c.value) >= 1000000000000
+          ? (Number(c.value) / 1000000000000).toFixed(1) + '조원'
+          : (Number(c.value) / 100000000).toFixed(0) + '억원';
+      }
+      return '$' + (Number(c.value) / 1000000000).toFixed(2) + 'B';
+    }
+    return String(c.value);
+  };
+  var rows = criteria.map(function(c) {
+    var marker = c.status === 'pass' ? '통과' : c.status === 'fail' ? '미충족' : '미확인';
+    var rowColor = c.status === 'pass' ? '#3fb950' : c.status === 'fail' ? '#f85149' : '#8b949e';
+    var detail = c.status === 'unavailable' && c.unavailable_reason ? ' · ' + c.unavailable_reason : '';
+    return '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-top:1px solid #21262d">' +
+      '<span style="color:#c9d1d9">' + c.label + ' <span style="color:#8b949e">(' + c.threshold + ')</span></span>' +
+      '<span style="text-align:right;color:' + rowColor + '">' + marker + ' · ' + formatValue(c) + detail + '</span></div>';
+  }).join('');
+  return '<div style="margin-top:10px;padding:9px 10px;border:1px solid ' + color + '55;border-radius:7px;background:' + color + '0d;font-size:11px;line-height:1.45">' +
+    '<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:4px;font-weight:700;color:' + color + '"><span>피터 린치 스타일 GARP</span><span>' + status + ' · ' + (garp.passed_count || 0) + '/5</span></div>' + rows +
+    '<div style="margin-top:5px;color:#8b949e">보고된 연간 EPS 4개 사업연도 기준 · 매수 신호나 수익 예측이 아닙니다.</div></div>';
+}
+
 function renderKrLongtermCards(items) {
   var el = document.getElementById('kr-lt-cards');
   if (!el) return;
@@ -23641,6 +23744,7 @@ function renderKrLongtermCards(items) {
         return '<span class="kr-lt-fund-tag">' + f + '</span>';
       }).join('') + '</div>';
     }
+    var garpHtml = renderLongtermGarp(it.peter_lynch);
 
     // 테마 배지
     var themeHtml = it.theme ? '<span class="kr-lt-theme-badge"># ' + it.theme + '</span>' : '';
@@ -23677,6 +23781,7 @@ function renderKrLongtermCards(items) {
           '<div class="us-reco-pi-val red">' + (it.stop_loss || 0).toLocaleString() + '원</div></div>' +
         kpredHtml +
       '</div>' +
+      garpHtml +
       /* ── 핵심 추천 사유 ── */
       '<div style="margin:10px 0 4px;font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.04em">핵심 추천 사유</div>' +
       '<div class="us-reco-reasons">' + reasons + '</div>' +
@@ -23766,6 +23871,7 @@ function renderUsLongtermCards(items) {
     var fundHtml = fundItems.length ? '<div class="kr-lt-fund">' + fundItems.map(function(f) {
       return '<span class="kr-lt-fund-tag">' + f + '</span>';
     }).join('') + '</div>' : '';
+    var garpHtml = renderLongtermGarp(it.peter_lynch);
 
     return '<div class="us-reco-card kr-lt-card">' +
       /* ── 헤더 ── */
@@ -23797,6 +23903,7 @@ function renderUsLongtermCards(items) {
           '<div class="us-reco-pi-val red">$' + (it.stop_loss || 0).toFixed(2) + '</div></div>' +
         kpredHtml +
       '</div>' +
+      garpHtml +
       /* ── 핵심 추천 사유 ── */
       '<div style="margin:10px 0 4px;font-size:11px;color:#8b949e;font-weight:600;letter-spacing:.04em">핵심 추천 사유</div>' +
       '<div class="us-reco-reasons">' + reasons + '</div>' +
