@@ -6448,6 +6448,49 @@ def _kr_calc_trend_status(a, ma_align, w52):
         return "횡보"
     return "혼조"
 
+
+def _collect_completed_futures(tickers, fetcher, max_workers: int, timeout: float):
+    """Collect completed provider calls without letting slow calls block the response."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    futures = {executor.submit(fetcher, ticker): ticker for ticker in tickers}
+    try:
+        done, pending = concurrent.futures.wait(futures, timeout=timeout)
+        results = {}
+        for future in done:
+            ticker = futures[future]
+            try:
+                results[ticker] = future.result()
+            except Exception:
+                results[ticker] = {}
+        for future in pending:
+            future.cancel()
+        return results, len(pending)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _has_valid_latest_ohlcv(df) -> bool:
+    """Reject incomplete final price bars before they can affect a ranking."""
+    required = ("Close", "High", "Low", "Volume")
+    if df is None or df.empty or any(column not in df.columns for column in required):
+        return False
+    try:
+        values = [float(df[column].iloc[-1]) for column in required]
+        return all(np.isfinite(value) for value in values) and values[0] > 0 and values[3] >= 0
+    except (TypeError, ValueError, IndexError, KeyError):
+        return False
+
+
+def _longterm_garp_rank(assessment, technical_score):
+    """Prioritize strict GARP qualification while preserving technical order."""
+    assessment = assessment or {}
+    return (
+        bool(assessment.get("eligible")),
+        int(assessment.get("passed_count") or 0),
+        technical_score,
+    )
+
+
 def _kr_longterm_score(a, tkr, fundamentals=None):
     """KR 장기 투자 100점 종합 스코어링
     추세(25) + 수급(20) + 밸류(15) + 성장성(15) + 안정성(10) + 저평가/반등(10) + 테마(5)
@@ -6592,18 +6635,17 @@ def fetch_kr_longterm_reco():
                     "roe": roe, "eps_growth": eps_growth,
                     "rev_growth": rev_growth,
                     "mktcap": info.get("marketCap"),
+                    "info": info,
                 }
             except Exception:
                 return {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
-            futs = {ex.submit(_fetch_fund, tkr): tkr for tkr in kr_tickers}
-            for fut in concurrent.futures.as_completed(futs, timeout=20):
-                tkr2 = futs[fut]
-                try: fundamentals[tkr2] = fut.result()
-                except Exception: fundamentals[tkr2] = {}
+        fundamentals, fund_timeouts = _collect_completed_futures(
+            kr_tickers, _fetch_fund, max_workers=6, timeout=20
+        )
 
         # ── 후보 종목 분석 ──────────────────────────────────────────────
         candidates = []
+        invalid_price_count = 0
         for tkr in kr_tickers:
             try:
                 if isinstance(raw.columns, pd.MultiIndex):
@@ -6611,9 +6653,12 @@ def fetch_kr_longterm_reco():
                     df = raw.xs(tkr, axis=1, level=1).dropna(how="all")
                 else:
                     df = raw.copy()
-                if len(df) < 60: continue
+                if len(df) < 60 or not _has_valid_latest_ohlcv(df):
+                    invalid_price_count += 1
+                    continue
                 a = _us_analyze_ticker(df, kospi_df)
                 if not a: continue
+                a["price_as_of"] = str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])
                 a["ma_align"] = _kr_calc_ma_align(df)
                 a["mdd_data"] = _kr_calc_mdd(df)
                 score, breakdown = _kr_longterm_score(a, tkr, fundamentals.get(tkr, {}))
@@ -6623,6 +6668,19 @@ def fetch_kr_longterm_reco():
                 continue
 
         candidates.sort(key=lambda x: x[1], reverse=True)
+        garp_candidates = [ticker for ticker, _, _, _ in candidates[:30]]
+        def _fetch_kr_garp(ticker):
+            return build_peter_lynch_assessment(
+                fundamentals.get(ticker, {}).get("info") or {}, {}, "KRX",
+                fetch_annual_income_statement(ticker),
+            )
+        garp_by_ticker, garp_timeouts = _collect_completed_futures(
+            garp_candidates, _fetch_kr_garp, max_workers=6, timeout=25
+        )
+        candidates.sort(
+            key=lambda item: _longterm_garp_rank(garp_by_ticker.get(item[0]), item[1]),
+            reverse=True,
+        )
         results = []
         for tkr, score, a, breakdown in candidates[:10]:
             rsi = a.get("rsi"); macd = a.get("macd"); adx = a.get("adx")
@@ -6741,8 +6799,17 @@ def fetch_kr_longterm_reco():
                 "ma_aligned": ma_align.get("aligned") if ma_align else False,
                 "mdd": mdd_d["mdd"] if mdd_d else None,
                 "per": f.get("per"), "pbr": f.get("pbr"), "roe": f.get("roe"),
+                "peter_lynch": garp_by_ticker.get(tkr) or build_peter_lynch_assessment({}, {}, "KRX"),
+                "price_as_of": a.get("price_as_of"),
             })
-        return {"items": results, "ts": int(time.time())}
+        return {
+            "items": results, "ts": int(time.time()),
+            "coverage": {
+                "universe_count": len(kr_tickers), "technical_candidates": len(candidates),
+                "invalid_price_count": invalid_price_count, "fundamental_timeouts": fund_timeouts,
+                "garp_checked": len(garp_by_ticker), "garp_timeouts": garp_timeouts,
+            },
+        }
     except Exception as e:
         return {"error": str(e), "items": []}
 
@@ -6750,7 +6817,10 @@ def fetch_kr_longterm_reco():
 def fetch_us_longterm_reco():
     """미국 장기 투자 추천 Top 10 (기술·수급·펀더멘털 통합 스코어링)"""
     try:
-        tickers = [t for t in _US_RECO_UNIVERSE[:100] if t not in {"SPY","QQQ","DIA","IWM"}]
+        tickers = list(dict.fromkeys(
+            [t for t in _US_RECO_UNIVERSE[:100] if t not in {"SPY", "QQQ", "DIA", "IWM"}]
+            + _US_GARP_UNIVERSE
+        ))
         all_dl = tickers + ["SPY"]
         raw = yf.download(all_dl, period="1y", interval="1d",
                           progress=False, auto_adjust=True, threads=True)
@@ -6761,6 +6831,7 @@ def fetch_us_longterm_reco():
             if "SPY" in raw.columns.get_level_values(1):
                 spy_df = raw.xs("SPY", axis=1, level=1).dropna(how="all")
         candidates = []
+        invalid_price_count = 0
         for tkr in tickers:
             try:
                 if isinstance(raw.columns, pd.MultiIndex):
@@ -6768,15 +6839,34 @@ def fetch_us_longterm_reco():
                     df = raw.xs(tkr, axis=1, level=1).dropna(how="all")
                 else:
                     df = raw.copy()
-                if len(df) < 60: continue
+                if len(df) < 60 or not _has_valid_latest_ohlcv(df):
+                    invalid_price_count += 1
+                    continue
                 a = _us_analyze_ticker(df, spy_df)
                 if not a: continue
+                a["price_as_of"] = str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1])
                 score = _us_longterm_score(a)
                 if score < 0: continue
                 candidates.append((tkr, score, a))
             except Exception:
                 continue
         candidates.sort(key=lambda x: x[1], reverse=True)
+        garp_candidates = [ticker for ticker, _, _ in candidates[:30]]
+        def _fetch_us_garp(ticker):
+            try:
+                info = yf.Ticker(ticker).info
+                return build_peter_lynch_assessment(
+                    info or {}, {}, "US", fetch_annual_income_statement(ticker)
+                )
+            except Exception:
+                return build_peter_lynch_assessment({}, {}, "US")
+        garp_by_ticker, garp_timeouts = _collect_completed_futures(
+            garp_candidates, _fetch_us_garp, max_workers=8, timeout=30
+        )
+        candidates.sort(
+            key=lambda item: _longterm_garp_rank(garp_by_ticker.get(item[0]), item[1]),
+            reverse=True,
+        )
         results = []
         for tkr, score, a in candidates[:10]:
             rsi = a.get("rsi"); macd = a.get("macd"); adx = a.get("adx")
@@ -6872,8 +6962,17 @@ def fetch_us_longterm_reco():
                 "rs60": rs60,
                 "week52_pos": w52["pos"] if w52 else None,
                 "kalman_predicted": klt["predicted"] if klt else None,
+                "peter_lynch": garp_by_ticker.get(tkr) or build_peter_lynch_assessment({}, {}, "US"),
+                "price_as_of": a.get("price_as_of"),
             })
-        return {"items": results, "ts": int(time.time())}
+        return {
+            "items": results, "ts": int(time.time()),
+            "coverage": {
+                "universe_count": len(tickers), "technical_candidates": len(candidates),
+                "invalid_price_count": invalid_price_count, "garp_checked": len(garp_by_ticker),
+                "garp_timeouts": garp_timeouts,
+            },
+        }
     except Exception as e:
         return {"error": str(e), "items": []}
 
@@ -7504,13 +7603,19 @@ def check_market_regime(market: str, symbol: str = "") -> str:
     except:
         return "NEUTRAL"
 
-def validate_financial_health(ticker_info: dict) -> bool:
-    """투자 전략 수립 시 부채 비율(레버리지) 반드시 확인"""
-    debt_to_equity = ticker_info.get("debtToEquity")
-    if debt_to_equity is None:
-        return False
-    debt_pct = debt_to_equity * 100 if debt_to_equity < 10 else debt_to_equity
-    return debt_pct <= 150.0
+def validate_financial_health(ticker_info: dict) -> Optional[bool]:
+    """Return leverage health; Yahoo values below 1 are ratios, otherwise percentages."""
+    try:
+        debt_to_equity = ticker_info.get("debtToEquity")
+        if debt_to_equity is None:
+            return None
+        debt_value = float(debt_to_equity)
+        if not np.isfinite(debt_value):
+            return None
+        debt_pct = debt_value * 100 if 0 < debt_value < 1 else debt_value
+        return debt_pct <= 150.0
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
     """
@@ -8146,6 +8251,13 @@ def calc_event_risk(symbol: str, market: str, news_items: list | None = None,
             if group in matched:
                 continue
             if any(kw.lower() in text for kw in kws):
+                # A bare FDA mention is not necessarily a clinical event risk
+                # for the analyzed company.
+                if group == "fda" and not any(context in text for context in (
+                    "clinical", "trial", "drug", "therapy", "biotech", "pharma",
+                    "임상", "신약", "치료", "의약", "바이오",
+                )):
+                    continue
                 matched.add(group)
                 if group == "earnings_negative":
                     points += 14; reasons.append(f"{source}: 실적/가이던스 부정 이벤트")
@@ -15105,12 +15217,18 @@ def route(path: str, params: Dict) -> Dict:
         try:
             info = _cached_ticker_info(sym)
             info_for_charm = info or {}
-            if not validate_financial_health(info):
+            debt_health = validate_financial_health(info)
+            if debt_health is False:
                 if isinstance(ai_strategy, dict):
-                    ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"
+                    ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 — 재무 레버리지 위험 확인 필요"
                 else:
-                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "⚠️ [경고] 부채비율 150% 초과 또는 재무 데이터 누락으로 투자 위험 높음"}
+                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "⚠️ [경고] 부채비율 150% 초과 — 재무 레버리지 위험 확인 필요"}
                 score = min(score, 45)
+            elif debt_health is None:
+                if isinstance(ai_strategy, dict):
+                    ai_strategy["result"] += " | ℹ️ 부채비율 데이터 미확인 — 재무제표로 별도 점검 필요"
+                else:
+                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "ℹ️ 부채비율 데이터 미확인 — 재무제표로 별도 점검 필요"}
         except Exception:
             pass
         # ── 기하학적 패턴 → 캔들 패턴 리스트 통합 (UI 표시용) ───────────────
@@ -17706,6 +17824,7 @@ input::placeholder{color:#484f58}
   .charm-radar-canvas{max-width:400px;min-width:320px;aspect-ratio:420/390}
   .charm-radar-detail-grid{grid-template-columns:minmax(420px,1.1fr) minmax(340px,.9fr)}
 }
+
 @media(min-width:481px) and (max-width:640px){
   .charm-top{grid-template-columns:1fr 1fr}
 }
@@ -23638,7 +23757,7 @@ async function loadKrLongterm(force) {
   if (cnt) { cnt.style.display = 'none'; }
   if (err) { err.style.display = 'none'; }
   try {
-    var r = await fetch('/api/kr/longterm');
+    var r = await fetch('/api/kr/longterm' + (force ? '?refresh=1' : ''));
     var d = await r.json();
     if (ldg) ldg.style.display = 'none';
     if (d.error && !(d.items && d.items.length)) {
@@ -23654,6 +23773,11 @@ async function loadKrLongterm(force) {
 }
 
 function renderLongtermGarp(assessment) {
+  var esc = function(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char];
+    });
+  };
   var garp = assessment || {};
   var criteria = garp.criteria || [];
   if (!criteria.length) {
@@ -23680,12 +23804,20 @@ function renderLongtermGarp(assessment) {
     var rowColor = c.status === 'pass' ? '#3fb950' : c.status === 'fail' ? '#f85149' : '#8b949e';
     var detail = c.status === 'unavailable' && c.unavailable_reason ? ' · ' + c.unavailable_reason : '';
     return '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-top:1px solid #21262d">' +
-      '<span style="color:#c9d1d9">' + c.label + ' <span style="color:#8b949e">(' + c.threshold + ')</span></span>' +
-      '<span style="text-align:right;color:' + rowColor + '">' + marker + ' · ' + formatValue(c) + detail + '</span></div>';
+      '<span style="color:#c9d1d9">' + esc(c.label) + ' <span style="color:#8b949e">(' + esc(c.threshold) + ')</span></span>' +
+      '<span style="text-align:right;color:' + rowColor + '">' + marker + ' · ' + esc(formatValue(c)) + esc(detail) + '</span></div>' +
+      '<div style="color:#6e7681;font-size:10px">출처: ' + esc(c.source || '미확인') + '</div>';
   }).join('');
+  var noteHtml = (garp.notes || []).map(function(note) {
+    return '<div style="margin-top:3px;color:#8b949e">' + esc(note) + '</div>';
+  }).join('');
+  var epsCriterion = criteria.find(function(c) { return c.key === 'eps_cagr_3y'; }) || {};
+  var epsBasis = epsCriterion.status === 'unavailable'
+    ? '연속 4개 사업연도 EPS가 확인되면 CAGR과 PEG를 계산합니다.'
+    : '보고된 연간 EPS 4개 사업연도 기준으로 CAGR과 PEG를 계산했습니다.';
   return '<div style="margin-top:10px;padding:9px 10px;border:1px solid ' + color + '55;border-radius:7px;background:' + color + '0d;font-size:11px;line-height:1.45">' +
     '<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:4px;font-weight:700;color:' + color + '"><span>피터 린치 스타일 GARP</span><span>' + status + ' · ' + (garp.passed_count || 0) + '/5</span></div>' + rows +
-    '<div style="margin-top:5px;color:#8b949e">보고된 연간 EPS 4개 사업연도 기준 · 매수 신호나 수익 예측이 아닙니다.</div></div>';
+    '<div style="margin-top:5px;color:#8b949e">' + epsBasis + ' 매수 신호나 수익 예측이 아닙니다.</div>' + noteHtml + '</div>';
 }
 
 function renderKrLongtermCards(items) {
@@ -23771,7 +23903,7 @@ function renderKrLongtermCards(items) {
       '</div>' +
       /* ── 가격 정보 ── */
       '<div class="us-reco-prices">' +
-        '<div class="us-reco-pi"><div class="us-reco-pi-label">현재가</div>' +
+        '<div class="us-reco-pi"><div class="us-reco-pi-label">최근 일봉 종가' + (it.price_as_of ? ' (' + it.price_as_of + ')' : '') + '</div>' +
           '<div class="us-reco-pi-val">' + (it.close || 0).toLocaleString() + '원 ' +
           '<span class="' + pctCls + '" style="font-size:12px">' + pctSign + (it.change_pct || 0).toFixed(2) + '%</span></div></div>' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">목표가</div>' +
@@ -23803,7 +23935,7 @@ async function loadUsLongterm(force) {
   if (cnt) { cnt.style.display = 'none'; }
   if (err) { err.style.display = 'none'; }
   try {
-    var r = await fetch('/api/us/longterm');
+    var r = await fetch('/api/us/longterm' + (force ? '?refresh=1' : ''));
     var d = await r.json();
     if (ldg) ldg.style.display = 'none';
     if (d.error && !(d.items && d.items.length)) {
@@ -23893,7 +24025,7 @@ function renderUsLongtermCards(items) {
       '</div>' +
       /* ── 가격 정보 ── */
       '<div class="us-reco-prices">' +
-        '<div class="us-reco-pi"><div class="us-reco-pi-label">현재가</div>' +
+        '<div class="us-reco-pi"><div class="us-reco-pi-label">최근 일봉 종가' + (it.price_as_of ? ' (' + it.price_as_of + ')' : '') + '</div>' +
           '<div class="us-reco-pi-val">$' + (it.close || 0).toFixed(2) +
           ' <span class="' + pctCls + '" style="font-size:12px">' + pctSign + (it.change_pct || 0).toFixed(2) + '%</span></div></div>' +
         '<div class="us-reco-pi"><div class="us-reco-pi-label">목표가</div>' +

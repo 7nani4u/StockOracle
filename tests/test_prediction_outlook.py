@@ -2,6 +2,7 @@
 import gzip
 import io
 import json
+import math
 import sys
 from types import SimpleNamespace
 
@@ -27,6 +28,7 @@ from api.index import (
     _project_nasdaq_session_date,
     _smma_values,
     build_prediction_outlook,
+    build_weekly_analysis_context,
     calc_arty_smma_fractal,
     calc_risk,
     calibrate_volume_recovery_threshold,
@@ -571,11 +573,78 @@ def test_risk_scenarios_expose_only_ordered_independent_tp_estimate_ranges():
         )
 
 
+def _one_year_weekly_dd(scale=1.0):
+    bars = 260
+    dates = pd.bdate_range("2025-09-01", periods=bars)
+    closes = [(100.0 + index * 0.18 + math.sin(index / 7.0) * 2.4) * scale for index in range(bars)]
+    highs = [close + 1.6 * scale for close in closes]
+    lows = [close - 1.7 * scale for close in closes]
+    opens = [close - 0.2 * scale for close in closes]
+    atrs = [3.3 * scale] * bars
+    return {
+        "Date": [date.strftime("%Y-%m-%d") for date in dates],
+        "Open": opens, "High": highs, "Low": lows, "Close": closes,
+        "Volume": [200_000 + index % 11 * 5_000 for index in range(bars)],
+        "ATR": atrs,
+        "MA20": [None] * 19 + closes[19:],
+        "MA60": [None] * 59 + closes[59:],
+        "MA120": [None] * 119 + closes[119:],
+        "RSI": [55.0] * bars,
+        "MACD": [0.8 * scale] * bars,
+        "Signal_Line": [0.5 * scale] * bars,
+        "ADX": [24.0] * bars,
+        "DI_Plus": [23.0] * bars,
+        "DI_Minus": [17.0] * bars,
+        "BB_Upper": [close + 4.0 * scale for close in closes],
+        "BB_Lower": [close - 4.0 * scale for close in closes],
+    }
+
+
+def test_one_year_daily_history_builds_calendar_week_fibonacci_context():
+    context = build_weekly_analysis_context(_one_year_weekly_dd(), "US")
+
+    assert context["available"] is True
+    assert context["source"] == "calendar_week"
+    assert context["daily_bars"] == 260
+    assert context["completed_week_count"] >= 50
+    assert {"13w", "26w", "52w"}.issubset(context["windows"])
+    for window in context["windows"].values():
+        fib = window["retracements"]
+        assert fib["f236"] > fib["f382"] > fib["f500"] > fib["f618"] > fib["f786"]
+    assert context["weekly_atr"] > 0
+    assert context["basis"].startswith("1년 일봉")
+
+
+def test_target_probabilities_use_completed_stop_first_paths_and_distinct_card_ranges():
+    for market, scale in (("KRX", 1_500.0), ("US", 1.0)):
+        dd = _one_year_weekly_dd(scale)
+        context = build_weekly_analysis_context(dd, market)
+        result = calc_risk(
+            dd["Close"][-1], dd["ATR"][-1], market, dd,
+            weekly_context=context,
+        )
+        scenarios = [result[key] for key in ("conservative", "balanced", "aggressive")]
+        assert result["weekly_analysis"]["available"] is True
+        assert "보수적→중립적→공격적" in result["target_range_order_basis"]
+        assert len({tuple(scenario["tp_range"]) for scenario in scenarios}) == 3
+        assert len({scenario["tp_range"][1] - scenario["tp_range"][0] for scenario in scenarios}) == 3
+        for scenario in scenarios:
+            widths = [level["price_range"][1] - level["price_range"][0] for level in scenario["tp_levels"]]
+            assert len(set(widths)) >= 2
+            for index, width in enumerate(widths):
+                if width in widths[:index]:
+                    assert scenario["tp_levels"][index].get("range_resolution_limited") is True
+            assert all(level["empirical_sample_n"] >= 40 for level in scenario["tp_levels"])
+            assert all("손절 우선 과거 경로" in level["probability_basis"] for level in scenario["tp_levels"])
+
+
 def test_removed_risk_card_sections_are_not_rendered():
     assert "분할 비중" not in HTML
     assert "최대 허용 손실" not in HTML
     assert "이 시나리오가 실패할 수 있는 조건" not in HTML
     assert "목표가 레벨별 도달 가능성" in HTML
+    assert "전체 목표 청산 범위" in HTML
+    assert "1년 주간 구조 분석" in HTML
     assert "예측 목표 가격 범위" not in HTML
     for column in ("목표 가격 범위", "수익률", "도달 가능성", "예상 거래일"):
         assert f'role="columnheader">{column}</span>' in HTML

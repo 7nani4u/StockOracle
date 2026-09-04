@@ -107,21 +107,13 @@ def test_analysis_period_dropdown_matches_backend_allowlist():
     select = re.search(r'<select id="period-select"[^>]*>(.*?)</select>', source, re.S)
     assert select is not None
     options = re.findall(r'<option value="([^"]+)"(?: selected)?>([^<]+)</option>', select.group(1))
-    expected = [
-        ("1d", "초단기 (1일)"), ("3d", "초단기 (3일·단타 권장)"),
-        ("1wk", "초단기 (1주)"), ("1mo", "단기 (1개월)"),
-        ("3mo", "중단기 (3개월)"),
-        ("6mo", "6개월"), ("1y", "1년"),
-        ("2y", "2년"), ("5y", "5년"),
-    ]
-    assert options == expected
-    allowlist_line = re.search(r'^VALID_PERIODS\s*=\s*\{([^}]*)\}', source, re.M)
-    assert allowlist_line is not None
-    allowlist = set(re.findall(r'"([^"]+)"', allowlist_line.group(1)))
-    assert allowlist == {value for value, _ in expected}
-    assert '<option value="3d" selected>초단기 (3일·단타 권장)</option>' in select.group(1)
-    assert source.count('params.get("period", "3d")') == 2
-    assert "select.value === '3d'" in source
+    assert options == [("1y", "1년 고정 · 일봉/주봉 다중 분석")]
+    assert 'disabled aria-label="분석 기간 1년 고정"' in source
+    assert 'FIXED_ANALYSIS_PERIOD = "1y"' in source
+    assert "VALID_PERIODS = {FIXED_ANALYSIS_PERIOD}" in source
+    assert 'const period = \'1y\';' in source
+    assert 'params.get("period", "3d")' not in source
+    assert "select.value === '1y'" in source
     assert "updatePeriodGuide()" in source
 
 

@@ -67,6 +67,21 @@ def test_technical_and_supply_conclusions_are_combined_once_after_their_evidence
     assert "교차 지표 정합" in renderer
 
 
+def test_diagnosis_badge_omits_composite_score_but_keeps_signal_consistency():
+    renderer = HTML.split("function renderInvestorFlow", 1)[1].split(
+        "function resetPeerIndustryTab", 1
+    )[0]
+
+    assert "`${recLbl} · ${confText}`" in renderer
+    assert "종합 ${effScore.toFixed(1)}점" not in renderer
+
+
+def test_longterm_cards_render_strict_garp_criteria_for_both_markets():
+    assert "function renderLongtermGarp(assessment)" in HTML
+    assert "GARP 5/5 통과" in HTML
+    assert HTML.count("var garpHtml = renderLongtermGarp(it.peter_lynch);") == 2
+
+
 def test_charm_score_label_and_disclosure_remain_visible():
     assert "스마트스코어" in HTML
     assert "비교 유니버스 상위" in HTML

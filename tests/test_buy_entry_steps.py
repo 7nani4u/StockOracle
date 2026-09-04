@@ -71,6 +71,7 @@ def test_all_buy_bands_expose_only_ordered_independent_structure_steps():
 
     for family in ("aggressive_bands", "recommended_bands"):
         assert [band["band"] for band in result[family]] == ["A", "B", "C"]
+        assert [band["strategy_label"] for band in result[family]] == ["밴드 A", "밴드 B", "밴드 C"]
         for band in result[family]:
             steps = band["steps"]
             if band.get("is_available") is False:
@@ -135,6 +136,25 @@ def test_reach_probability_and_period_are_bounded_and_monotonic():
     ):
         assert recommended["steps"]
         assert recommended["steps"][0]["price"] <= aggressive["steps"][0]["price"]
+
+
+def test_band_cards_are_strictly_lower_and_use_distinct_ranges():
+    result = _calculate(_sample_buy_dd())
+
+    for family in ("aggressive_bands", "recommended_bands"):
+        bands = result[family]
+        assert all(band["is_available"] for band in bands)
+        assert len({tuple(band["range"]) for band in bands}) == 3
+        widths = [band["range"][1] - band["range"][0] for band in bands]
+        assert len(set(widths)) == 3
+
+        for previous, current in zip(bands, bands[1:]):
+            assert previous["range"][0] > current["range"][0]
+            assert previous["range"][1] > current["range"][1]
+            for previous_step, current_step in zip(previous["steps"], current["steps"]):
+                assert previous_step["price"] > current_step["price"]
+                assert previous_step["price_range"][0] > current_step["price_range"][0]
+                assert previous_step["price_range"][1] > current_step["price_range"][1]
 
 
 def test_insufficient_history_never_fabricates_probability_or_period():
@@ -217,6 +237,8 @@ def test_forecast_band_ui_uses_aligned_five_column_stage_rows():
     assert "s.price_range" in HTML
     assert "분석 데이터 부족" in HTML
     assert "기간 산정 불가" in HTML
+    assert "b.range_order_basis" in HTML
     assert "TP1" not in HTML.split("const renderBandCard", 1)[1].split(
         "const recBandsHtml", 1
     )[0]
+    assert "1차 탐색 구간 · 소액 테스트" in HTML
