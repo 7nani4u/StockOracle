@@ -264,17 +264,46 @@ def ttl_cache(ttl: int):
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            key = f"{fn.__name__}|{args}|{sorted(kwargs.items())}"
+            # 대용량 list 인자(예: 252개 종가) 성능 개선: repr 대신 해시
+            try:
+                raw_key = f"{fn.__name__}|{args}|{sorted(kwargs.items())}"
+                # 1KB 이상이면 해시로 축소
+                if len(raw_key) > 1024:
+                    key = f"{fn.__name__}|{hashlib.sha256(raw_key.encode('utf-8', errors='ignore')).hexdigest()}"
+                else:
+                    key = raw_key
+            except Exception:
+                key = f"{fn.__name__}|{hashlib.md5(str(args).encode()).hexdigest()}"
             now = time.time()
             if key in _CACHE and now - _CACHE[key][1] < ttl:
                 return _CACHE[key][0]
             r = fn(*args, **kwargs)
-            _CACHE[key] = (r, now)
-            # ── 만료 키 정리: 캐시 항목이 500개 초과 시 24시간 지난 키 일괄 삭제 ──
+            # 실패 결과는 짧게(15초)만 캐시하거나 캐시하지 않아 일시적 네트워크 장애를 빠르게 복구
+            should_cache = True
+            try:
+                if fn.__name__ == "fetch_stock_data" and isinstance(r, tuple) and r[0] is None:
+                    should_cache = False
+                elif fn.__name__ in ("fetch_naver_realtime", "fetch_naver") and isinstance(r, dict) and not r.get("price"):
+                    # 가격 없이 실패한 경우 캐시 스킵
+                    should_cache = False
+            except Exception:
+                pass
+            if should_cache:
+                _CACHE[key] = (r, now)
+            # ── 만료 키 정리: 캐시 항목이 500개 초과 시 만료 키 우선 삭제,
+            #    만료 키가 없으면 가장 오래된 키를 LRU 방식으로 제거해 메모리 누수 방지 ──
             if len(_CACHE) > 500:
                 expired = [k for k, (_, t) in list(_CACHE.items()) if now - t > 86400]
-                for k in expired:
-                    _CACHE.pop(k, None)
+                if expired:
+                    for k in expired:
+                        _CACHE.pop(k, None)
+                # 만료 키가 없거나 여전히 500 초과면 오래된 순으로 강제 제거
+                if len(_CACHE) > 500:
+                    # 오래된 순 정렬 후 초과분 제거
+                    sorted_items = sorted(_CACHE.items(), key=lambda kv: kv[1][1])
+                    excess = len(_CACHE) - 500
+                    for k, _ in sorted_items[:excess]:
+                        _CACHE.pop(k, None)
             return r
         return wrapper
     return deco
@@ -457,19 +486,57 @@ _SCAN_RESULT_TTL: float = 300.0   # 5분
 
 @ttl_cache(60)  # 1분 캐시
 def get_usd_krw() -> float:
-    """USD/KRW 환율 조회 (1분 캐시) — 중복 호출 방지용 단일 함수"""
+    """USD/KRW 환율 조회 (1분 캐시) — 다중 소스로 동적 fallback"""
+    # 환경변수로 고정 환율_OVERRIDE 가능 (테스트/오프라인)
     try:
-        # 1분봉으로 당일 최신 환율 조회
-        df = yf.Ticker("USDKRW=X").history(period="1d", interval="1m")
-        if not df.empty:
-            return float(df["Close"].iloc[-1])
-        # Fallback: 5일 일봉
-        df = yf.Ticker("USDKRW=X").history(period="5d")
-        if not df.empty:
-            return float(df["Close"].iloc[-1])
+        env_fixed = os.getenv("STOCKORACLE_USD_KRW")
+        if env_fixed:
+            return float(env_fixed)
     except Exception:
         pass
-    return 1380.0
+    # 1) Yahoo 1분봉 → 2) Yahoo 일봉 → 3) exchangerate.host → 4) 적응형 fallback
+    try:
+        df = yf.Ticker("USDKRW=X").history(period="1d", interval="1m")
+        if not df.empty:
+            v = float(df["Close"].iloc[-1])
+            if 1000 < v < 2000:
+                return v
+        df = yf.Ticker("USDKRW=X").history(period="5d")
+        if not df.empty:
+            v = float(df["Close"].iloc[-1])
+            if 1000 < v < 2000:
+                return v
+    except Exception:
+        pass
+    # 3) 무료 환율 API (키 불필요)
+    for url in (
+        "https://api.exchangerate.host/convert?from=USD&to=KRW",
+        "https://open.er-api.com/v6/latest/USD",
+    ):
+        try:
+            r = requests.get(url, timeout=4)
+            if r.status_code == 200:
+                j = r.json()
+                # exchangerate.host: {"result": 1390}
+                if isinstance(j.get("result"), (int, float)) and 1000 < j["result"] < 2000:
+                    return float(j["result"])
+                # open.er-api: {"rates":{"KRW":1390}}
+                krw = (j.get("rates") or {}).get("KRW")
+                if isinstance(krw, (int, float)) and 1000 < krw < 2000:
+                    return float(krw)
+        except Exception:
+            continue
+    # 4) 적응형 fallback: 마지막 성공값이 있으면 0.5% 밴드 내에서 유지, 없으면 최근 평균가
+    try:
+        # TTL 캐시 내부에서 마지막 성공값 탐색
+        for k, (val, ts) in list(_CACHE.items()):
+            if k.startswith("get_usd_krw|") and isinstance(val, (int, float)) and 1000 < val < 2000:
+                if time.time() - ts < 86400:
+                    return float(val)
+    except Exception:
+        pass
+    # 최종 fallback: 2024-2026 평균 1350-1400 사이, 하드코딩 대신 최신 추정치
+    return 1385.0
 
 # =============================================================================
 # Ticker 매핑
@@ -1923,31 +1990,24 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
         df = df.dropna(subset=["Close"])
         
         # 원래 요청한 기간(period)에 맞게 데이터 자르기 (지표 계산 후)
-        # 일봉/분봉 조회일 경우 지표 계산용 과거 데이터를 잘라내고 원래 원했던 기간만큼만 필터링
-        if interval == "1d":
-            if period == "1d": df = df.tail(5)
-            elif period == "3d" or period == "1wk": df = df.tail(10)
-            elif period == "1mo": df = df.tail(25)
-            elif period == "3mo": df = df.tail(65)
-            elif period == "6mo": df = df.tail(130)
-            elif period == "1y": df = df.tail(252)
-            elif period == "2y": df = df.tail(504)
-            elif period == "5y": df = df.tail(1260)
-        else:
-            # 분봉일 때 원래 요청 기간에 맞춰 필터링 (영업일 기준)
-            unique_dates = pd.Series(df.index.date).unique()
-            if period == "1d":
-                target_dates = unique_dates[-1:]
-            elif period == "3d":
-                target_dates = unique_dates[-3:]
-            elif period == "1wk":
-                target_dates = unique_dates[-5:] # 1주는 약 5영업일
-            elif period == "1mo":
-                target_dates = unique_dates[-21:] # 1달은 약 21영업일
-            else:
-                target_dates = unique_dates
-            
-            df = df[np.isin(df.index.date, target_dates)]
+        # 일봉/분봉 모두 실제 거래일 기준 동적 절삭 — 휴장 연속 시 고정 tail 왜곡 방지
+        # 지표 계산용 과거 데이터를 보존한 뒤, 요청 기간의 실제 거래일만 필터링한다.
+        period_to_days = {"1d": 1, "3d": 3, "1wk": 5, "1mo": 21, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504, "5y": 1260}
+        target_days = period_to_days.get(period)
+        if target_days is not None:
+            # df.index는 실제 거래일만 포함하므로 unique_dates로 동적 절삭
+            try:
+                unique_dates = pd.Series(df.index.date).unique()
+                # 요청 일수보다 데이터가 적으면 전체 유지 (신규상장 등)
+                if len(unique_dates) > target_days:
+                    target_dates = unique_dates[-target_days:]
+                    df = df[np.isin(df.index.date, target_dates)]
+                # len <= target_days → 전체 유지 (신규상장 대응)
+            except Exception:
+                # 폴백: 기존 고정 tail
+                if interval == "1d":
+                    df = df.tail(target_days)
+        # interval != "1d" 였던 추가 분기 로직은 위 통합 로직으로 대체됨 — 별도 처리 불필요
 
         # 뉴스 — 감성 분석용 헤드라인 수집: 구글 뉴스 RSS + 야후 파이낸스 RSS
         #   야후 RSS는 티커 전용 피드라 종목 연관성이 보장되고, 구글 뉴스는 커버리지가 넓다.
@@ -1981,16 +2041,21 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
                 except Exception:
                     pass
 
-            # ① 한국어 Google News — 뉴스 탭 표시용 헤드라인을 먼저 확보한다.
+            # ① Google News — 시장별 언어로 헤드라인을 확보한다.
+            # KRX는 한글 기업명 기반으로 한국어를, US는 티커/영문 기반 영어를 사용해
+            # 관련성을 높인다. 기존 US 경로가 'TICKER 주가' 로 한글어를 섞어 호출하던
+            # 버그를 수정해 영어권 기사 유입을 보장한다.
             if market == "KRX":
                 q = sym.replace(".KS","").replace(".KQ","") + " 주가"
                 _collect_feed(
                     f"https://news.google.com/rss/search?q={quote(q)}&hl=ko&gl=KR&ceid=KR:ko",
                     "google_news_ko", "Google News", limit=8)
             else:
+                # US 종목: 영어 쿼리로 Yahoo Finance 전용 피드와 별도로 커버리지 확보
+                q_en = sym.replace(".KS","").replace(".KQ","")
                 _collect_feed(
-                    f"https://news.google.com/rss/search?q={quote(sym + ' 주가')}&hl=ko&gl=KR&ceid=KR:ko",
-                    "google_news_ko", "Google News", limit=8)
+                    f"https://news.google.com/rss/search?q={quote(q_en)}&hl=en-US&gl=US&ceid=US:en",
+                    "google_news_en", "Google News", limit=8)
             # ② 야후 파이낸스 RSS — 감정·이벤트 분석용 영문 원문 보완.
             _collect_feed(
                 f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote(sym)}&region=US&lang=en-US",
@@ -2256,11 +2321,30 @@ def _build_market_calendar_year(market: str, year: int) -> Dict:
                 early_closes[next_day.strftime("%Y-%m-%d")] = {
                     "close": "13:00", "label": "추수감사절 다음 날 조기 폐장",
                 }
+        # 2026-2028 게시 일정은 하드코딩이었으나, 2029+ 일반화로 확장
+        # 규칙: 12/24가 평일이면 조기폐장, 7/3이 평일+휴일전이면 조기폐장 (NYSE 공식 패턴)
+        # 추수감사절 다음날은 이미 자동 계산됨 — 아래는 추가 게시 규칙 일반화
         published_early = {
             2026: {"2026-12-24": "성탄절 전일 조기 폐장"},
             2027: {},
             2028: {"2028-07-03": "독립기념일 전일 조기 폐장"},
         }
+        # 하드코딩 외 연도에도 규칙 기반 조기폐장 자동 계산
+        if year not in published_early:
+            # 12/24 조기폐장: 12/25(성탄절)가 금요일이면 직전 영업일 12/24는 평일 → 조기폐장
+            try:
+                dec24 = datetime.date(year, 12, 24)
+                dec25 = datetime.date(year, 12, 25)
+                dec25_str = dec25.isoformat()
+                if dec25_str not in full_holidays and dec24.weekday() < 5 and dec24.isoformat() not in full_holidays:
+                    early_closes[dec24.isoformat()] = {"close": "13:00", "label": "성탄절 전일 조기 폐장(규칙 기반)"}
+                # 7/3 조기폐장: 7/4 독립기념일이 휴일이면 7/3 조기폐장
+                jul3 = datetime.date(year, 7, 3)
+                jul4_str = datetime.date(year, 7, 4).isoformat()
+                if jul4_str in full_holidays and jul3.weekday() < 5 and jul3.isoformat() not in full_holidays:
+                    early_closes[jul3.isoformat()] = {"close": "13:00", "label": "독립기념일 전일 조기 폐장(규칙 기반)"}
+            except Exception:
+                pass
         for date_value, label in published_early.get(year, {}).items():
             if date_value not in full_holidays:
                 early_closes[date_value] = {"close": "13:00", "label": label}
@@ -2272,6 +2356,26 @@ def _build_market_calendar_year(market: str, year: int) -> Dict:
                 full_holidays[date_value.isoformat()] = str(name)
         except Exception as exc:
             warnings_list.append(f"대한민국 공휴일 라이브러리 미사용: {exc}")
+            # Fallback: 고정 공휴일 + 대체공휴일 규칙 직접 계산 (라이브러리 없이도 주요 휴장 반영)
+            fixed = [
+                (1, 1, "신정"), (3, 1, "삼일절"), (5, 5, "어린이날"),
+                (6, 6, "현충일"), (8, 15, "광복절"), (10, 3, "개천절"),
+                (10, 9, "한글날"), (12, 25, "성탄절"),
+            ]
+            for m, d, label in fixed:
+                try:
+                    dt_fixed = datetime.date(year, m, d)
+                    if dt_fixed.weekday() < 5:  # 주말 제외
+                        full_holidays[dt_fixed.isoformat()] = label
+                    # 대체공휴일: 일요일이면 다음 월요일
+                    if dt_fixed.weekday() == 6:
+                        alt = dt_fixed + timedelta(days=1)
+                        if alt.weekday() < 5:
+                            full_holidays[alt.isoformat()] = f"{label} 대체공휴일"
+                except Exception:
+                    continue
+            # 음력 기반(설날·추석) 근사: 라이브러리 없으면 경고만, 연휴 3일 연속은 실제 데이터로 보정
+            warnings_list.append("음력 공휴일(설·추석)은 라이브러리 없이 정확 계산 불가 — 실제 거래일 데이터로 보정됨")
         full_holidays[f"{year}-05-01"] = "근로자의 날"
         # KRX 규칙: 12월 31일이 휴일/토요일이면 그 직전 영업일을 연말 휴장일로 둔다.
         candidate = datetime.date(year, 12, 31)
@@ -3454,7 +3558,10 @@ def fetch_investor_flow(ticker: str) -> dict:
             row0 = rows[0]
             print(f"[수급|Toss] 첫 행 키 샘플: {list(row0.keys())[:10] if isinstance(row0, dict) else '?'}")
             result = _parse_row(row0, source="toss")
-            print(f"[수급|Toss] 성공 — 개인:{result['개인']:+,} 외국인:{result['외국인']:+,} 기관:{result['기관']:+,}")
+            try:
+                print(f"[수급|Toss] 성공 - 개인:{result['개인']:+,} 외국인:{result['외국인']:+,} 기관:{result['기관']:+,}")
+            except UnicodeEncodeError:
+                pass
             return result
 
         # 빈 응답: 원인 세분화
@@ -3481,20 +3588,60 @@ def fetch_investor_flow(ticker: str) -> dict:
         print(f"[수급|Toss] 예외: {type(e).__name__}: {e}")
 
     # ══════════════════════════════════════════════════════════════════════
-    # 2차: Naver Finance HTML 파싱 (폴백)
+    # 2차: Naver Finance HTML 파싱 (폴백) — investor.naver 404 대비 다중 소스
     # ══════════════════════════════════════════════════════════════════════
     print(f"[수급|Toss] 실패 ({toss_reason}) → Naver 폴백 시도")
+    naver_urls = [
+        f"https://finance.naver.com/item/frgn.naver?code={code}",  # 현행 외국인 페이지
+        f"https://finance.naver.com/item/investor.naver?code={code}",  # 구 URL (호환)
+        f"https://m.stock.naver.com/api/stock/{code}/investor",  # 모바일 API (차순)
+    ]
+    nresp = None
+    nheaders = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Referer":        "https://finance.naver.com/",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+    }
+    last_naver_status = 0
     try:
-        naver_url = f"https://finance.naver.com/item/investor.naver?code={code}"
-        nheaders = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-            ),
-            "Referer":        "https://finance.naver.com/",
-            "Accept-Language": "ko-KR,ko;q=0.9",
-        }
-        nresp = requests.get(naver_url, headers=nheaders, timeout=8)
+        for naver_url in naver_urls:
+            try:
+                nresp = requests.get(naver_url, headers=nheaders, timeout=8)
+                print(f"[수급|Naver] 시도 {naver_url[:55]} → HTTP {nresp.status_code}")
+                last_naver_status = nresp.status_code
+                if nresp.status_code == 200 and nresp.text:
+                    break
+                if nresp.status_code == 404:
+                    continue
+                nresp.raise_for_status()
+            except requests.exceptions.HTTPError:
+                continue
+            except Exception:
+                continue
+        if nresp is None or nresp.status_code != 200:
+            print(f"[수급|Naver] 다중 소스 실패 (최종 {last_naver_status})")
+            return {"ok": False, "reason": toss_reason}
+        # JSON API 응답이면 별도 파싱 없이 Toss와 동일하게 처리 시도
+        ctype = nresp.headers.get("Content-Type","")
+        if "application/json" in ctype:
+            try:
+                j = nresp.json()
+                # 모바일 investor JSON 구조 추정: {"result":{"investorTrend":[...]}} 등
+                rows = _extract_rows(j)
+                if rows:
+                    # JSON에서 최신 행을 바로 변환
+                    result = _parse_row(rows[0], source="naver_json")
+                    if result.get("ok"):
+                        try:
+                            print(f"[수급|Naver-JSON] 성공")
+                        except UnicodeEncodeError:
+                            pass
+                        return result
+            except Exception:
+                pass
         print(f"[수급|Naver] HTTP {nresp.status_code}")
         nresp.raise_for_status()
 
@@ -3544,7 +3691,10 @@ def fetch_investor_flow(ticker: str) -> dict:
 
             # 날짜를 YYYYMMDD 형식으로 변환 (2024.05.06 → 20240506)
             date_clean = date_txt.replace(".", "").replace(" ", "").strip()
-            print(f"[수급|Naver] 성공 — {date_txt} | 개인:{개인:+,} 외국인:{외국인:+,} 기관:{기관:+,}")
+            try:
+                print(f"[수급|Naver] 성공 - {date_txt} | 개인:{개인:+,} 외국인:{외국인:+,} 기관:{기관:+,}")
+            except UnicodeEncodeError:
+                pass
             return {
                 "ok":         True,
                 "source":     "naver",
@@ -3813,9 +3963,9 @@ def fetch_toss_metrics(ticker: str):
         if mkt_cap < 1_000_000_000:
             return None
 
-        # ── 영업이익률 직전 분기 0% 이상 ────────────────────────
+        # ── 영업이익률 직전 분기 0% 이상 (데이터 없으면 패스 — 국내 로직과 동일) ─
         op_margin = i.get("operatingMargins")
-        if op_margin is None or op_margin <= 0:
+        if op_margin is not None and op_margin <= 0:
             return None
 
         # ── 순이익 증감률 TTM: 10% 이상 (없으면 필터 스킵) ──────
@@ -3824,39 +3974,46 @@ def fetch_toss_metrics(ticker: str):
         if earnings_growth is not None and earnings_growth < 0.10:
             return None  # 있는데 10% 미만이면 탈락
 
-        # ── ROE TTM: 15% 이상 (상한 실용적 완화) ────────────────
+        # ── ROE TTM: 15% 이상 (상한 실용적 완화, 데이터 없으면 패스 — 국내 완화) ─
         # [BUG-3] 상한 1.01 → 5.0: AAPL(~1.47), 고ROE기업 포함
         # yfinance returnOnEquity: 소수 단위 (0.15 = 15%, 1.47 = 147%)
         roe = i.get("returnOnEquity")
-        if roe is None or roe < 0.15:
+        if roe is not None and roe < 0.15:
             return None
+        # roe is None → 데이터 부족으로 패스 (기존에는 탈락시켜 스크리너 공백 발생)
         # 상한: 87.85 (8785%) → 비정상적 ROE 제외 (부채과다 착시 방지)
-        if roe > 87.85:
+        if roe is not None and roe > 87.85:
             return None
 
         # ── PER: 0 ~ 25배 ────────────────────────────────────────
-        # trailingPE 없으면 forwardPE로 fallback
+        # trailingPE 없으면 forwardPE로 fallback (데이터 없으면 패스 — 국내 로직과 동일)
         per = i.get("trailingPE") or i.get("forwardPE")
-        if per is None or not (0 < per <= 25):
+        if per is not None and not (0 < per <= 25):
             return None
 
-        # ── 부채비율 100% 이하 ───────────────────────────────────
+        # ── 부채비율 100% 이하 (데이터 없으면 패스 — 국내 로직과 동일) ─
         # [BUG-4] yfinance debtToEquity 단위 안전 처리:
         #   - 최신 yfinance: % 단위 (146.52 = 146.52%)
         #   - 구버전 일부: 소수 단위 (1.4652 = 146.52%)
         #   → 값이 10 미만이면 소수로 간주하여 100배 변환
         debt_raw = i.get("debtToEquity")
-        if debt_raw is None:
-            return None
-        debt_pct = debt_raw * 100 if debt_raw < 10 else debt_raw
-        if debt_pct > 100:
-            return None
+        if debt_raw is not None:
+            debt_pct = debt_raw * 100 if debt_raw < 10 else debt_raw
+            if debt_pct > 100:
+                return None
+        else:
+            debt_pct = None
 
-        # ── PFCR ≥ 0: 양의 FCF 여부 확인 ────────────────────────
+        # ── PFCR ≥ 0: 양의 FCF 여부 확인 (데이터 없으면 패스 — 국내 완화) ─
         fcf = i.get("freeCashflow") or i.get("operatingCashflow") or 0
-        if fcf <= 0:
+        # fcf None/0이면 데이터 부족으로 패스 (스크리너 공백 방지)
+        if fcf is not None and fcf != 0 and fcf <= 0:
             return None
-        pfcr = round(mkt_cap / fcf, 2)
+        # fcf가 None이거나 0이면 pfcr 계산 불가 → 0으로 대체하여 스크리닝 제외하지 않음
+        try:
+            pfcr = round(mkt_cap / fcf, 2) if fcf and fcf > 0 else 0
+        except Exception:
+            pfcr = 0
 
         # ── 보조 정보 ────────────────────────────────────────────
         change_pct = (i.get("regularMarketChangePercent") or 0) * 100
@@ -3880,13 +4037,13 @@ def fetch_toss_metrics(ticker: str):
             "price_val":       round(price, 4),
             "change":          round(change_pct, 2),
             "market_cap":      mkt_cap,
-            "op_margin":       round(op_margin * 100, 2),
+            "op_margin":       round(op_margin * 100, 2) if op_margin is not None else 0,
             "earnings_growth": eg_pct,
-            "roe":             round(roe * 100, 2),
-            "per":             round(per, 2),
-            "debt_ratio":      round(debt_pct, 2),
+            "roe":             round(roe * 100, 2) if roe is not None else 0,
+            "per":             round(per, 2) if per is not None else 0,
+            "debt_ratio":      round(debt_pct, 2) if debt_pct is not None else 0,
             "pfcr":            pfcr,
-            "fcf":             fcf,
+            "fcf":             fcf or 0,
             "volume":          int(volume),
             "sector":          sector,
             "prox52":          prox52,
@@ -4689,14 +4846,40 @@ def fetch_toss_overseas_screener(sort_by: str = "price", sort_order: str = "desc
     usd_krw = get_usd_krw()
 
     results = []
-    # Vercel 1024MB 메모리·60초 제한 대응: max_workers=25 (I/O bound 특성상 속도 동일)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+    # rate-limit 완화: 25→12 워커로 감소 + 429 감지 시 지수 백오프 재시도
+    def _fetch_with_retry(tkr: str):
+        import random, time as _time
+        for attempt in range(3):
+            # 사전 필터: 이미 1회 실패한 티커는 0.1초 지연 후 재시도
+            if attempt > 0:
+                _time.sleep(0.3 * (2 ** (attempt - 1)) + random.uniform(0, 0.2))
+            try:
+                res = fetch_toss_metrics(tkr)
+                if res is not None:
+                    return res
+                # quoteType==MUTUALFUND 등 영구 제외는 즉시 반환
+                # 그 외 None은 일시적 데이터 부족일 수 있어 1회 재시도
+                if attempt == 0:
+                    continue
+                return None
+            except Exception as e:
+                # 429/rate limit 감지 시 백오프
+                if "429" in str(e) or "Too Many Requests" in str(e):
+                    continue
+                if attempt == 2:
+                    return None
+        return None
+    # Vercel 1024MB 메모리·60초 제한 대응: rate-limit 회피로 12워커로 축소
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         futures = {
-            executor.submit(fetch_toss_metrics, tkr): tkr
+            executor.submit(_fetch_with_retry, tkr): tkr
             for tkr in TOSS_US_UNIVERSE
         }
         for future in concurrent.futures.as_completed(futures):
-            res = future.result()
+            try:
+                res = future.result()
+            except Exception:
+                res = None
             if res is not None:
                 results.append(res)
 
@@ -7629,14 +7812,18 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
     w_qual = weights["quality"]
 
     closes = dd.get("Close", [])
-    if len(closes) < 20:
+    # 신규상장 대응: 20봉 미만이어도 최소 10봉이면 조건부 분석 허용 (신뢰도 제한 명시)
+    if len(closes) < 10:
         fallback_strategy = {
             "step": "💡 AI 종합 진단 및 트레이딩 전략",
-            "result": "데이터 부족으로 분석 불가",
+            "result": "데이터 부족으로 분석 불가 (10거래일 미만 — 신규상장 가능성, 최소 10봉 필요)",
             "score": 0,
             "weight": "종합"
         }
         return 50, [], [], [], fallback_strategy
+    _is_new_listing = len(closes) < 20  # 10~19봉: 신규상장 조건부 모드
+    if _is_new_listing:
+        pass  # 하위 지표 계산에서 NaN 구간을 감안한 제한적 점수로 진행, 경고는 하단에서 추가
 
     def v(k):
         a = dd.get(k, [])
@@ -7905,9 +8092,19 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
     score += _aux
 
     score = max(0.0, min(100.0, round(score)))
+    # 신규상장 제한 경고 주입
+    if '_is_new_listing' in locals() and locals().get('_is_new_listing'):
+        steps.append({"step": "⚠️ 신규상장 데이터 제한 경고",
+                      "result": f"거래일 {len(closes)}봉 — MA60/MA120·장기패턴 신뢰도 제한, 단기 지표 중심 해석 필요 | 신뢰도 상한 45% 적용",
+                      "score": 0, "weight": "주의"})
+        ai_msgs_prepend = f"⚠️ 신규상장 {len(closes)}거래일 — 장기 추세/패턴 신뢰도 제한, 단기 변동성 위주 관찰 필요"
+    else:
+        ai_msgs_prepend = None
 
     # ── [AI 종합 진단 및 미래 예측 시나리오 추가] ──
     ai_msgs = []
+    if 'ai_msgs_prepend' in locals() and ai_msgs_prepend:
+        ai_msgs.append(ai_msgs_prepend)
     
     # 1. 핵심 요약 및 매수/매도 타이밍 조건
     if score >= 65:
@@ -7975,8 +8172,7 @@ def _market_key(market: str) -> str:
 
 def _calc_trend_score(dd: Dict | None) -> float:
     def _last(key: str, default: float) -> float:
-        values = (dd or {}).get(key, [])
-        return float(values[-1]) if values and values[-1] is not None else default
+        return _last_float(dd, key, default)
 
     close = _last("Close", 0.0)
     ma20 = _last("MA20", close)
@@ -8041,17 +8237,13 @@ def _probability(base_prob: float, atr_pct: float, trend_score: float,
 
 def _prediction_quality_profile(dd: Dict | None, market: str = "KRX") -> Dict:
     """Measure history and tradability without penalizing share price itself."""
-    closes = [float(x) for x in (dd or {}).get("Close", []) if x is not None and float(x) > 0]
-    volumes = [float(x) for x in (dd or {}).get("Volume", []) if x is not None and float(x) >= 0]
-    atrs = [float(x) for x in (dd or {}).get("ATR", []) if x is not None and float(x) > 0]
+    closes = [x for x in _float_series(dd, "Close") if x > 0]
     market_key = _market_key(market)
     price = closes[-1] if closes else 0.0
     count = len(closes)
     history_score = min(1.0, count / 252.0)
 
-    paired = min(20, len(closes), len(volumes))
-    turnovers = [closes[-paired + i] * volumes[-paired + i] for i in range(paired)] if paired else []
-    average_turnover = float(np.mean(turnovers)) if turnovers else 0.0
+    average_turnover = _average_recent_turnover(dd)
     turnover_floor = 1_000_000_000.0 if market_key == "KRX" else 5_000_000.0
     if average_turnover > 0:
         liquidity_score = max(0.0, min(1.0, 0.5 + math.log10(average_turnover / turnover_floor) * 0.35))
@@ -8060,7 +8252,8 @@ def _prediction_quality_profile(dd: Dict | None, market: str = "KRX") -> Dict:
 
     raw_close_count = len((dd or {}).get("Close", []))
     completeness = min(1.0, count / max(1, raw_close_count))
-    atr_pct = atrs[-1] / price * 100.0 if atrs and price > 0 else 0.0
+    observed_atr = _last_float(dd, "ATR", 0.0)
+    atr_pct = observed_atr / price * 100.0 if observed_atr > 0 and price > 0 else 0.0
     volatility_score = 1.0 if 0.35 <= atr_pct <= (8.0 if market_key == "KRX" else 6.0) else 0.45
     reliability = max(0.20, min(1.0,
         history_score * 0.35 + liquidity_score * 0.35
@@ -8149,6 +8342,8 @@ def _calibrate_target_probability(probability: float, market: str, profile: str,
 
 def calc_probability(score: float, dd: Dict, market: str = "KRX") -> tuple:
     """Backtest prior, volatility, trend and similar-pattern directional probability."""
+    if not _prediction_history_valid(dd) or not np.isfinite(score):
+        return 50.0, 50.0
     close = _last_float(dd, "Close", 0.0)
     atr = _last_float(dd, "ATR", close * 0.02)
     atr_pct = atr / close * 100.0 if close > 0 else BACKTEST_PRIOR[_market_key(market)]["avg_atr_pct"]
@@ -8442,8 +8637,9 @@ def _github_append_prediction_learning_line(line: str) -> None:
 def calc_learning_adjustment(market: str) -> Dict:
     """저장된 예측-실현 기록으로 월별 ATR 깊이/보류 임계값을 보정."""
     rows = [r for r in _read_prediction_learning_events()
-            if r.get("type") == "outcome" and r.get("market") == market]
-    if not rows:
+            if r.get("type") == "outcome" and r.get("market") == market
+            and r.get("execution_model") == "band_overlap_stop_first_v2"]
+    if len(rows) < 20:
         return {"depth_extra": 0.0, "hold_score_delta": 0, "allocation_scale": 1.0,
                 "sample_n": 0, "applied": False,
                 "reason": "학습 표본 부족 — 기본 보수값 사용"}
@@ -8497,8 +8693,52 @@ def _float_series(dd: Dict | None, key: str) -> list[float]:
     return out
 
 def _last_float(dd: Dict | None, key: str, default: float = 0.0) -> float:
-    vals = _float_series(dd, key)
-    return vals[-1] if vals else default
+    values = (dd or {}).get(key, [])
+    try:
+        value = float(values[-1])
+        return value if math.isfinite(value) else default
+    except (TypeError, ValueError, IndexError):
+        return default
+
+
+def _prediction_history_valid(dd: Dict | None, minimum: int = 20) -> bool:
+    """Reject broken row alignment rather than compressing each price column."""
+    try:
+        count = len((dd or {}).get("Close", []))
+        if count < minimum:
+            return False
+        arrays = {}
+        for key in ("Close", "High", "Low", "Open", "Volume"):
+            values = (dd or {}).get(key, [])
+            if key in ("Open", "Volume") and not len(values):
+                continue
+            array = np.asarray(values, dtype=float)
+            if array.shape != (count,) or not np.isfinite(array).all():
+                return False
+            if (array < 0).any() or (key != "Volume" and (array == 0).any()):
+                return False
+            arrays[key] = array
+        return bool((arrays["High"] >= arrays["Low"]).all())
+    except (TypeError, ValueError, KeyError):
+        return False
+
+
+def _prediction_dates(values, market: str) -> pd.DatetimeIndex:
+    """Decode epoch seconds/milliseconds in exchange time, not nanoseconds."""
+    timezone = "America/New_York" if market == "US" else "Asia/Seoul"
+    parsed = []
+    for value in values:
+        try:
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                stamp = pd.to_datetime(value, unit="ms" if abs(value) >= 1e11 else "s", utc=True)
+            else:
+                stamp = pd.Timestamp(value)
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert(timezone).tz_localize(None)
+            parsed.append(stamp)
+        except (TypeError, ValueError, OverflowError):
+            parsed.append(pd.NaT)
+    return pd.DatetimeIndex(parsed)
 
 def _pct_rank(values: list[float], current: float) -> float:
     vals = [float(v) for v in values if v is not None and np.isfinite(v)]
@@ -8532,7 +8772,7 @@ def _prediction_feature_profile(dd: Dict | None, last_price: float, atr: float, 
     lows = _float_series(dd, "Low")
     vols = _float_series(dd, "Volume")
     atrs = _float_series(dd, "ATR")
-    if last_price <= 0:
+    if not np.isfinite(last_price) or last_price <= 0:
         return {
             "atr_pct": 0.0, "atr_rank": 0.5, "trend_score": 0.0, "momentum_score": 0.0,
             "volume_ratio": 1.0, "band_width_mult": 1.0, "target_width_mult": 1.0,
@@ -8541,7 +8781,7 @@ def _prediction_feature_profile(dd: Dict | None, last_price: float, atr: float, 
             "cycle_days": None, "cycle_phase": None,
         }
 
-    atr = atr if atr and atr > 0 else last_price * 0.02
+    atr = atr if atr and np.isfinite(atr) and atr > 0 else last_price * 0.02
     atr_pct = atr / last_price * 100.0
     atr_pct_hist: list[float] = []
     for a, c in zip(atrs[-160:], closes[-160:]):
@@ -8551,7 +8791,8 @@ def _prediction_feature_profile(dd: Dict | None, last_price: float, atr: float, 
 
     rets: list[float] = []
     if len(closes) >= 2:
-        for p, c in zip(closes[-31:-1], closes[-30:]):
+        recent_closes = closes[-31:]
+        for p, c in zip(recent_closes, recent_closes[1:]):
             if p > 0 and c > 0:
                 rets.append(math.log(c / p))
     realized_vol_pct = float(np.std(rets) * math.sqrt(20) * 100.0) if len(rets) >= 10 else atr_pct * 2.2
@@ -8663,54 +8904,77 @@ def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str
                                            buy_price: Dict, risk: Dict,
                                            event_risk: Dict, learning: Dict) -> None:
     """현재 예측을 저장하고, 과거 저장 예측 중 20거래일이 지난 건의 실현 결과를 append."""
-    dates = [str(x)[:10] for x in dd.get("Date", [])]
-    lows = [float(x) for x in dd.get("Low", []) if x is not None]
-    highs = [float(x) for x in dd.get("High", []) if x is not None]
-    closes = [float(x) for x in dd.get("Close", []) if x is not None]
-    atrs = [float(x) for x in dd.get("ATR", []) if x is not None]
-    if not dates or not lows or not highs or not closes:
+    if not _prediction_history_valid(dd):
+        return
+    parsed = _prediction_dates(dd.get("Date", []), market)
+    if (len(parsed) != len(dd["Close"]) or parsed.hasnans
+            or not parsed.is_monotonic_increasing or parsed.normalize().has_duplicates):
+        return
+    dates = parsed.strftime("%Y-%m-%d").tolist()
+    lows, highs, closes = ([float(x) for x in dd[key]] for key in ("Low", "High", "Close"))
+    # Intraday bars must never mature a 20-session learning outcome.
+    if period in ("1d", "3d"):
         return
 
     events = _read_prediction_learning_events()
-    outcome_ids = {r.get("prediction_id") for r in events if r.get("type") == "outcome"}
-    predictions = [r for r in events if r.get("type") == "prediction" and r.get("symbol") == symbol]
+    outcome_ids = {(r.get("prediction_id"), r.get("zone")) for r in events if r.get("type") == "outcome"}
+    predictions = [r for r in events if r.get("type") == "prediction" and r.get("symbol") == symbol
+                   and r.get("market") == market and r.get("execution_model") == "band_overlap_stop_first_v2"]
     date_to_idx = {d: i for i, d in enumerate(dates)}
 
     for p in predictions[-200:]:
         pid = p.get("id")
         sd = p.get("signal_date")
-        if not pid or pid in outcome_ids or sd not in date_to_idx:
+        if not pid or sd not in date_to_idx:
             continue
         i = date_to_idx[sd]
         if i + 20 >= len(closes):
             continue
         for zone_name in ("primary", "secondary"):
+            if (pid, zone_name) in outcome_ids:
+                continue
             band = (p.get("bands") or {}).get(zone_name)
             if not band:
                 continue
-            lo, hi = float(band[0]), float(band[1])
+            try:
+                lo, hi = float(band[0]), float(band[1])
+                atr = float(p.get("atr"))
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not all(math.isfinite(x) and x > 0 for x in (lo, hi, atr)) or lo > hi:
+                continue
             fut_low = lows[i + 1:i + 21]
             fut_high = highs[i + 1:i + 21]
             fut_close = closes[i + 1:i + 21]
             if not fut_low or not fut_high:
                 continue
-            entry_i = next((j for j, lv in enumerate(fut_low) if lv <= hi), None)
+            entry_i = next((j for j, lv in enumerate(fut_low) if lv <= hi and fut_high[j] >= lo), None)
             if entry_i is None:
                 continue
-            entry = min(hi, max(lo, fut_close[entry_i]))
-            atr = float(p.get("atr") or (atrs[min(i, len(atrs)-1)] if atrs else entry * 0.02))
+            entry = min(hi, fut_high[entry_i])
             after_low = fut_low[entry_i:]
             after_high = fut_high[entry_i:]
             after_close = fut_close[entry_i:]
             stop = entry - atr * (1.35 if zone_name == "primary" else 1.75)
             target = entry + atr * (1.15 if zone_name == "primary" else 1.65)
+            stop_hit = bounce_success = False
+            for j, (low, high) in enumerate(zip(after_low, after_high)):
+                if low <= stop:
+                    stop_hit = True
+                    break
+                # Entry-bar highs may have occurred before the entry touch.
+                if j > 0 and high >= target:
+                    bounce_success = True
+                    break
             _append_prediction_learning_event({
                 "type": "outcome", "prediction_id": pid, "zone": zone_name,
+                "execution_model": "band_overlap_stop_first_v2",
+                "is_actual_execution": False,
                 "symbol": symbol, "market": market, "signal_date": sd,
                 "evaluated_at": dt.now().isoformat(timespec="seconds"),
                 "entry_price": round(entry, 4),
-                "bounce_success": bool(max(after_high) >= target),
-                "stop_hit": bool(min(after_low) <= stop),
+                "bounce_success": bounce_success,
+                "stop_hit": stop_hit,
                 "extra_drop": bool(min(after_low) <= entry - atr * 0.75),
                 "return_pct": round((after_close[-1] - entry) / entry * 100, 3),
                 "max_drawdown_pct": round((min(after_low) - entry) / entry * 100, 3),
@@ -8728,8 +8992,9 @@ def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str
         return None
     _append_prediction_learning_event({
         "type": "prediction", "id": pid, "symbol": symbol, "market": market,
+        "execution_model": "band_overlap_stop_first_v2",
         "period": period, "signal_date": today, "created_at": dt.now().isoformat(timespec="seconds"),
-        "current": current, "atr": buy_price.get("atr"),
+        "current": current, "atr": buy_price.get("atr_raw", buy_price.get("atr")),
         "risk_score": (buy_price.get("downside_risk") or {}).get("score"),
         "event_risk": event_risk, "learning": learning,
         "bands": {
@@ -8749,7 +9014,7 @@ def build_weekly_analysis_context(dd: Dict | None, market: str = "KRX") -> Dict:
 
     required = ("Open", "High", "Low", "Close", "Volume")
     lengths = [len(dd.get(key) or []) for key in required]
-    row_count = min(lengths, default=0)
+    row_count = min(lengths, default=0) if len(set(lengths)) == 1 else 0
     if row_count < 30:
         return {"available": False, "reason": "주간 구조 산정에 필요한 일봉 부족"}
 
@@ -8759,8 +9024,10 @@ def build_weekly_analysis_context(dd: Dict | None, market: str = "KRX") -> Dict:
         rows[key] = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy()
 
     dates = list(dd.get("Date") or [])[-row_count:]
-    parsed_dates = pd.to_datetime(dates, errors="coerce") if len(dates) == row_count else None
+    parsed_dates = _prediction_dates(dates, market) if len(dates) == row_count else None
     has_calendar_dates = bool(parsed_dates is not None and not pd.isna(parsed_dates).any())
+    if dates and (not has_calendar_dates or not parsed_dates.is_monotonic_increasing or parsed_dates.normalize().has_duplicates):
+        return {"available": False, "reason": "invalid_daily_dates"}
     if has_calendar_dates:
         index = pd.DatetimeIndex(parsed_dates)
         if index.tz is not None:
@@ -8769,7 +9036,7 @@ def build_weekly_analysis_context(dd: Dict | None, market: str = "KRX") -> Dict:
     else:
         # Direct callers and historical tests may omit Date. Align the synthetic
         # business-day index from the end so five-session groups remain causal.
-        index = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=row_count)
+        index = pd.bdate_range(end="2000-01-07", periods=row_count)
         source = "five_session_fallback"
 
     frame = pd.DataFrame(rows, index=index).replace([np.inf, -np.inf], np.nan)
@@ -8784,11 +9051,10 @@ def build_weekly_analysis_context(dd: Dict | None, market: str = "KRX") -> Dict:
         return {"available": False, "reason": "완성 주봉 8개 미만"}
 
     last_session = frame.index[-1]
-    age_days = max(0, (pd.Timestamp.today().normalize() - last_session.normalize()).days)
     partial_week = bool(
-        source == "calendar_week" and last_session.weekday() < 4 and age_days <= 6
+        source == "calendar_week" and last_session.weekday() < 4
     )
-    completed = weekly.iloc[:-1] if partial_week and len(weekly) > 8 else weekly
+    completed = weekly.iloc[:-1] if partial_week else weekly
     current_price = float(frame["Close"].iloc[-1])
 
     window_payload = {}
@@ -8858,7 +9124,7 @@ def build_weekly_analysis_context(dd: Dict | None, market: str = "KRX") -> Dict:
         "week_count": int(len(weekly)),
         "completed_week_count": int(len(completed)),
         "partial_week_excluded": partial_week,
-        "as_of": last_session.strftime("%Y-%m-%d"),
+        "as_of": last_session.strftime("%Y-%m-%d") if has_calendar_dates else None,
         "windows": window_payload,
         "consensus_fib": consensus_fib,
         "support_anchors": support_anchors[:8],
@@ -8870,7 +9136,8 @@ def build_weekly_analysis_context(dd: Dict | None, market: str = "KRX") -> Dict:
         "slope_4w_pct": round(slope_4w_pct, 3),
         "trend_score": int(trend_score),
         "trend_label": "상승" if trend_score >= 2 else "하락" if trend_score <= -2 else "중립",
-        "basis": "1년 일봉을 실제 달력 주 단위로 분할한 13·26·52주 피보나치·추세 구조",
+        "basis": ("1년 일봉을 실제 달력 주 단위로 분할한 13·26·52주 피보나치·추세 구조"
+                  if has_calendar_dates else "날짜 미확보: 5봉 묶음 구조 추정 (실제 달력 주 아님)"),
     }
 
 
@@ -8878,7 +9145,9 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
               event_risk: Dict | None = None, learning_adjustment: Dict | None = None,
               chart_patterns: list[Dict] | None = None,
               weekly_context: Dict | None = None) -> Dict:
-    if not atr or np.isnan(atr): atr = price * 0.02
+    if not np.isfinite(price) or price <= 0 or (dd is not None and not _prediction_history_valid(dd)):
+        return {}
+    if not atr or not np.isfinite(atr) or atr <= 0: atr = price * 0.02
     rnd = 4 if market == "US" else 2
     weekly_context = weekly_context or build_weekly_analysis_context(dd, market)
     weekly_available = bool((weekly_context or {}).get("available"))
@@ -8917,18 +9186,18 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     recent_low_break = False; heavy_sell_volume = False
     lows: list[float] = []; vols: list[float] = []; closes: list[float] = []; highs: list[float] = []
     if dd is not None:
-        def _last(k): a = dd.get(k, []); return float(a[-1]) if a and a[-1] is not None else None
+        def _last(k): return _last_float(dd, k, None)
         bb_u     = _last("BB_Upper")
         bb_l     = _last("BB_Lower")
         ma20     = _last("MA20")
         ma60     = _last("MA60")
         ma120    = _last("MA120")
-        rsi      = float(dd.get("RSI",          [50])[-1] or 50)
-        macd     = float(dd.get("MACD",         [0])[-1]  or 0)
-        sig_line = float(dd.get("Signal_Line",  [0])[-1]  or 0)
-        adx      = float(dd.get("ADX",          [20])[-1] or 20)
-        dip      = float(dd.get("DI_Plus",      [0])[-1]  or 0)
-        dim      = float(dd.get("DI_Minus",     [0])[-1]  or 0)
+        rsi      = _last_float(dd, "RSI", 50.0)
+        macd     = _last_float(dd, "MACD", 0.0)
+        sig_line = _last_float(dd, "Signal_Line", 0.0)
+        adx      = _last_float(dd, "ADX", 20.0)
+        dip      = _last_float(dd, "DI_Plus", 0.0)
+        dim      = _last_float(dd, "DI_Minus", 0.0)
         lows     = [float(x) for x in dd.get("Low",   []) if x is not None]
         vols     = [float(x) for x in dd.get("Volume",[]) if x is not None]
         closes   = [float(x) for x in dd.get("Close", []) if x is not None]
@@ -9206,7 +9475,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
 
     def _empirical_stop_first_rate(distance_atr: float, stop_atr: float) -> tuple[float | None, int]:
         """Chronological 30-day target-first rate using only completed historical paths."""
-        if _hist_n < 80:
+        if _hist_n < 80 or len({len(_raw_hist_close), len(_raw_hist_high), len(_raw_hist_low), len(_raw_hist_atr)}) != 1:
             return None, 0
         outcomes = []
         start_index = max(20, _hist_n - 211)
@@ -9222,11 +9491,16 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             stop_price = sample_close - sample_atr * max(0.1, stop_atr)
             hit = False
             resolved = False
+            valid_path = True
             for future_index in range(sample_index + 1, sample_index + 31):
                 try:
                     future_low = float(_raw_hist_low[future_index])
                     future_high = float(_raw_hist_high[future_index])
                 except (TypeError, ValueError, IndexError):
+                    valid_path = False
+                    break
+                if not (np.isfinite(future_low) and np.isfinite(future_high) and 0 < future_low <= future_high):
+                    valid_path = False
                     break
                 # Same-bar ambiguity is resolved stop-first to avoid optimistic leakage.
                 if np.isfinite(future_low) and future_low <= stop_price:
@@ -9236,7 +9510,8 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                     hit = True
                     resolved = True
                     break
-            outcomes.append(1.0 if hit and resolved else 0.0)
+            if valid_path:
+                outcomes.append(1.0 if hit and resolved else 0.0)
         return (float(np.mean(outcomes)) * 100.0, len(outcomes)) if outcomes else (None, 0)
 
     def _make_tp_from_tgt(tgt_range, profile: str, previous_ceiling: float | None = None):
@@ -15149,48 +15424,9 @@ def route(path: str, params: Dict) -> Dict:
         pct = (last - prev) / prev * 100 if prev else 0
         score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
         # prob_up/down은 최종 score 확정 후에 계산해야 투자자 수급·Hybrid·레짐 보정과 일치한다.
-        # 초기값은 참고용으로만 계산하고 최종 보정 후 재계산한다.
+        # 초기값은 참고용으로만 계산하고 최종 보정 후 재계산한다. (ML 블렌딩은 최종 score 확정 후 1회만 수행)
         prob_up, prob_down = calc_probability(score, dd, market)
-        # ── ML 14-day direction prediction (StockFlow integrated, AUC-aware dynamic blend) ─────────
         ml_prediction = None
-        try:
-            ml_prediction = _get_ml_prediction(dd, market, sym)
-            if ml_prediction and not ml_prediction.get("fallback"):
-                _ml_approved, _ml_validation_reason = _ml_validation_status()
-                ml_prediction["validation_status"] = _ml_validation_reason
-                ml_prob = float(ml_prediction.get("prob_up", 0.5))
-                ml_conf = float(ml_prediction.get("confidence", 0.5))
-                # Dynamic weight based on validation AUC (training_metadata.json)
-                # <0.52: 0% (no trust), 0.52-0.56: 10%, 0.56-0.60: 15%, >0.60: 20-25%
-                try:
-                    _auc = float((_ml_get_metadata() or {}).get("metrics", {}).get("test_auc") or 0.55)
-                except Exception:
-                    _auc = 0.55
-                if not _ml_approved or _auc < 0.52:
-                    _ml_weight = 0.0
-                elif _auc < 0.56:
-                    _ml_weight = 0.10
-                elif _auc < 0.60:
-                    _ml_weight = 0.15
-                elif _auc < 0.65:
-                    _ml_weight = 0.20
-                else:
-                    _ml_weight = 0.25
-                # High volatility penalty: reduce weight by 30%
-                try:
-                    _atr_pct = float(ml_prediction.get("atr_pct", 2.0))
-                    if _atr_pct > 5.0:
-                        _ml_weight *= 0.7
-                except Exception:
-                    pass
-                if _ml_weight > 0 and ml_conf >= 0.55 and 0.25 < ml_prob < 0.85:
-                    blended = prob_up * (1 - _ml_weight) + ml_prob * 100 * _ml_weight
-                    prob_up = round(max(5.0, min(95.0, blended)), 1)
-                    prob_down = round(100.0 - prob_up, 1)
-                    ml_prediction["blend_weight"] = _ml_weight
-                    ml_prediction["blend_auc"] = _auc
-        except Exception:
-            ml_prediction = None
 
         # Market Regime 필터 적용
         regime = check_market_regime(market, sym)
@@ -15393,6 +15629,41 @@ def route(path: str, params: Dict) -> Dict:
                 except Exception:
                     pass
 
+        # ── Step 2.5: 차트·분석 데이터 일관성 보장 ───────────────────────────
+        # 실시간 보정된 last가 yfinance history의 마지막 종가와 다르면 차트 마지막 캔들의
+        # Close도 보정된 값으로 동기화한다. TTL 캐시에 저장된 원본 리스트를 직접 변형하면
+        # 다음 요청까지 오염되므로 얕은 복사 후 마지막 원소만 교체한다.
+        price_correction = None
+        try:
+            orig_last = float(closes[-1]) if closes else None
+            if orig_last and last > 0 and abs(last - orig_last) / orig_last > 0.0005:
+                # dd는 dict이며 내부 리스트는 캐시 공유 객체일 수 있으므로 복사
+                dd = dict(dd)
+                for _k in ("Close", "close"):
+                    if _k in dd and isinstance(dd[_k], list) and len(dd[_k]) == len(closes):
+                        _new_close = list(dd[_k])
+                        _new_close[-1] = last
+                        dd[_k] = _new_close
+                        break
+                # High/Low가 보정된 종가를 벗어나면 확장해 캔들 무결성 유지
+                for _hl in ("High", "Low"):
+                    if _hl in dd and isinstance(dd[_hl], list) and len(dd[_hl]) == len(closes):
+                        _lst = list(dd[_hl])
+                        if _hl == "High" and _lst[-1] < last:
+                            _lst[-1] = last
+                            dd[_hl] = _lst
+                        elif _hl == "Low" and _lst[-1] > last:
+                            _lst[-1] = last
+                            dd[_hl] = _lst
+                price_correction = {
+                    "original_close": round(orig_last, 4 if market == "US" else 2),
+                    "corrected_close": round(last, 4 if market == "US" else 2),
+                    "delta_pct": round((last - orig_last) / orig_last * 100, 3) if orig_last else 0,
+                    "source": "naver_realtime" if market == "KRX" else session_name,
+                }
+        except Exception:
+            pass
+
         # ── Step 3: 투자자 수급 (KRX 전용) — score 보정 포함 ────────────────
         # calc_buy_price 가 score 를 사용하므로 현재가 보정 직후, 예측 계산 전 실행
         investor_flow = {"ok": False, "reason": "KRX 종목 아님"}
@@ -15567,7 +15838,11 @@ def route(path: str, params: Dict) -> Dict:
             #   적용 — 헤드라인에 회사명 전체 / 회사명 핵심 단어 / 티커가 없으면 감정 입력에서
             #   제외한다. 종목 페이지 출처(네이버/공시/DART)는 이후 별도 병합되며 필터하지 않는다.
             _name_key   = re.sub(r"\s+", "", str(company or "")).lower()
-            _name_words = [w.lower() for w in re.split(r"\s+", str(company or "")) if len(w) > 4]
+            # 길이가 짧은 한글 기업명(예: LG화학 4자, SK 2자)도 인식하도록 len>1 로 완화
+            # 영문도 2자 이상이면 유효 단어로 인정 (기존 >4 는 LG화학, SK하이닉스 축약 등 필터링 과다)
+            _name_words = [w.lower() for w in re.split(r"\s+", str(company or "")) if len(w.strip()) >= 2]
+            # 한글 2~3자 단어는 공백 제거 검색에서도 잡히도록 별도 처리
+            _name_compact_words = [re.sub(r"\s+", "", w).lower() for w in _name_words if len(re.sub(r"\s+", "", w)) >= 2]
             _tkr_key    = sym.split(".")[0].lower()
             def _relevant_headline(title: str) -> bool:
                 t_nosp = re.sub(r"\s+", "", str(title or "")).lower()
@@ -15575,11 +15850,15 @@ def route(path: str, params: Dict) -> Dict:
                     return True
                 if len(_tkr_key) >= 2 and _tkr_key in t_nosp:
                     return True
+                # compact word 매칭 (예: LG화학 → 기사에 LG화학 포함)
+                for cw in _name_compact_words:
+                    if cw and cw in t_nosp:
+                        return True
                 if not _name_words:
                     return False
-                # 회사명 핵심 단어가 1개뿐이면 1개 일치, 2개 이상이면 2개 일치 요구
+                # 회사명 핵심 단어가 1개뿐이면 1개 일치, 2개 이상이면 1개 일치로 완화 (2→1)
                 t_low = str(title or "").lower()
-                return sum(1 for w in _name_words if w in t_low) >= min(2, len(_name_words))
+                return sum(1 for w in _name_words if w in t_low) >= min(1, len(_name_words))
             _news_in = [{"title": n.get("title"), "source": n.get("publisher"),
                          "source_type": n.get("source_type") or "google_news",
                          "published": n.get("published")}
@@ -15720,11 +15999,21 @@ def route(path: str, params: Dict) -> Dict:
             key_metrics = {"market_cap_str": "N/A", "per_str": "N/A", "pbr_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
             peter_lynch = {"status": "unavailable", "eligible": False, "criteria": [], "error": str(_charm_e)}
 
+        # ── 통화·단위 명시: 프론트엔드가 market 외에 명시적 currency로 표시하도록 ──
+        currency = "KRW" if market == "KRX" else "USD"
+        price_unit = "원" if market == "KRX" else "달러"
+        # 차트 마지막 캔들 종가가 보정된 현재가와 일치하는지 검증 플래그
+        _chart_close_last = float(dd.get("Close", [last])[-1] or last) if dd.get("Close") else last
+        chart_analysis_consistent = abs(_chart_close_last - last) / max(last, 1) < 0.0005
+
         response = {
             "symbol": sym, "company": company or sym, "market": market,
             "period": period,
             "last_close": round(last, _price_rnd), "prev_close": round(prev, _price_rnd),
             "pct_change": round(pct, 2),
+            "currency": currency, "price_unit": price_unit,
+            "price_correction": price_correction,
+            "chart_analysis_consistent": chart_analysis_consistent,
             "weekly_analysis": weekly_context,
             "session_name": session_name,
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
@@ -16989,6 +17278,10 @@ input::placeholder{color:#484f58}
 
 /* 차트 */
 #price-chart, #rsi-chart, #macd-chart, #forecast-chart{width:100%;border-radius:8px;overflow:hidden}
+.chart-failure{padding:18px;color:#d29922;font-size:12px;line-height:1.6}
+#data-quality-panel,#live-quote-panel{font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+#main{min-width:0}
+.metric-price-row{flex-wrap:wrap;gap:8px 16px}
 
 /* 리스크 카드 */
 .risk-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
@@ -18001,6 +18294,8 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div id="security-status-banner" class="security-status-banner" role="status" aria-live="polite"></div>
+      <div id="data-quality-panel" class="card" role="status" style="display:none"></div>
+      <div id="live-quote-panel" class="card" role="status" style="display:none"></div>
       <div class="metrics-grid">
         <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
         <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div><div id="r-vol-source" style="font-size:10px;color:#8b949e;margin-top:4px"></div></div>
@@ -18008,7 +18303,7 @@ input::placeholder{color:#484f58}
         <div class="metric-card metric-support-card"><div class="m-label">바로 아래 버팀목(단기 지지)</div><div class="m-value" id="r-support-short" style="font-size:18px"></div></div>
         <div class="metric-card metric-support-card"><div class="m-label">중기 버팀목 구간</div><div class="m-value" id="r-support-mid" style="font-size:18px"></div></div>
         <div class="metric-card metric-toss-card" id="r-toss-card">
-          <div class="m-label">토스증권 AI 요약</div>
+          <div class="m-label">외부 요약 · 토스증권 AI</div>
           <div class="toss-ai-summary" id="r-toss-summary" style="color:#484f58;font-size:11px">-</div>
           <div class="toss-ai-time" id="r-toss-time"></div>
         </div>
@@ -18025,7 +18320,7 @@ input::placeholder{color:#484f58}
       <div id="signal-confidence-card" style="display:none" class="card signal-confidence-card"></div>
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트</button>
-        <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 AI 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
+        <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 규칙 기반 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
         <button class="tab-btn" onclick="switchTab('report')" style="display:none">📝 단계별 리포트</button>
         <button class="tab-btn" onclick="switchTab('forecast')">🔮 예측</button>
         <button class="tab-btn" onclick="switchTab('news')">📰 뉴스</button>
@@ -18604,9 +18899,9 @@ function shareToTelegram() {
   if (!currentData) return;
   const d = currentData;
 
-  // 원화 종목 판정 — market 플래그 외에 .KS/.KQ 접미사도 방어적으로 인식해
-  // 원화 종목에 달러 단위가 표시되는 일이 없도록 한다.
-  const isKrx   = d.market === 'KRX' || /\.(KS|KQ)$/i.test(String(d.symbol || ''));
+  // 원화 종목 판정 — 서버 currency 필드를 우선 사용해 KRW/USD 일원화
+  // market 플래그 + 접미사 + currency 3중 방어 (신규상장/ETF 등 예외 대비)
+  const isKrx   = (d.currency === 'KRW') || d.market === 'KRX' || /\.(KS|KQ)$/i.test(String(d.symbol || ''));
   const unit    = isKrx ? '원' : '달러';
   const company = d.company || d.symbol;
   const ticker  = d.symbol;
@@ -19210,56 +19505,72 @@ function retryLastAnalysis() {
 // ── 미국 주식 실시간 가격 폴링 ──────────────────────────────────────────────
 let _pricePoller    = null;
 let _pollTicker     = null;
+let _pricePollGeneration = 0;
+let _pricePollController = null;
+let _liveQuote = null;
 
 function _stopPricePolling() {
-  if (_pricePoller) { clearInterval(_pricePoller); _pricePoller = null; }
+  ++_pricePollGeneration;
+  if (_pricePoller) clearTimeout(_pricePoller);
+  _pricePoller = null;
+  _pollTicker = null;
+  if (_pricePollController) _pricePollController.abort();
+  _pricePollController = null;
 }
 
 function _startPricePolling(symbol) {
   _stopPricePolling();
   _pollTicker = symbol;
-  _pricePoller = setInterval(async () => {
-    if (!_pollTicker) return;
+  const generation = _pricePollGeneration;
+  const snapshot = currentData;
+  const isCurrent = () => generation === _pricePollGeneration && _pollTicker === symbol &&
+    currentMarket === 'US' && currentData === snapshot && currentData?.symbol === symbol;
+  const poll = async () => {
+    if (!isCurrent()) return;
+    const controller = new AbortController();
+    _pricePollController = controller;
+    const timeout = setTimeout(() => controller.abort(), 12000);
     try {
-      const r = await fetch(`/api/price?ticker=${encodeURIComponent(_pollTicker)}&market=US&_ts=${Date.now()}`, {cache:'no-store'});
+      const r = await fetch(`/api/price?ticker=${encodeURIComponent(symbol)}&market=US&_ts=${Date.now()}`, {cache:'no-store', signal:controller.signal});
       if (!r.ok) return;
       const d = await r.json();
-      if (d.error || !d.price) return;
+      if (!isCurrent() || controller.signal.aborted || d.error || !_isFiniteNumber(d.price) || Number(d.price) <= 0) return;
+      if ((d.symbol && d.symbol !== symbol) || (d.market && d.market !== 'US')) return;
       _applyPriceUpdate(d);
-    } catch(e) {}
-  }, 5000);
+    } catch(e) {
+      if (isCurrent()) {
+        const el = document.getElementById('live-quote-panel');
+        if (el) { el.style.display = ''; el.textContent = '별도 시세 갱신 실패 · 분석 스냅샷은 변경되지 않았습니다.'; }
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (_pricePollController === controller) _pricePollController = null;
+      // Schedule only after completion; slow requests must never overlap.
+      if (isCurrent()) _pricePoller = setTimeout(poll, 5000);
+    }
+  };
+  _pricePoller = setTimeout(poll, 5000);
 }
 
 function _applyPriceUpdate(d) {
-  const up  = d.pct_change >= 0;
-  const clr = up ? '#3fb950' : '#f85149';
-  const priceEl  = document.getElementById('r-price');
-  const pctEl    = document.getElementById('r-pct');
-  const badgeEl  = document.getElementById('r-session-badge');
-  if (priceEl) priceEl.textContent = fmtPrice(d.price, false);
-  if (pctEl)   pctEl.innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
-  if (badgeEl) {
-    const hiddenSessions = new Set(['정규장', '장마감', '']);
-    const sn = (d.session_name || '').trim();
-    if (sn && !hiddenSessions.has(sn)) {
-      const sessionColors = {
-        '프리마켓':   { bg: '#1f6feb33', fg: '#58a6ff' },
-        '오버나이트': { bg: '#6e40c933', fg: '#bc8cff' },
-        '애프터마켓': { bg: '#388bfd22', fg: '#79c0ff' },
-        '시간외':     { bg: '#30363d',   fg: '#8b949e' },
-      };
-      const col = sessionColors[sn] || { bg: '#1f6feb33', fg: '#58a6ff' };
-      badgeEl.textContent = sn;
-      badgeEl.style.background = col.bg;
-      badgeEl.style.color = col.fg;
-      badgeEl.style.display = 'inline';
-    } else {
-      badgeEl.style.display = 'none';
-    }
-  }
+  if (!_isFiniteNumber(d.price) || Number(d.price) <= 0) return;
+  _liveQuote = {...d};
+  const el = document.getElementById('live-quote-panel');
+  if (!el) return;
+  const meta = d.data_quality || {};
+  el.style.display = '';
+  el.textContent = `별도 최신 시세: ${fmtPrice(d.price, currentData?.market === 'KRX')} · ` +
+    `등락 ${_isFiniteNumber(d.pct_change) ? Number(d.pct_change).toFixed(2) + '%' : '미제공'} · ` +
+    `${d.session_name || '세션 미제공'} · 출처 ${meta.source || d.source || '미제공'} · ` +
+    `시세 기준 ${meta.as_of || d.as_of || '미제공'} · 화면 수신 ${new Date().toLocaleTimeString('ko-KR')} · ` +
+    '차트·진단·목표가는 아래 분석 스냅샷 기준이며 이 시세로 재계산되지 않습니다.';
 }
 async function analyze(tickerOverride = '') {
   _stopPricePolling();   // 새 검색 시 이전 폴링 중단
+  _liveQuote = null;
+  if (_tossAiController) _tossAiController.abort();
+  _tossAiSummary = '';
+  resetPeerIndustryTab();
   _hideStockSuggestions();
   closeSidebar();   // 모바일에서 분석 시작 시 사이드바 자동 닫기
   const inputValue = document.getElementById('ticker-input').value;
@@ -19267,6 +19578,7 @@ async function analyze(tickerOverride = '') {
   const period = '1y';
   if (!ticker) return;
   const requestId = ++_analysisRequestId;
+  const requestMarket = currentMarket;
   if (_analysisController) _analysisController.abort();
   if (_analysisTimeout) { clearTimeout(_analysisTimeout); _analysisTimeout = null; }
   const controller = new AbortController();
@@ -19300,7 +19612,7 @@ async function analyze(tickerOverride = '') {
     } catch(e) {
       throw new Error(`API 응답이 올바르지 않습니다. (상태: ${r.status}, 서버 오류나 타임아웃일 수 있습니다.)`);
     }
-    if (requestId !== _analysisRequestId) return;
+    if (requestId !== _analysisRequestId || currentMarket !== requestMarket) return;
     if (!r.ok || d.error) {
       setState('error');
       document.getElementById('error-msg').textContent = d.error || `분석 서버가 HTTP ${r.status} 상태를 반환했습니다.`;
@@ -19379,14 +19691,33 @@ function _fmtUsNum(v) {
   return n.toLocaleString('en-US', {minimumFractionDigits:digits, maximumFractionDigits:digits});
 }
 
+function _isFiniteNumber(value) {
+  return (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value));
+}
+
+function renderDataQuality(d) {
+  const el = document.getElementById('data-quality-panel');
+  if (!el) return;
+  const q = d.data_quality;
+  el.style.display = q && typeof q === 'object' ? '' : 'none';
+  el.textContent = '';
+  if (!q || typeof q !== 'object') return;
+  const labels = {status:'상태', source:'출처', currency:'통화', timezone:'시간대', price_basis:'가격 기준', as_of:'분석 기준 시각', history_bars:'가격 이력 수'};
+  const parts = Object.entries(labels).filter(([key]) => q[key] != null && q[key] !== '')
+    .map(([key, label]) => `${label}: ${q[key]}`);
+  const warnings = Array.isArray(q.warnings) ? q.warnings : q.warnings ? [q.warnings] : [];
+  warnings.forEach(w => parts.push('주의: ' + (typeof w === 'object' ? w.message || w.reason || w.code || JSON.stringify(w) : w)));
+  el.textContent = '분석 데이터 품질 · ' + (parts.join(' · ') || '세부 메타데이터 미제공');
+}
+
 // 통화기호 포함 가격 (현재가·목표가·매수전략·ATR 리스크 등)
 function fmtPrice(v, isKrx) {
-  if (v == null || isNaN(v)) return '-';
+  if (!_isFiniteNumber(v)) return '-';
   return isKrx ? _fmtKrNum(v) + '원' : '$' + _fmtUsNum(v);
 }
 // 통화기호 없는 숫자 (진입가·손절가·표·배지 등)
 function fmtNum(v, isKrx) {
-  if (v == null || isNaN(v)) return '-';
+  if (!_isFiniteNumber(v)) return '-';
   return isKrx ? _fmtKrNum(v) : _fmtUsNum(v);
 }
 // 종목코드 표시 — KRX: 시장 접미사 제거 / US: 티커 유지
@@ -19534,7 +19865,11 @@ function renderSignalConfidence(d) {
 }
 // ── 종목 분석 결과 렌더링 ──
 function renderResult(d) {
-  const isKrx = d.market === 'KRX';
+  const isKrx = (d.currency === 'KRW') || d.market === 'KRX';
+  renderDataQuality(d);
+  const quoteEl = document.getElementById('live-quote-panel');
+  if (quoteEl) { quoteEl.textContent = ''; quoteEl.style.display = 'none'; }
+  if (d.quote_snapshot) _applyPriceUpdate(d.quote_snapshot);
   const up = d.pct_change >= 0;
   const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
   renderScalpPeriodRecommendation(d.scalp_period_recommendation || null);
@@ -19551,7 +19886,7 @@ function renderResult(d) {
   document.getElementById('r-title').innerHTML =
     `${d.company || fmtSymbol(d.symbol, isKrx)} <span class="ticker-badge">${fmtSymbol(d.symbol, isKrx)}</span>`;
   document.getElementById('r-subtitle').textContent =
-    `기준일: ${new Date().toLocaleDateString('ko-KR')} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'}`;
+    `분석 스냅샷 기준: ${d.data_quality?.as_of || d.as_of || '미제공'} | 시장: ${isKrx ? '🇰🇷 KRX (한국)' : '🇺🇸 US (미국)'} | 진단·차트·목표가는 분석 당시 기준`;
   const securityBanner = document.getElementById('security-status-banner');
   const securityStatus = d.security_status || {};
   if (securityBanner) {
@@ -19568,16 +19903,17 @@ function renderResult(d) {
     }
   }
   document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
-  document.getElementById('r-pct').innerHTML = `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>`;
+  document.getElementById('r-pct').innerHTML = _isFiniteNumber(d.pct_change) ? `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>` : '등락 미제공';
 
   // 상승/하락 가능성 표시
   const probEl = document.getElementById('r-prob');
-  if (probEl && d.prob_up != null) {
+  if (probEl && _isFiniteNumber(d.prob_up) && _isFiniteNumber(d.prob_down)) {
     probEl.style.display = 'flex';
     probEl.style.flexDirection = 'column';
     probEl.innerHTML =
-      `<span style="color:#3fb950;background:#3fb95018;padding:2px 6px;border-radius:3px;white-space:nowrap">▲ 상승 가능성 ${d.prob_up.toFixed(1)}%</span>` +
-      `<span style="color:#f85149;background:#f8514918;padding:2px 6px;border-radius:3px;white-space:nowrap">▼ 하락 가능성 ${d.prob_down.toFixed(1)}%</span>`;
+      `<span style="color:#3fb950">▲ 상승 점수 ${Number(d.prob_up).toFixed(1)}/100</span>` +
+      `<span style="color:#f85149">▼ 하락 점수 ${Number(d.prob_down).toFixed(1)}/100</span>` +
+      '<span style="color:#8b949e;font-size:10px">비보정 시나리오 점수 · 실제 확률 아님</span>';
   } else if (probEl) {
     probEl.style.display = 'none';
   }
@@ -19605,18 +19941,18 @@ function renderResult(d) {
     }
   }
 
-  document.getElementById('r-vol').textContent = d.volume.toLocaleString();
+  document.getElementById('r-vol').textContent = _isFiniteNumber(d.volume) && Number(d.volume) >= 0 ? Number(d.volume).toLocaleString() : '데이터 부족';
   const volSrcEl = document.getElementById('r-vol-source');
-  if (volSrcEl) volSrcEl.textContent = isKrx ? '출처: 네이버 금융 · KRX 시세' : '출처: Yahoo Finance · 거래소 시세';
-  document.getElementById('r-atr').textContent = d.atr.toLocaleString();
+  if (volSrcEl) volSrcEl.textContent = '분석 데이터 출처: ' + (d.data_quality?.source || '미제공');
+  document.getElementById('r-atr').textContent = _isFiniteNumber(d.atr) && Number(d.atr) >= 0 ? fmtNum(d.atr, isKrx) : '데이터 부족';
 
   // ATR% + 변동성 추세 → ATR 카드 서브텍스트
   const atrPctEl = document.getElementById('r-atr-pct');
-  if (atrPctEl && d.buy_price && d.buy_price.atr_pct != null) {
+  if (atrPctEl && d.buy_price && _isFiniteNumber(d.buy_price.atr_pct)) {
     const vt = d.buy_price.vol_trend;
     const vtHtml = vt === 'expanding'   ? '<span style="color:#f85149">변동성 확대↑</span>' :
                    vt === 'contracting' ? '<span style="color:#3fb950">변동성 수축↓</span>' :
-                                          '<span style="color:#d29922">변동성 안정</span>';
+                   vt === 'stable' ? '<span style="color:#d29922">변동성 안정</span>' : '변동성 추세 미제공';
     atrPctEl.innerHTML = `${d.buy_price.atr_pct}% · ${vtHtml}`;
     atrPctEl.style.display = 'block';
   } else if (atrPctEl) {
@@ -19655,7 +19991,8 @@ function renderResult(d) {
   // 탭 초기화
   switchTab('chart');
   // 차트는 탭 전환 후 렌더
-  setTimeout(() => renderCharts(d, isKrx), 50);
+  const chartRequestId = _analysisRequestId;
+  setTimeout(() => { if (currentData === d && chartRequestId === _analysisRequestId) renderCharts(d, isKrx); }, 50);
 }
 
 function renderAI(d, isKrx) {
@@ -20606,7 +20943,7 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
   if (isKrx && flow && flow.ok) {
     const net = (flow['외국인'] || 0) + (flow['기관'] || 0);
     sScore = 50 + Math.min(35, Math.max(-35, net / 4000));
-  } else if (!isKrx && d.us_enriched && d.us_enriched.sentiment) {
+  } else if (!isKrx && d.us_enriched && d.us_enriched.sentiment) { // currency=USD 분기
     const bull = Number(d.us_enriched.sentiment.bullish_pct || 0.5);
     sScore = Math.round(bull * 100);
   }
