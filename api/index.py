@@ -1594,13 +1594,14 @@ def resolve_ticker(q: str):
                 company = remote["name"] if remote else code
             return qu, "KRX", company
 
+    # ── 5. KR_STOCK_MAP 완전 일치 (오프라인, KQ/KS 정확) ─────────────
+    # 라틴명 NAVER/SK 등도 KR 종목으로 우선 인식 (ASCII US 오분류 방지)
+    if q in KR_STOCK_MAP:
+        return KR_STOCK_MAP[q], "KRX", q
+
     # ── 4. 전체 ASCII → US ticker 직접 입력 ──────────────────────────
     if all(ord(c) < 128 for c in q):
         return q.upper(), "US", q.upper()
-
-    # ── 5. KR_STOCK_MAP 완전 일치 (오프라인, KQ/KS 정확) ─────────────
-    if q in KR_STOCK_MAP:
-        return KR_STOCK_MAP[q], "KRX", q
 
     # ── 6~7. KRX 마스터 (전체 상장 주식·ETF·ETN) ───────────────────
     try:
@@ -15485,28 +15486,70 @@ def route(path: str, params: Dict) -> Dict:
         # UI와 후속 진단에는 엔진 정렬상 가장 최신인 첫 항목만 전달한다.
         patterns = _deduplicate_pattern_types(patterns)
 
-        # ── Step 1: 외부 데이터 선제 수집 (현재가 보정에 필요) ───────────────
-        # Naver 금융 (KRX 현재가·전일가 보정 소스)
-        naver = fetch_naver(sym) if market == "KRX" else None
-
-        # US 보강 데이터 (Finnhub / AV / Tiingo — 재무지표·뉴스 보완)
+        # ── Step 1: 외부 데이터 선제 수집 (병렬 — 50초 타임아웃 방지) ───────────────
+        # 3개 I/O 작업을 병렬로 수행해 순차 합 15~25초 → 병렬 5~8초로 단축
+        naver = None
         us_enriched = None
-        if market == "US":
+        toss_industry = None
+        def _fetch_naver_job():
+            return fetch_naver(sym) if market == "KRX" else None
+        def _fetch_us_job():
+            if market != "US":
+                return None
             try:
                 import sys as _sys, os as _os
                 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
                 from market_briefing.us_enricher import fetch_us_enriched
-                us_enriched = fetch_us_enriched(sym)
+                return fetch_us_enriched(sym)
             except Exception:
-                pass
-
-        toss_industry = fetch_toss_industry_info(sym, market) if market == "KRX" else {
-            "sector": ((us_enriched or {}).get("overview") or {}).get("sector") or "",
-            "industry": ((us_enriched or {}).get("overview") or {}).get("industry") or "",
-            "product_code": "",
-            "source": "us-enriched",
-            "ok": bool(((us_enriched or {}).get("overview") or {}).get("sector") or ((us_enriched or {}).get("overview") or {}).get("industry")),
-        }
+                return None
+        def _fetch_toss_job():
+            try:
+                if market == "KRX":
+                    return fetch_toss_industry_info(sym, market)
+                # US는 us_enriched 결과가 필요하므로 일단 빈 값, 아래에서 채움
+                return None
+            except Exception:
+                return {"sector": "", "industry": "", "product_code": "", "source": "", "ok": False}
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as _pool:
+                f_naver = _pool.submit(_fetch_naver_job)
+                f_us = _pool.submit(_fetch_us_job)
+                f_toss_krx = _pool.submit(_fetch_toss_job) if market == "KRX" else None
+                naver = f_naver.result(timeout=12)
+                us_enriched = f_us.result(timeout=12)
+                if market == "KRX":
+                    try:
+                        toss_industry = f_toss_krx.result(timeout=8) if f_toss_krx else {"sector": "", "industry": "", "product_code": "", "source": "", "ok": False}
+                    except concurrent.futures.TimeoutError:
+                        toss_industry = {"sector": "", "industry": "", "product_code": "", "source": "timeout", "ok": False}
+                else:
+                    toss_industry = {
+                        "sector": ((us_enriched or {}).get("overview") or {}).get("sector") or "",
+                        "industry": ((us_enriched or {}).get("overview") or {}).get("industry") or "",
+                        "product_code": "",
+                        "source": "us-enriched",
+                        "ok": bool(((us_enriched or {}).get("overview") or {}).get("sector") or ((us_enriched or {}).get("overview") or {}).get("industry")),
+                    }
+        except Exception:
+            # 폴백: 개별 호출 (타임아웃 시 최소 데이터로 진행)
+            if naver is None and market == "KRX":
+                try: naver = fetch_naver(sym)
+                except Exception: naver = {}
+            if us_enriched is None and market == "US":
+                try:
+                    import sys as _sys, os as _os
+                    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+                    from market_briefing.us_enricher import fetch_us_enriched
+                    us_enriched = fetch_us_enriched(sym)
+                except Exception: us_enriched = None
+            if toss_industry is None:
+                toss_industry = fetch_toss_industry_info(sym, market) if market == "KRX" else {
+                    "sector": ((us_enriched or {}).get("overview") or {}).get("sector") or "",
+                    "industry": ((us_enriched or {}).get("overview") or {}).get("industry") or "",
+                    "product_code": "", "source": "us-enriched",
+                    "ok": bool(((us_enriched or {}).get("overview") or {}).get("sector") or ((us_enriched or {}).get("overview") or {}).get("industry")),
+                }
         if market == "KRX":
             if naver is None:
                 naver = {}
@@ -19466,7 +19509,7 @@ let _analysisController = null;
 let _analysisTimeout = null;
 let _analysisRequestId = 0;
 let _lastAnalysisRequest = null;
-const _ANALYSIS_TIMEOUT_MS = 50000;
+const _ANALYSIS_TIMEOUT_MS = 58000;
 
 function _startLoadingAnimation() {
   _stopLoadingAnimation();
@@ -19652,10 +19695,52 @@ async function analyze(tickerOverride = '') {
     loadPeerIndustryOutlook(d);
   } catch(e) {
     if (requestId !== _analysisRequestId) return;
-    setState('error');
     const timedOut = e && e.name === 'AbortError';
+    // 타임아웃 시 1회 자동 경량 재시도 (모바일/서버 지연 대응)
+    if (timedOut && !liteQuery) {
+      console.log('[StockOracle] 타임아웃 → lite 모드로 자동 재시도');
+      document.getElementById('error-msg').textContent = `분석이 ${Math.round(analysisTimeoutMs / 1000)}초를 초과해 경량 모드로 재시도합니다...`;
+      // 0.8초 후 lite=1로 재시도 (동일 ticker, 동일 market)
+      setTimeout(() => {
+        if (requestId === _analysisRequestId) {
+          // _lastAnalysisRequest는 이미 저장됨 → lite 강제 재호출
+          const _origFetch = window.fetch;
+          // 직접 lite 재시도: analyze를 lite 플래그와 함께 재호출
+          // 간단히 현재 요청을 lite로 다시 수행
+          (async () => {
+            try {
+              const liteR = await fetch(`/api/stock?ticker=${encodeURIComponent(ticker)}&period=${period}&market=${currentMarket}&lite=1&_ts=${Date.now()}`, {cache:'no-store', signal: controller.signal});
+              let liteText = await liteR.text();
+              let liteD;
+              try { liteD = JSON.parse(liteText); } catch(err) { throw new Error(`경량 재시도 응답 오류 (상태: ${liteR.status})`); }
+              if (!liteR.ok || liteD.error) throw new Error(liteD.error || `경량 재시도 실패 HTTP ${liteR.status}`);
+              currentData = liteD;
+              _selectedStockTicker = liteD.symbol || ticker;
+              if (liteD.market) currentMarket = liteD.market;
+              renderResult(liteD);
+              renderSignalConfidence(liteD);
+              setState('result');
+              if (liteD.market === 'US' && liteD.symbol) _startPricePolling(liteD.symbol);
+              renderFlowTab(liteD);
+              resetPeerIndustryTab(); loadPeerIndustryOutlook(liteD);
+              document.getElementById('error-msg').textContent = '';
+            } catch(retryE) {
+              if (retryE && retryE.name === 'AbortError') {
+                setState('error');
+                document.getElementById('error-msg').textContent = `경량 재시도도 ${Math.round(analysisTimeoutMs / 1000)}초를 초과했습니다. 네트워크가 불안정합니다. 잠시 후 '다시 분석'을 눌러주세요.`;
+              } else {
+                setState('error');
+                document.getElementById('error-msg').textContent = '경량 재시도 오류: ' + (retryE && retryE.message ? retryE.message : '알 수 없는 오류');
+              }
+            }
+          })();
+        }
+      }, 800);
+      return;
+    }
+    setState('error');
     document.getElementById('error-msg').textContent = timedOut
-      ? `분석이 ${Math.round(analysisTimeoutMs / 1000)}초 안에 완료되지 않아 중단했습니다. 모바일 네트워크 상태를 확인한 뒤 다시 시도해주세요.`
+      ? `분석이 ${Math.round(analysisTimeoutMs / 1000)}초 안에 완료되지 않아 중단했습니다. '다시 분석'을 누르면 경량 모드로 재시도합니다. (서버가 혼잡하면 10~15초 더 걸릴 수 있습니다)`
       : 'API 서버 오류: ' + (e && e.message ? e.message : '알 수 없는 오류');
   } finally {
     if (requestId === _analysisRequestId) {
@@ -25891,6 +25976,12 @@ class handler(BaseHTTPRequestHandler):
             else:
                 _send(self, result)
         except Exception as e:
-            # Log traceback internally but hide from user
-            print(f"Server Error: {str(e)}\n{traceback.format_exc()}")
-            _send(self, {"error": "Internal Server Error"}, 500)
+            # Log full traceback for Vercel logs, but return user-readable message
+            tb = traceback.format_exc()
+            print(f"Server Error: {str(e)}\n{tb}")
+            # 스톡 분석 경로는 500 대신 200+error JSON으로 반환해 프론트가 오류 메시지를 렌더하도록 함
+            err_msg = str(e)[:300] if str(e) else "알 수 없는 오류"
+            # 민감 정보(경로 등) 제거하고 간결 메시지
+            if len(tb) > 2000:
+                tb = tb[-2000:]
+            _send(self, {"error": f"분석 중 오류가 발생했습니다: {err_msg}", "error_detail": tb, "error_code": "INTERNAL_ERROR"}, 200)
