@@ -603,6 +603,34 @@ def _krx_session_date() -> str:
         return dt.now().strftime("%Y-%m-%d")
 
 
+def _krx_session_label(now: dt | None = None) -> str:
+    """한국 시장 세션 라벨 (네트워크 호출 없음).
+
+    정규장 09:00~15:30, 시간외 단일가 16:00~18:00 KST. 주말은 휴장.
+    공휴일은 여기서 판별하지 않는다 — 마지막 캔들 날짜와 조합해
+    data_quality 쪽에서 '휴장(데이터는 직전 거래일 기준)'으로 안내한다.
+    """
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        kst = now.astimezone(_ZI("Asia/Seoul")) if now else dt.now(_ZI("Asia/Seoul"))
+    except Exception:
+        kst = now or dt.now()
+    if kst.weekday() >= 5:
+        return "휴장(주말)"
+    hm = kst.hour * 60 + kst.minute
+    if hm < 8 * 60 + 30:
+        return "장 시작 전"
+    if hm < 9 * 60:
+        return "장전 동시호가"
+    if hm <= 15 * 60 + 30:
+        return "정규장"
+    if hm < 16 * 60:
+        return "장 마감"
+    if hm <= 18 * 60:
+        return "시간외 단일가"
+    return "장 마감"
+
+
 def _is_krx_short_code(value: str) -> bool:
     """숫자 또는 최근 도입된 영문 혼합 6자리 KRX 단축코드인지 확인한다."""
     return bool(re.fullmatch(r"[0-9A-Z]{6}", str(value or "").strip().upper()))
@@ -1601,7 +1629,12 @@ def resolve_ticker(q: str):
 
     # ── 4. 전체 ASCII → US ticker 직접 입력 ──────────────────────────
     if all(ord(c) < 128 for c in q):
-        return q.upper(), "US", q.upper()
+        tkr = q.upper()
+        # 역조회로 표시용 한글 종목명 확보 (AAPL → 애플). 실패 시 티커 그대로.
+        for _kname, _mapped in US_STOCK_MAPPING.items():
+            if str(_mapped).upper() == tkr:
+                return tkr, "US", _kname
+        return tkr, "US", tkr
 
     # ── 6~7. KRX 마스터 (전체 상장 주식·ETF·ETN) ───────────────────
     try:
@@ -1895,10 +1928,58 @@ FIXED_ANALYSIS_PERIOD = "1y"
 
 
 @ttl_cache(120)   # 2분
-def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
+def fetch_stock_data(ticker: str, market: str, period: str = "1y", company: str = ""):
     sym = ticker.strip().upper()
+    # 시장 파라미터 정규화 — 케이스 무시, 누락 시 티커 형태로 자동 추론 (KRX/US 안정성)
+    market = str(market or "").strip().upper()
+    if market not in ("KRX", "US"):
+        if sym.endswith((".KS", ".KQ")) or (sym.isdigit() and len(sym) == 6):
+            market = "KRX"
+        elif sym and all(ord(c) < 128 for c in sym):
+            market = "US"
+        else:
+            market = "KRX"
     if market == "KRX" and sym.isdigit():
         sym = f"{sym}.KS"
+
+    # yfinance history 재시도 헬퍼 — 일시적 429/타임아웃/NoneType 버그에 대응
+    def _yf_history_retry(_sym: str, _period: str, _interval: str, _tries: int = 2):
+        last_exc = None
+        for attempt in range(_tries):
+            try:
+                _df = yf.Ticker(_sym).history(period=_period, interval=_interval, auto_adjust=True)
+                if _df is not None and not _df.empty:
+                    return _df
+                # 빈 결과는 재시도 전에 짧은 백오프
+                if attempt + 1 < _tries:
+                    time.sleep(0.35 * (attempt + 1))
+                    continue
+                return _df if _df is not None else pd.DataFrame()
+            except TypeError as e:
+                if "NoneType" in str(e):
+                    if attempt + 1 < _tries:
+                        time.sleep(0.35 * (attempt + 1))
+                        continue
+                    return pd.DataFrame()
+                last_exc = e
+                if attempt + 1 < _tries:
+                    time.sleep(0.35 * (attempt + 1))
+                    continue
+                raise
+            except Exception as e:
+                last_exc = e
+                # 429/네트워크 일시 오류는 재시도
+                if "429" in str(e) or "Too Many Requests" in str(e) or "timed out" in str(e).lower():
+                    if attempt + 1 < _tries:
+                        time.sleep(0.6 * (attempt + 1))
+                        continue
+                if attempt + 1 < _tries:
+                    time.sleep(0.35 * (attempt + 1))
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return pd.DataFrame()
         
     interval = "1d"
     yf_period = period
@@ -1938,41 +2019,29 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
             fetch_period = "3mo" # 1달 요청 시 지표 계산용 3달치
 
     try:
-        obj = yf.Ticker(sym)
-        
-        # 1. 1차 시도: 요청받은 분봉 단위로 조회
-        try:
-            df = obj.history(period=fetch_period, interval=interval, auto_adjust=True)
-        except TypeError as e:
-            # yfinance 내부에서 분봉 데이터가 없을 때 발생하는 TypeError 방어
-            if "NoneType" in str(e):
-                df = pd.DataFrame()
-            else:
-                raise e
-        
-        # 코스닥 종목(.KS -> .KQ) 교체 후 재시도 로직
-        if (df is None or df.empty) and market == "KRX" and sym.endswith(".KS"):
-            sym = sym.replace(".KS", ".KQ")
-            try:
-                df = yf.Ticker(sym).history(period=fetch_period, interval=interval, auto_adjust=True)
-            except TypeError as e:
-                if "NoneType" in str(e):
-                    df = pd.DataFrame()
-                else:
-                    raise e
-            
+        # 1. 1차 시도: 요청받은 분봉 단위로 조회 (재시도 + 백오프)
+        df = _yf_history_retry(sym, fetch_period, interval, _tries=2)
+
+        # 코스닥/코스피 접미사 교차 재시도 — KRX 전용, US는 스킵
+        if (df is None or df.empty) and market == "KRX":
+            if sym.endswith(".KS"):
+                alt = sym.replace(".KS", ".KQ")
+                _alt_df = _yf_history_retry(alt, fetch_period, interval, _tries=2)
+                if _alt_df is not None and not _alt_df.empty:
+                    sym = alt
+                    df = _alt_df
+            elif sym.endswith(".KQ"):
+                alt = sym.replace(".KQ", ".KS")
+                _alt_df = _yf_history_retry(alt, fetch_period, interval, _tries=2)
+                if _alt_df is not None and not _alt_df.empty and (df is None or df.empty):
+                    sym = alt
+                    df = _alt_df
+
         # 2. 2차 시도: 분봉 조회가 실패하거나 데이터가 부족한 경우 일봉으로 Fallback
-        # TypeError: 'NoneType' object is not subscriptable 오류가 발생한 경우 df가 빈 DataFrame일 수 있음
         if (df is None or df.empty or len(df) < 20) and interval != "1d":
             interval = "1d"
             fetch_period = "1y"  # 일봉 Fallback 시 지표 계산을 위해 1y 사용
-            try:
-                df = yf.Ticker(sym).history(period=fetch_period, interval=interval, auto_adjust=True)
-            except TypeError as e:
-                if "NoneType" in str(e):
-                    df = pd.DataFrame()
-                else:
-                    raise e
+            df = _yf_history_retry(sym, fetch_period, interval, _tries=2)
             
         if df is None or df.empty:
             return None, None, f"데이터 없음: {sym}"
@@ -2022,7 +2091,10 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
                 try:
                     for e in feedparser.parse(url).entries[:limit]:
                         title = (getattr(e, "title", "") or "").strip()
-                        key = " ".join(title.split()).lower()
+                        # Google News 제목은 "기사제목 - 매체명" 형식 — 같은 기사가 매체만
+                        # 바꿔 반복 수집되므로 매체 접미사를 뗀 본문으로 중복 판정한다.
+                        _core = title.rsplit(" - ", 1)[0] if " - " in title else title
+                        key = " ".join(_core.split()).lower()
                         if not title or key in _seen_titles:
                             continue
                         _seen_titles.add(key)
@@ -2047,7 +2119,11 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
             # 관련성을 높인다. 기존 US 경로가 'TICKER 주가' 로 한글어를 섞어 호출하던
             # 버그를 수정해 영어권 기사 유입을 보장한다.
             if market == "KRX":
-                q = sym.replace(".KS","").replace(".KQ","") + " 주가"
+                # 종목코드(005930)보다 한글 종목명(삼성전자) 검색이 중소형주 커버리지와
+                # 관련성이 훨씬 높다. 회사명이 없을 때만 코드로 폴백한다.
+                _q_name = str(company or "").strip()
+                q = (_q_name if _q_name and not _q_name.isdigit()
+                     else sym.replace(".KS", "").replace(".KQ", "")) + " 주가"
                 _collect_feed(
                     f"https://news.google.com/rss/search?q={quote(q)}&hl=ko&gl=KR&ceid=KR:ko",
                     "google_news_ko", "Google News", limit=8)
@@ -2064,9 +2140,17 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y"):
             news = news[:12]
 
         df2 = df.reset_index()
-        # 분봉 데이터인 경우 인덱스 이름이 "Datetime"일 수 있으므로 "Date"로 통일
-        if "Datetime" in df2.columns:
-            df2.rename(columns={"Datetime": "Date"}, inplace=True)
+        # yfinance 버전에 따라 인덱스 컬럼명이 Date/Datetime/index 등으로 다를 수 있어 정규화
+        if "Date" not in df2.columns:
+            # 첫 번째 컬럼이 datetime-like이면 Date로 간주
+            first_col = df2.columns[0]
+            if "Datetime" in df2.columns:
+                df2.rename(columns={"Datetime": "Date"}, inplace=True)
+            elif df2[first_col].dtype.kind in "M" or "date" in first_col.lower() or "index" in first_col.lower():
+                df2.rename(columns={first_col: "Date"}, inplace=True)
+            else:
+                # fallback: 첫 컬럼을 Date로
+                df2.rename(columns={first_col: "Date"}, inplace=True)
             
         # Lightweight Charts가 인식할 수 있도록 날짜를 yyyy-mm-dd 문자열 또는 Unix Timestamp 형식으로 반환해야 함
         # 일봉은 %Y-%m-%d 문자열로, 분봉은 Unix Timestamp(초 단위)로 변환
@@ -12482,7 +12566,7 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     elif _ctx == "downtrend":
         _rationale = ["하락 추세 진행 중 — 추가 하락 가능", f"RSI {rsi:.0f} — 아직 바닥 반전 신호 없음", "하락 추세 반전 확인(캔들·거래량) 후 진입 권장"]
     elif _ctx == "breakdown":
-        _rationale = [f"{downside_label}({downside_score}점) — 매수 구간보다 위험 확인이 우선"] + downside_reasons[:3]
+        _rationale = [f"하락 위험 점수 {downside_score}점 ({downside_label}) — 매수 구간보다 위험 확인이 우선"] + downside_reasons[:3]
     else:
         _rationale = ["횡보 구간 — 지지선 근접 시 매수 기회", f"RSI {rsi:.0f} — 중립 구간, 방향성 탐색 중", "밴드 B 진입 후 저항선 도달 시 차익 실현 전략"]
 
@@ -13695,6 +13779,14 @@ _PEER_INDUSTRY_GROUPS: dict = {
         "배터리": [("373220.KS", "LG에너지솔루션"), ("006400.KS", "삼성SDI"), ("247540.KQ", "에코프로비엠"), ("003670.KS", "포스코퓨처엠"), ("066970.KQ", "엘앤에프")],
         "바이오": [("068270.KS", "셀트리온"), ("207940.KS", "삼성바이오로직스"), ("196170.KQ", "알테오젠"), ("028300.KQ", "HLB"), ("000100.KS", "유한양행")],
         "금융": [("105560.KS", "KB금융"), ("055550.KS", "신한지주"), ("086790.KS", "하나금융지주"), ("316140.KS", "우리금융지주"), ("024110.KS", "기업은행")],
+        "증권": [("006800.KS", "미래에셋증권"), ("071050.KS", "한국금융지주"), ("005940.KS", "NH투자증권"), ("016360.KS", "삼성증권"), ("039490.KS", "키움증권")],
+        "보험": [("032830.KS", "삼성생명"), ("000810.KS", "삼성화재"), ("005830.KS", "DB손해보험"), ("001450.KS", "현대해상"), ("088350.KS", "한화생명")],
+        "건설": [("000720.KS", "현대건설"), ("006360.KS", "GS건설"), ("047040.KS", "대우건설"), ("375500.KS", "DL이앤씨"), ("028260.KS", "삼성물산")],
+        "유통": [("139480.KS", "이마트"), ("023530.KS", "롯데쇼핑"), ("004170.KS", "신세계"), ("282330.KS", "BGF리테일"), ("007070.KS", "GS리테일")],
+        "음식료": [("097950.KS", "CJ제일제당"), ("271560.KS", "오리온"), ("004370.KS", "농심"), ("003230.KS", "삼양식품"), ("000080.KS", "하이트진로")],
+        "엔터·미디어": [("352820.KS", "하이브"), ("035900.KQ", "JYP Ent."), ("041510.KQ", "에스엠"), ("122870.KQ", "와이지엔터테인먼트"), ("035760.KQ", "CJ ENM")],
+        "운송": [("003490.KS", "대한항공"), ("011200.KS", "HMM"), ("086280.KS", "현대글로비스"), ("028670.KS", "팬오션"), ("000120.KS", "CJ대한통운")],
+        "화장품": [("051900.KS", "LG생활건강"), ("090430.KS", "아모레퍼시픽"), ("192820.KS", "코스맥스"), ("161890.KS", "한국콜마")],
         "인터넷·게임": [("035420.KS", "NAVER"), ("035720.KS", "카카오"), ("259960.KS", "크래프톤"), ("036570.KS", "엔씨소프트"), ("251270.KS", "넷마블")],
         "통신": [("017670.KS", "SK텔레콤"), ("030200.KS", "KT"), ("032640.KS", "LG유플러스")],
         "화학": [("051910.KS", "LG화학"), ("011170.KS", "롯데케미칼"), ("009830.KS", "한화솔루션"), ("011780.KS", "금호석유"), ("010060.KS", "OCI홀딩스")],
@@ -13756,11 +13848,20 @@ _US_DETAILED_PEER_GROUPS = {
 }
 
 _KRX_PEER_KEYWORDS = {
+    # 세분류(증권·보험 등)를 먼저 검사해 금융 같은 광의 그룹에 흡수되지 않게 한다.
     "반도체": ("반도체", "semiconductor"), "전력기기": ("전력기기", "전기장비", "electrical equipment"),
     "조선": ("조선", "shipbuilding"), "방산": ("방산", "항공우주", "aerospace", "defense"),
     "정유": ("정유", "석유", "oil", "refining"), "자동차": ("자동차", "auto", "vehicle"),
     "배터리": ("배터리", "이차전지", "battery"), "바이오": ("바이오", "제약", "pharma", "biotech"),
-    "금융": ("금융", "은행", "보험", "financial", "bank"), "인터넷·게임": ("인터넷", "게임", "software", "interactive"),
+    "증권": ("증권", "securities", "capital market"),
+    "보험": ("보험", "생명보험", "손해보험", "insurance"),
+    "건설": ("건설", "건축", "토목", "construction", "engineering & construction"),
+    "유통": ("유통", "백화점", "리테일", "retail", "department store"),
+    "음식료": ("음식료", "식품", "음료", "food", "beverage", "packaged foods"),
+    "엔터·미디어": ("엔터", "미디어", "방송", "연예", "음악", "entertainment", "media", "music", "broadcasting"),
+    "운송": ("운송", "항공", "해운", "물류", "택배", "airline", "shipping", "marine", "logistics", "freight", "transport"),
+    "화장품": ("화장품", "뷰티", "cosmetic", "beauty", "personal care", "household & personal products"),
+    "금융": ("금융", "은행", "financial", "bank"), "인터넷·게임": ("인터넷", "게임", "software", "interactive"),
     "통신": ("통신", "telecom"), "화학": ("화학", "chemical"), "철강": ("철강", "steel", "metal"),
     "에너지": ("에너지", "전력", "가스", "energy", "utility"),
 }
@@ -13853,27 +13954,29 @@ def _resolve_peer_display_name(ticker: str, supplied_name: str, market: str) -> 
     return _yahoo_security_display_name(ticker)
 
 
-def _resolve_peer_group(symbol: str, market: str, sector: str = "", industry: str = "") -> tuple[str, list[tuple[str, str]]]:
+def _resolve_peer_group(symbol: str, market: str, sector: str = "", industry: str = "") -> tuple[str, list[tuple[str, str]], str]:
+    """(그룹명, 비교군, 출처) 반환. 출처: static=정적 업종군, keyword=업종명 매칭, yahoo_related=상관 기반 관련 종목."""
     symbol = str(symbol or "").upper()
     groups = _PEER_INDUSTRY_GROUPS.get(market, {})
     context = f"{sector} {industry}".casefold().strip()
     if market == "US" and context:
         for group_name, group in _US_DETAILED_PEER_GROUPS.items():
             if any(keyword.casefold() in context for keyword in group["keywords"]):
-                return group_name, group["members"]
+                return group_name, group["members"], "static"
     for group_name, members in groups.items():
         if any(member_symbol.upper() == symbol for member_symbol, _ in members):
-            return group_name, members
+            return group_name, members, "static"
     if market == "KRX":
         for group_name, keywords in _KRX_PEER_KEYWORDS.items():
             if any(keyword.casefold() in context for keyword in keywords):
-                return group_name, groups.get(group_name, [])
+                return group_name, groups.get(group_name, []), "keyword"
     else:
         for group_name in groups:
             if context and (group_name.casefold() in context or context in group_name.casefold()):
-                return group_name, groups[group_name]
-    fallback_name = str(industry or sector or "관련 종목").strip()
-    return fallback_name, _related_symbols_from_yahoo(symbol)
+                return group_name, groups[group_name], "keyword"
+    # 업종 미분류 폴백: Yahoo 관련 종목은 가격 상관 기반이라 동일 업종이 아닐 수 있다.
+    # 원래 업종명을 그대로 붙이면 "건설 업계 = 은행·바이오" 같은 오표기가 생기므로 구분한다.
+    return "관련 종목", _related_symbols_from_yahoo(symbol), "yahoo_related"
 
 
 def _peer_frame(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -13922,12 +14025,48 @@ def _peer_momentum_signal(df: pd.DataFrame) -> dict | None:
     }
 
 
+def _normalize_krx_peer_symbol(symbol: str) -> str:
+    """접미사 없는 6자리 코드(005930)를 .KS/.KQ 티커로 복원한다. 실패 시 원본 유지."""
+    if "." in symbol or not _is_krx_short_code(symbol):
+        return symbol
+    for _name, tkr in KR_STOCK_MAP.items():
+        if str(tkr).upper().startswith(symbol + "."):
+            return str(tkr).upper()
+    for groups in _PEER_INDUSTRY_GROUPS.get("KRX", {}).values():
+        for member_ticker, _n in groups:
+            if member_ticker.upper().startswith(symbol + "."):
+                return member_ticker.upper()
+    try:
+        n2c, c2n = get_krx_code_map()
+        name = c2n.get(symbol)
+        if name and name in n2c:
+            return str(n2c[name]).upper()
+    except Exception:
+        pass
+    return symbol
+
+
 @ttl_cache(300)
 def build_peer_industry_outlook(symbol: str, market: str, company: str = "", sector: str = "", industry: str = "") -> dict:
     """동종기업 가격 모멘텀을 집계해 업계 상승·하락 가능성과 비교표를 만든다."""
     symbol = str(symbol or "").upper()
     market = "KRX" if str(market or "").upper() == "KRX" or symbol.endswith((".KS", ".KQ")) else "US"
-    group_name, members = _resolve_peer_group(symbol, market, sector, industry)
+    if market == "KRX":
+        symbol = _normalize_krx_peer_symbol(symbol)
+        # 회사명이 비었거나 코드 그대로면 표시용 실제 종목명으로 교체
+        if _is_ticker_display_name(company, symbol):
+            resolved_company = _resolve_peer_display_name(symbol, company, market)
+            if resolved_company:
+                company = resolved_company
+    _resolved = _resolve_peer_group(symbol, market, sector, industry)
+    # 하위호환: 테스트 모킹이 2-tuple을 반환해도 동작 (legacy 2값 → static 출처 가정)
+    if isinstance(_resolved, (list, tuple)) and len(_resolved) == 3:
+        group_name, members, group_source = _resolved
+    elif isinstance(_resolved, (list, tuple)) and len(_resolved) == 2:
+        group_name, members = _resolved
+        group_source = "static"
+    else:
+        group_name, members, group_source = "관련 종목", [], "yahoo_related"
     peer_members = []
     for ticker, supplied_name in members:
         if ticker.upper() == symbol:
@@ -13969,6 +14108,8 @@ def build_peer_industry_outlook(symbol: str, market: str, company: str = "", sec
         f"동종기업 평균 20일 수익률 {avg_20d:+.2f}%",
         f"MA20 상회 종목 비율 {breadth:.1f}%",
     ]
+    if group_source == "yahoo_related":
+        reasons.append("⚠️ 업종 분류 미확보 — 가격 흐름 기반 관련 종목 비교 (동일 업종이 아닐 수 있음)")
     relative = None
     if selected:
         relative = round(selected["up_probability"] - up_probability, 1)
@@ -13976,6 +14117,7 @@ def build_peer_industry_outlook(symbol: str, market: str, company: str = "", sec
     return {
         "ok": True, "symbol": symbol, "company": company or symbol, "market": market,
         "sector": sector or group_name, "industry": industry or group_name, "group_name": group_name,
+        "group_source": group_source,
         "up_probability": up_probability, "down_probability": down_probability,
         "label": label, "avg_return_5d": avg_5d,
         "avg_return_20d": avg_20d, "breadth_above_ma20": breadth,
@@ -15370,7 +15512,28 @@ def route(path: str, params: Dict) -> Dict:
                     "company": company,
                     "security_status": security_status,
                 }
-        dd, news, err_or_sym = fetch_stock_data(ticker, market, period)
+        dd, news, err_or_sym = fetch_stock_data(ticker, market, period, company=company or "")
+        if dd is None and market == "US":
+            # 영문 회사명 직접 입력("apple", "tesla")이 티커로 오인돼 조회 실패한 경우
+            # Yahoo 심볼 검색으로 1회 재해석 후 재시도한다.
+            try:
+                _quotes = yf.Search(raw.strip(), max_results=6, news_count=0).quotes or []
+                _us_exch = {"NMS", "NAS", "NYQ", "ASE", "PCX", "BTS", "NGM", "NCM", "NYS"}
+                for _q in _quotes:
+                    _qsym = str(_q.get("symbol") or "").upper()
+                    if (_qsym and _qsym != ticker and "." not in _qsym
+                            and str(_q.get("quoteType") or "").upper() in {"EQUITY", "ETF"}
+                            and str(_q.get("exchange") or "").upper() in _us_exch):
+                        _dd2, _news2, _sym2 = fetch_stock_data(_qsym, market, period)
+                        if _dd2 is not None:
+                            dd, news, err_or_sym = _dd2, _news2, _sym2
+                            ticker = _qsym
+                            _qname = str(_q.get("longname") or _q.get("shortname") or "").strip()
+                            if _qname:
+                                company = _qname
+                            break
+            except Exception:
+                pass
         if dd is None:
             return {"error": f"데이터 조회 실패: {err_or_sym}"}
         listing_confidence_profile = None
@@ -15561,6 +15724,17 @@ def route(path: str, params: Dict) -> Dict:
                 naver["industry"] = toss_industry.get("sector")
             naver["industry_source"] = toss_industry.get("source") or ""
 
+        # US: Alpha Vantage overview가 비면(레이트리밋·키 만료) yfinance info의
+        # sector/industry로 폴백 — 동종업계 탭의 세부 업종 비교군 매칭에 필요하다.
+        if market == "US" and not (toss_industry or {}).get("ok"):
+            _yf_sector = str((info_for_charm or {}).get("sector") or "").strip()
+            _yf_industry = str((info_for_charm or {}).get("industry") or "").strip()
+            if _yf_sector or _yf_industry:
+                toss_industry = {
+                    "sector": _yf_sector, "industry": _yf_industry,
+                    "product_code": "", "source": "yfinance-info", "ok": True,
+                }
+
         # yfinance 정보가 비어 있는 미국 종목은 보강 조회가 끝난 뒤에만
         # overview를 최소 재무 컨텍스트로 사용한다. 이전 위치에서는
         # us_enriched가 아직 초기화되지 않아 분석 전체가 중단될 수 있었다.
@@ -15601,6 +15775,7 @@ def route(path: str, params: Dict) -> Dict:
         # US : USStockPriceFetcher → Pre-Market / Overnight / After-Hours / 정규장 순 자동 선택
         session_name = "정규장"   # 기본값
         if market == "KRX":
+            session_name = _krx_session_label()
             # 현재가 소스: 10초 캐시 경량 실시간 API 우선.
             # fetch_naver(60초 캐시)의 가격을 그대로 쓰면 '분석 시작'을
             # 다시 눌러도 최대 1분간 같은 현재가가 반환된다.
@@ -16004,6 +16179,27 @@ def route(path: str, params: Dict) -> Dict:
             dynamic_rsi=dynamic_rsi,
         )
 
+        # ── 탭 간 정합화: 예측 탭 종합 판단이 '주의·매수 보류'인데 매수 전략 카드가
+        # '분할 매수'를 유지하면 사용자에게 정반대 신호가 동시에 노출된다.
+        # 위험 우선 원칙: 종합 판단이 보수적이면 전략 카드도 보류로 하향하고 사유를 남긴다.
+        try:
+            _dec = (prediction_outlook or {}).get("decision") or {}
+            _sr = dict((buy_price or {}).get("strategy_rec") or {})
+            _sr_key = str(_sr.get("action_key") or "")
+            if _dec.get("key") == "caution" and _sr_key in ("band_a", "split_buy", "recovery_buy"):
+                _orig_action = str(_sr.get("action") or "").strip()
+                _sr["original_action"] = _orig_action
+                _sr["original_action_key"] = _sr_key
+                _sr["action"] = "⚠️ 매수 보류 · 위험 신호 우선"
+                _sr["action_key"] = "wait_support"
+                _sr["confidence_pct"] = min(int(_sr.get("confidence_pct") or 50), 40)
+                _sr["rationale"] = ([
+                    f"예측 종합 판단 '{_dec.get('label') or '주의'}' — 기술 신호({_orig_action})보다 위험 관리를 우선합니다"
+                ] + list(_sr.get("rationale") or []))[:5]
+                buy_price["strategy_rec"] = _sr
+        except Exception:
+            pass
+
         _record_prediction_and_update_outcomes(
             sym, market, period, dd, buy_price, risk, event_risk, learning_adjustment
         )
@@ -16049,6 +16245,51 @@ def route(path: str, params: Dict) -> Dict:
         _chart_close_last = float(dd.get("Close", [last])[-1] or last) if dd.get("Close") else last
         chart_analysis_consistent = abs(_chart_close_last - last) / max(last, 1) < 0.0005
 
+        # ── 데이터 품질 메타데이터 — 프론트 data-quality-panel/스냅샷 기준 표시용 ──
+        # 정상/데이터 부족/오래된 데이터를 구분하고 출처·기준 시각을 명시한다.
+        data_quality = None
+        try:
+            from zoneinfo import ZoneInfo as _ZI
+            _tz_name = "Asia/Seoul" if market == "KRX" else "America/New_York"
+            _now_local = dt.now(_ZI(_tz_name))
+            _dq_warnings = []
+            _bars = len(dd.get("Date") or [])
+            _last_bar = str((dd.get("Date") or ["-"])[-1])[:10]
+            _dq_status = "정상"
+            try:
+                _gap_days = (_now_local.date() - datetime.date.fromisoformat(_last_bar)).days
+            except (ValueError, TypeError):
+                _gap_days = None
+            if _gap_days is not None and _gap_days > 4:
+                _dq_status = "오래된 데이터"
+                _dq_warnings.append(f"마지막 캔들({_last_bar})이 {_gap_days}일 전 — 최신 거래일 데이터가 누락됐을 수 있습니다.")
+            if _bars < 60:
+                _dq_status = "데이터 부족" if _dq_status == "정상" else _dq_status
+                _dq_warnings.append(f"가격 이력 {_bars}봉 — 60봉 미만이라 지표·예측 신뢰도가 제한됩니다.")
+            if not (atrs and atrs[-1]):
+                _dq_warnings.append("ATR 미확보 — 현재가 2% 대체 변동폭을 사용했습니다.")
+            if price_correction and abs(float(price_correction.get("delta_pct") or 0)) >= 3:
+                _dq_warnings.append(
+                    f"실시간 보정으로 마지막 캔들 종가를 {price_correction['delta_pct']:+.1f}% 조정했습니다.")
+            if market == "KRX":
+                _rt_used = bool(price_correction and price_correction.get("source") == "naver_realtime")
+                _dq_source = "야후 파이낸스 일봉" + (" + 네이버 실시간 현재가" if _rt_used else "")
+            else:
+                _dq_source = "야후 파이낸스 일봉" + (f" + 실시간({session_name})" if session_name != "정규장" else " + 실시간 시세")
+            data_quality = {
+                "status": _dq_status,
+                "source": _dq_source,
+                "currency": currency,
+                "timezone": "한국(KST)" if market == "KRX" else "미국 동부(ET)",
+                "price_basis": "수정주가(분할·배당 반영) 일봉 종가 기준",
+                "as_of": _now_local.strftime("%Y-%m-%d %H:%M") + (" KST" if market == "KRX" else " ET"),
+                "last_bar_date": _last_bar,
+                "history_bars": _bars,
+                "warnings": _dq_warnings,
+            }
+        except Exception:
+            data_quality = None
+
         response = {
             "symbol": sym, "company": company or sym, "market": market,
             "period": period,
@@ -16057,6 +16298,7 @@ def route(path: str, params: Dict) -> Dict:
             "currency": currency, "price_unit": price_unit,
             "price_correction": price_correction,
             "chart_analysis_consistent": chart_analysis_consistent,
+            "data_quality": data_quality,
             "weekly_analysis": weekly_context,
             "session_name": session_name,
             "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
@@ -22491,18 +22733,23 @@ function _normalizeNewsItems(d, isKrx) {
   const naverNews = ((d.naver || {}).news || []);
   const finnhubNews = (((d.us_enriched || {}).news) || []);
   const rssNews = (d.news || []);
-  const candidates = isKrx
-    ? [...naverNews, ...rssNews.filter(n => _newsHasHangul(n.title_ko || n.title))]
-    : [
-        ...finnhubNews.filter(n => _newsHasHangul(n.title_ko || n.title)),
-        ...rssNews.filter(n => _newsHasHangul(n.title_ko || n.title)),
-      ];
+  const hasKo = n => _newsHasHangul(n.title_ko || n.title);
+  let candidates = isKrx
+    ? [...naverNews, ...rssNews.filter(hasKo)]
+    : [...finnhubNews.filter(hasKo), ...rssNews.filter(hasKo)];
+  // 미국 종목: 자동 번역이 실패(레이트리밋 등)하면 한글 헤드라인이 0건이 되어
+  // 뉴스 탭이 통째로 비어버린다. 한글 3건 미만이면 영어 원문을 이어 붙여
+  // 뉴스 자체는 항상 확인할 수 있게 한다.
+  if (!isKrx && candidates.length < 3) {
+    candidates = [...candidates, ...finnhubNews.filter(n => !hasKo(n)), ...rssNews.filter(n => !hasKo(n))];
+  }
   const seen = new Set();
   return candidates.filter(n => {
     const displayTitle = String(n.title_ko || n.title || '').replace(/\s+/g, ' ').trim();
-    const key = displayTitle.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+    // "기사제목 - 매체명" 형식의 매체 접미사를 떼고 중복 판정 (동일 기사 반복 방지)
+    const coreTitle = displayTitle.includes(' - ') ? displayTitle.slice(0, displayTitle.lastIndexOf(' - ')) : displayTitle;
+    const key = coreTitle.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
     if (!displayTitle || !key || seen.has(key)) return false;
-    if (!isKrx && !_newsHasHangul(displayTitle)) return false;
     seen.add(key);
     return true;
   }).slice(0, 10);
@@ -22556,12 +22803,15 @@ function renderNews(d, isKrx) {
       : '<p class="news-empty">공시가 없습니다.</p>';
     _bindNewsImageFallbacks(discList);
   } else {
-    col1Title.textContent = '📰 주요 뉴스 · 한글 헤드라인';
+    col1Title.textContent = '📰 주요 뉴스 (한글 번역 우선)';
     discEl.style.display = 'none';
   }
+  const emptyNewsHtml = isKrx
+    ? '<p class="news-empty">관련 뉴스를 찾지 못했습니다. (수집 실패 또는 보도 없음)</p>'
+    : '<p class="news-empty">한국어로 제공 가능한 관련 뉴스를 찾지 못했습니다. (수집 실패 또는 번역 불가)</p>';
   newsList.innerHTML = newsArr.length > 0
     ? newsArr.map(n => _renderNewsItem(n)).join('')
-    : `<p class="news-empty">${isKrx ? '관련 뉴스를 찾지 못했습니다.' : '한국어로 제공 가능한 관련 뉴스를 찾지 못했습니다.'}</p>`;
+    : emptyNewsHtml;
   _bindNewsImageFallbacks(newsList);
 }
 

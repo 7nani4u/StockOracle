@@ -11,9 +11,9 @@ from api import index
 
 
 def test_peer_group_resolves_known_krx_and_us_symbols():
-    krx_group, krx_members = index._resolve_peer_group("005930.KS", "KRX")
-    us_group, us_members = index._resolve_peer_group("AAPL", "US")
-    detailed_group, detailed_members = index._resolve_peer_group(
+    krx_group, krx_members, krx_src = index._resolve_peer_group("005930.KS", "KRX")
+    us_group, us_members, us_src = index._resolve_peer_group("AAPL", "US")
+    detailed_group, detailed_members, detailed_src = index._resolve_peer_group(
         "AAPL", "US", "Technology", "Consumer Electronics"
     )
 
@@ -53,7 +53,7 @@ def test_outlook_aggregates_peer_momentum_and_excludes_selected_stock(monkeypatc
 
     monkeypatch.setattr(
         index, "_resolve_peer_group",
-        lambda *args, **kwargs: ("Test Industry", [("TEST", "Selected"), ("AAA", "Peer A"), ("BBB", "Peer B")]),
+        lambda *args, **kwargs: ("Test Industry", [("TEST", "Selected"), ("AAA", "Peer A"), ("BBB", "Peer B")], "static"),
     )
     monkeypatch.setattr(index.yf, "download", lambda *args, **kwargs: raw)
     index._CACHE.pop("build_peer_industry_outlook|('TEST', 'US', 'Selected', 'Test', 'Test Industry')|[]", None)
@@ -80,7 +80,7 @@ def test_outlook_never_returns_ticker_as_peer_display_name(monkeypatch):
     )
     monkeypatch.setattr(
         index, "_resolve_peer_group",
-        lambda *args, **kwargs: ("서비스", [(ticker, ticker) for ticker in symbols]),
+        lambda *args, **kwargs: ("서비스", [(ticker, ticker) for ticker in symbols], "static"),
     )
     monkeypatch.setattr(
         index, "_resolve_peer_display_name",

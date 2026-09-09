@@ -38,10 +38,8 @@ KST 기준 언제 실행해도 항상 가장 최신·정확한 미국 주가를 
   EDT(3~11월): 정규장 22:30~05:00 KST
   EST(11~3월): 정규장 23:30~06:00 KST
 
-[API 키]
-  Finnhub   : d7lm0o9r01qm7o0cb440d7lm0o9r01qm7o0cb44g
-  Tiingo    : 12ebd1feef89b6728cc15808864b7402449a5637
-  AV        : E0ODFSRNDU4P9HDU
+[API keys]
+  Configure FINNHUB_API_KEY, TIINGO_API_KEY and ALPHAVANTAGE_KEY in the environment.
 
 Dependencies:
   pip install requests yfinance
@@ -52,16 +50,15 @@ from __future__ import annotations
 import os
 import time
 import logging
+import math
 import warnings
+from contextvars import ContextVar
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-import urllib3
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 try:
     import yfinance as yf
@@ -78,23 +75,25 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# API 키 (환경변수 우선, 없으면 하드코딩 기본값 사용)
+# API keys are optional and environment-only.
 # ──────────────────────────────────────────────────────────────────────────────
-FINNHUB_KEY = os.getenv("FINNHUB_API_KEY",  "d7lm0o9r01qm7o0cb440d7lm0o9r01qm7o0cb44g")
-TIINGO_KEY  = os.getenv("TIINGO_API_KEY",   "12ebd1feef89b6728cc15808864b7402449a5637")
-AV_KEY      = os.getenv("ALPHAVANTAGE_KEY", "E0ODFSRNDU4P9HDU")
+FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
+TIINGO_KEY = os.getenv("TIINGO_API_KEY", "").strip()
+AV_KEY = os.getenv("ALPHAVANTAGE_KEY", "").strip()
 
 ET_TZ  = ZoneInfo("America/New_York")
 KST_TZ = ZoneInfo("Asia/Seoul")
 
 REQUEST_TIMEOUT = 10  # seconds
+_QUOTE_CLOCK: ContextVar[Optional[datetime]] = ContextVar("quote_clock", default=None)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# NYSE 공휴일 / 조기 종료일 (2025–2028)
+# NYSE 공휴일 / 조기 종료일 (2025–2028 기본 + 2029 이후 동적 생성)
+# 정적 데이터는 검증된 과거/공시 일정, 미래 연도는 holidays 라이브러리로 자동 계산
 # ──────────────────────────────────────────────────────────────────────────────
 NYSE_HOLIDAYS: frozenset[date] = frozenset({
     # 2025
-    date(2025, 1, 1),  date(2025, 1, 20), date(2025, 2, 17), date(2025, 4, 18),
+    date(2025, 1, 1), date(2025, 1, 9), date(2025, 1, 20), date(2025, 2, 17), date(2025, 4, 18),
     date(2025, 5, 26), date(2025, 6, 19), date(2025, 7, 4),  date(2025, 9, 1),
     date(2025, 11, 27), date(2025, 12, 25),
     # 2026
@@ -111,11 +110,60 @@ NYSE_HOLIDAYS: frozenset[date] = frozenset({
     date(2028, 11, 23), date(2028, 12, 25),
 })
 NYSE_EARLY_CLOSE: frozenset[date] = frozenset({
-    date(2025, 11, 28), date(2025, 12, 24),
+    date(2025, 7, 3), date(2025, 11, 28), date(2025, 12, 24),
     date(2026, 11, 27), date(2026, 12, 24),
-    date(2027, 11, 26), date(2027, 12, 24),
-    date(2028, 11, 24), date(2028, 12, 24),
+    date(2027, 11, 26),
+    date(2028, 7, 3), date(2028, 11, 24),
 })
+
+# ── 동적 휴장·조기폐장 판별 (2029 이후 holidays 라이브러리 기반) ─────────
+def _is_nyse_holiday(d: date) -> bool:
+    """정적 공휴일 + holidays 라이브러리 fallback으로 NYSE 전일 휴장 판별."""
+    if d in NYSE_HOLIDAYS:
+        return True
+    # 주말은 호출측(is_trading_day)에서 별도 처리 — 여기서는 공휴일만
+    if d.year <= 2028:
+        return False
+    try:
+        import holidays as _hol
+        # NYSE 캘린더가 있으면 사용, 없으면 US 연방공휴일로 근사
+        try:
+            nyse = _hol.NYSE(years=[d.year]) if hasattr(_hol, "NYSE") else _hol.US(years=[d.year])
+        except Exception:
+            nyse = _hol.US(years=[d.year]) if hasattr(_hol, "US") else None
+        if nyse is not None and d in nyse:
+            return True
+    except Exception:
+        pass
+    return False
+
+def _is_nyse_early_close(d: date) -> bool:
+    """정적 조기폐장 + 추수감사절 다음날/크리스마스이브/7월3일 규칙 기반 동적 판별."""
+    if d in NYSE_EARLY_CLOSE:
+        return True
+    if d.year <= 2028:
+        return False
+    # 미래 연도: NYSE 대표 조기폐장 규칙 3개 적용
+    try:
+        # 추수감사절(11월 넷째 목요일) 다음날 금요일
+        import datetime as _dt
+        # Thanksgiving = 4th Thursday of November
+        nov1 = date(d.year, 11, 1)
+        thursdays = [nov1 + timedelta(days=i) for i in range(30) if (nov1 + timedelta(days=i)).weekday() == 3]
+        thanksgiving = thursdays[3] if len(thursdays) >= 4 else None
+        if thanksgiving and d == thanksgiving + timedelta(days=1) and d.weekday() < 5:
+            return True
+        # 7/3 : 7/4 독립기념일이 평일 휴장이면 전일 조기폐장
+        july4 = date(d.year, 7, 4)
+        if _is_nyse_holiday(july4) and d == date(d.year, 7, 3) and d.weekday() < 5:
+            return True
+        # 12/24 : 성탄절이 평일 휴장이면 전일 조기폐장
+        dec25 = date(d.year, 12, 25)
+        if _is_nyse_holiday(dec25) and d == date(d.year, 12, 24) and d.weekday() < 5:
+            return True
+    except Exception:
+        pass
+    return False
 
 # Yahoo Finance marketState 값 중 "Overnight" 레이블에 해당하는 상태들
 # PREPRE: 자정~04:00 ET / POSTPOST: 20:00~자정 ET
@@ -167,6 +215,7 @@ class PriceResult:
     price_time:  Optional[datetime]
     fetch_time:  datetime = field(default_factory=lambda: datetime.now(KST_TZ))
     notes:       str = ""
+    freshness:   str = "unknown"
 
     def __str__(self) -> str:
         G, R, RST = "\033[32m", "\033[31m", "\033[0m"
@@ -208,19 +257,22 @@ class PriceResult:
             "price_time": self.price_time.isoformat() if self.price_time else None,
             "fetch_time": self.fetch_time.isoformat(),
             "notes":      self.notes,
+            "freshness":  self.freshness,
         }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 세션 감지 유틸리티
 # ──────────────────────────────────────────────────────────────────────────────
-def now_et()  -> datetime: return datetime.now(ET_TZ)
+def now_et()  -> datetime: return _QUOTE_CLOCK.get() or datetime.now(ET_TZ)
 def now_kst() -> datetime: return datetime.now(KST_TZ)
 
 
 def is_trading_day(dt: datetime) -> bool:
+    if dt.tzinfo is None:
+        raise ValueError("Market datetime must be timezone-aware")
     d = dt.astimezone(ET_TZ).date()
-    return d.weekday() < 5 and d not in NYSE_HOLIDAYS
+    return d.weekday() < 5 and not _is_nyse_holiday(d)
 
 
 def detect_session(dt: Optional[datetime] = None) -> Tuple[MarketSession, datetime]:
@@ -238,32 +290,26 @@ def detect_session(dt: Optional[datetime] = None) -> Tuple[MarketSession, dateti
     ※ OVERNIGHT 세션은 거래일 기준: 전일 20:00 ~ 당일 04:00
        비거래일(주말/공휴일)의 자정~04:00은 CLOSED로 분류
     """
+    if dt is not None and dt.tzinfo is None:
+        raise ValueError("Market datetime must be timezone-aware")
     dt_et = dt.astimezone(ET_TZ) if dt else now_et()
 
     t = dt_et.hour * 60 + dt_et.minute  # 분 단위 시각
 
-    # ── 전날 20:00 이후 ~ 오늘 04:00 이전: 자정 넘긴 overnight 처리 ──────────
-    # 자정~04:00(분 기준 0~239)이면 "오늘" 또는 "어제"가 거래일인지 확인
-    #
-    # 수정 이유: 월요일 00:00~04:00 ET 에서 "어제"(일요일)는 비거래일이므로
-    # 이전 로직이 CLOSED 를 반환하는 버그가 있었음.
-    # 수정 로직: 오늘이 거래일이면 OVERNIGHT (Blue Ocean ATS 활성), 그 다음 어제 확인.
-    if t < 240:  # 00:00 ~ 03:59
-        if is_trading_day(dt_et):
-            # 오늘이 거래일(월~금) → 전날 밤 ATS 연장 세션 (예: 월요일 자정~04:00)
-            return MarketSession.OVERNIGHT, dt_et
-        yesterday = (dt_et - timedelta(days=1)).astimezone(ET_TZ)
-        if is_trading_day(yesterday):
-            # 어제가 거래일 → 어제 밤 ATS 연장 세션 (예: 금요일 → 토요일 자정)
-            return MarketSession.OVERNIGHT, dt_et
-        # 어제·오늘 모두 비거래일 (예: 일요일 자정) → CLOSED
-        return MarketSession.CLOSED, dt_et
+    # Overnight belongs to the following trading day, not Friday/Saturday.
+    if t >= 1200:
+        next_day = dt_et + timedelta(days=1)
+        return (MarketSession.OVERNIGHT if is_trading_day(next_day)
+                else MarketSession.CLOSED), dt_et
+    if t < 240:
+        return (MarketSession.OVERNIGHT if is_trading_day(dt_et)
+                else MarketSession.CLOSED), dt_et
 
     # 04:00 이후는 당일 거래일 여부 체크
     if not is_trading_day(dt_et):
         return MarketSession.CLOSED, dt_et
 
-    reg_end = 780 if dt_et.date() in NYSE_EARLY_CLOSE else 960  # 13:00 or 16:00
+    reg_end = 780 if _is_nyse_early_close(dt_et.date()) else 960  # 13:00 or 16:00
 
     if   240  <= t < 570:      return MarketSession.PRE_MARKET,  dt_et  # 04:00~09:30
     elif 570  <= t < reg_end:  return MarketSession.REGULAR,     dt_et  # 09:30~16:00
@@ -284,6 +330,37 @@ def session_info() -> Dict[str, str]:
     }
 
 
+def _number(value: Any) -> float:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) and not isinstance(value, bool) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _local_timestamp(value: Any, tz=ET_TZ) -> Optional[datetime]:
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (ts.replace(tzinfo=tz) if ts.tzinfo is None else ts).astimezone(ET_TZ)
+    except (TypeError, ValueError):
+        return None
+
+
+def _close_timestamp(value: Any) -> Optional[datetime]:
+    # Daily provider dates identify an exchange day, not a UTC midnight trade.
+    try:
+        day = date.fromisoformat(str(value)[:10])
+        return datetime(day.year, day.month, day.day,
+                        13 if _is_nyse_early_close(day) else 16, tzinfo=ET_TZ)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fresh_timestamp(ts: Optional[datetime], minutes: int) -> bool:
+    return bool(ts is not None and ts.tzinfo is not None
+                and 0 <= (now_et() - ts).total_seconds() <= minutes * 60)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 공통 HTTP 클라이언트
 # ──────────────────────────────────────────────────────────────────────────────
@@ -300,18 +377,18 @@ class _BaseClient:
 
     def _get(self, url: str, params: Dict, headers: Dict = None, label="API") -> Optional[Any]:
         self._wait()
-        kw = dict(params=params, headers=headers or {}, timeout=REQUEST_TIMEOUT)
+        kw = dict(params=params, headers=headers or {}, timeout=REQUEST_TIMEOUT,
+                  allow_redirects=False)
         try:
             r = requests.get(url, verify=True,  **kw); r.raise_for_status()
-            self._last = time.monotonic(); return r.json()
-        except requests.exceptions.SSLError:
-            try:
-                r = requests.get(url, verify=False, **kw); r.raise_for_status()
-                self._last = time.monotonic(); return r.json()
-            except Exception as e:
-                logger.warning(f"[{label}] 요청 실패: {e}"); return None
+            if 300 <= r.status_code < 400:
+                return None
+            return r.json()
         except Exception as e:
-            logger.warning(f"[{label}] 요청 실패: {e}"); return None
+            logger.warning("[%s] request failed (%s)", label, type(e).__name__)
+            return None
+        finally:
+            self._last = time.monotonic()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -418,17 +495,15 @@ class YahooFinanceDirectClient(_BaseClient):
             try:
                 from yfinance.data import YfData
                 yfd_inst = YfData()          # SingletonMeta → 공유 인스턴스
-                yfd_inst._get_cookie_and_crumb()
+                yfd_inst._get_cookie_and_crumb(timeout=REQUEST_TIMEOUT)
                 if yfd_inst._crumb and yfd_inst._session:
                     self._crumb    = yfd_inst._crumb
                     self._crumb_at = time.monotonic()
                     self._sess     = yfd_inst._session  # crumb 설정된 세션 공유
-                    logger.debug(
-                        f"[YFDirect] yfinance crumb 획득 ({self._crumb[:8]}...)"
-                    )
+                    logger.debug("[YFDirect] authenticated session acquired")
                     return True
             except Exception as e:
-                logger.debug(f"[YFDirect] yfinance crumb 실패: {e}")
+                logger.debug("[YFDirect] authentication failed (%s)", type(e).__name__)
 
         # ── 방법 2: 직접 HTTP (백업) ────────────────────────────────────────
         try:
@@ -446,11 +521,11 @@ class YahooFinanceDirectClient(_BaseClient):
                 if token and len(token) > 2:
                     self._crumb    = token
                     self._crumb_at = time.monotonic()
-                    logger.debug(f"[YFDirect] 직접 crumb 획득 ({token[:8]}...)")
+                    logger.debug("[YFDirect] authentication acquired")
                     return True
             logger.warning(f"[YFDirect] csrfToken HTTP {r.status_code}")
         except Exception as e:
-            logger.debug(f"[YFDirect] 직접 crumb 획득 실패: {e}")
+            logger.debug("[YFDirect] authentication failed (%s)", type(e).__name__)
 
         return False
 
@@ -511,9 +586,9 @@ class YahooFinanceDirectClient(_BaseClient):
                     return q
                 logger.warning(f"[YFDirect] {ticker}: 응답 성공이나 result 비어 있음")
             except requests.exceptions.HTTPError as e:
-                logger.warning(f"[YFDirect] {ticker} HTTP 오류 ({url}): {e}")
+                logger.warning("[YFDirect] HTTP request failed (%s)", type(e).__name__)
             except Exception as e:
-                logger.debug(f"[YFDirect] {ticker} ({url}): {e}")
+                logger.debug("[YFDirect] request failed (%s)", type(e).__name__)
 
         logger.warning(f"[YFDirect] {ticker}: 모든 엔드포인트 실패")
         return None
@@ -541,17 +616,17 @@ class YahooFinanceDirectClient(_BaseClient):
         if not q:
             return None
 
-        prev_close   = float(q.get("regularMarketPreviousClose") or 0)
+        prev_close = _number(q.get("regularMarketPrice")) or _number(q.get("regularMarketPreviousClose"))
         market_state = q.get("marketState", "")
 
         # ── ① overnightMarketPrice (Blue Ocean ATS) ──────────────────────────
         # marketState 상관없이: 타임스탬프가 8시간 이내면 유효한 overnight 데이터
-        ovn_price = q.get("overnightMarketPrice")
+        ovn_price = _number(q.get("overnightMarketPrice"))
         ovn_time  = self._ts(q.get("overnightMarketTime"))
 
         if ovn_price and ovn_time:
             age_min = (now_et() - ovn_time).total_seconds() / 60
-            if age_min <= 480:  # 8시간 이내
+            if 0 <= age_min <= 480 and detect_session(ovn_time)[0] == MarketSession.OVERNIGHT:
                 logger.info(
                     f"[YFDirect] {ticker} Overnight(Blue Ocean ATS) ✓ "
                     f"marketState={market_state} | "
@@ -573,11 +648,11 @@ class YahooFinanceDirectClient(_BaseClient):
 
         # ── ② postMarketPrice fallback (PREPRE/POSTPOST 전용) ─────────────
         if market_state in _YF_OVERNIGHT_STATES:
-            post_price = q.get("postMarketPrice")
+            post_price = _number(q.get("postMarketPrice"))
             post_time  = self._ts(q.get("postMarketTime"))
             if post_price and post_time:
                 age_min = (now_et() - post_time).total_seconds() / 60
-                if age_min <= 480:
+                if 0 <= age_min <= 480:
                     logger.info(
                         f"[YFDirect] {ticker} postMarketPrice fallback "
                         f"(overnightMarketPrice 없음) | "
@@ -587,7 +662,7 @@ class YahooFinanceDirectClient(_BaseClient):
                         float(post_price),
                         prev_close,
                         post_time,
-                        "overnight",
+                        "post_market",
                         market_state,
                     )
 
@@ -616,16 +691,16 @@ class YahooFinanceDirectClient(_BaseClient):
         if not q:
             return None
 
-        prev_close   = float(q.get("regularMarketPreviousClose") or 0)
+        prev_close = _number(q.get("regularMarketPrice")) or _number(q.get("regularMarketPreviousClose"))
         market_state = q.get("marketState", "")
 
         # ── ① preMarketPrice ─────────────────────────────────────────────────
-        pre_price = q.get("preMarketPrice")
+        pre_price = _number(q.get("preMarketPrice"))
         pre_time  = self._ts(q.get("preMarketTime"))
 
         if pre_price and pre_time:
             age_min = (now_et() - pre_time).total_seconds() / 60
-            if age_min <= 360:  # 6시간 이내 (04:00~09:30 ET 커버)
+            if 0 <= age_min <= 360 and detect_session(pre_time)[0] == MarketSession.PRE_MARKET:
                 logger.info(
                     f"[YFDirect] {ticker} Pre-market ✓ "
                     f"marketState={market_state} | "
@@ -640,11 +715,11 @@ class YahooFinanceDirectClient(_BaseClient):
             return None
 
         # ── ② overnightMarketPrice fallback (PRE 세션 직전 Blue Ocean ATS) ──
-        ovn_price = q.get("overnightMarketPrice")
+        ovn_price = _number(q.get("overnightMarketPrice"))
         ovn_time  = self._ts(q.get("overnightMarketTime"))
         if ovn_price and ovn_time:
             age_min = (now_et() - ovn_time).total_seconds() / 60
-            if age_min <= 480:
+            if 0 <= age_min <= 480 and detect_session(ovn_time)[0] == MarketSession.OVERNIGHT:
                 logger.info(
                     f"[YFDirect] {ticker} overnightMarketPrice fallback (PRE) "
                     f"price={ovn_price} | {age_min:.0f}min ago"
@@ -666,18 +741,18 @@ class YahooFinanceDirectClient(_BaseClient):
         if not q:
             return None
 
-        prev_close   = float(q.get("regularMarketPreviousClose") or 0)
+        prev_close = _number(q.get("regularMarketPrice")) or _number(q.get("regularMarketPreviousClose"))
         market_state = q.get("marketState", "")
 
         if market_state not in ("POST", *_YF_OVERNIGHT_STATES):
             return None
 
-        post_price = q.get("postMarketPrice")
+        post_price = _number(q.get("postMarketPrice"))
         post_time  = self._ts(q.get("postMarketTime"))
 
         if post_price and post_time:
             age_min = (now_et() - post_time).total_seconds() / 60
-            if age_min <= 240:  # 4시간 이내
+            if 0 <= age_min <= 240 and detect_session(post_time)[0] == MarketSession.AFTER_HOURS:
                 return float(post_price), prev_close, post_time, "post_market", market_state
 
         return None
@@ -784,7 +859,8 @@ class NaverWorldStockClient(_BaseClient):
         if '.' in t:
             data = self._fetch_basic(t)
             code = t if (data and data.get("closePrice")) else None
-            self._code_cache[t] = code
+            if code:
+                self._code_cache[t] = code
             return code
 
         # 접미사 없음 → 후보 순으로 시도
@@ -797,7 +873,6 @@ class NaverWorldStockClient(_BaseClient):
                 return code
 
         logger.warning(f"[Naver] {t}: 매칭 Reuters code 없음 (스킵)")
-        self._code_cache[t] = None
         return None
 
     # ── 공개 메서드 ───────────────────────────────────────────────────────────
@@ -833,16 +908,16 @@ class NaverWorldStockClient(_BaseClient):
             market_status = data.get("marketStatus", "CLOSE")
 
             # ── closePrice (정규장 체결가 / 마지막 종가) ────────────────────
-            close_str = (data.get("closePrice") or "0").replace(",", "")
-            close_price = float(close_str)
+            close_str = str(data.get("closePrice") or "0").replace(",", "")
+            close_price = _number(close_str)
             if close_price <= 0:
                 return None
 
             # 정규장 전일종가 역산
             # compareToPreviousClosePrice = closePrice와 전일종가의 절대 차이
-            chg_str  = (data.get("compareToPreviousClosePrice") or "0").replace(",", "")
+            chg_str = str(data.get("compareToPreviousClosePrice") or "0").replace(",", "")
             chg_code = data.get("compareToPreviousPrice", {}).get("code", "3")
-            chg_val  = float(chg_str) if chg_str else 0.0
+            chg_val = abs(_number(chg_str))
             # code "2"=상승(RISING), "5"=하락(FALLING), "3"=보합(EVEN)
             if chg_code == "2":
                 prev_close_regular = close_price - chg_val
@@ -858,7 +933,7 @@ class NaverWorldStockClient(_BaseClient):
             local_traded = data.get("localTradedAt")
             if local_traded:
                 try:
-                    price_time = datetime.fromisoformat(local_traded).astimezone(ET_TZ)
+                    price_time = _local_timestamp(local_traded)
                 except Exception:
                     pass
 
@@ -871,12 +946,12 @@ class NaverWorldStockClient(_BaseClient):
             over_price: float = 0.0
             over_time: Optional[datetime] = None
             if over_status == "OPEN":
-                over_price_str = (over.get("overPrice") or "").replace(",", "")
-                over_price = float(over_price_str) if over_price_str else 0.0
+                over_price_str = str(over.get("overPrice") or "").replace(",", "")
+                over_price = _number(over_price_str)
                 over_local = over.get("localTradedAt")
                 if over_local:
                     try:
-                        over_time = datetime.fromisoformat(over_local).astimezone(ET_TZ)
+                        over_time = _local_timestamp(over_local)
                     except Exception:
                         pass
 
@@ -989,7 +1064,7 @@ class YFinanceClient:
             self._last = time.monotonic()
             return info
         except Exception as e:
-            logger.warning(f"[yfinance] {ticker} info 조회 실패: {e}")
+            logger.warning("[yfinance] info request failed (%s)", type(e).__name__)
             return None
 
     def _ts(self, unix: Any) -> Optional[datetime]:
@@ -1007,19 +1082,15 @@ class YFinanceClient:
         postMarketPrice 유효성 검증 헬퍼.
         max_age_min 이내의 데이터만 반환, 만료된 경우 None.
         """
-        prev_close = float(
-            info.get("regularMarketPreviousClose")
-            or info.get("previousClose")
-            or 0
-        )
-        post_price = info.get("postMarketPrice")
+        prev_close = _number(info.get("regularMarketPrice")) or _number(info.get("previousClose"))
+        post_price = _number(info.get("postMarketPrice"))
         post_ts    = self._ts(info.get("postMarketTime"))
 
         if not post_price or not post_ts:
             return None
 
         age_min = (now_et() - post_ts).total_seconds() / 60
-        if age_min > max_age_min:
+        if not 0 <= age_min <= max_age_min:
             logger.info(
                 f"[yfinance] {ticker}: postMarketPrice가 {age_min:.0f}분 전 데이터 "
                 f"(기준 {max_age_min}분 초과) → 스킵"
@@ -1042,33 +1113,28 @@ class YFinanceClient:
         if not info:
             return None
 
-        prev_close = float(
-            info.get("regularMarketPreviousClose")
-            or info.get("previousClose")
-            or 0
-        )
+        prev_close = _number(info.get("regularMarketPreviousClose")) or _number(info.get("previousClose"))
 
         # ── PRE_MARKET ───────────────────────────────────────────────────────
         if session == MarketSession.PRE_MARKET:
-            price = info.get("preMarketPrice")
+            price = _number(info.get("preMarketPrice"))
             if not price:
                 logger.debug(f"[yfinance] {ticker}: preMarketPrice=None")
                 return None
             ts = self._ts(info.get("preMarketTime"))
-            if ts:
-                age = (now_et() - ts).total_seconds() / 60
-                if age > 60:
-                    logger.warning(
-                        f"[yfinance] {ticker}: preMarketPrice가 {age:.0f}분 전 데이터"
-                    )
+            if not _fresh_timestamp(ts, 360) or detect_session(ts)[0] != session:
+                return None
+            prev_close = _number(info.get("regularMarketPrice")) or prev_close
             return float(price), prev_close, ts, "pre_market"
 
         # ── REGULAR ──────────────────────────────────────────────────────────
         elif session == MarketSession.REGULAR:
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            price = _number(info.get("regularMarketPrice")) or _number(info.get("currentPrice"))
             if not price:
                 return None
             ts = self._ts(info.get("regularMarketTime"))
+            if not _fresh_timestamp(ts, 20) or detect_session(ts)[0] != session:
+                return None
             return float(price), prev_close, ts, "real_time"
 
         # ── AFTER_HOURS ──────────────────────────────────────────────────────
@@ -1090,14 +1156,14 @@ class YFinanceClient:
                     f"[yfinance] {ticker}: Overnight postMarketPrice 확인 "
                     f"({ts.strftime('%H:%M:%S %Z') if ts else 'N/A'})"
                 )
-                return price, pc, ts, "overnight"
+                return price, pc, ts, "post_market"
             # Overnight 데이터 없음 → None (regularMarketPrice 로 폴백 금지)
             logger.debug(f"[yfinance] {ticker}: Overnight postMarketPrice 없음/만료 → None")
             return None
 
         # ── CLOSED ───────────────────────────────────────────────────────────
         elif session == MarketSession.CLOSED:
-            price = prev_close or info.get("regularMarketPrice")
+            price = _number(info.get("regularMarketPrice")) or _number(info.get("currentPrice"))
             if not price:
                 return None
             ts = self._ts(info.get("regularMarketTime"))
@@ -1127,18 +1193,18 @@ class YFinanceClient:
         if not info:
             return None
 
-        market_state = info.get("marketState", "REGULAR")
-        prev_close = float(
-            info.get("regularMarketPreviousClose")
-            or info.get("previousClose")
-            or 0
-        )
+        market_state = info.get("marketState", "CLOSED")
+        prev_close = _number(info.get("regularMarketPreviousClose")) or _number(info.get("previousClose"))
+        if market_state in _YF_EXTENDED_STATES:
+            prev_close = _number(info.get("regularMarketPrice")) or prev_close
 
         # ── Pre-Market (04:00~09:30 ET) ──────────────────────────────────────
         if market_state == "PRE":
-            price = info.get("preMarketPrice")
+            price = _number(info.get("preMarketPrice"))
             if price:
                 ts = self._ts(info.get("preMarketTime"))
+                if not _fresh_timestamp(ts, 360) or detect_session(ts)[0] != MarketSession.PRE_MARKET:
+                    return None
                 logger.info(
                     f"[yfinance ms] {ticker}: PRE → preMarketPrice={price} "
                     f"({ts.strftime('%H:%M %Z') if ts else 'N/A'})"
@@ -1148,58 +1214,60 @@ class YFinanceClient:
 
         # ── Overnight POSTPOST (20:00~자정 ET) ───────────────────────────────
         elif market_state == "POSTPOST":
-            price = info.get("postMarketPrice")
+            price = _number(info.get("postMarketPrice"))
             if price:
                 ts = self._ts(info.get("postMarketTime"))
                 if ts:
                     age_min = (now_et() - ts).total_seconds() / 60
-                    if age_min <= 480:
+                    if 0 <= age_min <= 480:
                         logger.info(
                             f"[yfinance ms] {ticker}: POSTPOST → "
                             f"postMarketPrice={price} ({age_min:.0f}min ago)"
                         )
-                        return float(price), prev_close, ts, "overnight", market_state
+                        return float(price), prev_close, ts, "post_market", market_state
             return None
 
         # ── Overnight PREPRE (자정~04:00 ET) ─────────────────────────────────
         elif market_state == "PREPRE":
-            price = info.get("postMarketPrice")
+            price = _number(info.get("postMarketPrice"))
             if price:
                 ts = self._ts(info.get("postMarketTime"))
                 if ts:
                     age_min = (now_et() - ts).total_seconds() / 60
                     # 480분(8h) → 360분(6h)으로 축소: PREPRE 구간 최대 04:00 ET 까지이므로
                     # 전날 22:00 이후 postMarketPrice 만 유효로 인정 (04:00 - 6h = 22:00)
-                    if age_min <= 360:
+                    if 0 <= age_min <= 360:
                         logger.info(
                             f"[yfinance ms] {ticker}: PREPRE → "
                             f"postMarketPrice={price} ({age_min:.0f}min ago)"
                         )
-                        return float(price), prev_close, ts, "overnight", market_state
+                        return float(price), prev_close, ts, "post_market", market_state
             return None
 
         # ── After-Hours POST (16:00~20:00 ET) ────────────────────────────────
         elif market_state == "POST":
-            price = info.get("postMarketPrice")
+            price = _number(info.get("postMarketPrice"))
             if price:
                 ts = self._ts(info.get("postMarketTime"))
                 if ts:
                     age_min = (now_et() - ts).total_seconds() / 60
-                    if age_min <= 240:
+                    if 0 <= age_min <= 240:
                         return float(price), prev_close, ts, "post_market", market_state
             return None
 
         # ── Regular (09:30~16:00 ET) ─────────────────────────────────────────
         elif market_state == "REGULAR":
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            price = _number(info.get("regularMarketPrice")) or _number(info.get("currentPrice"))
             if price:
                 ts = self._ts(info.get("regularMarketTime"))
+                if not _fresh_timestamp(ts, 20) or detect_session(ts)[0] != MarketSession.REGULAR:
+                    return None
                 return float(price), prev_close, ts, "real_time", market_state
             return None
 
         # ── Closed (주말·공휴일) ──────────────────────────────────────────────
         else:
-            price = prev_close or info.get("regularMarketPrice")
+            price = _number(info.get("regularMarketPrice")) or _number(info.get("currentPrice"))
             if price:
                 ts = self._ts(info.get("regularMarketTime"))
                 return float(price), prev_close, ts, "last_close", market_state
@@ -1226,13 +1294,14 @@ class YFinanceClient:
                 interval="1m",
                 prepost=True,
                 auto_adjust=False,
+                timeout=REQUEST_TIMEOUT,
             )
             if df.empty:
                 logger.debug(f"[yfinance history] {ticker}: 빈 DataFrame")
                 return None
 
             last  = df.iloc[-1]
-            price = float(last["Close"])
+            price = _number(last["Close"])
             if price <= 0:
                 return None
 
@@ -1250,8 +1319,8 @@ class YFinanceClient:
             prev_close = 0.0
             try:
                 pc = t.fast_info.previous_close
-                if pc and pc > 0:
-                    prev_close = float(pc)
+                if _number(pc) > 0:
+                    prev_close = _number(pc)
             except Exception:
                 pass
             if not prev_close:
@@ -1267,6 +1336,8 @@ class YFinanceClient:
                     pass
 
             # 신선도 검사: 마지막 캔들이 120분(2시간) 이상 지났으면 스테일 데이터 폐기
+            if not _fresh_timestamp(ts, 120):
+                return None
             if ts:
                 age_min = (now_et() - ts).total_seconds() / 60
                 if age_min > 120:
@@ -1282,9 +1353,11 @@ class YFinanceClient:
                 f"price={price:.4f} | "
                 f"time={ts.strftime('%H:%M:%S %Z') if ts else 'N/A'}"
             )
-            return price, prev_close or price, ts, "extended_hours"
+            ptype = {MarketSession.REGULAR: "real_time", MarketSession.PRE_MARKET: "pre_market",
+                     MarketSession.AFTER_HOURS: "post_market", MarketSession.OVERNIGHT: "overnight"}.get(detect_session(ts)[0])
+            return (price, prev_close, ts, ptype) if ptype else None
         except Exception as e:
-            logger.warning(f"[yfinance history] {ticker}: {e}")
+            logger.warning("[yfinance history] request failed (%s)", type(e).__name__)
             return None
 
 
