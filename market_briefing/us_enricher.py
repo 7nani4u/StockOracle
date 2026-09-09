@@ -8,6 +8,7 @@ API 우선순위:
 from __future__ import annotations
 
 import datetime
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,9 +16,10 @@ from typing import Any
 
 import requests
 
-FINNHUB_KEY = "d7lm0o9r01qm7o0cb440d7lm0o9r01qm7o0cb44g"
-TIINGO_KEY  = "12ebd1feef89b6728cc15808864b7402449a5637"
-AV_KEY      = "E0ODFSRNDU4P9HDU"
+# 환경변수 우선 — 무료 키는 레이트리밋에 쉽게 걸리므로 배포 환경에서 교체 가능해야 한다.
+FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "d7lm0o9r01qm7o0cb440d7lm0o9r01qm7o0cb44g")
+TIINGO_KEY  = os.getenv("TIINGO_API_KEY", "12ebd1feef89b6728cc15808864b7402449a5637")
+AV_KEY      = os.getenv("ALPHAVANTAGE_API_KEY", "E0ODFSRNDU4P9HDU")
 
 _TIMEOUT = 6  # seconds per request
 _US_ENRICH_CACHE: dict[str, tuple[dict, float]] = {}

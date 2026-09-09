@@ -102,22 +102,49 @@ def _discover_public_token(force: bool = False) -> str:
         page = _SESSION.get(_INDUSTRY_PAGE, timeout=_TIMEOUT)
         page.raise_for_status()
         sources = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', page.text, re.I)
-        # Nuxt 공통 번들은 보통 문서 끝쪽에 있으므로 역순으로 확인한다.
+        # 1) manifest 기반: CSP 변경 시 /_nuxt/ 직접 경로 없이도 빌드 매니페스트에서 추적
+        manifest_urls = []
         nuxt_urls = []
-        for source in reversed(sources):
+        for source in sources:
             url = urljoin(_BASE_URL, source)
             parsed = urlparse(url)
-            if parsed.scheme == "https" and parsed.netloc == "markets.hankyung.com" and "/_nuxt/" in parsed.path:
+            if parsed.scheme != "https" or parsed.netloc != "markets.hankyung.com":
+                continue
+            if "manifest" in parsed.path or "build-manifest" in parsed.path:
+                manifest_urls.append(url)
+            if "/_nuxt/" in parsed.path:
                 nuxt_urls.append(url)
-
-        for url in nuxt_urls:
-            response = _SESSION.get(url, timeout=_TIMEOUT)
-            response.raise_for_status()
-            token = _extract_public_token(response.text)
-            if token:
-                with _LOCK:
-                    _TOKEN_CACHE = (token, now + _TOKEN_TTL)
-                return token
+        # manifest가 있으면 내부 스크립트 목록을 재귀적으로 수집
+        for m_url in manifest_urls:
+            try:
+                m_resp = _SESSION.get(m_url, timeout=_TIMEOUT)
+                m_resp.raise_for_status()
+                # manifest JSON 또는 JS 내 URL 추출
+                extra = re.findall(r'"/_nuxt/[^"]+\.js"', m_resp.text)
+                for e in extra:
+                    full = urljoin(_BASE_URL, e.strip('"'))
+                    if full not in nuxt_urls:
+                        nuxt_urls.append(full)
+            except Exception:
+                continue
+        # 2) CSP 대비: 페이지 내 인라인 스크립트에서도 토큰 직접 탐색 (번들 없이도 가능)
+        inline_token = _extract_public_token(page.text)
+        if inline_token:
+            with _LOCK:
+                _TOKEN_CACHE = (inline_token, now + _TOKEN_TTL)
+            return inline_token
+        # Nuxt 공통 번들은 보통 문서 끝쪽에 있으므로 역순으로 확인한다.
+        for url in reversed(nuxt_urls):
+            try:
+                response = _SESSION.get(url, timeout=_TIMEOUT)
+                response.raise_for_status()
+                token = _extract_public_token(response.text)
+                if token:
+                    with _LOCK:
+                        _TOKEN_CACHE = (token, now + _TOKEN_TTL)
+                    return token
+            except Exception:
+                continue
     raise RuntimeError("한국경제 공개 데이터 인증 정보를 찾지 못했습니다.")
 
 

@@ -26,6 +26,8 @@ from email.utils import parsedate_to_datetime
 from threading import Lock as _Lock
 from typing import Any
 
+import pandas as pd
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -305,11 +307,72 @@ def _fetch_market_indices_naver() -> dict[str, Any]:
     return result
 
 
+def _fetch_market_indices_yfinance() -> dict[str, Any]:
+    """KRX Global·Naver 모두 실패 시 yfinance로 최후 폴백 (KOSPI/KOSDAQ/KOSPI200)."""
+    import yfinance as yf
+    now_iso = datetime.now(KST).isoformat()
+    symbol_map = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "KOSPI200": "^KS200"}
+    fallback_symbol = {"KOSPI": "069500.KS", "KOSDAQ": "229200.KS", "KOSPI200": "^KS11"}
+    result: dict[str, Any] = {}
+    try:
+        tickers = list(symbol_map.values())
+        df = yf.download(tickers, period="5d", auto_adjust=True, progress=False, threads=True)
+    except Exception as exc:
+        raise ValueError(f"yfinance 지수 조회 실패: {exc}")
+    for key, sym in symbol_map.items():
+        try:
+            closes = None
+            if isinstance(df.columns, pd.MultiIndex):
+                try:
+                    closes = df.xs("Close", axis=1, level=0)[sym].dropna() if sym in df.columns.get_level_values(1) else None
+                except Exception:
+                    try:
+                        closes = df["Close"][sym].dropna()
+                    except Exception:
+                        closes = None
+            else:
+                closes = df["Close"].dropna() if "Close" in df.columns else None
+            # fallback ETF 시도
+            if closes is None or len(closes) < 2:
+                fb = fallback_symbol.get(key, "")
+                if fb and fb != sym:
+                    try:
+                        hist = yf.Ticker(fb).history(period="5d", auto_adjust=True)
+                        if hist is not None and len(hist) >= 2 and "Close" in hist.columns:
+                            closes = hist["Close"].dropna()
+                            sym = fb
+                    except Exception:
+                        pass
+            if closes is None or len(closes) < 2:
+                result[key] = _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 데이터 부족")
+                continue
+            cur = float(closes.iloc[-1])
+            prev = float(closes.iloc[-2])
+            if prev <= 0 or cur <= 0 or not (math.isfinite(cur) and math.isfinite(prev)):
+                result[key] = _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 가격 검증 실패")
+                continue
+            change_abs = cur - prev
+            change_pct = change_abs / prev * 100
+            direction = "up" if change_abs > 0 else "down" if change_abs < 0 else "flat"
+            # yfinance 폴백은 검증 없이 직접 표준 엔트리 생성 (산술 일치 보장)
+            entry = _validated_index_entry(
+                current=cur, change_abs=abs(change_abs), change_pct=abs(change_pct),
+                direction=direction, source=f"yfinance 폴백 ({sym})", source_symbol=sym, as_of=now_iso,
+            )
+            result[key] = entry or _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 검증 실패")
+        except Exception as exc:
+            result[key] = _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 예외: {exc}")
+    if not any(v.get("available") for v in result.values()):
+        raise ValueError("yfinance 폴백도 유효 지수 없음")
+    return result
+
+
 def fetch_market_indices() -> dict[str, Any]:
     """KOSPI·KOSDAQ·KOSPI 200 공식 현재 지수와 전일 대비 정보를 반환한다.
 
-    KRX Global을 기본 출처로 사용하고, 공식 응답 전체를 가져오지 못한 경우에만
-    네이버 증권을 단일 폴백으로 사용한다. 출처를 섞거나 과거 숫자를 재사용하지 않는다.
+    KRX Global을 기본 출처로 사용하고, 공식 응답 전체를 가져오지 못한 경우
+    네이버 증권을 단일 폴백으로, 그것마저 실패하면 yfinance로 최후 폴백한다.
+    출처를 섞거나 과거 숫자를 재사용하지 않는다.
     """
     try:
         return _fetch_market_indices_krx()
@@ -319,11 +382,15 @@ def fetch_market_indices() -> dict[str, Any]:
             return _fetch_market_indices_naver()
         except Exception as fallback_exc:
             print(f"[warn] Naver market indices fallback: {fallback_exc}", file=sys.stderr)
-            as_of = datetime.now(KST).isoformat()
-            return {
-                key: _empty_index_entry("미수신", as_of, "지수 데이터 수집 실패")
-                for key in _INDEX_KEYS.values()
-            }
+            try:
+                return _fetch_market_indices_yfinance()
+            except Exception as yf_exc:
+                print(f"[warn] yfinance market indices fallback: {yf_exc}", file=sys.stderr)
+                as_of = datetime.now(KST).isoformat()
+                return {
+                    key: _empty_index_entry("미수신", as_of, "지수 데이터 수집 실패 (3개 출처 모두 실패)")
+                    for key in _INDEX_KEYS.values()
+                }
 
 
 def _parse_index_change(raw: str, direction_hint: str | None = None) -> dict:

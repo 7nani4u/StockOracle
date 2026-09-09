@@ -61,8 +61,10 @@ CANDIDATE_MODEL_DIRS = [
     Path.cwd() / "StockOracle" / "models",
 ]
 
-# StockFlow pretrained fallback
-STOCKFLOW_MODEL_DIR = Path(r"C:\Users\Administrator\Documents\trae_projects\stockflow\models")
+# StockFlow pretrained fallback — 환경변수로 재정의 가능, 하드코딩 절대경로 제거
+# 로컬 윈도우 개발 시 STOCKFLOW_MODEL_DIR 환경변수로 지정 가능, 없으면 비활성
+_stockflow_env = os.getenv("STOCKFLOW_MODEL_DIR", "").strip()
+STOCKFLOW_MODEL_DIR = Path(_stockflow_env) if _stockflow_env else None
 
 MODEL_FILENAME = "lgbm_model.pkl"
 MODEL_JSON_FILENAME = "lgbm_model.json"
@@ -107,8 +109,8 @@ def _find_model_dir() -> Optional[Path]:
     for d in CANDIDATE_MODEL_DIRS:
         if d.exists() and (d / COLUMNS_FILENAME).exists():
             return d
-    # StockFlow pretrained fallback
-    if (STOCKFLOW_MODEL_DIR / COLUMNS_FILENAME).exists():
+    # StockFlow pretrained fallback (환경변수 지정 시에만 활성)
+    if STOCKFLOW_MODEL_DIR is not None and STOCKFLOW_MODEL_DIR.exists() and (STOCKFLOW_MODEL_DIR / COLUMNS_FILENAME).exists():
         return STOCKFLOW_MODEL_DIR
     # any existing models dir even without columns (will be created by training)
     for d in CANDIDATE_MODEL_DIRS:
@@ -332,14 +334,25 @@ def _get_index_cache(market: str) -> Dict[str, float]:
     import concurrent.futures
     def _fetch_market():
         try:
+            # KRX: 전체 fallback 체인 순차 시도 (yfinance Ticker 차이 대응)
+            if mk == "KRX":
+                for sym in KRX_MARKET_FALLBACKS:
+                    daily, cum20 = _fetch_index_return(sym)
+                    if daily != 0 or cum20 != 0:
+                        return daily, cum20
+                return 0.0, 0.0
             daily, cum20 = _fetch_index_return(symbols["market"])
-            if mk == "KRX" and daily == 0 and cum20 == 0:
-                daily, cum20 = _fetch_index_return(symbols.get("fallback_market") or "^KS11")
             return daily, cum20
         except Exception:
             return 0.0, 0.0
     def _fetch_sector():
         try:
+            if mk == "KRX":
+                for sym in KRX_SECTOR_FALLBACKS:
+                    d2, _ = _fetch_index_return(sym)
+                    if d2 != 0:
+                        return d2
+                return 0.0
             d2, _ = _fetch_index_return(symbols["sector"])
             return d2
         except Exception:
@@ -371,12 +384,24 @@ def _get_index_cache(market: str) -> Dict[str, float]:
     except Exception:
         # fallback sequential if thread pool fails
         try:
-            daily, cum20 = _fetch_index_return(symbols["market"])
-            if mk == "KRX" and daily == 0 and cum20 == 0:
-                daily, cum20 = _fetch_index_return(symbols.get("fallback_market") or "^KS11")
+            if mk == "KRX":
+                daily, cum20 = 0.0, 0.0
+                for sym in KRX_MARKET_FALLBACKS:
+                    daily, cum20 = _fetch_index_return(sym)
+                    if daily != 0 or cum20 != 0:
+                        break
+            else:
+                daily, cum20 = _fetch_index_return(symbols["market"])
             result["NIFTY_return"] = daily
             result["NIFTY_cum20"] = cum20
-            d2, _ = _fetch_index_return(symbols["sector"])
+            if mk == "KRX":
+                d2 = 0.0
+                for sym in KRX_SECTOR_FALLBACKS:
+                    d2, _ = _fetch_index_return(sym)
+                    if d2 != 0:
+                        break
+            else:
+                d2, _ = _fetch_index_return(symbols["sector"])
             result["BANKNIFTY_return"] = d2
             result["India_VIX"] = _fetch_vix(symbols["vix"])
         except Exception:
