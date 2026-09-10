@@ -31,6 +31,13 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    import feedparser as _feedparser
+    _FEEDPARSER_AVAILABLE = True
+except ImportError:
+    _feedparser = None
+    _FEEDPARSER_AVAILABLE = False
+
 KST = timezone(timedelta(hours=9))
 
 _UA = (
@@ -474,34 +481,128 @@ def fetch_fx() -> list[dict]:
 
 
 def fetch_macro_news(limit: int = 15) -> list[dict]:
-    """네이버 금융 메인 뉴스 (거시/시장 전반)."""
-    soup = _get("https://finance.naver.com/news/mainnews.naver")
+    """네이버 금융 메인 뉴스 (거시/시장 전반) — 3단계 폴백으로 빈 결과 방지.
+
+    1차: 네이버 금융 mainnews.naver (기존 파서, li.block1)
+    2차: 네이버 newsList.naver 대체 섹션 (HTML 구조 변경 대응, 테이블 파서)
+    3차: Google News RSS (한국 증시 키워드, feedparser) — 네이버 차단/점검 시 최후 보루
+    """
     items: list[dict] = []
-    for li in soup.select("li.block1"):
-        subj = li.select_one("dd.articleSubject a") or li.select_one("dt a")
-        summ = li.select_one("dd.articleSummary")
-        if not subj:
-            continue
-        href   = _abs_naver_link(subj.get("href", ""))
-        source = date = summary_text = ""
-        if summ:
-            press = summ.select_one(".press")
-            wdate = summ.select_one(".wdate")
-            source = press.get_text(strip=True) if press else ""
-            date   = wdate.get_text(strip=True) if wdate else ""
-            for s in summ.select(".press, .wdate, .source"):
-                s.extract()
-            summary_text = summ.get_text(" ", strip=True)
-        items.append({
-            "title":   subj.get_text(strip=True),
-            "link":    href,
-            "source":  source,
-            "date":    date,
-            "summary": summary_text,
-        })
-        if len(items) >= limit:
-            break
-    return items
+
+    # ── 1차: 네이버 금융 메인 뉴스 (기존) ───────────────────────────────
+    try:
+        soup = _get("https://finance.naver.com/news/mainnews.naver")
+        for li in soup.select("li.block1"):
+            subj = li.select_one("dd.articleSubject a") or li.select_one("dt a")
+            summ = li.select_one("dd.articleSummary")
+            if not subj:
+                continue
+            href   = _abs_naver_link(subj.get("href", ""))
+            source = date = summary_text = ""
+            if summ:
+                press = summ.select_one(".press")
+                wdate = summ.select_one(".wdate")
+                source = press.get_text(strip=True) if press else ""
+                date   = wdate.get_text(strip=True) if wdate else ""
+                for s in summ.select(".press, .wdate, .source"):
+                    s.extract()
+                summary_text = summ.get_text(" ", strip=True)
+            title = subj.get_text(strip=True)
+            if title:
+                items.append({
+                    "title":   title,
+                    "link":    href,
+                    "source":  source or "네이버 금융",
+                    "date":    date,
+                    "summary": summary_text,
+                })
+            if len(items) >= limit:
+                break
+        if items:
+            return items[:limit]
+    except Exception as e:
+        print(f"[warn] fetch_macro_news naver main: {e}", file=sys.stderr)
+
+    # ── 2차: 네이버 대체 리스트 (뉴스 구조 변경 대응) ─────────────────────
+    try:
+        soup2 = _get("https://finance.naver.com/news/newsList.naver?mode=LSS3D&section_id=101&section_id2=258")
+        # 대체 페이지는 dl/dt/dd 또는 table 구조가 섞여 있어 넓게 탐색
+        for sel in ("dl dt a", "td.title a", "ul.realtimeNewsList li a", "dd.articleSubject a"):
+            for a in soup2.select(sel):
+                title = a.get_text(strip=True)
+                if not title or len(title) < 5:
+                    continue
+                href = _abs_naver_link(a.get("href", ""))
+                # 중복 방지
+                if any(x["title"] == title for x in items):
+                    continue
+                items.append({
+                    "title": title,
+                    "link": href,
+                    "source": "네이버 금융",
+                    "date": "",
+                    "summary": "",
+                })
+                if len(items) >= limit:
+                    break
+            if len(items) >= limit:
+                break
+        if len(items) >= 5:
+            return items[:limit]
+        # 5개 미만은 불완전 — 3차로 이어감
+    except Exception as e:
+        print(f"[warn] fetch_macro_news naver alt: {e}", file=sys.stderr)
+
+    # ── 3차: Google News RSS (한국 증시) — 네이버 차단/점검 시 최후 보루 ──
+    if _FEEDPARSER_AVAILABLE and _feedparser is not None:
+        try:
+            rss_urls = [
+                "https://news.google.com/rss/search?q=한국+증시+OR+코스피+OR+코스닥+OR+증시&hl=ko&gl=KR&ceid=KR:ko",
+                "https://news.google.com/rss/search?q=주식+OR+증시+OR+코스피&hl=ko&gl=KR&ceid=KR:ko",
+            ]
+            for rss_url in rss_urls:
+                try:
+                    feed = _feedparser.parse(rss_url)
+                    for entry in getattr(feed, "entries", [])[:limit]:
+                        raw_title = str(getattr(entry, "title", "") or "").strip()
+                        if not raw_title:
+                            continue
+                        # Google News 제목은 "기사제목 - 언론사" 형태 — 언론사 분리
+                        if " - " in raw_title:
+                            core, src = raw_title.rsplit(" - ", 1)
+                        else:
+                            core, src = raw_title, getattr(getattr(entry, "source", None), "title", "") or "Google News"
+                        link = str(getattr(entry, "link", "") or "")
+                        pub = str(getattr(entry, "published", "") or getattr(entry, "pubDate", "") or "")
+                        if any(x["title"] == core for x in items):
+                            continue
+                        items.append({
+                            "title": core,
+                            "link": link,
+                            "source": src or "Google News",
+                            "date": pub,
+                            "summary": "",
+                        })
+                        if len(items) >= limit:
+                            break
+                    if len(items) >= limit:
+                        break
+                except Exception as inner_e:
+                    print(f"[warn] fetch_macro_news google rss inner: {inner_e}", file=sys.stderr)
+                    continue
+            if items:
+                return items[:limit]
+        except Exception as e:
+            print(f"[warn] fetch_macro_news google rss: {e}", file=sys.stderr)
+
+    # ── 최후: 빈 리스트 반환 (프론트에서 빈 상태 메시지 대신 재시도 유도) ──
+    # 그래도 비어 있으면 build_core_summary에서 뉴스 없음으로 처리되나,
+    # 호출측 fetch_macro_context는 []를 그대로 반환하므로 프론트는
+    # "뉴스를 불러올 수 없습니다."를 표시한다. 빈 경우를 줄이기 위해
+    # 위 3단계로 최대한 채웠으므로, 여기 도달은 네트워크 완전 차단 시에만 발생한다.
+    if not items:
+        print(f"[warn] fetch_macro_news all sources failed — returning empty", file=sys.stderr)
+    return items[:limit]
 
 
 def fetch_overnight_markets() -> list[dict]:

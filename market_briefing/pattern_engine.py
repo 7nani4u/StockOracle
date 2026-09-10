@@ -97,7 +97,7 @@ TIMEFRAME_CONFIG: dict[str, dict[str, int | float]] = {
         "atr_period": 14, "forming_valid_bars": 30,
         "dedupe_window": 8, "target_horizon": 60,
         "atr_tolerance_multiplier": 0.85,
-        "min_breakout_atr": 0.15,
+        "min_breakout_atr": 0.18,
     },
     "1W": {
         "min_pattern_bars": 8, "max_pattern_bars": 104,
@@ -382,7 +382,12 @@ def _confirmation(
             if direction == "bearish" and not (closes[j] < line - buffer):
                 held = False
         if held:
-            return {"confirmed": True, "index": i, "volume_ratio": _volume_ratio(volumes, i, int(cfg["volume_period"]))}
+            vol_ratio = _volume_ratio(volumes, i, int(cfg["volume_period"]))
+            # 정확도 강화: 거래량 동반 없는 돌파는 확정으로 보지 않고 대기 상태 유지 (FLOOD 방지)
+            # 기존 테스트용 합성 데이터는 vol_ratio 1.8로 통과, 실전 저거래량 돌파는 걸러짐
+            if vol_ratio is not None and vol_ratio < 1.0:
+                continue
+            return {"confirmed": True, "index": i, "volume_ratio": vol_ratio}
     return {"confirmed": False, "index": None, "volume_ratio": None}
 
 
@@ -582,7 +587,7 @@ class PatternEngine:
                 continue
             head_depth = (min(seq[0]["price"], seq[4]["price"]) - seq[2]["price"]) if direction == "bullish" else (seq[2]["price"] - max(seq[0]["price"], seq[4]["price"]))
             atr_v = max(float(self.atr[int(seq[4]["index"])]), 1e-12)
-            if head_depth < atr_v * 0.55:
+            if head_depth < atr_v * 0.65:
                 continue
             left_bars = max(1, seq[2]["index"] - seq[0]["index"])
             right_bars = max(1, seq[4]["index"] - seq[2]["index"])

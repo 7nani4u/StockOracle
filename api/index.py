@@ -16165,6 +16165,74 @@ def route(path: str, params: Dict) -> Dict:
             target_price["long_term_note"] = "장기 전망은 기업가치·성장성·산업 전망·실적 추세·기술 흐름·변동성을 함께 반영한 참고 범위입니다."
             target_price = _normalize_target_output(target_price, last, market)
         pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
+        # ── 심층 상관·예측 범위 자동 축소 (X10THINK / CORRELATION) ─────────────────
+        # 기존 분석 결과를 파싱·연관시켜 매수/매도 확률과 목표가 범위를 자동 좁힘. 호환성: 실패 시 원본 유지.
+        _correlation_report = None
+        try:
+            from market_briefing.correlation_engine import correlate_and_narrow
+            # 상관 분석에 필요한 파생 지표 추출
+            _vols_corr = dd.get("Volume") or dd.get("volume") or []
+            _closes_corr = dd.get("Close") or dd.get("close") or []
+            _vol_ratio_corr = 1.0
+            try:
+                if _vols_corr and len(_vols_corr) >= 21:
+                    _avg_v = float(np.mean([float(v) for v in _vols_corr[-21:-1] if v is not None]))
+                    _vol_ratio_corr = float(_vols_corr[-1]) / _avg_v if _avg_v else 1.0
+            except Exception:
+                _vol_ratio_corr = 1.0
+            _rsi_corr = 50.0
+            _macd_gap_corr = 0.0
+            try:
+                if indicator_signals:
+                    _rsi_corr = float(indicator_signals.get("rsi", 50))
+                    _macd_corr = float(indicator_signals.get("macd", 0) or 0)
+                    _sig_corr = float(indicator_signals.get("signal_line", 0) or 0)
+                    _macd_gap_corr = _macd_corr - _sig_corr
+                if not math.isfinite(_rsi_corr):
+                    _rsi_corr = 50.0
+            except Exception:
+                pass
+            _candle_up_corr = bool(last >= prev) if prev else True
+            _corr = correlate_and_narrow(
+                symbol=sym, market=market, dd=dd, last_price=last, atr=atr_val,
+                score=score, prob_up_base=prob_up, prob_down_base=prob_down,
+                target_price=target_price, signal_confidence=signal_confidence,
+                indicator_signals=indicator_signals, candlestick_patterns=patterns,
+                pullback_analysis=pullback_analysis, investor_flow=investor_flow,
+                ml_prediction=ml_prediction, regime=regime, pct_change=pct,
+                volume_ratio=_vol_ratio_corr, candle_up=_candle_up_corr,
+                rsi=_rsi_corr, macd_gap=_macd_gap_corr, event_risk=event_risk,
+            )
+            _correlation_report = _corr
+            # 좁혀진 값으로 덮어쓰기 (원본은 _orig_*로 보존)
+            if _corr and isinstance(_corr, dict):
+                prob_up = float(_corr.get("prob_up_corr", prob_up))
+                prob_down = float(_corr.get("prob_down_corr", prob_down))
+                if _corr.get("target_narrowed") and target_price is not None:
+                    tn = _corr["target_narrowed"]
+                    target_price = dict(target_price)
+                    target_price["_orig_min_price"] = target_price.get("min_price")
+                    target_price["_orig_max_price"] = target_price.get("max_price")
+                    target_price["min_price"] = tn.get("min_price", target_price.get("min_price"))
+                    target_price["max_price"] = tn.get("max_price", target_price.get("max_price"))
+                    target_price["_correlation_narrow_factor"] = tn.get("factor")
+                    target_price["_correlation_reason"] = tn.get("reason")
+                    target_price = _normalize_target_output(target_price, last, market)
+                    # pullback도 좁혀진 target 기준으로 재계산해 정합성 유지
+                    try:
+                        pullback_analysis = calc_pullback_analysis(dd, last, atr_val, score, market, target_price)
+                    except Exception:
+                        pass
+                if _corr.get("confidence_corr") is not None and signal_confidence is not None:
+                    signal_confidence = dict(signal_confidence)
+                    signal_confidence["_orig_confidence"] = signal_confidence.get("confidence")
+                    signal_confidence["_orig_interval"] = signal_confidence.get("confidence_interval")
+                    signal_confidence["confidence"] = _corr.get("confidence_corr")
+                    signal_confidence["confidence_interval"] = _corr.get("confidence_interval_corr")
+                    signal_confidence["_correlation_agreement"] = (_corr.get("correlation") or {}).get("agreement")
+        except Exception as _corr_e:
+            _correlation_report = {"error": str(_corr_e), "prob_up_corr": prob_up, "prob_down_corr": prob_down}
+            # 실패 시 원본 유지이므로 별도 처리 없음
         prediction_outlook = build_prediction_outlook(
             symbol=sym, market=market, dd=dd, last_price=last, prev_close=prev,
             pct_change=pct, atr=atr_val, regime=regime, score=score,
@@ -16357,6 +16425,18 @@ def route(path: str, params: Dict) -> Dict:
             "investment_charm": investment_charm,
             "key_metrics": key_metrics,
             "peter_lynch": peter_lynch,
+            "correlation": _correlation_report,
+            "deep_analysis": {
+                "agreement": (_correlation_report or {}).get("correlation", {}).get("agreement"),
+                "dominant": (_correlation_report or {}).get("correlation", {}).get("dominant"),
+                "blindspots": (_correlation_report or {}).get("correlation", {}).get("blindspots"),
+                "causal_map": (_correlation_report or {}).get("correlation", {}).get("causal_map"),
+                "falsify": (_correlation_report or {}).get("correlation", {}).get("falsify"),
+                "redteam": (_correlation_report or {}).get("correlation", {}).get("redteam"),
+                "systematic_bias": (_correlation_report or {}).get("correlation", {}).get("systematic_bias"),
+                "verified": (_correlation_report or {}).get("verified"),
+                "meta": (_correlation_report or {}).get("meta"),
+            },
         }
         if str(params.get("lite") or "").lower() in {"1", "true", "yes"}:
             response = _compact_stock_response(response)
@@ -17394,7 +17474,7 @@ input::placeholder{color:#484f58}
 .signal-confidence-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
 .signal-confidence-title{font-size:13px;font-weight:700;color:#e6edf3}
 .signal-confidence-help{font-size:10px;color:#8b949e;line-height:1.5;margin-top:4px}
-.signal-confidence-status{font-size:10px;font-weight:700;padding:4px 9px;border:1px solid currentColor;border-radius:999px;white-space:nowrap}
+.signal-confidence-status{display:none !important;font-size:10px;font-weight:700;padding:4px 9px;border:1px solid currentColor;border-radius:999px;white-space:nowrap}
 .signal-confidence-overview{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(300px,1.2fr);gap:10px}
 .signal-confidence-score-panel,.signal-confidence-interpretation{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px}
 .signal-confidence-score-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-height:22px}
@@ -20149,7 +20229,6 @@ function renderSignalConfidence(d) {
     '<div class="signal-confidence-header">' +
       '<div><div class="signal-confidence-title">🧭 신호 신뢰도 종합</div>' +
       '<div class="signal-confidence-help">분석 결과가 서로 얼마나 일치하는지 보여주는 보조 지표입니다.</div></div>' +
-      '<span class="signal-confidence-status" style="color:' + level.color + '">' + level.label + ' 신뢰도</span>' +
     '</div>' +
     '<div class="signal-confidence-overview">' +
       '<div class="signal-confidence-score-panel">' +
