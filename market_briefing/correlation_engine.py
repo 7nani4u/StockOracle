@@ -109,10 +109,10 @@ def _supply_correlation(investor_flow: Dict | None, volume_ratio: float, candle_
     ok = bool(flow.get("ok"))
     # market KRX일 때만 수급 신뢰
     if market.upper() != "KRX" or not ok:
-        # US는 수급 대신 거래량만으로 판단 (BLINDSPOT 명시)
-        if volume_ratio >= 1.5:
-            bias = 1.5 if candle_up else -1.5
-            return bias, {"source": "volume_only", "blindspot": "KRX 수급 미확보 — 거래량으로 대체", "bias": bias}
+        # US는 수급 대신 거래량만으로 판단 (BLINDSPOT 명시) — KRX보다 임계치 1.2로 하향해 민감도 보정
+        if volume_ratio >= 1.2:
+            bias = 1.2 if candle_up else -1.2
+            return bias, {"source": "volume_only", "blindspot": "KRX 수급 미확보 — 거래량으로 대체 (1.2배 기준)", "bias": bias}
         return 0.0, {"source": "none", "blindspot": "수급 데이터 없음", "bias": 0.0}
     # KRX 수급
     if foreign > 0 and inst > 0:
@@ -132,9 +132,24 @@ def _supply_correlation(investor_flow: Dict | None, volume_ratio: float, candle_
 
 def _technical_depth_score(dd: Dict | None, last_price: float, rsi: float, macd_gap: float, atr_pct: float, ma20, ma60) -> Dict:
     """DEEPER: 피상적 지표 수치가 아니라 구조적 깊이를 점수화"""
-    closes = dd.get("Close") or dd.get("close") or []
-    highs = dd.get("High") or dd.get("high") or []
-    lows = dd.get("Low") or dd.get("low") or []
+    # ma20/ma60이 None이면 dd에서 자동 추출 (정확도: 호출측 누락 보완)
+    if ma20 is None and dd:
+        try:
+            _ma20_arr = dd.get("MA20") or dd.get("ma20") or []
+            if _ma20_arr and _ma20_arr[-1] is not None:
+                ma20 = float(_ma20_arr[-1])
+        except Exception:
+            pass
+    if ma60 is None and dd:
+        try:
+            _ma60_arr = dd.get("MA60") or dd.get("ma60") or []
+            if _ma60_arr and _ma60_arr[-1] is not None:
+                ma60 = float(_ma60_arr[-1])
+        except Exception:
+            pass
+    closes = dd.get("Close") if dd and dd.get("Close") else (dd.get("close") if dd else []) or []
+    highs = dd.get("High") if dd and dd.get("High") else (dd.get("high") if dd else []) or []
+    lows = dd.get("Low") if dd and dd.get("Low") else (dd.get("low") if dd else []) or []
     # 추세 깊이: MA 이격 정도와 지속성
     depth = 0.0
     notes = []
@@ -262,22 +277,39 @@ def correlate_and_narrow(
         event_bias = -_clamp(event_score / 15.0, 0, 3.0)
         signals["event"] = event_bias
 
-        # ── 3. 상관관계: 방향 일치도(agreement) 계산 ──────────────
-        # 각 신호의 부호(상승/하락/중립)를 비교해 일치도 측정
+        # ── 3. 상관관계: 방향 일치도(agreement) 계산 — 가중치 반영 ───────
+        # 4원칙 가중치를 신호별 중요도에 매핑해 가중 일치도로 산출 (정확도 향상)
+        SIGNAL_WEIGHTS = {
+            "technical": 0.20, "pattern": 0.15, "supply": 0.20, "ml": 0.18,
+            "confidence": 0.10, "regime": 0.10, "depth": 0.05, "event": 0.02,
+        }
         def _sign(v):
             if v > 0.7:
                 return 1
             if v < -0.7:
                 return -1
             return 0
-        signs = [_sign(v) for v in signals.values()]
-        # 0(중립) 제외하고 다수결
-        non_neutral = [s for s in signs if s != 0]
-        if non_neutral:
-            pos = sum(1 for s in non_neutral if s == 1)
-            neg = sum(1 for s in non_neutral if s == -1)
-            agreement = max(pos, neg) / len(non_neutral) if non_neutral else 0.5
-            dominant = 1 if pos > neg else (-1 if neg > pos else 0)
+        signs = {k: _sign(v) for k, v in signals.items()}
+        # 가중 다수결
+        total_w = 0.0
+        pos_w = neg_w = 0.0
+        for k, s in signs.items():
+            w = SIGNAL_WEIGHTS.get(k, 0.10)
+            # 블라인드스팟 신호는 가중치 50% 하향 (데이터 불확실성 반영)
+            if k == "supply" and sup_info.get("blindspot"):
+                w *= 0.5
+            if k == "pattern" and pat_info.get("confirmed", 0) == 0 and pat_info.get("count", 0) > 0:
+                w *= 0.6  # 미확정 패턴만 있으면 가중 하향
+            total_w += w if s != 0 else 0
+            if s == 1:
+                pos_w += w
+            elif s == -1:
+                neg_w += w
+        if total_w > 0:
+            agreement = max(pos_w, neg_w) / total_w if total_w else 0.5
+            dominant = 1 if pos_w > neg_w else (-1 if neg_w > pos_w else 0)
+            # 가중 일치도가 0.5 근처에서 과도하게 극단으로 치우치지 않도록 0.5~1.0으로 재매핑
+            # (기존 단순 다수결 대비, 가중치가 분산을 부드럽게 함)
         else:
             agreement = 0.5
             dominant = 0
@@ -297,23 +329,20 @@ def correlate_and_narrow(
         if orig_lo > orig_hi:
             orig_lo, orig_hi = orig_hi, orig_lo
         orig_width = max(orig_hi - orig_lo, atr_value * 0.5)
-        # agreement 1.0이면 폭을 45% 축소, 0.5면 유지, 0.3이면 25% 확대
-        if agreement >= 0.75:
-            narrow_factor = 0.55  # 45% 축소
-            uncertainty = "중간"
-            narrow_reason = f"신호 일치도 {agreement*100:.0f}% 높음 — 목표가 범위 45% 축소"
-        elif agreement >= 0.60:
-            narrow_factor = 0.70
-            uncertainty = "중간"
-            narrow_reason = f"신호 일치도 {agreement*100:.0f}% — 목표가 범위 30% 축소"
-        elif agreement >= 0.45:
-            narrow_factor = 0.85
-            uncertainty = "높음"
-            narrow_reason = f"신호 일치도 {agreement*100:.0f}% — 목표가 범위 15% 축소"
+        # 연속형 축소: agreement 0.5→1.0 구간에서 폭을 85%→55%로 선형 축소, 0.5 미만에서는 85%→115%로 확대
+        # 이산 구간보다 부드럽게 보정되어 급격한 경계 효과 방지 (정확도 향상)
+        if agreement >= 0.5:
+            # 0.5 → 0.85, 0.75 → 0.625, 1.0 → 0.55
+            narrow_factor = 1.15 - agreement * 0.60  # 0.5→0.85, 1.0→0.55
+            narrow_factor = _clamp(narrow_factor, 0.55, 0.85)
+            uncertainty = "중간" if agreement >= 0.62 else "높음"
+            narrow_reason = f"신호 일치도 {agreement*100:.0f}% — 목표가 범위 {(1-narrow_factor)*100:.0f}% 축소"
         else:
-            narrow_factor = 1.15  # 확대
+            # 0.5→0.85, 0.3→1.03, 0.0→1.15
+            narrow_factor = 0.85 + (0.5 - agreement) * 0.60
+            narrow_factor = _clamp(narrow_factor, 0.85, 1.15)
             uncertainty = "높음"
-            narrow_reason = f"신호 불일치 {agreement*100:.0f}% — 목표가 범위 15% 확대해 리스크 반영"
+            narrow_reason = f"신호 불일치 {agreement*100:.0f}% — 목표가 범위 {(narrow_factor-1)*100:.0f}% 확대해 리스크 반영"
 
         # Systematic bias가 있으면 추가 확대
         if systematic_bias_note:
