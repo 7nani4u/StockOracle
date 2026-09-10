@@ -17301,7 +17301,7 @@ body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI','Noto Sans KR',sans
 .sb-home-btn:hover{background:#30363d;color:#e6edf3}
 .sb-section{padding:14px;border-bottom:1px solid #30363d}
 .sb-label{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;display:block}
-#scalp-period-recommendation{font-size:10px;line-height:1.45;margin:-2px 0 10px;padding:8px;border:1px solid #30363d;border-radius:7px;background:#0d1117;color:#8b949e}
+#scalp-period-recommendation{display:none !important;font-size:10px;line-height:1.45;margin:-2px 0 10px;padding:8px;border:1px solid #30363d;border-radius:7px;background:#0d1117;color:#8b949e}
 .scalp-rec-head{display:flex;justify-content:space-between;gap:5px;align-items:flex-start}
 .scalp-rec-head strong{min-width:0;line-height:1.35}
 .scalp-rec-match{flex-shrink:0;font-size:9px;white-space:nowrap}
@@ -17564,7 +17564,7 @@ input::placeholder{color:#484f58}
 /* 차트 */
 #price-chart, #rsi-chart, #macd-chart, #forecast-chart{width:100%;border-radius:8px;overflow:hidden}
 .chart-failure{padding:18px;color:#d29922;font-size:12px;line-height:1.6}
-#data-quality-panel,#live-quote-panel{font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+#data-quality-panel,#live-quote-panel{display:none !important;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
 #main{min-width:0}
 .metric-price-row{flex-wrap:wrap;gap:8px 16px}
 
@@ -18579,8 +18579,8 @@ input::placeholder{color:#484f58}
         <p id="r-subtitle"></p>
       </div>
       <div id="security-status-banner" class="security-status-banner" role="status" aria-live="polite"></div>
-      <div id="data-quality-panel" class="card" role="status" style="display:none"></div>
-      <div id="live-quote-panel" class="card" role="status" style="display:none"></div>
+      <div id="data-quality-panel" class="card" role="status" style="display:none" aria-hidden="true"></div>
+      <div id="live-quote-panel" class="card" role="status" style="display:none" aria-hidden="true"></div>
       <div class="metrics-grid">
         <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
         <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div><div id="r-vol-source" style="font-size:10px;color:#8b949e;margin-top:4px"></div></div>
@@ -19675,7 +19675,10 @@ function _formatScalpTurnover(value, currency) {
 }
 
 function renderScalpPeriodRecommendation(rec = null) {
+  // 단타 추천 카드 표시 비활성화 (요청: "단타 매수 대기, 3일·15분봉" 영역 미출력)
   const el = document.getElementById('scalp-period-recommendation');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+  return;
   const select = document.getElementById('period-select');
   if (!el || !select) return;
   const detailsWasOpen = !!el.querySelector('.scalp-rec-details[open]');
@@ -19825,7 +19828,7 @@ function _startPricePolling(symbol) {
     } catch(e) {
       if (isCurrent()) {
         const el = document.getElementById('live-quote-panel');
-        if (el) { el.style.display = ''; el.textContent = '별도 시세 갱신 실패 · 분석 스냅샷은 변경되지 않았습니다.'; }
+        if (el) { el.style.display = 'none'; el.textContent = ''; }
       }
     } finally {
       clearTimeout(timeout);
@@ -19838,17 +19841,11 @@ function _startPricePolling(symbol) {
 }
 
 function _applyPriceUpdate(d) {
+  // 화면 표시 비활성화 요청으로 별도 최신 시세 패널 렌더링 제거 — 데이터는 _liveQuote에만 보관
   if (!_isFiniteNumber(d.price) || Number(d.price) <= 0) return;
   _liveQuote = {...d};
   const el = document.getElementById('live-quote-panel');
-  if (!el) return;
-  const meta = d.data_quality || {};
-  el.style.display = '';
-  el.textContent = `별도 최신 시세: ${fmtPrice(d.price, currentData?.market === 'KRX')} · ` +
-    `등락 ${_isFiniteNumber(d.pct_change) ? Number(d.pct_change).toFixed(2) + '%' : '미제공'} · ` +
-    `${d.session_name || '세션 미제공'} · 출처 ${meta.source || d.source || '미제공'} · ` +
-    `시세 기준 ${meta.as_of || d.as_of || '미제공'} · 화면 수신 ${new Date().toLocaleTimeString('ko-KR')} · ` +
-    '차트·진단·목표가는 아래 분석 스냅샷 기준이며 이 시세로 재계산되지 않습니다.';
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
 }
 async function analyze(tickerOverride = '') {
   _stopPricePolling();   // 새 검색 시 이전 폴링 중단
@@ -20023,18 +20020,9 @@ function _isFiniteNumber(value) {
 }
 
 function renderDataQuality(d) {
+  // 화면 표시 비활성화 요청으로 분석 데이터 품질 패널 렌더링 제거
   const el = document.getElementById('data-quality-panel');
-  if (!el) return;
-  const q = d.data_quality;
-  el.style.display = q && typeof q === 'object' ? '' : 'none';
-  el.textContent = '';
-  if (!q || typeof q !== 'object') return;
-  const labels = {status:'상태', source:'출처', currency:'통화', timezone:'시간대', price_basis:'가격 기준', as_of:'분석 기준 시각', history_bars:'가격 이력 수'};
-  const parts = Object.entries(labels).filter(([key]) => q[key] != null && q[key] !== '')
-    .map(([key, label]) => `${label}: ${q[key]}`);
-  const warnings = Array.isArray(q.warnings) ? q.warnings : q.warnings ? [q.warnings] : [];
-  warnings.forEach(w => parts.push('주의: ' + (typeof w === 'object' ? w.message || w.reason || w.code || JSON.stringify(w) : w)));
-  el.textContent = '분석 데이터 품질 · ' + (parts.join(' · ') || '세부 메타데이터 미제공');
+  if (el) { el.style.display = 'none'; el.textContent = ''; }
 }
 
 // 통화기호 포함 가격 (현재가·목표가·매수전략·ATR 리스크 등)
@@ -20196,7 +20184,8 @@ function renderResult(d) {
   renderDataQuality(d);
   const quoteEl = document.getElementById('live-quote-panel');
   if (quoteEl) { quoteEl.textContent = ''; quoteEl.style.display = 'none'; }
-  if (d.quote_snapshot) _applyPriceUpdate(d.quote_snapshot);
+  // 별도 최신 시세 패널은 표시하지 않음 (quote_snapshot 렌더링 비활성화)
+  // if (d.quote_snapshot) _applyPriceUpdate(d.quote_snapshot);
   const up = d.pct_change >= 0;
   const clr = isKrx ? (up ? '#f85149' : '#388bfd') : (up ? '#3fb950' : '#f85149');
   renderScalpPeriodRecommendation(d.scalp_period_recommendation || null);
@@ -20232,15 +20221,14 @@ function renderResult(d) {
   document.getElementById('r-price').textContent = fmt(d.last_close, isKrx);
   document.getElementById('r-pct').innerHTML = _isFiniteNumber(d.pct_change) ? `<span style="color:${clr}">${up?'▲':'▼'} ${Math.abs(d.pct_change).toFixed(2)}%</span>` : '등락 미제공';
 
-  // 상승/하락 가능성 표시
+  // 상승/하락 가능성 표시 — 요청에 따라 % 표기 및 하단 설명 삭제
   const probEl = document.getElementById('r-prob');
   if (probEl && _isFiniteNumber(d.prob_up) && _isFiniteNumber(d.prob_down)) {
     probEl.style.display = 'flex';
     probEl.style.flexDirection = 'column';
     probEl.innerHTML =
-      `<span style="color:#3fb950">▲ 상승 점수 ${Number(d.prob_up).toFixed(1)}/100</span>` +
-      `<span style="color:#f85149">▼ 하락 점수 ${Number(d.prob_down).toFixed(1)}/100</span>` +
-      '<span style="color:#8b949e;font-size:10px">비보정 시나리오 점수 · 실제 확률 아님</span>';
+      `<span style="color:#3fb950">▲ 상승 점수 ${Number(d.prob_up).toFixed(1)}%</span>` +
+      `<span style="color:#f85149">▼ 하락 점수 ${Number(d.prob_down).toFixed(1)}%</span>`;
   } else if (probEl) {
     probEl.style.display = 'none';
   }
@@ -21503,7 +21491,7 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
     <div class="diag-grade-row">
       <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${gradeHtml}</div>
       <div class="diag-grade-info" style="flex:1">
-        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText} <span style="color:#484f58;font-size:11px;font-weight:400">· ${activeItemCount}항목 평균 ${avg}점</span></div>
+        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText}</div>
         <div class="diag-grade-sub">${gradeDesc}</div>
       </div>
       <span id="flow-rec-badge" class="rec-badge-lg" style="flex-shrink:0;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
@@ -22824,6 +22812,8 @@ function destroyCharts() {
 }
 
 function _bindInteractivePatternOverlays(priceEl, chart, candleSeries, cd, overlayOptions, patternOverlays) {
+  // 차트 탭 호버 패턴 라벨 비활성화 — 요청으로 WAIT/NECK/FORM 등 전체 오버레이 미출력
+  return () => {};
   const overlays = (Array.isArray(patternOverlays) ? patternOverlays : []).slice(0, 6);
   if (!priceEl || overlayOptions.show_pattern_overlay === false || !overlays.length) return () => {};
 
