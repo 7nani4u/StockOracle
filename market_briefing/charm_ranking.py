@@ -80,8 +80,10 @@ def _eligible_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, 
         ticker = _normalise_ticker(item.get("ticker"))
         score = _safe_score(item.get("smart_score"))
         try:
-            available_count = int(item.get("available_count") or 0)
-        except (TypeError, ValueError):
+            _ac_raw = item.get("available_count")
+            _ac_f = float(_ac_raw) if _ac_raw is not None and str(_ac_raw).strip().lower() not in ("nan","") else 0
+            available_count = int(_ac_f) if math.isfinite(_ac_f) else 0
+        except Exception:
             available_count = 0
         if ticker and score is not None and available_count >= 3:
             eligible[ticker] = {**item, "ticker": ticker, "smart_score": score}
@@ -111,8 +113,10 @@ def enrich_charm_with_ranks(
     })
     score = _safe_score(result.get("smart_score"))
     try:
-        available_count = int(result.get("available_count") or 0)
-    except (TypeError, ValueError):
+        _ac_raw = result.get("available_count")
+        _ac_f = float(_ac_raw) if _ac_raw is not None and str(_ac_raw).strip().lower() not in ("nan","") else 0
+        available_count = int(_ac_f) if math.isfinite(_ac_f) else 0
+    except Exception:
         available_count = 0
     if score is None or available_count < 3:
         result["ranking_meta"] = {

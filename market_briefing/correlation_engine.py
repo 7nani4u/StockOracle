@@ -429,10 +429,22 @@ def correlate_and_narrow(
         if rsi >= 75:
             falsify.append("RSI 75 상회 후 종가 음봉 전환 시 단기 추격 무효")
 
+        # safe expected_days: guard NaN/inf/zero atr
+        try:
+            import math as _math
+            safe_atr = atr_value if isinstance(atr_value, (int,float)) and _math.isfinite(float(atr_value)) and float(atr_value) > 0 else 1.0
+            if not _math.isfinite(safe_atr) or safe_atr <= 0:
+                safe_atr = 1.0
+            gap_hi = new_hi - last_price if isinstance(new_hi, (int,float)) and isinstance(last_price, (int,float)) and _math.isfinite(float(new_hi)) and _math.isfinite(float(last_price)) else safe_atr
+            ed_low = max(1, int(round(gap_hi/max(safe_atr,1) * 1.2))) if _math.isfinite(gap_hi) else 1
+            ed_high = max(2, int(round(gap_hi/max(safe_atr,1) * 2.8))) if _math.isfinite(gap_hi) else 8
+        except Exception as e:
+            print(f"[correlation_engine] expected_days fallback {e} atr={atr_value} new_hi={new_hi} last={last_price}")
+            ed_low, ed_high = 1, 8
         timeline = {
             "short": f"1~5봉 내 {new_lo:,.2f}~{new_hi:,.2f} 1차 테스트",
             "mid": f"6~20봉 내 상단 돌파 또는 하단 이탈 여부 확정",
-            "expected_days": [max(1, int(round((new_hi-last_price)/max(atr_value,1) * 1.2))), max(2, int(round((new_hi-last_price)/max(atr_value,1) * 2.8)))] if dominant==1 else [2,8],
+            "expected_days": [ed_low, ed_high] if dominant==1 else [2,8],
         }
 
         blindspots = []

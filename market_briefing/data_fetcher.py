@@ -27,6 +27,7 @@ from threading import Lock as _Lock
 from typing import Any
 
 import pandas as pd
+import math
 
 import requests
 from bs4 import BeautifulSoup
@@ -734,17 +735,29 @@ def _fetch_quote_mobile_json(code: str) -> dict | None:
         direction = "up" if diff_num > 0 else ("down" if diff_num < 0 else "flat")
         sign      = "+" if diff_num > 0 else ""
 
+        # safe int conversion: NaN guard
+        try:
+            price_int = int(price_num) if math.isfinite(price_num) else 0
+        except Exception:
+            price_int = 0
+        try:
+            diff_int = abs(int(diff_num)) if math.isfinite(diff_num) else 0
+        except Exception:
+            diff_int = 0
         out: dict = {
-            "price":          f"{int(price_num):,}",
-            "change":         f"{abs(int(diff_num)):,}",
-            "change_pct":     f"{sign}{pct_num:.2f}%",
-            "change_pct_num": round(pct_num, 2),
+            "price":          f"{price_int:,}",
+            "change":         f"{diff_int:,}",
+            "change_pct":     f"{sign}{pct_num:.2f}%" if math.isfinite(pct_num) else "0.00%",
+            "change_pct_num": round(pct_num, 2) if math.isfinite(pct_num) else 0.0,
             "direction":      direction,
         }
         if vol_str:
             try:
-                out["volume"] = int(vol_str)
-            except ValueError:
+                # vol_str may be NaN string
+                fv = float(str(vol_str).replace(",", ""))
+                if math.isfinite(fv):
+                    out["volume"] = int(fv)
+            except Exception:
                 pass
         return out
     except Exception:
@@ -793,8 +806,11 @@ def fetch_stock_quote(code: str) -> dict:
                 td = th.find_next("em") or th.find_next("td")
                 if td:
                     try:
-                        out["volume"] = int(td.get_text(strip=True).replace(",", ""))
-                    except ValueError:
+                        txt = td.get_text(strip=True).replace(",", "")
+                        fv = float(txt)
+                        if math.isfinite(fv):
+                            out["volume"] = int(fv)
+                    except Exception:
                         pass
                 break
     except Exception:
@@ -942,7 +958,9 @@ def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     low_52w   = float(h["Low"].min())
     last_close = float(closes[-1])
 
-    vols        = [float(v) for v in h["Volume"].tolist()[-20:] if v]
+    vols        = [float(v) for v in h["Volume"].tolist()[-20:] if v is not None]
+    # filter non-finite volumes
+    vols = [v for v in vols if math.isfinite(v) and v >= 0]
     vol_20d_avg = round(sum(vols) / len(vols)) if vols else None
 
     change_20d = None
@@ -953,18 +971,18 @@ def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     if high_52w > low_52w:
         pos_52w = round((last_close - low_52w) / (high_52w - low_52w) * 100, 1)
 
-    highs_20d = [float(x) for x in h["High"].tolist()[-20:]]
-    lows_20d  = [float(x) for x in h["Low"].tolist()[-20:]]
-    opens_20d = [float(x) for x in h["Open"].tolist()[-20:]]
-    vols_20d  = [float(v) for v in h["Volume"].tolist()[-20:]]
+    highs_20d = [float(x) for x in h["High"].tolist()[-20:] if x is not None and math.isfinite(float(x))]
+    lows_20d  = [float(x) for x in h["Low"].tolist()[-20:] if x is not None and math.isfinite(float(x))]
+    opens_20d = [float(x) for x in h["Open"].tolist()[-20:] if x is not None and math.isfinite(float(x))]
+    vols_20d  = [float(v) for v in h["Volume"].tolist()[-20:] if v is not None and math.isfinite(float(v))]
 
     return {
         "symbol":              symbol,
-        "closes_20d":          [round(float(c), 2) for c in last20],
+        "closes_20d":          [round(float(c), 2) for c in last20 if c is not None and math.isfinite(float(c))],
         "highs_20d":           [round(float(x), 2) for x in highs_20d],
         "lows_20d":            [round(float(x), 2) for x in lows_20d],
         "opens_20d":           [round(float(x), 2) for x in opens_20d],
-        "volumes_20d":         [int(v) for v in vols_20d],
+        "volumes_20d":         [int(v) for v in vols_20d if math.isfinite(v)],
         "fifty_two_week_high": round(high_52w, 2),
         "fifty_two_week_low":  round(low_52w, 2),
         "last_close":          round(last_close, 2),

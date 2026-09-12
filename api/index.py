@@ -2164,7 +2164,21 @@ def fetch_stock_data(ticker: str, market: str, period: str = "1y", company: str 
             # 호환성 문제를 방지하기 위해 Timestamp.timestamp()를 사용해 항상 초 단위로 변환
             df2["Date"] = [int(ts.timestamp()) for ts in df2["Date"]]
             
-        d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
+        # robust NaN/inf → None conversion (float columns keep NaN after where, so also replace)
+        try:
+            d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
+            # ensure any remaining np.nan / inf become None (pandas where may retain NaN in float dtype)
+            for k, lst in list(d.items()):
+                if isinstance(lst, list):
+                    for i, v in enumerate(lst):
+                        if isinstance(v, float) and not math.isfinite(v):
+                            lst[i] = None
+                        # also handle numpy floating
+                        elif isinstance(v, (np.floating,)) and not np.isfinite(float(v)):
+                            lst[i] = None
+        except Exception as _conv_e:
+            print(f"[fetch_stock_data] NaN->None conversion failed {sym} {type(_conv_e).__name__}:{_conv_e}")
+            d = df2.where(pd.notna(df2), other=None).to_dict(orient="list")
         return d, news, sym
     except Exception as e:
         print(f"[StockOracle Error] fetch_stock_data 예외 발생: {e}")
@@ -2751,12 +2765,12 @@ def _build_us_ipo_risk(
     lockup_start_date = pd.Timestamp(
         profile.get("lockup_start_date") or profile["ipo_date"]
     ).normalize()
-    shares_reference = int(profile.get("shares_outstanding_reference") or 0)
+    shares_reference = _safe_int(profile.get("shares_outstanding_reference"), default=0, log_ctx="ipo shares_reference")
 
     lockups = []
     for row in profile.get("lockups") or []:
-        expiry = lockup_start_date + pd.Timedelta(days=int(row["days"]))
-        days_remaining = int((expiry - as_of_date).days)
+        expiry = lockup_start_date + pd.Timedelta(days=_safe_int(row.get("days"), default=0, log_ctx="ipo lockup days"))
+        days_remaining = _safe_int((expiry - as_of_date).days, default=0)
         lockups.append({
             **row,
             "expiry_date": expiry.strftime("%Y-%m-%d"),
@@ -2767,7 +2781,7 @@ def _build_us_ipo_risk(
     registrations = []
     registered_existing_shares = 0
     for row in profile.get("registrations") or []:
-        existing = int(row.get("registered_existing_shares") or 0)
+        existing = _safe_int(row.get("registered_existing_shares"), default=0, log_ctx="ipo registered_existing")
         registered_existing_shares += existing
         registrations.append({
             **row,
@@ -2779,8 +2793,8 @@ def _build_us_ipo_risk(
     warrants = []
     warrant_shares = 0
     for row in profile.get("warrants") or []:
-        shares = int(row.get("shares") or 0)
-        strike = float(row.get("exercise_price") or 0)
+        shares = _safe_int(row.get("shares"), default=0, log_ctx="ipo warrant shares")
+        strike = _safe_finite_float(row.get("exercise_price"), default=0.0)
         dilution_counted = bool(row.get("dilution_counted", True))
         if dilution_counted:
             warrant_shares += shares
@@ -3572,15 +3586,24 @@ def fetch_investor_flow(ticker: str) -> dict:
         def _i(*keys):
             for k in keys:
                 v = row.get(k)
-                if v is not None:
-                    try: return int(float(str(v).replace(",", "")))
+                if v is not None and v != "":
+                    try:
+                        # NaN/inf guard
+                        fv = float(str(v).replace(",", ""))
+                        if not math.isfinite(fv):
+                            continue
+                        return int(fv)
                     except: continue
             return 0
         def _f(*keys):
             for k in keys:
                 v = row.get(k)
-                if v is not None:
-                    try: return round(float(str(v).replace(",", "")), 2)
+                if v is not None and v != "":
+                    try:
+                        fv = float(str(v).replace(",", ""))
+                        if not math.isfinite(fv):
+                            continue
+                        return round(fv, 2)
                     except: continue
             return 0.0
         date_val = (row.get("baseDate") or row.get("date") or
@@ -4129,12 +4152,13 @@ def fetch_toss_metrics(ticker: str):
             "debt_ratio":      round(debt_pct, 2) if debt_pct is not None else 0,
             "pfcr":            pfcr,
             "fcf":             fcf or 0,
-            "volume":          int(volume),
+            "volume":          _safe_int(volume, default=0, log_ctx=f"toss_metrics {ticker} volume"),
             "sector":          sector,
             "prox52":          prox52,
             "signal":          analyst_signal,
         }
-    except Exception:
+    except Exception as e:
+        print(f"[fetch_toss_metrics] {ticker} failed {type(e).__name__}:{e}")
         return None
 
 def fetch_kr_toss_metrics(item: dict):
@@ -4204,11 +4228,12 @@ def fetch_kr_toss_metrics(item: dict):
             "debt_ratio":   debt_ratio,
             "earnings_growth": round(earnings_growth * 100, 2) if earnings_growth is not None else 0,
             "sector":       sector,
-            "volume":       volume,
+            "volume":       _safe_int(volume, default=0, log_ctx=f"kr_toss_metrics {ticker} volume"),
             "signal":       analyst_signal,
-            "prox52":       round(prox, 2)
+            "prox52":       round(prox, 2) if math.isfinite(prox) else 0
         }
-    except Exception:
+    except Exception as e:
+        print(f"[fetch_kr_toss_metrics] {item.get('ticker')} failed {type(e).__name__}:{e}")
         return None
 
 def to_toss_product_code(ticker: str, market: str = None) -> str:
@@ -5907,6 +5932,69 @@ def _kr_surge_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _safe_finite_float(value: Any, default: float = 0.0) -> float:
+    """Any → finite float with NaN/inf/None guard. Returns default if not finite."""
+    try:
+        if value is None or value == "":
+            return default
+        # pandas NA / numpy nan
+        if isinstance(value, float) and not math.isfinite(value):
+            return default
+        number = float(str(value).replace(",", "") if isinstance(value, str) else value)
+        return number if math.isfinite(number) else default
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: int = 0, log_ctx: str = "") -> int:
+    """NaN/inf/None/empty safe integer conversion with diagnostic log."""
+    try:
+        if value is None or value == "":
+            if log_ctx:
+                print(f"[safe_int] missing value ctx={log_ctx} -> default {default}")
+            return default
+        # detect string NaN/inf
+        s = str(value).strip().lower() if isinstance(value, str) else None
+        if s in ("nan", "none", "null", "inf", "-inf", "n/a", "-"):
+            if log_ctx:
+                print(f"[safe_int] non-numeric string '{value}' ctx={log_ctx} -> default {default}")
+            return default
+        number = float(str(value).replace(",", "") if isinstance(value, str) else value)
+        if not math.isfinite(number):
+            if log_ctx:
+                print(f"[safe_int] non-finite {value} ctx={log_ctx} -> default {default}")
+            return default
+        return int(number)
+    except Exception as e:
+        if log_ctx:
+            print(f"[safe_int] exception {type(e).__name__}:{e} value={value!r} ctx={log_ctx} -> default {default}")
+        return default
+
+
+def _safe_round_int(value: Any, default: int = 0, log_ctx: str = "") -> int:
+    """Safe round→int with NaN guard."""
+    try:
+        if value is None or value == "":
+            return default
+        number = float(value)
+        if not math.isfinite(number):
+            if log_ctx:
+                print(f"[safe_round_int] non-finite {value} ctx={log_ctx} -> default {default}")
+            return default
+        return int(round(number))
+    except Exception as e:
+        if log_ctx:
+            print(f"[safe_round_int] exception {type(e).__name__}:{e} value={value!r} ctx={log_ctx} -> default {default}")
+        return default
+
+
+def _is_finite_number(value: Any) -> bool:
+    try:
+        return value is not None and value != "" and math.isfinite(float(value))
+    except Exception:
+        return False
+
+
 def _krx_tick_size(price: float, market: str = "KOSPI") -> int:
     """KRX 주권시장 호가가격단위. KOSDAQ은 10만원 이상도 100원 단위다."""
     p = max(0.0, _kr_surge_float(price))
@@ -6238,7 +6326,7 @@ def _kr_surge_item(quote: Dict[str, Any], analysis: Dict[str, Any], rvol: Option
     stop_raw = max(day_low - atr * 0.10, price - atr * 0.65)
     stop = _round_krx_price(min(stop_raw, price - _krx_tick_size(price, market)), market, "floor")
     entry_low = _round_krx_price(max(day_open if 0 < day_open < price else 0, price - atr * 0.25), market, "ceil")
-    entry_low = min(entry_low, int(price))
+    entry_low = min(entry_low, _safe_int(price, default=entry_low, log_ctx="kr_surge entry_low"))
     entry_high = _round_krx_price(price, market, "nearest")
     target_return = ((target - price) / price * 100) if price > 0 else 0.0
     stop_return = ((stop - price) / price * 100) if price > 0 else 0.0
@@ -6300,10 +6388,10 @@ def _kr_surge_item(quote: Dict[str, Any], analysis: Dict[str, Any], rvol: Option
     else: confidence = "관찰"
     return {
         "ticker": quote.get("ticker"), "code": quote.get("code"), "name": quote.get("name"),
-        "market": market, "price": int(price), "prev_close": int(prev_close),
-        "change_pct": round(change_pct, 2), "open": int(day_open), "high": int(day_high), "low": int(day_low),
-        "turnover": int(_kr_surge_float(quote.get("turnover"))),
-        "market_cap": int(_kr_surge_float(quote.get("market_cap"))),
+        "market": market, "price": _safe_int(price, default=0, log_ctx="kr_surge price"), "prev_close": _safe_int(prev_close, default=0, log_ctx="kr_surge prev_close"),
+        "change_pct": round(_safe_finite_float(change_pct, 0.0), 2), "open": _safe_int(day_open, default=0, log_ctx="kr_surge open"), "high": _safe_int(day_high, default=0, log_ctx="kr_surge high"), "low": _safe_int(day_low, default=0, log_ctx="kr_surge low"),
+        "turnover": _safe_int(_kr_surge_float(quote.get("turnover")), default=0, log_ctx="kr_surge turnover"),
+        "market_cap": _safe_int(_kr_surge_float(quote.get("market_cap")), default=0, log_ctx="kr_surge market_cap"),
         "rvol": rvol, "intraday_position": round(position, 1), "off_high_pct": round(off_high, 2),
         "score": score, "score_breakdown": breakdown, "confidence_label": confidence,
         "entry_low": entry_low, "entry_high": entry_high, "target_price": target, "stop_loss": stop,
@@ -14187,8 +14275,17 @@ def build_prediction_outlook(
     macd = float(macd_raw if macd_raw is not None else 0.0)
     macd_signal = float(macd_signal_raw if macd_signal_raw is not None else 0.0)
     bb_upper = _last("BB_Upper"); bb_lower = _last("BB_Lower")
-    atr_observed = bool(atr_is_observed) if atr_is_observed is not None else bool(atr and atr > 0)
-    atr_value = float(atr or last_price * 0.02)
+    # atr guard: NaN/inf/None → last_price*0.02, and ensure observed flag is correct
+    try:
+        _atr_candidate = float(atr) if atr is not None else float("nan")
+        atr_observed_raw = math.isfinite(_atr_candidate) and _atr_candidate > 0
+    except Exception:
+        atr_observed_raw = False
+        _atr_candidate = float("nan")
+    atr_observed = bool(atr_is_observed) if atr_is_observed is not None else atr_observed_raw
+    atr_value = _safe_finite_float(_atr_candidate, last_price * 0.02) if math.isfinite(last_price) and last_price > 0 else 0.02
+    if not math.isfinite(atr_value) or atr_value <= 0:
+        atr_value = max(last_price * 0.02, 0.01) if math.isfinite(last_price) and last_price > 0 else 0.02
     atr_pct = atr_value / last_price * 100.0
     rnd = 2 if market == "US" else 0
     macd_gap = macd - macd_signal
@@ -14428,11 +14525,29 @@ def build_prediction_outlook(
         return f"{value:,.0f}원" if market == "KRX" else f"${value:,.2f}"
 
     def _expected_days(lo: float, hi: float) -> list[int]:
-        distance_atr = max(abs(lo - last_price), abs(hi - last_price)) / max(atr_value, last_price * 0.001)
-        center = max(1, int(round(distance_atr * 2.2)))
-        low_days = max(1, int(np.floor(center * 0.6)))
-        high_days = max(low_days, int(np.ceil(center * 1.8)))
-        return [min(low_days, horizon_days), min(max(low_days, high_days), horizon_days)]
+        try:
+            # guard atr_value and price gaps against NaN/inf
+            safe_atr = atr_value if math.isfinite(atr_value) and atr_value > 0 else max(last_price * 0.02, 0.01) if math.isfinite(last_price) and last_price > 0 else 1.0
+            lo_f = float(lo) if math.isfinite(float(lo)) else last_price
+            hi_f = float(hi) if math.isfinite(float(hi)) else last_price
+            gap = max(abs(lo_f - last_price), abs(hi_f - last_price))
+            if not math.isfinite(gap):
+                gap = safe_atr
+            denom = max(safe_atr, last_price * 0.001 if math.isfinite(last_price) and last_price > 0 else 1.0)
+            if not math.isfinite(denom) or denom <= 0:
+                denom = 1.0
+            distance_atr = gap / denom
+            if not math.isfinite(distance_atr):
+                print(f"[build_prediction_outlook] _expected_days non-finite distance_atr={distance_atr} lo={lo} hi={hi} atr={atr_value} symbol={symbol} -> fallback")
+                distance_atr = 1.0
+            center = max(1, _safe_round_int(distance_atr * 2.2, default=2, log_ctx=f"{symbol} _expected_days center"))
+            low_days = max(1, _safe_int(math.floor(center * 0.6), default=1, log_ctx=f"{symbol} low_days"))
+            high_days = max(low_days, _safe_int(math.ceil(center * 1.8), default=2, log_ctx=f"{symbol} high_days"))
+            return [min(low_days, horizon_days), min(max(low_days, high_days), horizon_days)]
+        except Exception as e:
+            print(f"[build_prediction_outlook] _expected_days exception {type(e).__name__}:{e} symbol={symbol} lo={lo} hi={hi} atr={atr_value} -> fallback [2,5]")
+            traceback.print_exc()
+            return [2, 5]
 
     up_days = _expected_days(target_lo, target_hi)
     side_days = [1, min(max(3, int(round(horizon_days * 0.35))), horizon_days)]
@@ -15909,7 +16024,16 @@ def route(path: str, params: Dict) -> Dict:
         # ── Step 4: 예측·리스크 계산 — 보정된 현재가(last) 기준 ─────────────
         # ATR fallback 도 보정된 last 기준으로 재계산
         atrs = dd.get("ATR", [])
-        atr_val          = float(atrs[-1]) if atrs and atrs[-1] else last * 0.02
+        # safe ATR extraction: NaN/inf/None guard, fallback to last*0.02
+        try:
+            _raw_atr = atrs[-1] if atrs and len(atrs) else None
+            atr_val = _safe_finite_float(_raw_atr, default=float("nan"))
+            if not math.isfinite(atr_val) or atr_val <= 0:
+                atr_val = last * 0.02 if math.isfinite(last) and last > 0 else 0.02
+                print(f"[route] ATR fallback applied symbol={sym} raw={_raw_atr!r} -> {atr_val}")
+        except Exception as e:
+            print(f"[route] ATR extraction failed symbol={sym} err={e} -> fallback")
+            atr_val = last * 0.02 if math.isfinite(last) and last > 0 else 0.02
         pivot_points     = calc_pivot_points(dd)
         indicator_signals= calc_indicator_signals(dd, market=market)
         # 이벤트 위험: 실적 발표, FDA/임상, 소송/조사, 공시, 가이던스 하향을 매수 위험 점수에 반영
@@ -16233,19 +16357,37 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as _corr_e:
             _correlation_report = {"error": str(_corr_e), "prob_up_corr": prob_up, "prob_down_corr": prob_down}
             # 실패 시 원본 유지이므로 별도 처리 없음
-        prediction_outlook = build_prediction_outlook(
-            symbol=sym, market=market, dd=dd, last_price=last, prev_close=prev,
-            pct_change=pct, atr=atr_val, regime=regime, score=score,
-            prob_up=prob_up, prob_down=prob_down, pivot_points=pivot_points,
-            indicator_signals=indicator_signals, buy_price=buy_price,
-            target_price=target_price, pullback_analysis=pullback_analysis,
-            signal_confidence=signal_confidence, investor_flow=investor_flow,
-            ai_strategy=ai_strategy, candlestick_patterns=patterns,
-            naver=naver, us_enriched=us_enriched, toss_industry=toss_industry,
-            event_risk=event_risk, period=period,
-            atr_is_observed=bool(atrs and atrs[-1]),
-            dynamic_rsi=dynamic_rsi,
-        )
+        # build_prediction_outlook: NaN/inf safe + isolated failure
+        try:
+            _atr_observed_flag = False
+            try:
+                _last_atr = atrs[-1] if (atrs and len(atrs)) else None
+                _atr_observed_flag = bool(_last_atr is not None and _is_finite_number(_last_atr) and float(_last_atr) > 0)
+            except Exception:
+                _atr_observed_flag = False
+            prediction_outlook = build_prediction_outlook(
+                symbol=sym, market=market, dd=dd, last_price=last, prev_close=prev,
+                pct_change=pct, atr=atr_val, regime=regime, score=score,
+                prob_up=prob_up, prob_down=prob_down, pivot_points=pivot_points,
+                indicator_signals=indicator_signals, buy_price=buy_price,
+                target_price=target_price, pullback_analysis=pullback_analysis,
+                signal_confidence=signal_confidence, investor_flow=investor_flow,
+                ai_strategy=ai_strategy, candlestick_patterns=patterns,
+                naver=naver, us_enriched=us_enriched, toss_industry=toss_industry,
+                event_risk=event_risk, period=period,
+                atr_is_observed=_atr_observed_flag,
+                dynamic_rsi=dynamic_rsi,
+            )
+        except Exception as e:
+            print(f"[route] build_prediction_outlook failed symbol={sym} market={market} err={type(e).__name__}:{e} atr={atr_val}")
+            traceback.print_exc()
+            prediction_outlook = {
+                "error": str(e),
+                "decision": {"key": "watch", "label": "예측 분석 제한", "tone": "neutral", "summary": "데이터 부족으로 예측 시나리오를 제한적으로 표시합니다."},
+                "levels": {},
+                "scenarios": [],
+                "market_context": {"facts": [], "data_gaps": [f"예측 로직 오류: {e}"]},
+            }
 
         # ── 탭 간 정합화: 예측 탭 종합 판단이 '주의·매수 보류'인데 매수 전략 카드가
         # '분할 매수'를 유지하면 사용자에게 정반대 신호가 동시에 노출된다.
@@ -16334,7 +16476,9 @@ def route(path: str, params: Dict) -> Dict:
             if _bars < 60:
                 _dq_status = "데이터 부족" if _dq_status == "정상" else _dq_status
                 _dq_warnings.append(f"가격 이력 {_bars}봉 — 60봉 미만이라 지표·예측 신뢰도가 제한됩니다.")
-            if not (atrs and atrs[-1]):
+            # ATR guard: treat NaN/inf/None as missing
+            _atr_last = atrs[-1] if (atrs and len(atrs)) else None
+            if not _is_finite_number(_atr_last) or not _safe_finite_float(_atr_last, 0) > 0:
                 _dq_warnings.append("ATR 미확보 — 현재가 2% 대체 변동폭을 사용했습니다.")
             if price_correction and abs(float(price_correction.get("delta_pct") or 0)) >= 3:
                 _dq_warnings.append(
@@ -16369,9 +16513,9 @@ def route(path: str, params: Dict) -> Dict:
             "data_quality": data_quality,
             "weekly_analysis": weekly_context,
             "session_name": session_name,
-            "rsi": round(float(dd.get("RSI", [50])[-1] or 50), 1),
-            "volume": int(dd.get("Volume", [0])[-1] or 0),
-            "atr": round(atr_val, _price_rnd),
+            "rsi": round(_safe_finite_float((dd.get("RSI") or [50])[-1], 50.0), 1) if (dd.get("RSI") or []) and _is_finite_number((dd.get("RSI") or [])[-1]) else 50.0,
+            "volume": _safe_int((dd.get("Volume") or [0])[-1], default=0, log_ctx=f"{sym} route volume"),
+            "atr": round(_safe_finite_float(atr_val, last*0.02 if math.isfinite(last) and last>0 else 0.02), _price_rnd),
             "score": score, "prob_up": prob_up, "prob_down": prob_down,
               "ml_prediction": ml_prediction,
             "analysis_steps": steps, "ai_strategy": ai_strategy,
