@@ -16,10 +16,18 @@ from typing import Any
 
 import requests
 
-# 환경변수 우선 — 무료 키는 레이트리밋에 쉽게 걸리므로 배포 환경에서 교체 가능해야 한다.
-FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "d7lm0o9r01qm7o0cb440d7lm0o9r01qm7o0cb44g")
-TIINGO_KEY  = os.getenv("TIINGO_API_KEY", "12ebd1feef89b6728cc15808864b7402449a5637")
-AV_KEY      = os.getenv("ALPHAVANTAGE_API_KEY", "E0ODFSRNDU4P9HDU")
+# 환경변수 우선 — 키는 환경변수로만 주입한다. 소스 내 평문 기본값 금지
+# (과거 하드코딩 키는 쿼터 고갈·유출 위험으로 제거. ALPHAVANTAGE_KEY 구명도 호환)
+def _env_key(*names: str) -> str:
+    for _n in names:
+        _v = (os.getenv(_n, "") or "").strip()
+        if _v:
+            return _v
+    return ""
+
+FINNHUB_KEY = _env_key("FINNHUB_API_KEY")
+TIINGO_KEY  = _env_key("TIINGO_API_KEY")
+AV_KEY      = _env_key("ALPHAVANTAGE_API_KEY", "ALPHAVANTAGE_KEY")
 
 _TIMEOUT = 6  # seconds per request
 _US_ENRICH_CACHE: dict[str, tuple[dict, float]] = {}

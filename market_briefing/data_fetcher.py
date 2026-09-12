@@ -88,7 +88,7 @@ def _sector_ttl_seconds() -> int:
 
 def _get_with_retry(url: str, headers: dict, timeout: float = 5,
                     retries: int = 2, backoff: float = 0.2) -> requests.Response:
-    """일시적 네트워크 실패에 대해 지수 백오프 재시도를 수행."""
+    """일시적 네트워크 실패에 대해 지수 백오프 재시도를 수행. 429는 재시도, 그 외 4xx는 즉시 raise."""
     from requests.exceptions import ConnectionError as _ConnErr
     from requests.exceptions import HTTPError as _HTTPErr
     from requests.exceptions import Timeout as _TimeoutErr
@@ -97,6 +97,9 @@ def _get_with_retry(url: str, headers: dict, timeout: float = 5,
     for attempt in range(retries):
         try:
             r = requests.get(url, headers=headers, timeout=timeout)
+            if r.status_code == 429 and attempt < retries - 1:
+                _time.sleep(backoff * (2 ** attempt) + 0.5)
+                continue
             r.raise_for_status()
             return r
         except _TimeoutErr:
@@ -106,7 +109,7 @@ def _get_with_retry(url: str, headers: dict, timeout: float = 5,
             last_err = _ConnErr(f"conn {url}")
             _time.sleep(backoff * (2 ** attempt))
         except _HTTPErr as e:
-            # 4xx는 재시도해도 성공하지 못함 — 즉시 반환
+            # 429는 위에서 처리, 그 외 4xx는 재시도해도 성공하지 못함 — 즉시 반환
             if e.response is not None and 400 <= e.response.status_code < 500:
                 raise
             last_err = e
@@ -1055,15 +1058,16 @@ def fetch_macro_context() -> dict:
         "news":       list,   # 거시 뉴스
       }
     """
-    # ── 캐시 확인 (락 없이 읽기 — 원자적 dict 접근으로 안전) ──────────────
+    # ── 캐시 확인 (TTL은 1회만 계산 — 자정/장경계 뒤집힘으로 읽기·쓰기 시점 TTL이 달라지는 thundering-herd 방지)
+    ttl = _macro_ttl_seconds()
     cached = _MACRO_CACHE["data"]
-    if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < _macro_ttl_seconds():
+    if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < ttl:
         return cached
 
     # ── 캐시 미스: 락 획득 후 재확인 (Thundering-herd 방지) ───────────────
     with _MACRO_LOCK:
         cached = _MACRO_CACHE["data"]
-        if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < _macro_ttl_seconds():
+        if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < ttl:
             return cached   # 다른 스레드가 이미 갱신한 경우
 
         result: dict = {"generated_at": datetime.now(KST).isoformat()}

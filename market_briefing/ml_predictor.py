@@ -327,7 +327,13 @@ def _get_index_cache(market: str) -> Dict[str, float]:
     mk = "KRX" if market.upper() == "KRX" else "US"
     now = time.monotonic()
     if mk in _INDEX_CACHE and (now - _INDEX_CACHE_TS.get(mk, 0)) < _INDEX_TTL:
-        return _INDEX_CACHE[mk]
+        _cached = _INDEX_CACHE[mk]
+        # 구 캐시에도 canonical alias 보장
+        _cached.setdefault("market_return_1d", _cached.get("NIFTY_return", 0.0))
+        _cached.setdefault("sector_return_1d", _cached.get("BANKNIFTY_return", 0.0))
+        _cached.setdefault("volatility_index", _cached.get("India_VIX", 15.0))
+        _cached.setdefault("market_return_20d", _cached.get("NIFTY_cum20", 0.0))
+        return _cached
     symbols = INDEX_SYMBOLS[mk]
     result: Dict[str, float] = {"NIFTY_return": 0.0, "BANKNIFTY_return": 0.0, "India_VIX": 15.0, "NIFTY_cum20": 0.0}
     # Parallel fetch with 5s budget per symbol (Vercel-friendly)
@@ -408,6 +414,11 @@ def _get_index_cache(market: str) -> Dict[str, float]:
             pass
     _INDEX_CACHE[mk] = result
     _INDEX_CACHE_TS[mk] = now
+    # canonical alias 동시 제공 — 신규 코드는 India_*명 없이 사용 가능 (모델은 legacy 사용)
+    result["market_return_1d"] = result["NIFTY_return"]
+    result["sector_return_1d"] = result["BANKNIFTY_return"]
+    result["volatility_index"] = result["India_VIX"]
+    result["market_return_20d"] = result["NIFTY_cum20"]
     logger.info(f"[ML] {mk} index cache refreshed: NIFTY {result['NIFTY_return']:.2f}% VIX {result['India_VIX']:.1f}")
     return result
 

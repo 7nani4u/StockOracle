@@ -3365,9 +3365,16 @@ US_TICKERS = [
     "AIG", "HIG", "PLTR", "IONQ", "JOBY", "ACHR", "SOFI", "AFRM", "UPST", "RIVN", "LCID", "NKLA", "DNA", "PATH"
 ]
 
-# ── 미국 주가 보조 API 키 (yfinance 실패 시 폴백) ────────────────────────────
-_TIINGO_KEY = os.getenv("TIINGO_API_KEY",   "12ebd1feef89b6728cc15808864b7402449a5637")
-_AV_KEY     = os.getenv("ALPHAVANTAGE_KEY", "E0ODFSRNDU4P9HDU")
+# ── 미국 주가 보조 API 키 (yfinance 실패 시 폴백, 환경변수로만 주입 — 평문 기본값 금지) ──
+def _env_key(*_names: str) -> str:
+    for _n in _names:
+        _v = (os.getenv(_n, "") or "").strip()
+        if _v:
+            return _v
+    return ""
+
+_TIINGO_KEY = _env_key("TIINGO_API_KEY")
+_AV_KEY     = _env_key("ALPHAVANTAGE_KEY", "ALPHAVANTAGE_API_KEY")
 
 
 def _tiingo_price(ticker: str, session_name: str) -> Optional[Tuple[float, float]]:
@@ -3376,6 +3383,8 @@ def _tiingo_price(ticker: str, session_name: str) -> Optional[Tuple[float, float
     - 정규장           → last (IEX 실시간) 우선, 없으면 tngoLast
     반환: (price, prev_close) or None
     """
+    if not _TIINGO_KEY:
+        return None  # 키 미설정 시 네트워크 호출 생략 → yfinance 경로로 폴백
     try:
         url = f"https://api.tiingo.com/iex/{ticker.upper()}?token={_TIINGO_KEY}"
         r = requests.get(url, timeout=5, headers={"Accept": "application/json"})
@@ -3404,6 +3413,8 @@ def _av_price(ticker: str) -> Optional[Tuple[float, float]]:
     """AlphaVantage GLOBAL_QUOTE로 미국 주식 현재가·전일종가 조회 (무료 플랜).
     반환: (price, prev_close) or None
     """
+    if not _AV_KEY:
+        return None  # 키 미설정 시 호출 생략 (25req/day 쿼터 보호 + 불필요 지연 방지)
     try:
         url = (
             "https://www.alphavantage.co/query"
@@ -6108,56 +6119,66 @@ def _fetch_kr_surge_quotes(tickers: List[str]) -> List[Dict[str, Any]]:
                 rows = ((payload or {}).get("result") or {}).get("areas") or []
                 for area in rows:
                     datas.extend(area.get("datas") or [])
-        except Exception:
+        except Exception as e:
+            print(f"[kr-surge] polling batch {start//40+1} 실패: {type(e).__name__} — 다음 배치 계속")
             continue
 
         for row in datas:
-            code = str(row.get("itemCode") or "").zfill(6)
+            try:
+                code = str(row.get("itemCode") or "").zfill(6)
+            except Exception:
+                continue
             if code not in ticker_by_code:
+                # allowlist 밖 종목은 버리되 카운트만 로그 (스키마 드리프트 감지용)
+                print(f"[kr-surge] allowlist외 code 스킵: {code}")
                 continue
             integrated = row.get("integratedPriceInfo") or {}
             exchange = row.get("stockExchangeType") or {}
             over = row.get("overMarketPriceInfo") or {}
-            price = _kr_surge_float(row.get("closePriceRaw") or integrated.get("closePriceRaw"))
-            change = _kr_surge_float(row.get("compareToPreviousClosePriceRaw"))
-            direction = str((row.get("compareToPreviousPrice") or {}).get("code") or "")
-            direction_name = str((row.get("compareToPreviousPrice") or {}).get("name") or "").upper()
-            if direction in {"5", "4"} or "FALL" in direction_name or "하락" in direction_name:
-                change = -abs(change)
-            elif direction in {"2", "1"} or "RIS" in direction_name or "상승" in direction_name:
-                change = abs(change)
-            prev_close = price - change if price > 0 else 0.0
-            ratio = _kr_surge_float(row.get("fluctuationsRatioRaw"))
-            if ratio == 0 and prev_close > 0:
-                ratio = change / prev_close * 100
+            try:
+                price = _kr_surge_float(row.get("closePriceRaw") or integrated.get("closePriceRaw"))
+                change = _kr_surge_float(row.get("compareToPreviousClosePriceRaw"))
+                direction = str((row.get("compareToPreviousPrice") or {}).get("code") or "")
+                direction_name = str((row.get("compareToPreviousPrice") or {}).get("name") or "").upper()
+                if direction in {"5", "4"} or "FALL" in direction_name or "하락" in direction_name:
+                    change = -abs(change)
+                elif direction in {"2", "1"} or "RIS" in direction_name or "상승" in direction_name:
+                    change = abs(change)
+                prev_close = price - change if price > 0 else 0.0
+                ratio = _kr_surge_float(row.get("fluctuationsRatioRaw"))
+                if ratio == 0 and prev_close > 0:
+                    ratio = change / prev_close * 100
 
-            market_code = str(exchange.get("code") or ("KQ" if ticker_by_code[code].endswith(".KQ") else "KS"))
-            market_name = "KOSDAQ" if market_code in {"KQ", "KOSDAQ", "KOSDAQ_GLOBAL"} else "KOSPI"
-            open_price = _kr_surge_float(integrated.get("openPriceRaw") or row.get("openPriceRaw"))
-            high_price = _kr_surge_float(integrated.get("highPriceRaw") or row.get("highPriceRaw"))
-            low_price = _kr_surge_float(integrated.get("lowPriceRaw") or row.get("lowPriceRaw"))
-            volume = _kr_surge_float(integrated.get("accumulatedTradingVolumeRaw") or row.get("accumulatedTradingVolumeRaw"))
-            turnover = _kr_surge_float(integrated.get("accumulatedTradingValueRaw") or row.get("accumulatedTradingValueRaw"))
-            market_cap = _kr_surge_float(row.get("marketValueFullRaw"))
-            trade_stop = row.get("tradeStopType") or {}
-            trade_status = str(trade_stop.get("name") or "")
-            vi = _kr_surge_vi_state(code, row)
-            short_overheat = any(_kr_surge_bool(row.get(field)) for field in (
-                "shortTermOverheatYn", "overheatYn", "shortTermOverheated", "singlePriceTradingYn"
-            ))
-            output.append({
-                "ticker": ticker_by_code[code], "code": code, "name": name_by_code.get(code, code),
-                "market": market_name, "price": price, "prev_close": prev_close,
-                "change_pct": ratio, "open": open_price, "high": high_price, "low": low_price,
-                "volume": volume, "turnover": turnover, "market_cap": market_cap,
-                "market_status": row.get("marketStatus"), "tradable_status": row.get("tradableStatus"),
-                "tradable_status_code": row.get("tradableStatusCode"),
-                "tradable_updated_at": row.get("tradableStatusUpdatedAt"),
-                "trade_status": trade_status, "trade_status_code": trade_stop.get("code"),
-                "vi": vi, "short_overheat": short_overheat,
-                "local_traded_at": row.get("localTradedAt"),
-                "over_market_status": over.get("overMarketStatus"),
-            })
+                market_code = str(exchange.get("code") or ("KQ" if ticker_by_code[code].endswith(".KQ") else "KS"))
+                market_name = "KOSDAQ" if market_code in {"KQ", "KOSDAQ", "KOSDAQ_GLOBAL"} else "KOSPI"
+                open_price = _kr_surge_float(integrated.get("openPriceRaw") or row.get("openPriceRaw"))
+                high_price = _kr_surge_float(integrated.get("highPriceRaw") or row.get("highPriceRaw"))
+                low_price = _kr_surge_float(integrated.get("lowPriceRaw") or row.get("lowPriceRaw"))
+                volume = _kr_surge_float(integrated.get("accumulatedTradingVolumeRaw") or row.get("accumulatedTradingVolumeRaw"))
+                turnover = _kr_surge_float(integrated.get("accumulatedTradingValueRaw") or row.get("accumulatedTradingValueRaw"))
+                market_cap = _kr_surge_float(row.get("marketValueFullRaw"))
+                trade_stop = row.get("tradeStopType") or {}
+                trade_status = str(trade_stop.get("name") or "")
+                vi = _kr_surge_vi_state(code, row)
+                short_overheat = any(_kr_surge_bool(row.get(field)) for field in (
+                    "shortTermOverheatYn", "overheatYn", "shortTermOverheated", "singlePriceTradingYn"
+                ))
+                output.append({
+                    "ticker": ticker_by_code[code], "code": code, "name": name_by_code.get(code, code),
+                    "market": market_name, "price": price, "prev_close": prev_close,
+                    "change_pct": ratio, "open": open_price, "high": high_price, "low": low_price,
+                    "volume": volume, "turnover": turnover, "market_cap": market_cap,
+                    "market_status": row.get("marketStatus"), "tradable_status": row.get("tradableStatus"),
+                    "tradable_status_code": row.get("tradableStatusCode"),
+                    "tradable_updated_at": row.get("tradableStatusUpdatedAt"),
+                    "trade_status": trade_status, "trade_status_code": trade_stop.get("code"),
+                    "vi": vi, "short_overheat": short_overheat,
+                    "local_traded_at": row.get("localTradedAt"),
+                    "over_market_status": over.get("overMarketStatus"),
+                })
+            except Exception as _row_e:
+                print(f"[kr-surge] row 파싱 스킵 {code}: {type(_row_e).__name__}")
+                continue
     return output
 
 
@@ -26314,10 +26335,10 @@ def _start_toss_prewarm_once() -> bool:
 # 프론트의 텔레그램 버튼이 /api/telegram/send 로 현재 분석 메시지를 POST하면,
 # 서버가 봇 토큰으로 sendMessage를 호출해 즉시 전송한다(평문, 재분석 없음).
 def send_telegram_message(text: str) -> Dict[str, Any]:
-    token   = (os.getenv("TELEGRAM_BOT_TOKEN", "8951186273:AAFTtSxV-hvcz8ezsdEjnieywAyqoTSMfSg") or "").strip()
+    token   = (os.getenv("TELEGRAM_BOT_TOKEN", "") or "").strip()
     # 전송 대상: "K애널리스트 주식" 채널 (@KjusikBot이 관리자로 게시).
     # 채널/그룹 chat_id는 음수(채널은 -100… 형식)가 정상값.
-    chat_id = (os.getenv("TELEGRAM_CHAT_ID",   "-1003625567216") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID", "") or "").strip()
     if not token or not chat_id:
         return {"ok": False, "error": "서버에 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 설정되지 않았습니다."}
     if not text or not text.strip():

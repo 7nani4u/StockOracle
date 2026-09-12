@@ -40,6 +40,39 @@ FEATURE_COLS: List[str] = [
     "trend_spread_20_50",
 ]
 
+# ── Market-index slot aliases (StockFlow legacy → StockOracle canonical) ──
+# 모델 pkl은 학습 당시 슬롯명(NIFTY_return/BANKNIFTY_return/India_VIX)으로 저장돼 있어
+# 추론 호환을 위해 레거시명을 유지한다. 신규 코드는 canonical명을 사용하고,
+# _normalize_index_cache()가 양쪽을 모두 받아 레거시로 정규화한다.
+#   market_return_1d  ↔ NIFTY_return      (KOSPI200 / SPY 일간 수익률)
+#   sector_return_1d  ↔ BANKNIFTY_return  (KOSDAQ / QQQ 일간 수익률)
+#   volatility_index  ↔ India_VIX         (CBOE VIX, 미취득시 15.0)
+#   market_return_20d ↔ NIFTY_cum20       (시장 20일 누적 수익률)
+MARKET_INDEX_ALIASES: Dict[str, str] = {
+    "market_return_1d": "NIFTY_return",
+    "sector_return_1d": "BANKNIFTY_return",
+    "volatility_index": "India_VIX",
+    "market_return_20d": "NIFTY_cum20",
+}
+
+
+def _normalize_index_cache(index_cache: Optional[Dict[str, float]]) -> Dict[str, float]:
+    """신/구 슬롯명을 모두 받아 레거시 키로 정규화. NaN/inf → 폴백값."""
+    out: Dict[str, float] = {"NIFTY_return": 0.0, "BANKNIFTY_return": 0.0, "India_VIX": 15.0, "NIFTY_cum20": 0.0}
+    if not index_cache:
+        return out
+    for canon, legacy in MARKET_INDEX_ALIASES.items():
+        for key in (canon, legacy):
+            if key in index_cache:
+                try:
+                    v = float(index_cache[key])
+                    if np.isfinite(v):
+                        out[legacy] = v
+                        break
+                except Exception:
+                    continue
+    return out
+
 # human-readable descriptions for metadata
 FEATURE_DESCRIPTIONS: Dict[str, str] = {
     "RSI_14": "RSI 14 (Wilder RMA)",
@@ -502,17 +535,22 @@ def compute_feature_vector(
         obv_val = float(obv_s.iloc[-1])
         f["OBV_ratio"] = obv_val / (obv_mean20 + 1e-9) if obv_mean20 else 0.0
 
-        # Index features from cache (market-aware)
+        # Index features from cache (market-aware, 신/구 슬롯명 모두 호환)
+        norm_idx = _normalize_index_cache(index_cache)
         if index_cache is not None:
-            f["NIFTY_return"] = float(index_cache.get("NIFTY_return", 0.0))
-            f["BANKNIFTY_return"] = float(index_cache.get("BANKNIFTY_return", 0.0))
-            f["India_VIX"] = float(index_cache.get("India_VIX", 15.0))
-            f["market_return_20d"] = float(index_cache.get("NIFTY_cum20", 0.0))
+            f["NIFTY_return"] = float(norm_idx["NIFTY_return"])
+            f["BANKNIFTY_return"] = float(norm_idx["BANKNIFTY_return"])
+            f["India_VIX"] = float(norm_idx["India_VIX"])
+            f["market_return_20d"] = float(norm_idx["NIFTY_cum20"])
             f["relative_strength"] = f["price_momentum_20d"] - f["market_return_20d"]
+            # canonical alias도 함께 제공 — 신규 코드가 India_*명 없이 사용 가능
+            f["market_return_1d"] = f["NIFTY_return"]
+            f["sector_return_1d"] = f["BANKNIFTY_return"]
+            f["volatility_index"] = f["India_VIX"]
             # log diagnostic (100*log(price/price_20) - NIFTY_cum20) - kept for future ablation, not in model
             try:
                 _log_mom = math.log(closes[-1]/closes[-21])*100 if len(closes)>20 and closes[-21]>0 else f["price_momentum_20d"]
-                f["relative_strength_log"] = _log_mom - float(index_cache.get("NIFTY_cum20", 0.0))
+                f["relative_strength_log"] = _log_mom - float(norm_idx["NIFTY_cum20"])
             except Exception:
                 f["relative_strength_log"] = f["relative_strength"]
         else:
