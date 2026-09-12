@@ -75,11 +75,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# API keys are optional and environment-only.
+# API keys are optional and environment-only (평문 기본값 금지).
+# AlphaVantage는 구/신 변수명 모두 호환: ALPHAVANTAGE_KEY 우선, ALPHAVANTAGE_API_KEY 폴백.
 # ──────────────────────────────────────────────────────────────────────────────
-FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
-TIINGO_KEY = os.getenv("TIINGO_API_KEY", "").strip()
-AV_KEY = os.getenv("ALPHAVANTAGE_KEY", "").strip()
+def _env_key(*names: str) -> str:
+    for _n in names:
+        _v = (os.getenv(_n, "") or "").strip()
+        if _v:
+            return _v
+    return ""
+
+FINNHUB_KEY = _env_key("FINNHUB_API_KEY")
+TIINGO_KEY = _env_key("TIINGO_API_KEY")
+AV_KEY = _env_key("ALPHAVANTAGE_KEY", "ALPHAVANTAGE_API_KEY")
 
 ET_TZ  = ZoneInfo("America/New_York")
 KST_TZ = ZoneInfo("Asia/Seoul")
@@ -812,8 +820,10 @@ class NaverWorldStockClient(_BaseClient):
         self._sess.headers.update(self._HEADERS)
         # 가격 데이터 캐시 {reuters_code → (data, monotonic_time)}
         self._data_cache: Dict[str, Tuple[Any, float]] = {}
-        # Reuters code 해석 결과 캐시 {raw_ticker → resolved_reuters_code|None}
-        self._code_cache: Dict[str, Optional[str]] = {}
+        # Reuters code 해석 결과 캐시 {raw_ticker → (resolved|None, monotonic_time)}
+        # 실패도 60초 네거티브 캐시 — 오타 티커 반복 조회 시 최대 4 HTTP probing 반복 방지
+        self._code_cache: Dict[str, Tuple[Optional[str], float]] = {}
+        self._code_negative_ttl = 60.0
         self._cache_ttl = cache_ttl  # 초 (새로고침 시 실시간 반영을 위해 5초로 단축)
 
     # ── 내부 API 호출 ──────────────────────────────────────────────────────────
@@ -830,6 +840,9 @@ class NaverWorldStockClient(_BaseClient):
             r = self._sess.get(url, timeout=REQUEST_TIMEOUT)
             if r.status_code == 404:
                 return None
+            if r.status_code in (403, 429):
+                logger.warning(f"[Naver] {reuters_code} HTTP {r.status_code} — 일시 차단, 다음 소스로 폴백")
+                return None
             r.raise_for_status()
             data = r.json()
             self._last = time.monotonic()
@@ -843,6 +856,17 @@ class NaverWorldStockClient(_BaseClient):
             logger.debug(f"[Naver] {reuters_code} 조회 실패: {e}")
             return None
 
+    def _get_cached_code(self, ticker: str) -> Tuple[bool, Optional[str]]:
+        """네거티브 캐시 포함 조회. (hit, resolved) 반환."""
+        hit = self._code_cache.get(ticker)
+        if not hit:
+            return False, None
+        resolved, ts = hit
+        ttl = self._cache_ttl if resolved else self._code_negative_ttl
+        if (time.monotonic() - ts) < ttl:
+            return True, resolved
+        return False, None
+
     def _resolve_reuters_code(self, ticker: str) -> Optional[str]:
         """
         티커 심볼 → 네이버 Reuters code 결정.
@@ -852,15 +876,15 @@ class NaverWorldStockClient(_BaseClient):
         결과는 _code_cache에 저장해 재호출 비용 제거.
         """
         t = ticker.upper()
-        if t in self._code_cache:
-            return self._code_cache[t]
+        hit, resolved = self._get_cached_code(t)
+        if hit:
+            return resolved
 
         # 이미 접미사 포함된 경우
         if '.' in t:
             data = self._fetch_basic(t)
             code = t if (data and data.get("closePrice")) else None
-            if code:
-                self._code_cache[t] = code
+            self._code_cache[t] = (code, time.monotonic())
             return code
 
         # 접미사 없음 → 후보 순으로 시도
@@ -869,10 +893,11 @@ class NaverWorldStockClient(_BaseClient):
             data = self._fetch_basic(code)
             if data and data.get("closePrice"):
                 logger.info(f"[Naver] {t}: Reuters code 결정 → {code}")
-                self._code_cache[t] = code
+                self._code_cache[t] = (code, time.monotonic())
                 return code
 
-        logger.warning(f"[Naver] {t}: 매칭 Reuters code 없음 (스킵)")
+        logger.warning(f"[Naver] {t}: 매칭 Reuters code 없음 (스킵, 60초 네거티브 캐시)")
+        self._code_cache[t] = (None, time.monotonic())
         return None
 
     # ── 공개 메서드 ───────────────────────────────────────────────────────────
@@ -1046,9 +1071,11 @@ class YFinanceClient:
     """
 
     _min_interval = 0.5
+    _INFO_TTL = 30.0  # info()는 무겁고 rate-limit 대상 — 30초 메모리 캐시로 1회 fetch당 최대 4회 호출 문제 완화
 
     def __init__(self):
         self._last = 0.0
+        self._info_cache: Dict[str, Tuple[Optional[dict], float]] = {}
 
     def _wait(self):
         gap = self._min_interval - (time.monotonic() - self._last)
@@ -1058,13 +1085,26 @@ class YFinanceClient:
     def _fetch_info(self, ticker: str) -> Optional[dict]:
         if not _HAS_YFINANCE:
             return None
+        ck = ticker.upper()
+        cached = self._info_cache.get(ck)
+        if cached is not None and (time.monotonic() - cached[1]) < self._INFO_TTL:
+            return cached[0]
         self._wait()
         try:
             info = yf.Ticker(ticker).info
             self._last = time.monotonic()
+            # 과도한 메모리 방지: 200개 초과 시 만료분 정리
+            if len(self._info_cache) > 200:
+                now_m = time.monotonic()
+                for k, (_, ts) in list(self._info_cache.items()):
+                    if now_m - ts > self._INFO_TTL:
+                        self._info_cache.pop(k, None)
+            self._info_cache[ck] = (info, time.monotonic())
             return info
         except Exception as e:
             logger.warning("[yfinance] info request failed (%s)", type(e).__name__)
+            # 실패도 짧게(5초) 캐시해 burst 재시도 폭증 방지 — 단, None이 장시간 잔류하지 않게 TTL 분리
+            self._info_cache[ck] = (None, time.monotonic() - self._INFO_TTL + 5.0)
             return None
 
     def _ts(self, unix: Any) -> Optional[datetime]:
@@ -1988,7 +2028,7 @@ class USStockPriceFetcher:
 
         # ── 3. 정규장 (09:30–16:00 ET) ───────────────────────────────────────
         elif session == MarketSession.REGULAR:
-            return self._first(
+            result = self._first(
                 # ① 네이버 증권: closePrice (marketStatus=OPEN 실시간)
                 self._try(
                     self.naver.get_price, ticker, session, "Naver 증권",
@@ -2008,6 +2048,20 @@ class USStockPriceFetcher:
                 ),
                 self._try(self.av.global_quote, ticker, session, "AlphaVantage"),
             )
+            if result:
+                return result
+            # 정규장도 전 소스 실패 시 EOD 종가로 폴백 (기존 None 반환 → 차트 공백 버그 수정)
+            logger.info(f"[Fetcher] {ticker}: 정규장 실시간 없음 — 최근 종가 fallback")
+            eod = self._first(
+                self._try(self.yf.get_price, ticker, MarketSession.CLOSED, "yfinance"),
+                self._try(self.tiingo.get_price, ticker, MarketSession.CLOSED, "Tiingo EOD"),
+                self._try(self.av.daily_close, ticker, session, "AlphaVantage Daily"),
+            )
+            if eod:
+                eod.notes = (eod.notes + " — 정규장 실시간 부재, 최근 종가" if eod.notes
+                             else "정규장 실시간 부재 — 최근 종가 표시")
+                eod.price_type = "last_close"
+            return eod
 
         # ── 4. 애프터마켓 (16:00–20:00 ET) ───────────────────────────────────
         elif session == MarketSession.AFTER_HOURS:
@@ -2109,14 +2163,33 @@ class USStockPriceFetcher:
         self,
         tickers:       List[str],
         delay_between: float = 0.0,
+        parallel: bool = False,
+        max_workers: int = 5,
     ) -> Dict[str, Optional["PriceResult"]]:
-        """여러 티커 일괄 조회."""
-        results: Dict[str, Optional[PriceResult]] = {}
-        for i, t in enumerate(tickers):
-            results[t] = self.fetch(t)
-            if delay_between > 0 and i < len(tickers) - 1:
-                time.sleep(delay_between)
-        return results
+        """여러 티커 일괄 조회.
+
+        parallel=False(기본): 기존 순차 동작 유지 — Vercel rate-limit 안전.
+        parallel=True: ThreadPoolExecutor 병렬 — 오프라인 스캔/백테스트용.
+        """
+        if not parallel:
+            results: Dict[str, Optional[PriceResult]] = {}
+            for i, t in enumerate(tickers):
+                results[t] = self.fetch(t)
+                if delay_between > 0 and i < len(tickers) - 1:
+                    time.sleep(delay_between)
+            return results
+        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
+        out: Dict[str, Optional[PriceResult]] = {}
+        with _TPE(max_workers=max_workers) as ex:
+            futs = {ex.submit(self.fetch, t): t for t in tickers}
+            for fut in _ac(futs):
+                t = futs[fut]
+                try:
+                    out[t] = fut.result()
+                except Exception as e:
+                    logger.warning("[Fetcher] batch %s 실패: %s", t, type(e).__name__)
+                    out[t] = None
+        return out
 
 
 # ──────────────────────────────────────────────────────────────────────────────
