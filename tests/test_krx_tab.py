@@ -62,8 +62,11 @@ def test_renderer_discloses_relative_estimate_and_data_limitations():
         "// 🔔 알림 시스템", 1
     )[0]
 
-    assert "상승 상대 가능성" in renderer
+    # 동종업계 값은 가격 모멘텀 점수이므로 '가능성(확률)'이 아닌 '모멘텀 점수'로 표기한다.
+    assert "상승 모멘텀 점수" in renderer
+    assert "상승 상대 가능성" not in renderer
     assert "업계 평균보다" in renderer
+    assert "밸류에이션 비교 데이터" in renderer
     assert "확정적인 주가 예측이나 투자 권유가 아니며" in renderer
     assert "업종 분류 및 데이터 제공 범위" in renderer
     assert SOURCE.count("refreshPeerIndustryTabFromCache();") >= 3

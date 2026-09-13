@@ -125,3 +125,25 @@ def test_us_risk_scenarios_include_entry_status_and_cost_adjusted_expectancy():
         assert isinstance(scenario["entry_eligible"], bool)
         assert isinstance(scenario["entry_status"], str)
         assert isinstance(scenario["expected_value_pct"], float)
+
+
+def test_new_listing_risk_cards_show_price_ranges_without_fake_probability_or_duration():
+    closes = [100.0, 103.0, 101.0, 104.0, 106.0, 105.0]
+    dd = {
+        "Open": [99.0, 102.0, 102.0, 102.0, 105.0, 106.0],
+        "High": [102.0, 104.0, 104.0, 105.0, 107.0, 107.0],
+        "Low": [98.0, 100.0, 100.0, 101.0, 103.0, 103.0],
+        "Close": closes,
+        "Volume": [1000.0, 1300.0, 900.0, 1500.0, 1800.0, 1200.0],
+    }
+
+    result = calc_risk(closes[-1], 3.0, "KRX", dd)
+
+    assert result["provisional"] is True
+    assert "6개" in result["provisional_reason"]
+    for name in ("conservative", "balanced", "aggressive"):
+        scenario = result[name]
+        assert scenario["entry_eligible"] is False
+        assert scenario["target_confidence_pct"] is None
+        assert scenario["tp_range"][0] < scenario["tp_range"][1]
+        assert all(level["prob_pct"] is None and level["avg_days"] is None for level in scenario["tp_levels"])

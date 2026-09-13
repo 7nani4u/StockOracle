@@ -875,6 +875,33 @@ def test_forecast_wait_state_keeps_all_entry_bands_and_detailed_risk_forecasts()
     assert "목표 청산 범위는 진입 조건이 확인된 뒤에만 표시합니다." not in renderer
 
 
+def test_forecast_uses_observation_labels_for_provisional_new_listings():
+    renderer = HTML.split("function renderForecast", 1)[1].split(
+        "function renderTechnicalSignals", 1
+    )[0]
+
+    assert "const isProvisional = Boolean(risk && risk.provisional);" in renderer
+    assert "신규상장 관찰 모드" in renderer
+    assert "관찰 전용 · 비중 미산정" in renderer
+    assert "관찰 가격 구간" in renderer
+    assert "주문·진입 판단에는 사용하지 마세요" in renderer
+    assert 'id="forecast-entry-guide"' in HTML
+    assert "<b>관찰 원칙:</b>" in renderer
+
+
+def test_prediction_outlook_marks_short_history_as_new_listing_observation():
+    kwargs = _base_kwargs()
+    kwargs["dd"] = {key: values[:6] for key, values in kwargs["dd"].items()}
+    kwargs["last_price"] = kwargs["dd"]["Close"][-1]
+    kwargs["prev_close"] = kwargs["dd"]["Close"][-2]
+
+    result = build_prediction_outlook(**kwargs)
+
+    assert result["decision"]["key"] == "observation"
+    assert result["decision"]["label"] == "신규상장 관찰"
+    assert "최소 20개 일봉" in result["decision"]["summary"]
+
+
 def test_analysis_loader_has_timeout_cancellation_and_retry_path():
     analyzer = HTML.split("async function analyze", 1)[1].split("function setState", 1)[0]
 
@@ -889,6 +916,8 @@ def test_analysis_loader_has_timeout_cancellation_and_retry_path():
     assert "_networkProfile()" in analyzer
     assert "&lite=1" in analyzer
     assert "75000" in analyzer
+    assert "const liteController = new AbortController();" in analyzer
+    assert "signal: liteController.signal" in analyzer
 
 
 def test_lite_stock_response_reduces_chart_and_backtest_diagnostics():

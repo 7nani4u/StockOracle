@@ -104,6 +104,15 @@ def test_selvas_ai_code_uses_remote_market_recovery_instead_of_wrong_ks(monkeypa
     assert index.resolve_ticker("셀바스AI") == ("108860.KQ", "KRX", "셀바스AI")
 
 
+def test_skylabs_code_uses_remote_kosdaq_market_recovery(monkeypatch):
+    skylabs = index._build_krx_security_record("386380", "스카이랩스", "KOSDAQ", "STOCK")
+    monkeypatch.setattr(index, "get_krx_code_map", lambda: ({}, {}))
+    monkeypatch.setattr(index, "search_krx_security_remote", lambda _q: (skylabs,))
+
+    assert index.resolve_ticker("386380") == ("386380.KQ", "KRX", "스카이랩스")
+    assert index.resolve_ticker("스카이랩스") == ("386380.KQ", "KRX", "스카이랩스")
+
+
 def test_leveraged_etf_is_searchable_with_product_metadata(monkeypatch):
     leveraged = index._build_krx_security_record(
         "122630", "KODEX 레버리지", "KOSPI", "ETF"
