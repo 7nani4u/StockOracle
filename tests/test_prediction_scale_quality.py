@@ -127,7 +127,7 @@ def test_us_risk_scenarios_include_entry_status_and_cost_adjusted_expectancy():
         assert isinstance(scenario["expected_value_pct"], float)
 
 
-def test_new_listing_risk_cards_show_price_ranges_without_fake_probability_or_duration():
+def test_new_listing_risk_cards_show_observation_probability_and_duration():
     closes = [100.0, 103.0, 101.0, 104.0, 106.0, 105.0]
     dd = {
         "Open": [99.0, 102.0, 102.0, 102.0, 105.0, 106.0],
@@ -146,4 +146,7 @@ def test_new_listing_risk_cards_show_price_ranges_without_fake_probability_or_du
         assert scenario["entry_eligible"] is False
         assert scenario["target_confidence_pct"] is None
         assert scenario["tp_range"][0] < scenario["tp_range"][1]
-        assert all(level["prob_pct"] is None and level["avg_days"] is None for level in scenario["tp_levels"])
+        assert all(level["provisional"] is True for level in scenario["tp_levels"])
+        assert all(5.0 <= level["prob_pct"] <= 95.0 for level in scenario["tp_levels"])
+        assert all(level["prob_low_pct"] < level["prob_pct"] < level["prob_high_pct"] for level in scenario["tp_levels"])
+        assert all(level["days_min"] < level["avg_days"] < level["days_max"] for level in scenario["tp_levels"])

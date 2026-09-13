@@ -885,6 +885,7 @@ def test_forecast_uses_observation_labels_for_provisional_new_listings():
     assert "관찰 전용 · 비중 미산정" in renderer
     assert "관찰 가격 구간" in renderer
     assert "주문·진입 판단에는 사용하지 마세요" in renderer
+    assert "관찰용 추정" in renderer
     assert 'id="forecast-entry-guide"' in HTML
     assert "<b>관찰 원칙:</b>" in renderer
 
@@ -900,6 +901,15 @@ def test_prediction_outlook_marks_short_history_as_new_listing_observation():
     assert result["decision"]["key"] == "observation"
     assert result["decision"]["label"] == "신규상장 관찰"
     assert "최소 20개 일봉" in result["decision"]["summary"]
+
+
+def test_prediction_scenarios_render_a_visible_fallback_when_api_has_no_scenarios():
+    renderer = HTML.split("function renderPredictionSections", 1)[1].split(
+        "function renderForecast", 1
+    )[0]
+
+    assert "const scenarios = Array.isArray(p.scenarios)" in renderer
+    assert "조건부 시나리오를 만들 데이터가 부족합니다" in renderer
 
 
 def test_analysis_loader_has_timeout_cancellation_and_retry_path():

@@ -10415,7 +10415,7 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
         observed_bars = len((dd or {}).get("Close") or [])
         reason = (
             f"유효 일봉 {observed_bars}개로 산출한 신규상장 관찰용 가격 범위입니다. "
-            "최소 20개 일봉이 쌓일 때까지 도달 가능성과 예상 소요일은 산정하지 않습니다."
+            "최소 20개 일봉 전의 도달 가능성과 예상 소요일은 ATR 기반 관찰용 추정이며 주문 판단에 사용할 수 없습니다."
         )
         result["provisional"] = True
         result["provisional_reason"] = reason
@@ -10427,12 +10427,22 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             scenario["target_confidence_pct"] = None
             scenario["breakout_probability_pct"] = None
             for level in scenario.get("tp_levels") or []:
-                level["prob_pct"] = None
-                level["prob_low_pct"] = None
-                level["prob_high_pct"] = None
-                level["days_min"] = None
-                level["days_max"] = None
-                level["avg_days"] = None
+                # Keep a low-confidence ATR-only estimate rather than rendering null.
+                # The value is pulled toward neutral and the range is intentionally wide.
+                raw_prob = float(level.get("prob_pct") or 50.0)
+                observed_prob = round(_clip(50.0 + (raw_prob - 50.0) * 0.35, 5.0, 95.0), 1)
+                raw_days = float(level.get("avg_days") or 1.0)
+                observed_days_min = round(max(1.0, raw_days * 0.55), 1)
+                observed_days_max = round(max(observed_days_min + 1.0, raw_days * 1.65), 1)
+                level["prob_pct"] = observed_prob
+                level["prob_low_pct"] = round(max(5.0, observed_prob - 15.0), 1)
+                level["prob_high_pct"] = round(min(95.0, observed_prob + 15.0), 1)
+                level["days_min"] = observed_days_min
+                level["days_max"] = observed_days_max
+                level["avg_days"] = round(raw_days, 1)
+                level["provisional"] = True
+                level["probability_label"] = f"관찰용 추정 · 일봉 {observed_bars}개"
+                level["period_label"] = "관찰용 기간 추정"
                 level["probability_basis"] = reason
     return result
 
@@ -23026,7 +23036,9 @@ function renderPredictionSections(d, isKrx) {
 
   // ── ③/④ 조건부 시나리오: 시간축 명확화 + 중복 제거 ──
   const horizonNote = _escPrediction(p.scenario_note || '');
-  scenariosEl.innerHTML = `<div class="prediction-scenario-grid">${(p.scenarios || []).map(sc => {
+  const scenarios = Array.isArray(p.scenarios) ? p.scenarios.filter(sc => sc && sc.label) : [];
+  const isObservation = decision.key === 'observation';
+  const scenariosHtml = scenarios.map(sc => {
     const color = _predictionTone(sc.tone);
     const range = sc.price_range || [];
     const rangeText = range.length === 2 ? `${fmt(range[0], isKrx)} ~ ${fmt(range[1], isKrx)}` : '가격 범위 확인 필요';
@@ -23041,20 +23053,23 @@ function renderPredictionSections(d, isKrx) {
     const days = sc.expected_days || [];
     const touchText = Number.isFinite(Number(sc.touch_probability)) && sc.touch_probability !== null
       ? ` · 변동성상 터치 가능성 ${Number(sc.touch_probability).toFixed(0)}%(방향 무관)` : '';
-    const daysText = days.length===2 ? `${days[0]}~${days[1]}거래일 내${touchText}` : '';
+    const daysText = days.length===2 ? `${isObservation ? '관찰용 ' : ''}${days[0]}~${days[1]}거래일 내${touchText}` : '';
     const response = sc.key === 'upside'
       ? '대응: 저항 종가 돌파 + 거래량 1.2배 확인 시 분할 접근, 그 전 추격 보류.'
       : sc.key === 'downside'
         ? '대응: 지지 종가 이탈 시 매수 무효화, 손절·현금 비중 우선.'
         : '대응: 박스권 내에서는 지지 확인 후 소액, 저항 접근 시 관망.';
     return `<div class="prediction-scenario ${_escPrediction(sc.tone || 'neutral')}">
-      <div class="prediction-scenario-head"><div class="prediction-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="prediction-prob" style="color:${color};border-color:${color}55">상대 비중 ${Number(sc.probability || 0).toFixed(0)}%</div></div>
+      <div class="prediction-scenario-head"><div class="prediction-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="prediction-prob" style="color:${color};border-color:${color}55">${isObservation ? '관찰용 상대 비중' : '상대 비중'} ${Number(sc.probability || 0).toFixed(0)}%</div></div>
       <div class="prediction-price-range">${rangeText} ${daysText ? `<span style="font-size:10px;color:#8b949e">· ${daysText}</span>` : ''}</div>
       <div class="prediction-condition-list">${conditions}</div>
       <div class="prediction-checks">${checks}</div>
       <div class="prediction-scenario-action" style="border-left:3px solid ${color}">${response}</div>
     </div>`;
-  }).join('')}</div>${horizonNote ? `<div style="font-size:10px;color:#6e7681;margin-top:8px">${horizonNote}</div>` : ''}`;
+  }).join('');
+  scenariosEl.innerHTML = scenariosHtml
+    ? `<div class="prediction-scenario-grid">${scenariosHtml}</div>${horizonNote ? `<div style="font-size:10px;color:#6e7681;margin-top:8px">${horizonNote}</div>` : ''}`
+    : `<div class="prediction-mini-list" style="padding:10px;border:1px solid #30363d;border-radius:8px">조건부 시나리오를 만들 데이터가 부족합니다. 일봉과 거래량이 누적되면 상승·횡보·하락 조건을 표시합니다.</div>`;
 
   // ── ⑥ 시장 환경: 직접 사용되는 데이터와 참고 데이터 구분, 신선도 명확화 ──
   const marketContext = p.market_context || {};
@@ -23705,11 +23720,12 @@ function renderForecast(d, isKrx) {
             </div>
             ${sc.tp_levels.map((lv, i) => {
               const hasProbability = Number.isFinite(Number(lv.prob_pct));
+              const isProvisionalLevel = Boolean(risk.provisional || lv.provisional);
               const tpC = !hasProbability ? '#8b949e' : lv.prob_pct >= 65 ? '#3fb950' : lv.prob_pct >= 45 ? '#d29922' : '#f97316';
               const probText = !hasProbability ? '산정 보류' : (lv.prob_low_pct != null && lv.prob_high_pct != null
                 ? `${lv.prob_low_pct}~${lv.prob_high_pct}%` : `${lv.prob_pct}%`);
               const daysText = lv.days_min != null && lv.days_max != null
-                ? `${lv.days_min}~${lv.days_max}일` : Number.isFinite(Number(lv.avg_days)) ? `약 ${lv.avg_days}일` : '기간 산정 보류';
+                ? `${isProvisionalLevel ? '관찰용 ' : ''}${lv.days_min}~${lv.days_max}일` : Number.isFinite(Number(lv.avg_days)) ? `${isProvisionalLevel ? '관찰용 ' : '약 '}${lv.avg_days}일` : '기간 산정 보류';
               const levelRange = Array.isArray(lv.price_range) && lv.price_range.length === 2
                 ? lv.price_range : [lv.price, lv.price];
               const levelPriceText = `${fmt(levelRange[0], isKrx)} ~ ${fmt(levelRange[1], isKrx)}`;
@@ -23720,7 +23736,7 @@ function renderForecast(d, isKrx) {
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
                 <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction([lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '', lv.probability_basis || '', lv.price_range_basis || ''].filter(Boolean).join(' · '))}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
                 <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
-                <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}</span>
+                <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}${isProvisionalLevel && hasProbability ? '<small style="display:block;color:#d29922">관찰용 추정</small>' : ''}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
               </div>`;
             }).join('')}
