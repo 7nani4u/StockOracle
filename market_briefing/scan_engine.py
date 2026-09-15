@@ -73,6 +73,11 @@ TIER_MULTIPLIER = {
 # 미국 스캔은 $70 초과 종목을 출력에서 제외한다 (수집 후 실측가 기준).
 SCAN_US_MAX_PRICE = 70.0
 
+# ── 시장별 수집 상한 (Vercel 60s 타임아웃 방지 + 시간 예산 하드가드 병행) ──
+# 미국은 전수 검토를 위해 유니버스 전체를 수집 대상으로 둔다.
+SCAN_COLLECT_CAP_US_FULL = 120
+SCAN_COLLECT_CAP_US_LITE = 48
+
 
 def is_scan_price_eligible(market: str, price: Any) -> bool:
     """스캔 출력 가격 상한 판정. US는 $70 초과 제외, KRX는 제한 없음."""
@@ -85,6 +90,72 @@ def is_scan_price_eligible(market: str, price: Any) -> bool:
     if not math.isfinite(value) or value <= 0:
         return False
     return value <= SCAN_US_MAX_PRICE
+
+
+def apply_leader_promotion(
+    cands: List[Dict],
+    leader_map: Dict[str, Dict] | None,
+    equity: float = 10_000_000.0,
+    risk_pct: float = 1.0,
+) -> Dict[str, int]:
+    """리더 반전 BREAKOUT 후보를 진입 준비(READY)로 승격한다.
+
+    스캔 엔진의 자체 돌파 체계와 리더 반전 체계는 진입가·손절가가 다르므로,
+    승격 시 진입 트리거·손절가·이격률·포지션 사이징을 리더 기준으로 교체하고
+    원래 값은 orig_* 로 보존한다 (투명성). 점수(BQS/FWS/NCS)는 손대지 않는다.
+
+    규칙:
+      - leader stage == BREAKOUT 일 때만 승격
+      - EARNINGS_BLOCK(실적 대기)은 하드 게이트라 승격 제외
+      - 진입가·손절가가 유한 양수이고 손절 < 진입일 때만 승격
+    절대 raise하지 않는다.
+    """
+    promoted = 0
+    try:
+        for cd in cands or []:
+            try:
+                if not isinstance(cd, dict):
+                    continue
+                if cd.get("status") == "EARNINGS_BLOCK":
+                    continue
+                lr = ((leader_map or {}).get(cd.get("ticker")) or {})
+                if not isinstance(lr, dict) or lr.get("stage") != "BREAKOUT":
+                    continue
+                try:
+                    entry_f = float(lr.get("entry_trigger"))
+                    stop_f = float(lr.get("stop_price"))
+                    price_f = float(cd.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(entry_f) and math.isfinite(stop_f)
+                        and math.isfinite(price_f)):
+                    continue
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= 0:
+                    continue
+                cd["orig_status"] = cd.get("status")
+                cd["orig_entry_trigger"] = cd.get("entry_trigger")
+                cd["orig_stop_price"] = cd.get("stop_price")
+                cd["status"] = "READY"
+                cd["status_source"] = "leader_reversal"
+                cd["entry_trigger"] = round(entry_f, 4)
+                cd["stop_price"] = round(stop_f, 4)
+                cd["distance_pct"] = round((entry_f - price_f) / price_f * 100, 2)
+                try:
+                    sizing = calculate_position_size(
+                        equity, entry_f, stop_f,
+                        cd.get("sleeve") or "CORE", risk_pct)
+                    cd["shares"] = sizing.get("shares")
+                    cd["risk_amount"] = sizing.get("risk_amount")
+                    cd["risk_pct"] = sizing.get("risk_pct")
+                    cd["total_cost"] = sizing.get("total_cost")
+                except Exception:
+                    pass
+                promoted += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"promoted": promoted}
 
 
 # ── 데이터 구조 ───────────────────────────────────────────────────────────────

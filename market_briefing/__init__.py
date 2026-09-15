@@ -66,6 +66,8 @@ try:
         run_technical_filters, classify_candidate, rank_candidate,
         check_anti_chase, check_pullback_continuation,
         calculate_position_size,
+        SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
+        is_scan_price_eligible, apply_leader_promotion,
     )
     _SCAN_AVAILABLE = True
 except Exception:
@@ -75,6 +77,11 @@ except Exception:
     run_technical_filters = classify_candidate = rank_candidate = None
     check_anti_chase = check_pullback_continuation = None
     calculate_position_size = None
+    SCAN_US_MAX_PRICE = 70.0
+    SCAN_COLLECT_CAP_US_FULL = 120
+    SCAN_COLLECT_CAP_US_LITE = 48
+    is_scan_price_eligible = None
+    apply_leader_promotion = None
 
 # ── 신규 통합 모듈 (graceful fallback) ────────────────────────────────────────
 
@@ -174,6 +181,8 @@ __all__ = [
     "run_technical_filters", "classify_candidate", "rank_candidate",
     "check_anti_chase", "check_pullback_continuation",
     "calculate_position_size",
+    "SCAN_US_MAX_PRICE", "SCAN_COLLECT_CAP_US_FULL", "SCAN_COLLECT_CAP_US_LITE",
+    "is_scan_price_eligible", "apply_leader_promotion",
     # portfolio_manager
     "PortfolioPosition", "PortfolioState", "PortfolioManager", "TradeRiskAssessment",
     # market_immune

@@ -585,6 +585,7 @@ SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 (양 시장 공통, 목�
 
 # 병렬 수집 — 워커 수 / 월클럭 예산 (Vercel 60s 내 안전 마진)
 SCAN_COLLECT_WORKERS  = 16
+SCAN_INFO_WORKERS     = 6    # info 전용 (야후 401 레이트리밋 회피용 소수 워커)
 SCAN_COLLECT_BUDGET_S = 42.0   # 이 시간 내 도착한 종목만으로 진행 (타임아웃 하드가드)
 
 # 출력 선정 게이트 — 진입 가능권(상태)만 노출 (신호 조건 제거)
@@ -18316,7 +18317,8 @@ def route(path: str, params: Dict) -> Dict:
             _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
             from market_briefing.scan_engine import (
                 StockUniverse, run_full_scan, build_snapshot_from_ohlcv,
-                SCAN_US_MAX_PRICE, is_scan_price_eligible,
+                SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
+                is_scan_price_eligible, apply_leader_promotion,
             )
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
@@ -18452,8 +18454,36 @@ def route(path: str, params: Dict) -> Dict:
                 ("WBD", "Warner Bros", "SMALL"),  ("SNAP", "Snap", "SMALL"),
                 ("AAL", "American Airlines", "SMALL"), ("CCL", "Carnival", "SMALL"),
                 ("LVS", "Las Vegas Sands", "SMALL"), ("MGM", "MGM Resorts", "SMALL"),
-                ("WBA", "Walgreens", "SMALL"),    ("BAX", "Baxter", "SMALL"),
+                ("BAX", "Baxter", "SMALL"),
                 ("PARA", "Paramount", "SMALL"),
+                # ── 대형주 추가 (전수 검토 — $70 초과는 수집 후 출력 제외) ──
+                ("WMT", "Walmart", "LARGE"),      ("CAT", "Caterpillar", "LARGE"),
+                ("HON", "Honeywell", "LARGE"),    ("LIN", "Linde", "LARGE"),
+                ("RTX", "RTX", "LARGE"),          ("GE", "GE Aerospace", "LARGE"),
+                ("IBM", "IBM", "LARGE"),          ("INTU", "Intuit", "LARGE"),
+                ("NOW", "ServiceNow", "LARGE"),   ("PLTR", "Palantir", "LARGE"),
+                ("GS", "Goldman Sachs", "LARGE"), ("MS", "Morgan Stanley", "LARGE"),
+                ("AXP", "American Express", "LARGE"), ("DIS", "Disney", "LARGE"),
+                ("ABNB", "Airbnb", "LARGE"),
+                # ── 중형주 추가 ──
+                ("DELL", "Dell", "MID"),          ("MU", "Micron", "MID"),
+                ("WDC", "Western Digital", "MID"),("STX", "Seagate", "MID"),
+                ("EA", "Electronic Arts", "MID"), ("TTWO", "Take-Two", "MID"),
+                ("VEEV", "Veeva", "MID"),         ("ZM", "Zoom", "MID"),
+                ("DOCU", "DocuSign", "MID"),      ("OKTA", "Okta", "MID"),
+                ("DAL", "Delta Air", "MID"),      ("UAL", "United Airlines", "MID"),
+                ("GM", "General Motors", "MID"),  ("DHI", "D.R. Horton", "MID"),
+                ("LEN", "Lennar", "MID"),         ("NUE", "Nucor", "MID"),
+                ("FCX", "Freeport", "MID"),       ("EOG", "EOG Resources", "MID"),
+                # ── 중소형주 추가 ──
+                ("NCLH", "Norwegian Cruise", "SMALL"), ("SIRI", "Sirius XM", "SMALL"),
+                ("RIOT", "Riot", "SMALL"),        ("MARA", "MARA", "SMALL"),
+                ("GME", "GameStop", "SMALL"),     ("AMC", "AMC", "SMALL"),
+                ("NOK", "Nokia", "SMALL"),        ("BB", "BlackBerry", "SMALL"),
+                ("SOUN", "SoundHound", "SMALL"),  ("JOBY", "Joby Aviation", "SMALL"),
+                ("LCID", "Lucid", "SMALL"),       ("ANF", "Abercrombie", "SMALL"),
+                ("URBN", "Urban Outfitters", "SMALL"), ("GAP", "Gap", "SMALL"),
+                ("M", "Macy's", "SMALL"),         ("KR", "Kroger", "SMALL"),
             ]
 
             # 종목 목록 파싱 — tickers 파라미터 우선, 없으면 시장별 확장 유니버스
@@ -18484,8 +18514,12 @@ def route(path: str, params: Dict) -> Dict:
 
             # 스캔 모드별 수집 상한 — 한국/미국 동일 적용 (Vercel 60s 타임아웃 방지)
             #   상수: SCAN_COLLECT_CAP_FULL(48) / SCAN_COLLECT_CAP_LITE(24)
+            #   미국은 전수 검토를 위해 별도 상한(US_FULL 120 / US_LITE 48)을 둔다.
             #   인터리브된 raw_list이므로 truncation 후에도 티어가 고르게 남는다.
-            _scan_cap = SCAN_COLLECT_CAP_FULL if mode_p == "FULL" else SCAN_COLLECT_CAP_LITE
+            if market_p == "US":
+                _scan_cap = SCAN_COLLECT_CAP_US_FULL if mode_p == "FULL" else SCAN_COLLECT_CAP_US_LITE
+            else:
+                _scan_cap = SCAN_COLLECT_CAP_FULL if mode_p == "FULL" else SCAN_COLLECT_CAP_LITE
             raw_list  = raw_list[:_scan_cap]
 
             # ── 응답 캐시 조회 (warm 인스턴스 재사용) ──────────────────────────
@@ -18513,6 +18547,8 @@ def route(path: str, params: Dict) -> Dict:
                 return cl[:n], hi[:n], lo[:n], vo[:n], op[:n]
 
             # 벤치마크 데이터 (레짐 감지용) — Ticker.history() 사용
+            # 수집 전체에 시간 예산을 공유한다 (Vercel 60s 대응)
+            _collect_start = time.time()
             bench_sym = "^KS200" if market_p == "KRX" else "SPY"
             bench_closes = []
             bench_highs  = []
@@ -18550,6 +18586,49 @@ def route(path: str, params: Dict) -> Dict:
                 if atr_v and bench_closes[-1] > 0:
                     vol_regime = detect_vol_regime(atr_v / bench_closes[-1] * 100)
 
+            # ── Phase A: bulk history 전수 수집 (1회 요청) ──
+            # 112종목 × (history + info) 순차 호출은 레이트리밋으로 붕괴하므로,
+            # OHLCV는 yf.download 1회로 전수 확보하고 info만 개별 조회한다.
+            # 실패 시 Phase B에서 기존 개별 수집으로 폴백한다.
+            _bulk_ohlcv: dict = {}
+            try:
+                _bd = yf.download(" ".join(raw_list), period="1y", group_by="ticker",
+                                  threads=True, progress=False, timeout=25)
+                if _bd is not None and not _bd.empty:
+                    _bd_is_multi = isinstance(_bd.columns, pd.MultiIndex)
+                    _bd_tickers = (set(_bd.columns.get_level_values(0))
+                                   if _bd_is_multi else set())
+                    for _t in raw_list:
+                        try:
+                            if _bd_is_multi:
+                                if _t not in _bd_tickers:
+                                    continue
+                                _sub = _bd[_t]
+                            else:
+                                if len(raw_list) != 1:
+                                    continue
+                                _sub = _bd
+                            _need = [c for c in ("Close", "High", "Low", "Volume", "Open")
+                                     if c in _sub.columns]
+                            if len(_need) < 5:
+                                continue
+                            _sub = _sub.dropna(subset=_need)
+                            _cl = _sub["Close"].tolist()
+                            _hi = _sub["High"].tolist()
+                            _lo = _sub["Low"].tolist()
+                            _vo = _sub["Volume"].tolist()
+                            _op = _sub["Open"].tolist()
+                            _n = min(len(_cl), len(_hi), len(_lo), len(_vo), len(_op))
+                            if _n < 60:
+                                continue
+                            _bulk_ohlcv[_t] = (_cl[:_n], _hi[:_n], _lo[:_n], _vo[:_n], _op[:_n])
+                        except Exception:
+                            continue
+                print(f"[scan] bulk history: {len(_bulk_ohlcv)}/{len(raw_list)} tickers")
+            except Exception as _bd_e:
+                print(f"[scan] bulk download failed ({type(_bd_e).__name__}: {_bd_e}) — per-ticker fallback")
+                _bulk_ohlcv = {}
+
             # OHLCV 수집 + 스냅샷/품질 빌드
             universe    = []
             snap_map    = {}
@@ -18567,54 +18646,80 @@ def route(path: str, params: Dict) -> Dict:
 
             _ETF_SET = {"QQQ", "SPY", "SOXL", "TQQQ", "SQQQ", "DIA", "IWM"}
 
-            def _scan_collect_one(tkr: str):
-                """단일 종목 정밀 수집 — OHLCV·스냅샷·품질(QMJ)·섹터·애널리스트 신호·이름.
-
-                병렬 워커로 호출됨. info 조회 실패 시에도 가격/기술 분석은 유지(graceful degrade).
-                """
+            # ── Phase B: 2단계 수집 (히스토리 벌크 → info 소수 워커) ──
+            # 112연타 (history+info) 호출은 야후 401 Invalid Crumb를 유발하므로,
+            # B1에서 OHLCV·스냅샷을 먼저 확정하고 B2에서 info만 6워커로 나눠 조회한다.
+            def _scan_history_one(tkr: str):
+                """B1: OHLCV·스냅샷·등락률 (info 없이 — 빠름)."""
                 try:
-                    tk    = yf.Ticker(tkr)
-                    ohlcv = _hist_to_lists(tk.history(period="1y"))
-                    if ohlcv is None:
-                        return None
-                    closes, highs, lows, volumes, opens = ohlcv
+                    pre = _bulk_ohlcv.get(tkr)
+                    if pre is not None:
+                        closes, highs, lows, volumes, opens = pre
+                    else:
+                        ohlcv = _hist_to_lists(yf.Ticker(tkr).history(period="1y"))
+                        if ohlcv is None:
+                            return None
+                        closes, highs, lows, volumes, opens = ohlcv
                     snap = build_snapshot_from_ohlcv(
                         ticker=tkr, closes=closes, highs=highs,
                         lows=lows, volumes=volumes, opens=opens,
                         bench_closes=bench_closes,
                     )
-                    # 등락률: 전일 대비 당일 종가 변화율
                     change = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2) \
                              if len(closes) >= 2 and closes[-2] != 0 else 0.0
-                    # info: 품질(QMJ)·섹터·애널리스트 신호 (실패 허용)
-                    _info, quality = {}, None
+                    return {"tkr": tkr, "snap": snap, "change": change}
+                except Exception:
+                    return None
+
+            def _scan_info_one(tkr: str):
+                """B2: info·품질(QMJ)·섹터·신호·시총 (느림 — 소수 워커 전용)."""
+                try:
+                    _info = yf.Ticker(tkr).info or {}
+                    quality = None
                     try:
-                        _info   = tk.info or {}
                         quality = get_quality_score_from_info(tkr, _info)
                     except Exception:
                         pass
                     sector  = _info.get("sector") or _info.get("industry") or ""
                     rec_key = (_info.get("recommendationKey") or "").lower()
-                    signal  = _ANALYST_MAP.get(rec_key, "중립")
-                    name    = name_hint.get(tkr) or _get_name(tkr, _info)
-                    sleeve  = "ETF" if tkr in _ETF_SET else "CORE"
-                    # 시가총액 → 티어 (실측 marketCap 우선, 없으면 정적 힌트)
-                    mcap     = _scan_num(_info.get("marketCap"), 0.0)
-                    cap_tier = scan_cap_tier(market_p, mcap, cap_hint.get(tkr, ""))
                     return {
-                        "tkr": tkr, "snap": snap, "change": change, "quality": quality,
-                        "sector": sector, "signal": signal, "name": name, "sleeve": sleeve,
-                        "cap_tier": cap_tier, "market_cap": mcap,
+                        "tkr": tkr, "quality": quality, "sector": sector,
+                        "signal": _ANALYST_MAP.get(rec_key, "중립"),
+                        "name": name_hint.get(tkr) or _get_name(tkr, _info),
+                        "sleeve": "ETF" if tkr in _ETF_SET else "CORE",
+                        "cap_tier": scan_cap_tier(
+                            market_p, _scan_num(_info.get("marketCap"), 0.0),
+                            cap_hint.get(tkr, "")),
+                        "market_cap": _scan_num(_info.get("marketCap"), 0.0),
                     }
+                except Exception:
+                    # info 실패해도 이름·티어는 힌트로 유지해 기술 분석은 살린다
+                    return {
+                        "tkr": tkr, "quality": None, "sector": "", "signal": "중립",
+                        "name": name_hint.get(tkr) or tkr,
+                        "sleeve": "ETF" if tkr in _ETF_SET else "CORE",
+                        "cap_tier": cap_hint.get(tkr, "MID"), "market_cap": 0.0,
+                    }
+
+            def _scan_collect_one(tkr: str):
+                """개별 수집 폴백 (bulk에 없던 종목 전용 — history+info 일괄)."""
+                try:
+                    h = _scan_history_one(tkr)
+                    if h is None:
+                        return None
+                    i = _scan_info_one(tkr) or {}
+                    return {**h, **{k: v for k, v in i.items() if k != "tkr"}}
                 except Exception:
                     return None
 
-            # 병렬 수집 — 시간 예산(SCAN_COLLECT_BUDGET_S) 내 도착분만으로 진행.
-            #   대형 유니버스(최대 48)라도 느린 종목이 전체를 막지 않도록 하드가드.
+            # 병렬 수집 — 수집 전체 시간 예산(SCAN_COLLECT_BUDGET_S) 내 도착분만으로 진행.
+            #   bulk 소요 시간을 제외한 잔여 예산을 B1/B2에 나눠 Vercel 60s를 넘지 않게 한다.
+            #   B2(info)는 워커를 6개로 제한해 야후 401 레이트리밋을 회피한다.
             # ── 미국 가격 상한 ($70 초과 수집분 제외, 실측가 기준) ──
             _price_capped_out: list = []
+            _hist_hold: dict = {}
 
-            def _ingest(res):
+            def _ingest_history(res):
                 if not res:
                     return
                 t = res["tkr"]
@@ -18622,35 +18727,79 @@ def route(path: str, params: Dict) -> Dict:
                 if market_p == "US" and not is_scan_price_eligible("US", _px):
                     _price_capped_out.append({"ticker": t, "price": round(_px, 2)})
                     return
-                snap_map[t]   = res["snap"]
-                change_map[t] = res["change"]
-                if res["quality"] is not None:
+                _hist_hold[t] = res
+
+            def _ingest(res):
+                if not res:
+                    return
+                t = res["tkr"]
+                base = _hist_hold.get(t) or {}
+                snap_map[t]   = res.get("snap") or base.get("snap")
+                if snap_map[t] is None:
+                    return
+                change_map[t] = res.get("change", base.get("change", 0.0))
+                if res.get("quality") is not None:
                     quality_map[t] = res["quality"]
-                sector_map[t] = res["sector"]
-                signal_map[t] = res["signal"]
+                sector_map[t] = res.get("sector", "")
+                signal_map[t] = res.get("signal", "중립")
                 cap_map[t]    = res.get("cap_tier", "MID")
                 mcap_map[t]   = res.get("market_cap", 0.0)
-                universe.append(StockUniverse(t, res["name"], res["sleeve"], sector=res["sector"]))
+                universe.append(StockUniverse(
+                    t, res.get("name") or t,
+                    res.get("sleeve") or "CORE", sector=res.get("sector", "")))
+
+            def _run_pool(fn, items, workers, timeout_s):
+                """공통 풀 실행 — (결과 리스트, 예산초과 여부)를 반환."""
+                out: list = []
+                hit = False
+                if not items or timeout_s <= 0:
+                    return out, True
+                ex = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+                try:
+                    futs = [ex.submit(fn, t) for t in items]
+                    try:
+                        for fut in concurrent.futures.as_completed(futs, timeout=timeout_s):
+                            try:
+                                out.append(fut.result())
+                            except Exception:
+                                continue
+                    except concurrent.futures.TimeoutError:
+                        hit = True
+                finally:
+                    try:
+                        ex.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        ex.shutdown(wait=False)
+                return out, hit
 
             _workers = min(SCAN_COLLECT_WORKERS, max(1, len(raw_list)))
-            _ex = concurrent.futures.ThreadPoolExecutor(max_workers=_workers)
-            try:
-                _futs = [_ex.submit(_scan_collect_one, t) for t in raw_list]
-                try:
-                    for _fut in concurrent.futures.as_completed(_futs, timeout=SCAN_COLLECT_BUDGET_S):
-                        try:
-                            _ingest(_fut.result())
-                        except Exception:
-                            continue
-                except concurrent.futures.TimeoutError:
-                    # 예산 초과 — 이미 수집된 종목만으로 진행 (부분 결과 허용)
-                    pass
-            finally:
-                # 미착수 작업 취소, 진행 중 작업은 대기하지 않고 즉시 반환
-                try:
-                    _ex.shutdown(wait=False, cancel_futures=True)
-                except TypeError:
-                    _ex.shutdown(wait=False)   # py<3.9 호환
+            _budget_hit = False
+            # B1: 히스토리 (잔여 예산의 40%)
+            _remain = SCAN_COLLECT_BUDGET_S - (time.time() - _collect_start)
+            _t1 = max(5.0, _remain * 0.40)
+            _b1_res, _b1_hit = _run_pool(_scan_history_one, raw_list, _workers, _t1)
+            for _r in _b1_res:
+                _ingest_history(_r)
+            # B1에서 bulk에 없던 종목은 개별 폴백으로 재시도하지 않고(레이트리밋 방지)
+            # 스냅샷 미확보 종목으로 집계한다.
+            _survivors = list(_hist_hold.keys())
+            # B2: info (잔여 예산 전부, 6워커)
+            _remain2 = SCAN_COLLECT_BUDGET_S - (time.time() - _collect_start)
+            _t2 = max(5.0, _remain2)
+            _b2_res, _b2_hit = _run_pool(_scan_info_one, _survivors, SCAN_INFO_WORKERS, _t2)
+            _b2_done: set = set()
+            for _r in _b2_res:
+                if _r and _r.get("tkr"):
+                    _b2_done.add(_r["tkr"])
+                    _ingest({**_hist_hold[_r["tkr"]], **_r})
+            # B2 예산 초과 시 info 미도착분은 힌트 기본값으로 편입 (기술 분석 유지)
+            for _t in _survivors:
+                if _t not in _b2_done:
+                    _ingest({**_hist_hold[_t], "quality": None, "sector": "",
+                             "signal": "중립", "name": name_hint.get(_t) or _t,
+                             "sleeve": "ETF" if _t in _ETF_SET else "CORE",
+                             "cap_tier": cap_hint.get(_t, "MID"), "market_cap": 0.0})
+            _budget_hit = bool(_b1_hit or _b2_hit)
 
             if not snap_map:
                 return {"error": "데이터 수집 실패 — 네트워크 연결을 확인하거나 잠시 후 다시 시도하세요"}
@@ -18696,6 +18845,25 @@ def route(path: str, params: Dict) -> Dict:
                     {"available": False, "stage": "NONE", "stage_label": "해당 없음"},
                 )
                 cands.append(d)
+
+            # ── 리더 반전 BREAKOUT 승격 (미국 전용): 상태를 진입 준비로 ──
+            # 승격된 행은 진입 트리거·손절가·이격·사이징이 리더 기준으로 교체되고
+            # 원래 값은 orig_* 로 남는다. 점수(BQS/FWS/NCS)는 그대로 둔다.
+            _promoted = 0
+            if market_p == "US" and leader_map:
+                try:
+                    _promoted = int(apply_leader_promotion(
+                        cands, leader_map, equity, risk_pct).get("promoted", 0))
+                except Exception as _pm_e:
+                    print(f"[scan] leader promotion failed ({type(_pm_e).__name__}: {_pm_e})")
+
+            # 승격 반영 후 상태 집계 (요약 카드와 선정 목록 일치용)
+            _post_ready = sum(1 for cd in cands
+                              if cd.get("passes_tech_filters") and cd.get("status") == "READY")
+            _post_watch = sum(1 for cd in cands
+                              if cd.get("passes_tech_filters")
+                              and cd.get("status") in ("WATCH", "WAIT_PULLBACK"))
+            _post_far = sum(1 for cd in cands if cd.get("status") == "FAR")
 
             # ── 출력 선정: 정확히 15개 보장 + 품질 우선 단계적 보강 (한국/미국 동일) ──
             #   모든 후보에 종합점수 부여 후, '품질 등급(tier)'을 순서대로 채운다.
@@ -18752,14 +18920,15 @@ def route(path: str, params: Dict) -> Dict:
                 _sec = _scan_sector_key(cd) or "기타"
                 _sector_dist[_sec] = _sector_dist.get(_sec, 0) + 1
 
+            _unresolved = max(0, len(raw_list) - len(snap_map) - len(_price_capped_out))
             _resp = {
                 "regime":          result.regime,
                 "vol_regime":      result.vol_regime,
                 "total_scanned":   result.total_scanned,
                 "passed_filters":  result.passed_filters,
-                "ready_count":     result.ready_count,
-                "watch_count":     result.watch_count,
-                "far_count":       result.far_count,
+                "ready_count":     _post_ready,
+                "watch_count":     _post_watch,
+                "far_count":       _post_far,
                 "good_count":      len(selected),
                 "premium_count":   _tier_used[1],          # 진입 가능권(최우선) 충족 수
                 "relaxed":         _relaxed,               # 보강 로직 사용 여부
@@ -18768,7 +18937,21 @@ def route(path: str, params: Dict) -> Dict:
                 "tier_distribution":   _tier_dist,
                 "sector_distribution": _sector_dist,
                 "filter_desc":     "진입 가능권 우선 + 품질 등급 단계 보강(정확히 15개) + 시총·섹터 분산(MMR)"
-                                   + (" + 미국 $70 이하" if market_p == "US" else ""),
+                                   + (" + 미국 $70 이하" if market_p == "US" else "")
+                                   + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else ""),
+                "coverage":        {
+                    "universe": len(raw_list),
+                    "collected": len(snap_map),
+                    "price_capped": len(_price_capped_out),
+                    "unresolved": _unresolved,
+                    "budget_hit": _budget_hit,
+                    "full_review": _unresolved == 0,
+                    "note": ("유니버스 전수 검토 완료"
+                             + ("(일부 보조정보 기본값)" if _budget_hit else "")
+                             if _unresolved == 0
+                             else f"수집 시간 예산 초과로 {_unresolved}종목 미수집"),
+                },
+                "promoted_count":  _promoted,
                 "price_cap":       ({
                     "market": "US", "max_price": SCAN_US_MAX_PRICE,
                     "filtered_out": len(_price_capped_out),
@@ -20617,7 +20800,7 @@ input::placeholder{color:#484f58}
             <th style="text-align:center">치명적 약점</th>
             <th style="text-align:center">순복합 점수</th>
             <th style="text-align:center">퀀트 모멘텀 점수</th>
-            <th style="text-align:center">리더 반전</th>
+            <th style="text-align:center" title="상대강도 리더 중 하락을 먼저 멈춘 종목의 반전 신호 — 🔥 돌파(4조건 충족) · 👀 대기(돌파 직전) · 🧱 바닥(조정 중) · —(해당 없음). 점수 미반영 보조 지표">리더 반전</th>
           </tr></thead>
           <tbody id="scan-tbody"></tbody>
         </table>
@@ -27296,6 +27479,20 @@ function renderScanResult(d, market) {
           '<span style="font-weight:700;color:#3fb950">🔥 ' + (d.leader_reversal_counts.BREAKOUT || 0) + '</span>' +
           '<span style="font-weight:700;color:#d29922;margin-left:6px">👀 ' + (d.leader_reversal_counts.WAIT_BREAKOUT || 0) + '</span>'
         : '') +
+      (d.coverage
+        ? '<span style="color:#484f58;font-size:11px;margin-left:16px">검토 범위</span>' +
+          '<span style="font-weight:700;color:#8b949e">' + (d.coverage.collected || 0) + '/' + (d.coverage.universe || 0) + '</span>' +
+          (d.coverage.full_review
+            ? '<span style="font-size:10px;color:#3fb950;margin-left:6px">전수 검토</span>'
+            : '<span style="font-size:10px;color:#d29922;border:1px solid #d2992255;border-radius:3px;padding:0 5px;margin-left:6px">시간 초과로 ' + (d.coverage.unresolved || 0) + '종목 미검토</span>')
+        : '') +
+      (!isKrx
+        ? '<span style="flex-basis:100%;font-size:10px;color:#6e7681;line-height:1.6">리더 반전 읽는 법 — ' +
+          '<b style="color:#3fb950">🔥 돌파</b>=4조건 충족(상승기 시장 초과 +10%p 이상 · 고점 대비 −30% 이상 조정 · 신저가 중단 · 횡보 상단 돌파) · ' +
+          '<b style="color:#d29922">👀 대기</b>=돌파 직전 · ' +
+          '<b style="color:#8b949e">🧱 바닥</b>=조정 진행 중 · —=해당 없음. ' +
+          '배지 아래 수치(초과·조정·상단 이격·진입/손절가)가 근거이며, 점수 미반영 보조 지표로 매수 권유가 아닙니다.</span>'
+        : '') +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
@@ -27363,17 +27560,51 @@ function renderScanResult(d, market) {
     var capBadge = '<span style="font-size:9px;font-weight:700;color:' + capClr +
                    ';border:1px solid ' + capClr + '55;border-radius:3px;padding:0 4px;margin-left:5px">' + capKo + '</span>';
 
-    // 리더주 반전 신호 (미국 전용) — 점수 미반영 보조 지표
+    // 리더 돌파 승격 표시 — 리더 반전으로 진입 준비가 된 행은 상태 배지 옆에 🔥 표식
+    var promotedMark = (c.status_source === 'leader_reversal' && c.status === 'READY')
+      ? '<div title="리더 반전 돌파로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#3fb950;margin-top:2px;white-space:nowrap">🔥 리더 돌파</div>'
+      : '';
+    // 리더주 반전 신호 셀 (미국 전용 보조 지표 — 배지가 곧 신호, 아래 작은 글씨가 근거)
     var lr = c.leader_reversal || {};
     var lrStage = lr.stage || 'NONE';
-    var lrBadge = (function() {
+    var _lrNum = function(v, d) {
+      var n = Number(v);
+      return (v != null && isFinite(n)) ? n.toFixed(d == null ? 1 : d) : null;
+    };
+    var lrCell = (function() {
       var tip = (lr.summary || lr.stage_label || '').replace(/"/g, '&quot;');
-      if (lrStage === 'BREAKOUT')
-        return '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 8px;white-space:nowrap">🔥 돌파</span>';
-      if (lrStage === 'WAIT_BREAKOUT')
-        return '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 대기</span>';
-      if (lrStage === 'BASE_BUILDING')
-        return '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🧱 바닥</span>';
+      if (lrStage === 'BREAKOUT' || lrStage === 'WAIT_BREAKOUT' || lrStage === 'BASE_BUILDING') {
+        var badge = lrStage === 'BREAKOUT'
+          ? '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 8px;white-space:nowrap">🔥 돌파</span>'
+          : lrStage === 'WAIT_BREAKOUT'
+          ? '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 대기</span>'
+          : '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🧱 바닥</span>';
+        // 근거 1줄: 시장 초과수익 · 고점 대비 조정폭 · 횡보 상단 이격
+        var bits = [];
+        var rsTxt = _lrNum(lr.rs_edge_pp);
+        if (rsTxt != null) bits.push('초과 ' + (Number(lr.rs_edge_pp) >= 0 ? '+' : '') + rsTxt + '%p');
+        var ddTxt = _lrNum(lr.drawdown_pct);
+        if (ddTxt != null) bits.push('조정 ' + ddTxt + '%');
+        if ((lrStage === 'BREAKOUT' || lrStage === 'WAIT_BREAKOUT') && c.price != null && lr.range_high) {
+          var gap = (Number(c.price) - Number(lr.range_high)) / Number(lr.range_high) * 100;
+          if (isFinite(gap)) bits.push('상단 ' + (gap >= 0 ? '+' : '') + gap.toFixed(1) + '%');
+        } else if (lrStage === 'BASE_BUILDING' && lr.trough_ago != null) {
+          bits.push('저점 후 ' + lr.trough_ago + '거래일');
+        } else if (lr.market_confirm) {
+          bits.push('시장 역행 확인');
+        }
+        var lines = bits.length
+          ? '<div title="' + tip + '" style="font-size:9px;color:#8b949e;margin-top:3px;line-height:1.5">' + bits.join(' · ') + '</div>'
+          : '';
+        // 진입/손절 참고가 (돌파·대기 단계만)
+        var plan = '';
+        if ((lrStage === 'BREAKOUT' || lrStage === 'WAIT_BREAKOUT') && (lr.entry_trigger != null || lr.stop_price != null)) {
+          var eTxt = lr.entry_trigger != null ? fmtP(lr.entry_trigger) : '—';
+          var sTxt = lr.stop_price != null ? fmtP(lr.stop_price) : '—';
+          plan = '<div style="font-size:9px;color:#6e7681;margin-top:2px;line-height:1.5">진입 ' + eTxt + ' · 손절 ' + sTxt + '</div>';
+        }
+        return badge + lines + plan;
+      }
       return '<span style="font-size:11px;color:#484f58">—</span>';
     })();
 
@@ -27381,7 +27612,7 @@ function renderScanResult(d, market) {
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
       '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
            (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
-      '<td style="text-align:center">' + statusBadge(c.status) + '</td>' +
+      '<td style="text-align:center">' + statusBadge(c.status) + promotedMark + '</td>' +
       '<td style="text-align:right;font-size:13px;font-weight:600">' + fmtP(c.price) + '</td>' +
       '<td style="text-align:right;font-weight:700;color:' + chgClr + '">' + chgTxt + '</td>' +
       '<td><span class="cat-badge">' + cat + '</span></td>' +
@@ -27393,7 +27624,7 @@ function renderScanResult(d, market) {
       '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(qmScore, qmColor) +
            '<div style="font-size:9px;color:' + qmjColor + ';text-align:center;margin-top:2px">품질 ' + qmjLabel + '</div></td>' +
-      '<td style="text-align:center;min-width:64px">' + lrBadge + '</td>' +
+      '<td style="text-align:center;min-width:110px">' + lrCell + '</td>' +
     '</tr>';
   }).join('');
 
