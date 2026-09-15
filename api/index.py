@@ -18315,11 +18315,22 @@ def route(path: str, params: Dict) -> Dict:
             import sys as _sys, os as _os
             _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
             from market_briefing.scan_engine import (
-                StockUniverse, run_full_scan, build_snapshot_from_ohlcv
+                StockUniverse, run_full_scan, build_snapshot_from_ohlcv,
+                SCAN_US_MAX_PRICE, is_scan_price_eligible,
             )
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
             from market_briefing.dual_score_v2 import REGIME_BULLISH, REGIME_BEARISH, REGIME_SIDEWAYS, VOL_NORMAL
+            try:
+                from market_briefing.leader_reversal import detect_leader_reversal
+                _LEADER_AVAILABLE = True
+            except Exception as _leader_e:
+                _LEADER_AVAILABLE = False
+                print(f"[scan] leader_reversal import failed ({type(_leader_e).__name__}: {_leader_e}) — signal disabled")
+
+                def detect_leader_reversal(closes=None, highs=None, lows=None, bench_closes=None):
+                    return {"available": False, "stage": "NONE", "stage_label": "신호 모듈 없음",
+                            "reason": "leader_reversal 모듈을 불러오지 못했습니다."}
 
             market_p = params.get("market", "KRX").upper()
             equity   = float(params.get("equity", 100_000_000))
@@ -18432,6 +18443,17 @@ def route(path: str, params: Dict) -> Dict:
                 ("IONQ", "IonQ", "SMALL"),        ("RKLB", "Rocket Lab", "SMALL"),
                 ("SOFI", "SoFi", "SMALL"),        ("LMND", "Lemonade", "SMALL"),
                 ("CHPT", "ChargePoint", "SMALL"), ("FUBO", "fuboTV", "SMALL"),
+                # ── $70 이하 중·소형 보강 (미국 가격 상한 대응) ──
+                ("INTC", "Intel", "MID"),         ("PFE", "Pfizer", "MID"),
+                ("F", "Ford", "MID"),             ("T", "AT&T", "MID"),
+                ("VZ", "Verizon", "MID"),         ("KMI", "Kinder Morgan", "MID"),
+                ("HAL", "Halliburton", "MID"),
+                ("HPE", "Hewlett Packard", "SMALL"), ("HPQ", "HP", "SMALL"),
+                ("WBD", "Warner Bros", "SMALL"),  ("SNAP", "Snap", "SMALL"),
+                ("AAL", "American Airlines", "SMALL"), ("CCL", "Carnival", "SMALL"),
+                ("LVS", "Las Vegas Sands", "SMALL"), ("MGM", "MGM Resorts", "SMALL"),
+                ("WBA", "Walgreens", "SMALL"),    ("BAX", "Baxter", "SMALL"),
+                ("PARA", "Paramount", "SMALL"),
             ]
 
             # 종목 목록 파싱 — tickers 파라미터 우선, 없으면 시장별 확장 유니버스
@@ -18446,14 +18468,19 @@ def route(path: str, params: Dict) -> Dict:
                 cap_hint  = {t: (tier or "MID").upper() for t, _, tier in triples}
                 # 티어 라운드로빈 인터리브(LARGE→MID→SMALL→…) — 수집 상한 truncation
                 # 시에도 대형/중형/중소형이 고르게 수집되도록 한다.
+                # 단, 미국은 $70 가격 상한으로 대형주가 수집 후 제외되므로
+                # SMALL→MID→LARGE 순으로 모아 상한 내 후보 풀을 우선 확보한다.
                 _by_tier = {"LARGE": [], "MID": [], "SMALL": []}
                 for t, _, tier in triples:
                     _by_tier.setdefault((tier or "MID").upper(), _by_tier["MID"]).append(t)
                 from itertools import zip_longest as _zl
-                raw_list = [
-                    t for grp in _zl(_by_tier["LARGE"], _by_tier["MID"], _by_tier["SMALL"])
-                    for t in grp if t
-                ]
+                if market_p == "US":
+                    raw_list = _by_tier["SMALL"] + _by_tier["MID"] + _by_tier["LARGE"]
+                else:
+                    raw_list = [
+                        t for grp in _zl(_by_tier["LARGE"], _by_tier["MID"], _by_tier["SMALL"])
+                        for t in grp if t
+                    ]
 
             # 스캔 모드별 수집 상한 — 한국/미국 동일 적용 (Vercel 60s 타임아웃 방지)
             #   상수: SCAN_COLLECT_CAP_FULL(48) / SCAN_COLLECT_CAP_LITE(24)
@@ -18465,7 +18492,7 @@ def route(path: str, params: Dict) -> Dict:
             #   동일 (시장·모드·자본·리스크·종목집합) 요청은 5분간 재사용.
             #   refresh=1 파라미터로 강제 갱신 가능.
             _refresh   = str(params.get("refresh", "")).lower() in ("1", "true", "yes")
-            _cache_key = f"scan|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
+            _cache_key = f"scan|v2|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -18584,10 +18611,17 @@ def route(path: str, params: Dict) -> Dict:
 
             # 병렬 수집 — 시간 예산(SCAN_COLLECT_BUDGET_S) 내 도착분만으로 진행.
             #   대형 유니버스(최대 48)라도 느린 종목이 전체를 막지 않도록 하드가드.
+            # ── 미국 가격 상한 ($70 초과 수집분 제외, 실측가 기준) ──
+            _price_capped_out: list = []
+
             def _ingest(res):
                 if not res:
                     return
                 t = res["tkr"]
+                _px = float(getattr(res.get("snap"), "current_price", 0) or 0)
+                if market_p == "US" and not is_scan_price_eligible("US", _px):
+                    _price_capped_out.append({"ticker": t, "price": round(_px, 2)})
+                    return
                 snap_map[t]   = res["snap"]
                 change_map[t] = res["change"]
                 if res["quality"] is not None:
@@ -18621,6 +18655,21 @@ def route(path: str, params: Dict) -> Dict:
             if not snap_map:
                 return {"error": "데이터 수집 실패 — 네트워크 연결을 확인하거나 잠시 후 다시 시도하세요"}
 
+            # ── 리더주 반전 신호 (미국 전용 보조 지표, 점수 미반영) ──
+            leader_map: dict = {}
+            if market_p == "US":
+                for _lt, _lsnap in snap_map.items():
+                    try:
+                        leader_map[_lt] = detect_leader_reversal(
+                            closes=list(_lsnap.closes or []),
+                            highs=list(_lsnap.highs or []),
+                            lows=list(_lsnap.lows or []),
+                            bench_closes=bench_closes,
+                        )
+                    except Exception as _le:
+                        leader_map[_lt] = {"available": False, "stage": "NONE",
+                                           "stage_label": "계산 실패", "reason": str(_le)[:120]}
+
             result = run_full_scan(
                 universe           = [u for u in universe if u.ticker in snap_map],
                 snap_map           = snap_map,
@@ -18642,6 +18691,10 @@ def route(path: str, params: Dict) -> Dict:
                 d["cap_tier"]       = cap_map.get(c.ticker, "MID")
                 d["cap_tier_ko"]    = SCAN_CAP_TIER_KO.get(d["cap_tier"], "중형")
                 d["market_cap"]     = mcap_map.get(c.ticker, 0.0)
+                d["leader_reversal"] = leader_map.get(
+                    c.ticker,
+                    {"available": False, "stage": "NONE", "stage_label": "해당 없음"},
+                )
                 cands.append(d)
 
             # ── 출력 선정: 정확히 15개 보장 + 품질 우선 단계적 보강 (한국/미국 동일) ──
@@ -18714,7 +18767,20 @@ def route(path: str, params: Dict) -> Dict:
                 "display_cap":     SCAN_DISPLAY_CAP,
                 "tier_distribution":   _tier_dist,
                 "sector_distribution": _sector_dist,
-                "filter_desc":     "진입 가능권 우선 + 품질 등급 단계 보강(정확히 15개) + 시총·섹터 분산(MMR)",
+                "filter_desc":     "진입 가능권 우선 + 품질 등급 단계 보강(정확히 15개) + 시총·섹터 분산(MMR)"
+                                   + (" + 미국 $70 이하" if market_p == "US" else ""),
+                "price_cap":       ({
+                    "market": "US", "max_price": SCAN_US_MAX_PRICE,
+                    "filtered_out": len(_price_capped_out),
+                    "excluded": sorted(
+                        _price_capped_out, key=lambda x: -x["price"])[:15],
+                    "note": f"미국 종목은 ${SCAN_US_MAX_PRICE:.0f} 초과 시 출력에서 제외됩니다",
+                } if market_p == "US" else None),
+                "leader_reversal_counts": ({
+                    stage: sum(1 for cd in selected
+                               if (cd.get("leader_reversal") or {}).get("stage") == stage)
+                    for stage in ("BREAKOUT", "WAIT_BREAKOUT", "BASE_BUILDING", "NONE")
+                } if market_p == "US" else None),
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
@@ -20551,6 +20617,7 @@ input::placeholder{color:#484f58}
             <th style="text-align:center">치명적 약점</th>
             <th style="text-align:center">순복합 점수</th>
             <th style="text-align:center">퀀트 모멘텀 점수</th>
+            <th style="text-align:center">리더 반전</th>
           </tr></thead>
           <tbody id="scan-tbody"></tbody>
         </table>
@@ -27220,6 +27287,15 @@ function renderScanResult(d, market) {
           '<span style="font-weight:700;color:#3fb950">' + d.premium_count + '</span>' +
           (d.relaxed ? '<span style="font-size:10px;color:#d29922;border:1px solid #d2992255;border-radius:3px;padding:0 5px;margin-left:6px">관찰 후보 보강</span>' : '')
         : '') +
+      (d.price_cap
+        ? '<span style="font-size:10px;color:#58a6ff;border:1px solid #58a6ff55;border-radius:3px;padding:0 5px;margin-left:6px">$' + d.price_cap.max_price + ' 이하만 표시' +
+          (d.price_cap.filtered_out ? ' · ' + d.price_cap.filtered_out + '종목 제외' : '') + '</span>'
+        : '') +
+      (d.leader_reversal_counts && (d.leader_reversal_counts.BREAKOUT || d.leader_reversal_counts.WAIT_BREAKOUT)
+        ? '<span style="color:#484f58;font-size:11px;margin-left:16px">리더 반전</span>' +
+          '<span style="font-weight:700;color:#3fb950">🔥 ' + (d.leader_reversal_counts.BREAKOUT || 0) + '</span>' +
+          '<span style="font-weight:700;color:#d29922;margin-left:6px">👀 ' + (d.leader_reversal_counts.WAIT_BREAKOUT || 0) + '</span>'
+        : '') +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
@@ -27228,7 +27304,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
     return;
   }
 
@@ -27287,6 +27363,20 @@ function renderScanResult(d, market) {
     var capBadge = '<span style="font-size:9px;font-weight:700;color:' + capClr +
                    ';border:1px solid ' + capClr + '55;border-radius:3px;padding:0 4px;margin-left:5px">' + capKo + '</span>';
 
+    // 리더주 반전 신호 (미국 전용) — 점수 미반영 보조 지표
+    var lr = c.leader_reversal || {};
+    var lrStage = lr.stage || 'NONE';
+    var lrBadge = (function() {
+      var tip = (lr.summary || lr.stage_label || '').replace(/"/g, '&quot;');
+      if (lrStage === 'BREAKOUT')
+        return '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 8px;white-space:nowrap">🔥 돌파</span>';
+      if (lrStage === 'WAIT_BREAKOUT')
+        return '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 대기</span>';
+      if (lrStage === 'BASE_BUILDING')
+        return '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🧱 바닥</span>';
+      return '<span style="font-size:11px;color:#484f58">—</span>';
+    })();
+
     return '<tr onclick="openStockDetail(\'' + c.ticker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
       '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
@@ -27303,6 +27393,7 @@ function renderScanResult(d, market) {
       '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(qmScore, qmColor) +
            '<div style="font-size:9px;color:' + qmjColor + ';text-align:center;margin-top:2px">품질 ' + qmjLabel + '</div></td>' +
+      '<td style="text-align:center;min-width:64px">' + lrBadge + '</td>' +
     '</tr>';
   }).join('');
 

@@ -69,6 +69,23 @@ TIER_MULTIPLIER = {
     "unknown": 0.5,
 }
 
+# ── 시장별 가격 상한 (출력 필터) ─────────────────────────────────────────────
+# 미국 스캔은 $70 초과 종목을 출력에서 제외한다 (수집 후 실측가 기준).
+SCAN_US_MAX_PRICE = 70.0
+
+
+def is_scan_price_eligible(market: str, price: Any) -> bool:
+    """스캔 출력 가격 상한 판정. US는 $70 초과 제외, KRX는 제한 없음."""
+    if str(market or "").upper() != "US":
+        return True
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(value) or value <= 0:
+        return False
+    return value <= SCAN_US_MAX_PRICE
+
 
 # ── 데이터 구조 ───────────────────────────────────────────────────────────────
 
