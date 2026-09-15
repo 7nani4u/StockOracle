@@ -15,26 +15,66 @@
 #   cross_reference   → 스캔 × 분석 교차 참조 + 최종 점수
 #   dashboard_payload → 대시보드 커맨드 센터 상태 페이로드
 
-from .core_summary import build_core_summary
-from .sector_flow import build_sector_flow
-from .stock_analyzer import analyze_stock, classify_prediction, build_stock_report
-from .dual_score_v2 import (
-    SnapshotRow, score_row, score_all,
-    compute_bqs, compute_fws, compute_penalties, compute_ncs, action_note,
-    calc_hurst_v2, compute_bis_from_candle, compute_chasing_flags,
-    calc_dual_regime_score,
-)
-from .quality_filter import (
-    QualityFilterResult, score_quality, get_quality_score_from_info,
-    get_conviction_bonus,
-)
-from .scan_engine import (
-    StockUniverse, TechnicalSnapshot, ScanCandidate, ScanResult,
-    run_full_scan, build_snapshot_from_ohlcv,
-    run_technical_filters, classify_candidate, rank_candidate,
-    check_anti_chase, check_pullback_continuation,
-    calculate_position_size,
-)
+# 핵심 모듈도 개별 실패가 패키지 전체 import를 깨뜨리지 않게 보호한다.
+# (예: 배포 누락·의존성 미설치 시 from market_briefing.X 가 ModuleNotFoundError로 번지는 문제 방지)
+try:
+    from .core_summary import build_core_summary
+    _CORE_AVAILABLE = True
+except Exception:
+    _CORE_AVAILABLE = False
+    build_core_summary = None
+try:
+    from .sector_flow import build_sector_flow
+    _SECTOR_AVAILABLE = True
+except Exception:
+    _SECTOR_AVAILABLE = False
+    build_sector_flow = None
+try:
+    from .stock_analyzer import analyze_stock, classify_prediction, build_stock_report
+    _ANALYZER_AVAILABLE = True
+except Exception:
+    _ANALYZER_AVAILABLE = False
+    analyze_stock = classify_prediction = build_stock_report = None
+try:
+    from .dual_score_v2 import (
+        SnapshotRow, score_row, score_all,
+        compute_bqs, compute_fws, compute_penalties, compute_ncs, action_note,
+        calc_hurst_v2, compute_bis_from_candle, compute_chasing_flags,
+        calc_dual_regime_score,
+    )
+    _DUAL_AVAILABLE = True
+except Exception:
+    _DUAL_AVAILABLE = False
+    SnapshotRow = score_row = score_all = None
+    compute_bqs = compute_fws = compute_penalties = compute_ncs = action_note = None
+    calc_hurst_v2 = compute_bis_from_candle = compute_chasing_flags = None
+    calc_dual_regime_score = None
+try:
+    from .quality_filter import (
+        QualityFilterResult, score_quality, get_quality_score_from_info,
+        get_conviction_bonus,
+    )
+    _QUALITY_AVAILABLE = True
+except Exception:
+    _QUALITY_AVAILABLE = False
+    QualityFilterResult = score_quality = get_quality_score_from_info = None
+    get_conviction_bonus = None
+try:
+    from .scan_engine import (
+        StockUniverse, TechnicalSnapshot, ScanCandidate, ScanResult,
+        run_full_scan, build_snapshot_from_ohlcv,
+        run_technical_filters, classify_candidate, rank_candidate,
+        check_anti_chase, check_pullback_continuation,
+        calculate_position_size,
+    )
+    _SCAN_AVAILABLE = True
+except Exception:
+    _SCAN_AVAILABLE = False
+    StockUniverse = TechnicalSnapshot = ScanCandidate = ScanResult = None
+    run_full_scan = build_snapshot_from_ohlcv = None
+    run_technical_filters = classify_candidate = rank_candidate = None
+    check_anti_chase = check_pullback_continuation = None
+    calculate_position_size = None
 
 # ── 신규 통합 모듈 (graceful fallback) ────────────────────────────────────────
 
@@ -156,4 +196,6 @@ __all__ = [
     "_PORTFOLIO_AVAILABLE", "_IMMUNE_AVAILABLE",
     "_CROSS_REF_AVAILABLE", "_DASHBOARD_AVAILABLE", "_CONFIDENCE_ENGINE_AVAILABLE",
     "_ML_FEATURES_AVAILABLE", "_ML_PREDICTOR_AVAILABLE", "_ML_EVALUATE_AVAILABLE",
+    "_CORE_AVAILABLE", "_SECTOR_AVAILABLE", "_ANALYZER_AVAILABLE",
+    "_DUAL_AVAILABLE", "_QUALITY_AVAILABLE", "_SCAN_AVAILABLE",
 ]

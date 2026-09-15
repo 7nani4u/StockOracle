@@ -454,17 +454,24 @@ def get_key_metrics(info: Dict[str, Any], naver: Dict[str, Any], market: str) ->
         market_cap = _safe_float(info.get("marketCap"))
         if market_cap is None:
             market_cap = _safe_float(naver.get("market_cap_raw"))
-    # ROE
-    roe = _safe_float(info.get("returnOnEquity"))
-    if roe is None:
+    # ROE: KRX는 네이버 연간 실적 ROE(% 단위)를 우선한다. yfinance의 국내 종목 returnOnEquity는
+    # 산출 기간·기준이 달라 네이버 공시 기준(예: 삼성전자 10.85%)과 크게 어긋나는 사례가 있다.
+    roe = None
+    if str(market).upper() == "KRX":
         roe = _safe_float(naver.get("roe"))
-        if roe is not None and roe > 1:
-            roe = roe / 100
-    if roe is not None and 0 < roe < 10:
-        roe = roe * 100
-    # DY
-    dy = _safe_float(info.get("dividendYield"))
-    if dy is None:
+    if roe is None:
+        yf_roe = _safe_float(info.get("returnOnEquity"))
+        if yf_roe is not None:
+            # yfinance 는 비율(0.3079, -0.05)로 제공 → 퍼센트로 환산 (음수 ROE 포함)
+            roe = yf_roe * 100 if abs(yf_roe) < 5 else yf_roe
+        else:
+            roe = _safe_float(naver.get("roe"))
+    # DY: KRX는 네이버 배당수익률(%)을 우선
+    dy_from_naver = _safe_float(naver.get("dividend_yield")) if str(market).upper() == "KRX" else None
+    dy = dy_from_naver if dy_from_naver is not None else _safe_float(info.get("dividendYield"))
+    if dy_from_naver is not None:
+        pass
+    elif dy is None:
         dy = _safe_float(info.get("trailingAnnualDividendYield"))
         # trailingAnnualDividendYield는 항상 소수(0.0033)이므로 *100 필요
         if dy is not None and 0 < dy < 1:

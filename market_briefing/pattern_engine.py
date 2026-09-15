@@ -509,11 +509,20 @@ class PatternEngine:
     def _description(name: str, status: str, neckline: Mapping[str, Any] | None, invalidation: float | None) -> str:
         state = {"forming": "형성 중", "awaiting_breakout": "돌파 대기", "confirmed": "확정",
                  "invalidated": "무효화", "expired": "만료"}.get(status, status)
+        def _price_text(value: float) -> str:
+            # ',.4g'는 259,800 같은 원화 가격을 2.598e+05 로 표시했다. 크기에 맞춰 고정 소수로 표기한다.
+            number = float(value)
+            if abs(number) >= 1000:
+                return f"{number:,.0f}"
+            if abs(number) >= 1:
+                return f"{number:,.2f}"
+            return f"{number:.4f}"
+
         pieces = [f"{name} · {state}"]
         if neckline and neckline.get("breakout_price") is not None:
-            pieces.append(f"확인선 {float(neckline['breakout_price']):,.4g}")
+            pieces.append(f"확인선 {_price_text(neckline['breakout_price'])}")
         if invalidation is not None:
-            pieces.append(f"무효화 {float(invalidation):,.4g}")
+            pieces.append(f"무효화 {_price_text(invalidation)}")
         return " | ".join(pieces)
 
     def _lifecycle_status(

@@ -147,18 +147,59 @@ except:
 
 warnings.filterwarnings("ignore")
 
+# ── 프로젝트 루트 경로 보장 ──────────────────────────────────────────────
+# Vercel·로컬 실행기의 cwd가 api/ 또는 루트 어디든 market_briefing을 찾을 수 있게 한다.
+# (미등록 신규모듈이 배포에 빠져도 ModuleNotFoundError 위치를 특정할 수 있게 로그 유지)
+try:
+    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _PROJECT_ROOT and _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
+except Exception:
+    try:
+        _PROJECT_ROOT = os.getcwd()
+    except Exception:
+        _PROJECT_ROOT = ""
+
 # ── 의존성 ───────────────────────────────────────────────────────────────────
 import pandas as pd
 import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
-from market_briefing.dynamic_rsi import (
-    add_dynamic_rsi_features,
-    dynamic_rsi_daily_snapshot,
-    dynamic_rsi_signal_card,
-    dynamic_rsi_snapshot,
-)
+try:
+    from market_briefing.dynamic_rsi import (
+        add_dynamic_rsi_features,
+        dynamic_rsi_daily_snapshot,
+        dynamic_rsi_signal_card,
+        dynamic_rsi_snapshot,
+    )
+    _DRSI_AVAILABLE = True
+except Exception as _drsi_e:
+    _DRSI_AVAILABLE = False
+    print(f"[init] dynamic_rsi import failed ({type(_drsi_e).__name__}: {_drsi_e}) — stub fallback")
+
+    def add_dynamic_rsi_features(frame, market="US", config=None):
+        return frame
+
+    def _drsi_unavailable(reason="동적 RSI 모듈을 불러오지 못했습니다."):
+        return {
+            "available": False, "reason": reason,
+            "purchase_timing": {
+                "state": "unavailable", "tone": "neutral", "label": "계산 불가",
+                "window": "", "eligible_now": False,
+                "conditions_met": 0, "conditions_total": 3,
+                "conditions": [], "is_probability": False,
+            },
+        }
+
+    def dynamic_rsi_daily_snapshot(dd=None, market="US"):
+        return _drsi_unavailable()
+
+    def dynamic_rsi_snapshot(dd=None, market="US"):
+        return _drsi_unavailable()
+
+    def dynamic_rsi_signal_card(dd=None, market="US"):
+        return None
 try:
     from market_briefing.investment_charm import compute_charm_scores, get_key_metrics
     from market_briefing.charm_ranking import enrich_charm_with_ranks
@@ -226,6 +267,203 @@ def _ml_validation_status() -> tuple[bool, str]:
     except Exception:
         pass
     return False, "missing_holdout_validation"
+
+
+# ── 예측 변동성 헬퍼 (forecast_model) 강건 로더 ─────────────────────────────
+# build_prediction_outlook은 market_briefing/__init__을 거치지 않고 forecast_model.py를
+# 직접 읽어 들인다. 패키지 init의 무거운 의존성(sklearn 등) 하나가 깨져도 예측 탭 전체가
+# ModuleNotFoundError로 무너지지 않게 하고, 파일 자체가 배포에서 빠져도 순수 stdlib
+# 폴백으로 가격 범위·터치 확률을 계속 계산한다.
+_NEWS_HELPERS: Dict[str, Any] = {}
+
+
+def _load_news_helpers() -> Dict[str, Any]:
+    """company_name_terms/is_relevant_title/normalize_news_items 반환 (캐시).
+    패키지 init 실패 시 forecast_model.py를 파일 직접 로드로 우회한다."""
+    if _NEWS_HELPERS:
+        return _NEWS_HELPERS
+    try:
+        from market_briefing.forecast_model import (
+            company_name_terms as _terms,
+            is_relevant_title as _rel,
+            normalize_news_items as _norm,
+        )
+        _NEWS_HELPERS.update({
+            "company_name_terms": _terms, "is_relevant_title": _rel,
+            "normalize_news_items": _norm, "basis": "package",
+        })
+        return _NEWS_HELPERS
+    except Exception as _pkg_e:
+        print(f"[init] news helpers package import failed ({type(_pkg_e).__name__}: {_pkg_e}) — file-direct fallback")
+    try:
+        import importlib.util as _ilu2
+        _fm_path2 = os.path.join(_PROJECT_ROOT, "market_briefing", "forecast_model.py")
+        _spec2 = _ilu2.spec_from_file_location("stockoracle_forecast_news", _fm_path2)
+        if _spec2 is None or _spec2.loader is None:
+            raise ImportError(f"spec not found: {_fm_path2}")
+        _fm2 = _ilu2.module_from_spec(_spec2)
+        _spec2.loader.exec_module(_fm2)
+        _NEWS_HELPERS.update({
+            "company_name_terms": _fm2.company_name_terms,
+            "is_relevant_title": _fm2.is_relevant_title,
+            "normalize_news_items": _fm2.normalize_news_items,
+            "basis": "file-direct",
+        })
+        return _NEWS_HELPERS
+    except Exception as _file_e:
+        print(f"[init] news helpers file-direct load failed ({type(_file_e).__name__}: {_file_e})")
+    return _NEWS_HELPERS
+
+
+_FORECAST_HELPERS: Dict[str, Any] = {}
+_FORECAST_HELPERS_ERROR: str = ""
+
+
+def _load_forecast_helpers() -> Dict[str, Any]:
+    """Z_P90/Z_P95/blended_daily_sigma/build_forecast_summary/touch_* 반환 (캐시)."""
+    global _FORECAST_HELPERS_ERROR
+    if _FORECAST_HELPERS:
+        return _FORECAST_HELPERS
+    try:
+        from market_briefing.forecast_model import (
+            Z_P90 as _Z90, Z_P95 as _Z95,
+            blended_daily_sigma as _blend,
+            build_forecast_summary as _summary,
+            touch_day_window as _window,
+            touch_probability as _touch,
+        )
+        _FORECAST_HELPERS.update({
+            "Z_P90": _Z90, "Z_P95": _Z95,
+            "blended_daily_sigma": _blend,
+            "build_forecast_summary": _summary,
+            "touch_day_window": _window,
+            "touch_probability": _touch,
+            "basis": "market_briefing.forecast_model",
+        })
+        return _FORECAST_HELPERS
+    except Exception as _pkg_e:
+        _FORECAST_HELPERS_ERROR = f"{type(_pkg_e).__name__}: {_pkg_e}"
+        print(f"[init] forecast_model package import failed ({_FORECAST_HELPERS_ERROR}) — file-direct fallback")
+    try:
+        import importlib.util as _ilu
+        _fm_path = os.path.join(_PROJECT_ROOT, "market_briefing", "forecast_model.py")
+        _spec = _ilu.spec_from_file_location("stockoracle_forecast_model", _fm_path)
+        if _spec is None or _spec.loader is None:
+            raise ImportError(f"spec not found: {_fm_path}")
+        _fm = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_fm)
+        _FORECAST_HELPERS.update({
+            "Z_P90": _fm.Z_P90, "Z_P95": _fm.Z_P95,
+            "blended_daily_sigma": _fm.blended_daily_sigma,
+            "build_forecast_summary": _fm.build_forecast_summary,
+            "touch_day_window": _fm.touch_day_window,
+            "touch_probability": _fm.touch_probability,
+            "basis": "file-direct forecast_model.py",
+        })
+        return _FORECAST_HELPERS
+    except Exception as _file_e:
+        _FORECAST_HELPERS_ERROR = f"{type(_file_e).__name__}: {_file_e}"
+        print(f"[init] forecast_model file-direct load failed ({_FORECAST_HELPERS_ERROR}) — stdlib fallback")
+    # ── 최후 폴백: stdlib-only 최소 구현 (forecast_model.py 로직과 동일 수식) ──
+    _F_Z90, _F_Z95 = 1.2815515655446004, 1.6448536269514722
+
+    def _f_cdf(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    def _f_blend(closes, last_price, atr, atr_observed=True) -> dict:
+        vals = []
+        try:
+            for c in (closes or []):
+                v = float(c)
+                if math.isfinite(v) and v > 0:
+                    vals.append(v)
+        except (TypeError, ValueError):
+            vals = []
+        rets = [math.log(b / a) for a, b in zip(vals[:-1], vals[1:])][-60:]
+        realized, n = None, len(rets)
+        if n >= 15:
+            m = sum(rets) / n
+            realized = math.sqrt(max(sum((r - m) ** 2 for r in rets) / (n - 1), 0.0))
+        atr_s = None
+        try:
+            a = float(atr)
+            if math.isfinite(a) and a > 0 and last_price > 0:
+                atr_s = a / last_price / 1.596
+        except (TypeError, ValueError):
+            atr_s = None
+        if realized is not None and atr_s is not None and atr_observed:
+            sig = math.sqrt(0.5 * realized ** 2 + 0.5 * atr_s ** 2)
+            basis = f"최근 {n}일 실현 변동성 + ATR 결합(폴백)"
+        elif realized is not None:
+            sig, basis = realized, f"최근 {n}일 실현 변동성(폴백)"
+        elif atr_s is not None:
+            sig, basis = atr_s, "ATR 기반 추정(폴백)"
+        else:
+            return {"sigma": None, "basis": "변동성 산출 불가(폴백)", "observations": n,
+                    "realized": None, "atr_based": None}
+        return {"sigma": max(sig, 0.002), "basis": basis, "observations": n,
+                "realized": realized, "atr_based": atr_s}
+
+    def _f_touch(price, level, sigma_d, days):
+        try:
+            if not price or not level or price <= 0 or level <= 0 or not sigma_d or sigma_d <= 0 or days <= 0:
+                return None
+            gap = abs(math.log(level / price))
+            if gap == 0:
+                return 1.0
+            return max(0.0, min(1.0, 2.0 * (1.0 - _f_cdf(gap / (sigma_d * math.sqrt(days))))))
+        except (TypeError, ValueError):
+            return None
+
+    def _f_window(price, level, sigma_d, horizon_days):
+        try:
+            if not price or not level or price <= 0 or level <= 0 or not sigma_d or sigma_d <= 0:
+                return {"days": [1, max(1, horizon_days)], "within_horizon": False, "basis": "변동성 미확보"}
+            z = abs(math.log(level / price)) / sigma_d
+            early = max(1, math.ceil((z / 1.1503493803760079) ** 2))
+            typ = max(early, math.ceil((z / 0.6744897501960817) ** 2))
+            h = max(1, int(horizon_days))
+            return {"days": [min(early, h), min(typ, h)], "raw_days": [early, typ],
+                    "within_horizon": typ <= h, "basis": "무추세 변동성 기준(폴백)"}
+        except (TypeError, ValueError):
+            return {"days": [1, max(1, horizon_days)], "within_horizon": False, "basis": "변동성 미확보"}
+
+    def _f_summary(*, last_price, sigma_daily, horizon_days, up_prob, down_prob, tilt=0.35):
+        try:
+            if not sigma_daily or sigma_daily <= 0 or not last_price or last_price <= 0 or horizon_days <= 0:
+                return None
+            sh = sigma_daily * math.sqrt(horizon_days)
+            edge = max(-1.0, min(1.0, (float(up_prob) - float(down_prob)) / 100.0))
+            drift = edge * tilt * sh
+
+            def _px(z):
+                return last_price * math.exp(drift + z * sh)
+
+            if up_prob >= down_prob + 8:
+                dk, dl = "up", "상승 우위"
+            elif down_prob >= up_prob + 8:
+                dk, dl = "down", "하락 우위"
+            else:
+                dk, dl = "neutral", "중립"
+            unc = "낮음" if sh < 0.05 else "보통" if sh < 0.10 else "높음" if sh < 0.18 else "매우 높음"
+            return {"base_price": _px(0.0),
+                    "expected_return_pct": (_px(0.0) / last_price - 1.0) * 100.0,
+                    "range_p10_p90": [_px(-_F_Z90), _px(_F_Z90)],
+                    "range_p05_p95": [_px(-_F_Z95), _px(_F_Z95)],
+                    "sigma_daily_pct": sigma_daily * 100.0, "sigma_horizon_pct": sh * 100.0,
+                    "direction_key": dk, "direction": dl, "edge": edge, "uncertainty": unc}
+        except (TypeError, ValueError):
+            return None
+
+    _FORECAST_HELPERS.update({
+        "Z_P90": _F_Z90, "Z_P95": _F_Z95,
+        "blended_daily_sigma": _f_blend,
+        "build_forecast_summary": _f_summary,
+        "touch_day_window": _f_window,
+        "touch_probability": _f_touch,
+        "basis": "stdlib fallback",
+    })
+    return _FORECAST_HELPERS
 
 
 # yfinance 타임아웃 및 차단 방지를 위한 전역 설정 (session 래핑 제거)
@@ -14738,6 +14976,225 @@ def build_peer_industry_outlook(symbol: str, market: str, company: str = "", sec
     }
 
 
+def _degraded_prediction_outlook(
+    *, symbol: str, market: str, dd: Dict, last_price: float, prev_close: float,
+    pct_change: float, atr: float, regime: str, score: float,
+    prob_up: float, prob_down: float, pivot_points: Dict | None,
+    indicator_signals: Dict | None, buy_price: Dict | None,
+    target_price: Dict | None, pullback_analysis: Dict | None,
+    signal_confidence: Dict | None, investor_flow: Dict | None,
+    ai_strategy: Dict | None, candlestick_patterns: list | None,
+    naver: Dict | None, toss_industry: Dict | None, event_risk: Dict | None,
+    period: str = "1mo", dynamic_rsi: Dict | None = None,
+    data_warnings: List[str] | None = None, error: BaseException | None = None,
+) -> Dict:
+    """build_prediction_outlook이 예외로 중단될 때 쓰는 축소판.
+
+    이미 계산된 값(현재가·ATR·지지/저항 후보·수급·AI 문구)만으로 5개 섹션의 뼈대를
+    채워 프론트가 빈 카드로 남지 않게 한다. 수치는 '잠정·참고'임을 명시한다.
+    절대 raise하지 않는다.
+    """
+    try:
+        rnd = 2 if market == "US" else 0
+        err_detail = f"{type(error).__name__}: {error}" if error is not None else "상세不明"
+        if len(err_detail) > 220:
+            err_detail = err_detail[:220] + "…"
+
+        def _fnum(v):
+            try:
+                f = float(v)
+                return f if math.isfinite(f) and f > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        _atr = _fnum(atr) or (abs(float(last_price or 0)) * 0.02 if last_price else 1.0)
+        _last = float(last_price or 0) or 0.0
+        classic = (pivot_points or {}).get("classic") or {}
+        zones = (pullback_analysis or {}).get("zones") or {}
+        sup_cands = [x for x in [
+            _fnum(classic.get(k)) for k in ("S1", "S2", "S3")
+        ] + [
+            _fnum((zones.get("core") or {}).get("low")),
+            _fnum((zones.get("defense") or {}).get("low")),
+        ] if x is not None and (_last <= 0 or x < _last)]
+        res_cands = [x for x in [
+            _fnum(classic.get(k)) for k in ("R1", "R2", "R3")
+        ] + [
+            _fnum((zones.get("resistance") or {}).get("high")),
+        ] if x is not None and (_last <= 0 or x > _last)]
+        support = max(sup_cands) if sup_cands else max(0.01, _last - _atr)
+        resistance = min(res_cands) if res_cands else (_last + _atr if _last else _atr)
+        stop = _fnum((pullback_analysis or {}).get("stop_loss")) or max(0.01, support - _atr * 0.5)
+        stop = min(stop, support) if support > 0 else stop
+
+        try:
+            _pu, _pd = float(prob_up or 0), float(prob_down or 0)
+        except (TypeError, ValueError):
+            _pu, _pd = 50.0, 50.0
+        _tot = max(_pu + _pd, 1.0)
+        side = 20
+        up = int(round((100 - side) * (_pu / _tot)))
+        down = 100 - side - up
+
+        def _pl(v: float) -> str:
+            try:
+                return f"{v:,.0f}원" if market == "KRX" else f"${v:,.2f}"
+            except (TypeError, ValueError):
+                return "—"
+
+        t_lo = _fnum((target_price or {}).get("min_price")) or resistance
+        t_hi = _fnum((target_price or {}).get("max_price")) or max(t_lo, resistance + _atr)
+        if t_lo > t_hi:
+            t_lo, t_hi = t_hi, t_lo
+        horizon_label = {"1d": "1거래일", "3d": "3거래일", "1wk": "1주", "1mo": "1개월",
+                         "3mo": "3개월", "6mo": "6개월", "1y": "1년"}.get(str(period), "1개월")
+        try:
+            _score = float(score or 50)
+        except (TypeError, ValueError):
+            _score = 50.0
+        trend_label = "단기 상승 우위" if _score >= 60 else "단기 하락 우위" if _score <= 40 else "방향 확인 구간"
+        trend_tone = "positive" if _score >= 60 else "negative" if _score <= 40 else "neutral"
+        atr_pct = (_atr / _last * 100.0) if _last > 0 else 0.0
+
+        flow = investor_flow or {}
+        flow_txt = ""
+        if market == "KRX" and flow.get("ok"):
+            try:
+                f2 = int(round(float(str(flow.get("외국인", 0)).replace(",", "")) or 0))
+                i2 = int(round(float(str(flow.get("기관", 0)).replace(",", "")) or 0))
+                flow_txt = f"외국인 {f2:+,}주 · 기관 {i2:+,}주"
+            except (TypeError, ValueError):
+                flow_txt = "수급 데이터 일부 확인"
+
+        ai_lines: list[str] = []
+        if isinstance(ai_strategy, dict):
+            ai_lines = [s.strip() for s in str(ai_strategy.get("result") or "").split(" | ") if s.strip()][:4]
+        ind_sum = (indicator_signals or {}).get("summary") or {}
+        if ind_sum.get("overall_label"):
+            ai_lines.append(f"기술지표 종합: {ind_sum['overall_label']}")
+        flags = (pullback_analysis or {}).get("manipulation_flags") or []
+        candle_names = [str(p.get("name")) for p in (candlestick_patterns or []) if p.get("name")][:3]
+
+        facts: list[dict] = []
+        if market == "KRX":
+            facts.append({"label": "종목 중기 구조",
+                          "value": {"BULL": "중기 상승", "BEAR": "중기 약세"}.get(regime, "중립"),
+                          "detail": "해당 종목의 60일·120일 가격 구조 기준(잠정)", "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
+            if flow.get("ok") and flow_txt:
+                facts.append({"label": "외국인·기관", "value": "수급 참고", "detail": flow_txt, "tone": "neutral"})
+            industry = ((naver or {}).get("industry") or (naver or {}).get("sector")
+                        or (toss_industry or {}).get("industry") or (toss_industry or {}).get("sector"))
+            if industry:
+                facts.append({"label": "업종", "value": str(industry), "detail": "종목 분류 정보(잠정)", "tone": "neutral"})
+        else:
+            facts.append({"label": "종목 중기 구조",
+                          "value": {"BULL": "중기 상승", "BEAR": "중기 약세"}.get(regime, "중립"),
+                          "detail": "해당 종목의 60일·120일 가격 구조 기준(잠정)", "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
+        gaps = [f"상세 예측 계산 중단({err_detail}) — 아래는 기확보 지표 기준 잠정 범위"]
+        for w in (data_warnings or []):
+            if w and str(w) not in gaps:
+                gaps.append(str(w))
+
+        scenarios = [
+            {"key": "upside", "label": "상승 시나리오(잠정)", "tone": "positive", "probability": up,
+             "price_range": [round(t_lo, rnd), round(t_hi, rnd)],
+             "expected_days": [2, 10],
+             "summary": "저항 돌파와 거래량 회복이 함께 확인될 때만 유효한 잠정 범위입니다.",
+             "conditions": [f"저항 {_pl(resistance)} 위 종가 마감", "최근 평균 대비 거래량 증가 동반"],
+             "checks": [{"label": "확인 가격", "value": round(resistance, rnd), "note": "저항 돌파 여부"}],
+             "response": "돌파 확인 전 추격은 보류합니다."},
+            {"key": "sideways", "label": "중립·횡보 시나리오(잠정)", "tone": "neutral", "probability": side,
+             "price_range": [round(min(support, resistance), rnd), round(max(support, resistance), rnd)],
+             "expected_days": [1, 8],
+             "summary": "지지와 저항 사이 박스권 대응이 우선인 잠정 범위입니다.",
+             "conditions": [f"{_pl(min(support, resistance))}~{_pl(max(support, resistance))} 사이 종가 유지"],
+             "checks": [{"label": "박스권", "text": "지지·저항 내 움직임 확인"}],
+             "response": "하단 지지 또는 상단 돌파를 확인합니다."},
+            {"key": "downside", "label": "하락 시나리오(잠정)", "tone": "negative", "probability": down,
+             "price_range": [round(max(0.01, stop), rnd), round(support, rnd)],
+             "expected_days": [2, 10],
+             "summary": "지지 이탈 시 진입 시나리오를 무효화하는 잠정 범위입니다.",
+             "conditions": [f"지지 {_pl(support)} 아래 종가 이탈"],
+             "checks": [{"label": "손실 제한", "value": round(max(0.01, stop), rnd), "note": "잠정 손절 참고가"}],
+             "response": "지지 이탈 시 손절·현금 비중 관리를 우선합니다."},
+        ]
+        return {
+            "decision": {
+                "key": "watch", "label": "예측 분석 제한", "tone": "neutral",
+                "direction": "중립",
+                "summary": ("상세 예측 계산이 중단되어 기확보 지표 기준 잠정 범위를 표시합니다. "
+                            "차트·진단·뉴스 결과는 계속 표시합니다."),
+                "confidence": 50.0, "confidence_interval": [40.0, 60.0],
+                "confidence_note": "축소 모드 참고 신뢰도 — 상세 계산 복구 후 갱신",
+                "tp_confidence": 50.0,
+                "tp_confidence_note": "잠정 범위 — 방향 신뢰도와 분리",
+            },
+            "status": [
+                {"key": "position", "label": "현재가 위치",
+                 "value": f"전일 대비 {float(pct_change or 0):+.2f}%", "tone": "neutral",
+                 "detail": f"지지 {_pl(support)} · 저항 {_pl(resistance)} 기준 잠정",
+                 "help": "최근 가격 구조 기준 잠정 위치"},
+                {"key": "trend", "label": "단기 추세", "value": trend_label, "tone": trend_tone,
+                 "detail": f"종합 점수 {_score:.0f}점 기준 잠정", "help": "이동평균·RSI·MACD 종합 방향(잠정)"},
+                {"key": "volume", "label": "거래량", "value": "거래량 확인 필요", "tone": "neutral",
+                 "detail": "축소 모드에서는 거래량 가중치를 적용하지 않음",
+                 "help": "가격 움직임에 거래 참여가 동반됐는지 확인"},
+                {"key": "volatility", "label": "변동성",
+                 "value": "고변동성" if atr_pct >= (4.0 if market == "KRX" else 3.2) else "보통 변동성",
+                 "tone": "neutral",
+                 "detail": f"ATR {atr_pct:.2f}% 기준 잠정",
+                 "help": "ATR은 최근 평균 가격 진폭"},
+                {"key": "levels", "label": "주요 가격", "value": "지지 / 저항", "tone": "neutral",
+                 "detail": f"지지 {_pl(support)} · 저항 {_pl(resistance)} · 손절 참고 {_pl(max(0.01, stop))}",
+                 "help": "지지는 매수 유입 가능 구간, 저항은 매도 압력 가능 구간(잠정)"},
+            ],
+            "levels": {
+                "support": round(support, rnd), "support_label": "잠정 지지",
+                "resistance": round(resistance, rnd), "resistance_label": "잠정 저항",
+                "warning_zone": [round(max(0.01, stop), rnd), round(support, rnd)],
+                "stop": round(max(0.01, stop), rnd),
+                "support_gap_pct": round((support - _last) / _last * 100.0, 2) if _last else 0.0,
+                "resistance_gap_pct": round((resistance - _last) / _last * 100.0, 2) if _last else 0.0,
+                "stop_gap_pct": round((max(0.01, stop) - _last) / _last * 100.0, 2) if _last else 0.0,
+            },
+            "scenarios": scenarios,
+            "forecast": {
+                "status": "unavailable", "status_label": "예측 제한(축소 모드)",
+                "reason": f"상세 계산 중단({err_detail}) — 기확보 지표 기준 잠정 범위만 표시",
+                "horizon_days": 22, "horizon_label": horizon_label,
+                "current_price": round(_last, rnd),
+                "key_drivers_up": ai_lines[:2] or ["상승 근거 확인 중"],
+                "key_risks_down": [str(r) for r in ((event_risk or {}).get("reasons") or [])][:3] or ["하락 위험 확인 중"],
+                "scenario_probabilities": {"up": up, "sideways": side, "down": down},
+            },
+            "scenario_note": (f"{horizon_label} 잠정 범위 · 상세 계산 복구 전까지 확정 수치로 사용하지 마세요."),
+            "market_context": {"facts": facts, "data_gaps": gaps,
+                               "basis": "축소 모드 — 현재 분석 요청 시 확보 데이터 기준"},
+            "pattern_context": {
+                "manipulation_detected": bool(flags), "manipulation_count": len(flags),
+                "items": flags[:4], "candles": candle_names, "wick_note": "축소 모드에서는 캔들 꼬리 분석 생략",
+                "breakdown_count": int((pullback_analysis or {}).get("sl_triggered") or 0),
+            },
+            "ai_evidence": (ai_lines[:6] or ["AI 진단 문구를 확보하지 못했습니다."]),
+            "risk_triggers": [f"잠정 지지 {support:,.{rnd}f} 종가 이탈",
+                              "평균 1.5배 이상 거래량을 동반한 하락"][:4],
+            "dynamic_rsi": dynamic_rsi or {"available": False, "reason": "축소 모드에서는 동적 RSI 생략",
+                                           "purchase_timing": {"state": "unavailable"}},
+            "degraded": True,
+        }
+    except Exception as _deg_e:
+        print(f"[route] degraded outlook build failed: {type(_deg_e).__name__}: {_deg_e}")
+        return {
+            "error": str(error or _deg_e),
+            "forecast": {"status": "unavailable", "status_label": "예측 불가",
+                         "reason": f"예측 계산 중 오류({type(error).__name__ if error else 'UnknownError'}: {str(error or _deg_e)[:160]})가 발생해 가격 범위를 만들지 않았습니다."},
+            "decision": {"key": "watch", "label": "예측 분석 제한", "tone": "neutral",
+                         "summary": "예측 계산 오류로 조건부 시나리오를 만들지 못했습니다. 차트·진단·뉴스 결과는 계속 표시합니다."},
+            "levels": {}, "scenarios": [],
+            "market_context": {"facts": [], "data_gaps": [f"예측 로직 오류: {error or _deg_e}"]},
+        }
+
+
 def build_prediction_outlook(
     *, symbol: str, market: str, dd: Dict, last_price: float, prev_close: float,
     pct_change: float, atr: float, regime: str, score: float,
@@ -15065,9 +15522,14 @@ def build_prediction_outlook(
         return f"{value:,.0f}원" if market == "KRX" else f"${value:,.2f}"
 
     # ── 변동성 기반 기간 범위: 시나리오 가격이 보유 기간에 비현실적으로 멀어지지 않게 한다 ──
-    from market_briefing.forecast_model import (
-        Z_P90, Z_P95, blended_daily_sigma, build_forecast_summary, touch_day_window, touch_probability,
-    )
+    # 패키지 init 의존성과 무관하게 동작하는 강건 로더 사용 (ModuleNotFoundError 방지).
+    _fm = _load_forecast_helpers()
+    Z_P90 = _fm["Z_P90"]
+    Z_P95 = _fm["Z_P95"]
+    blended_daily_sigma = _fm["blended_daily_sigma"]
+    build_forecast_summary = _fm["build_forecast_summary"]
+    touch_day_window = _fm["touch_day_window"]
+    touch_probability = _fm["touch_probability"]
     vol_model = blended_daily_sigma(closes, last_price, atr_value, atr_observed)
     sigma_d = vol_model.get("sigma")
     sigma_h = sigma_d * math.sqrt(horizon_days) if sigma_d else None
@@ -16852,9 +17314,12 @@ def route(path: str, params: Dict) -> Dict:
         _news_tickers: List[str] = [sym.split(".", 1)[0]]
         _is_relevant_news_title = None
         try:
-            from market_briefing.forecast_model import (
-                company_name_terms, is_relevant_title as _is_relevant_news_title, normalize_news_items,
-            )
+            _nh = _load_news_helpers()
+            if not _nh:
+                raise ImportError("news helpers unavailable (package + file-direct)")
+            company_name_terms = _nh["company_name_terms"]
+            _is_relevant_news_title = _nh["is_relevant_title"]
+            normalize_news_items = _nh["normalize_news_items"]
             _info_names = ([info_for_charm.get("longName"), info_for_charm.get("shortName")]
                            if isinstance(info_for_charm, dict) else [])
             _news_terms = company_name_terms(company if company and company != sym else None, *_info_names)
@@ -17259,16 +17724,20 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as e:
             print(f"[route] build_prediction_outlook failed symbol={sym} market={market} err={type(e).__name__}:{e} atr={atr_val}")
             traceback.print_exc()
-            _component_status["prediction_outlook"] = "failed"
-            prediction_outlook = {
-                "error": str(e),
-                "forecast": {"status": "unavailable", "status_label": "예측 불가",
-                             "reason": f"예측 계산 중 오류({type(e).__name__})가 발생해 가격 범위를 만들지 않았습니다."},
-                "decision": {"key": "watch", "label": "예측 분석 제한", "tone": "neutral", "summary": "예측 계산 오류로 조건부 시나리오를 만들지 못했습니다. 차트·진단·뉴스 결과는 계속 표시합니다."},
-                "levels": {},
-                "scenarios": [],
-                "market_context": {"facts": [], "data_gaps": [f"예측 로직 오류: {e}"]},
-            }
+            _component_status["prediction_outlook"] = "degraded"
+            prediction_outlook = _degraded_prediction_outlook(
+                symbol=sym, market=market, dd=dd, last_price=last, prev_close=prev,
+                pct_change=pct, atr=atr_val, regime=regime, score=score,
+                prob_up=prob_up, prob_down=prob_down, pivot_points=pivot_points,
+                indicator_signals=indicator_signals, buy_price=buy_price,
+                target_price=target_price, pullback_analysis=pullback_analysis,
+                signal_confidence=signal_confidence, investor_flow=investor_flow,
+                ai_strategy=ai_strategy, candlestick_patterns=patterns,
+                naver=naver, toss_industry=toss_industry,
+                event_risk=event_risk, period=forecast_period,
+                dynamic_rsi=dynamic_rsi,
+                data_warnings=list(_route_warnings), error=e,
+            )
 
         # ── 탭 간 정합화: 예측 탭 종합 판단이 '주의·매수 보류'인데 매수 전략 카드가
         # '분할 매수'를 유지하면 사용자에게 정반대 신호가 동시에 노출된다.
@@ -22990,7 +23459,9 @@ function renderPredictionSections(d, isKrx) {
       <div class="prediction-status-detail" style="font-size:10px;color:#8b949e">${shortDetail}</div>
     </div>`;
   }).join('');
-  const technicalHtml = `<div class="prediction-status-grid">${statusHtml}</div>`;
+  const technicalHtml = statusHtml
+    ? `<div class="prediction-status-grid">${statusHtml}</div>`
+    : `<div class="prediction-mini-list" style="padding:10px;border:1px solid #30363d;border-radius:8px">기술 지표를 확보하지 못해 현재 상태를 표시할 수 없습니다. 일봉 데이터가 누적되면 추세·거래량·변동성·주요 가격을 표시합니다.</div>`;
 
   const fc = p.forecast || null;
   let forecastHtml = '';
@@ -23105,11 +23576,13 @@ function renderPredictionSections(d, isKrx) {
   const gapsHtml = (marketContext.data_gaps || []).map(x => `<div>• ${_escPrediction(x)}</div>`).join('');
   // 무효화 조건과 과거 이력 분리
   const invalidationNote = timing.invalidation ? `<div style="margin-top:6px;font-size:10px;color:#f85149;background:#2d0d0d55;border-left:3px solid #f85149;padding:4px 6px;border-radius:0 6px 6px 0">무효화: ${_escPrediction(timing.invalidation)}</div>` : '';
+  const aiBodyHtml = `${patternEvidence || ''}${wickHtml}${aiEvidenceFiltered ? `<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">${aiEvidenceFiltered}</div>` : ''}`
+    || '<div style="font-size:11px;color:#8b949e">패턴·AI 보조 근거를 확보하지 못했습니다. 일봉과 거래량이 누적되면 의심 패턴과 지표 근거를 표시합니다.</div>';
   marketContextEl.innerHTML = `<div class="prediction-context-card"><div class="prediction-facts">${factsHtml}</div><div class="prediction-scope" style="font-size:10px;color:#6e7681">${_escPrediction(marketContext.basis || '')}</div>${gapsHtml ? `<div class="prediction-mini-list" style="margin-top:7px;border-top:1px solid #21262d;padding-top:6px"><div style="font-size:9px;color:#6e7681;margin-bottom:3px">데이터 보완 필요</div>${gapsHtml}</div>` : ''}</div>`;
   aiContextEl.innerHTML = `<div class="prediction-context-card">
     <div style="font-size:11px;font-weight:800;color:${patternColor};margin-bottom:4px">${patternHeader}</div>
     <div class="prediction-pattern-alert" style="border-color:${patternColor};color:${patternColor};font-size:11px">${pattern.manipulation_detected ? '지지 종가와 거래량 회복이 함께 확인될 때만 반등 근거로 사용' : '패턴 근거 부족 — 가격·거래량 기본 조건 우선'}</div>
-    <div class="prediction-mini-list" style="margin-top:6px">${patternEvidence || ''}${wickHtml}${aiEvidenceFiltered ? `<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">${aiEvidenceFiltered}</div>` : ''}</div>
+    <div class="prediction-mini-list" style="margin-top:6px">${aiBodyHtml}</div>
     ${invalidationNote}
   </div>`;
 }
