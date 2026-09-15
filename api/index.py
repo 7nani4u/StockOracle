@@ -20783,9 +20783,9 @@ input::placeholder{color:#484f58}
       <div id="scan-summary-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px"></div>
       <!-- 레짐 배지 -->
       <div id="scan-regime-bar" style="margin-bottom:14px;padding:10px 14px;background:#161b22;border:1px solid #30363d;border-radius:10px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12px"></div>
-      <!-- 후보 테이블 -->
+      <!-- 후보 테이블 (셀 줄바꿈 방지 — 가로 스크롤로 표시) -->
       <div class="card" style="padding:0;overflow-x:auto">
-        <table class="screener-table" id="scan-table">
+        <table class="screener-table" id="scan-table" style="white-space:nowrap">
           <thead><tr>
             <th>#</th>
             <th>종목</th>
@@ -27487,10 +27487,10 @@ function renderScanResult(d, market) {
             : '<span style="font-size:10px;color:#d29922;border:1px solid #d2992255;border-radius:3px;padding:0 5px;margin-left:6px">시간 초과로 ' + (d.coverage.unresolved || 0) + '종목 미검토</span>')
         : '') +
       (!isKrx
-        ? '<span style="flex-basis:100%;font-size:10px;color:#6e7681;line-height:1.6">리더 반전 읽는 법 — ' +
-          '<b style="color:#3fb950">🔥 돌파</b>=4조건 충족(상승기 시장 초과 +10%p 이상 · 고점 대비 −30% 이상 조정 · 신저가 중단 · 횡보 상단 돌파) · ' +
-          '<b style="color:#d29922">👀 대기</b>=돌파 직전 · ' +
-          '<b style="color:#8b949e">🧱 바닥</b>=조정 진행 중 · —=해당 없음. ' +
+        ? '<span style="flex-basis:100%;font-size:10px;color:#6e7681;line-height:1.7">리더 반전 읽는 법<br>' +
+          '<b style="color:#3fb950">🔥 돌파</b>=4조건 충족(상승기 시장 초과 +10%p 이상 · 고점 대비 −30% 이상 조정 · 신저가 중단 · 횡보 상단 돌파)<br>' +
+          '<b style="color:#d29922">👀 대기</b>=돌파 직전<br>' +
+          '<b style="color:#8b949e">🧱 바닥</b>=조정 진행 중 · —=해당 없음<br>' +
           '배지 아래 수치(초과·조정·상단 이격·진입/손절가)가 근거이며, 점수 미반영 보조 지표로 매수 권유가 아닙니다.</span>'
         : '') +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');

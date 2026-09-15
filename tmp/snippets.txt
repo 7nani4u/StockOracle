@@ -1,0 +1,119 @@
+
+---hybrid_score---
+   # 단기 화면은 분봉을 사용하더라도 SMMA 21·50·200 전략은 항상 일봉으로 계산한다.
+        # 이미 220개 이상의 일봉이 있으면 재사용하고, 아니면 캐시된 전용 일봉을 조회한다.
+        _dates = dd.get("Date") or []
+        _has_daily_history = (
+            len(dd.get("Close") or []) >= 220
+            and bool(_dates)
+            and isinstance(_dates[-1], str)
+        )
+        arty_dd = dd if _has_daily_history else (fetch_arty_daily_data(sym, market) or dd)
+        # 예측 탭의 동적 RSI 매수 타이밍은 선택한 차트가 분봉이어도 항상 일봉으로 고정한다.
+        # SMMA 전략이 이미 확보한 일봉을 재사용하므로 별도 네트워크 호출은 추가하지 않는다.
+        dynamic_rsi = dynamic_rsi_daily_snapshot(arty_dd, market=market)
+
+        # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) — buy_price 전에 score 보정 ──
+        #  이전에는 buy_price가 hybrid 보정 전 score로 계산되어 조건부 진입 구간이
+        #  최종 신호와 불일치할 수 있었다. 먼저 hybrid로 score를 확정한다.
+        hybrid_score = None
+        try:
+            import sys as _sys, os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from market_briefing.stock_analyzer import enrich_with_hybrid
+            _closes  = [float(c) for c in (dd.get("Close") or []) if c is not None]
+  
+
+---signal_confidence---
+_ON_REQUEST = os.getenv(
+    "STOCKORACLE_LEARNING_SYNC_ON_REQUEST", "0"
+).strip().lower() in {"1", "true", "yes"}
+_prediction_log_default = (
+    os.path.join(tempfile.gettempdir(), "stockoracle_prediction_learning.jsonl")
+    if os.getenv("VERCEL") else
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        *PREDICTION_LEARNING_REPO_PATH.split("/"),
+    )
+)
+PREDICTION_LEARNING_PATH = os.getenv(
+    "STOCKORACLE_PREDICTION_LOG",
+    _prediction_log_default,
+)
+_PREDICTION_LEARNING_EVENTS_CACHE: list[dict] | None = None
+_PREDICTION_LEARNING_EVENTS_CACHE_TS: float = 0.0
+_PREDICTION_LEARNING_EVENTS_CACHE_TTL: float = 600.0
+
+def calc_event_risk(symbol: str, market: str, news_items: list | None = None,
+                    disclosures: list | None = None, signal_confidence: Dict | None = None) -> Dict:
+    """실적/FDA/소송/공시/가이던스 이벤트를 매수 위험 점수로 변환."""
+    points = 0
+    reasons: list[str] = []
+    days_to_earnings = None
+
+    if signal_confidence:
+        days_to_earnings = signal_confidence.get("days_to_earnings")
+    if days_to_earnings is None:
+        try:
+            from market_briefing.confidence_engine import get_earnings_proximity
+           
+
+---fetch_us_enriched---
+get("conf") or 0))),
+            })
+
+        # 패턴 엔진은 서로 다른 시점에 형성된 같은 종류를 여러 건 반환할 수 있다.
+        # UI와 후속 진단에는 엔진 정렬상 가장 최신인 첫 항목만 전달한다.
+        patterns = _deduplicate_pattern_types(patterns)
+
+        # ── Step 1: 외부 데이터 선제 수집 (병렬 — 50초 타임아웃 방지) ───────────────
+        # 3개 I/O 작업을 병렬로 수행해 순차 합 15~25초 → 병렬 5~8초로 단축
+        naver = None
+        us_enriched = None
+        toss_industry = None
+        def _fetch_naver_job():
+            return fetch_naver(sym) if market == "KRX" else None
+        def _fetch_us_job():
+            if market != "US":
+                return None
+            try:
+                import sys as _sys, os as _os
+                _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+                from market_briefing.us_enricher import fetch_us_enriched
+                return fetch_us_enriched(sym)
+            except Exception:
+                return None
+        def _fetch_toss_job():
+            try:
+                if market == "KRX":
+                    return fetch_toss_industry_info(sym, market)
+                # US는 us_enriched 결과가 필요하므로 일단 빈 값, 아래에서 채움
+                return None
+            except Exception:
+           
+
+---enrich_with_hybrid---
+, str)
+        )
+        arty_dd = dd if _has_daily_history else (fetch_arty_daily_data(sym, market) or dd)
+        # 예측 탭의 동적 RSI 매수 타이밍은 선택한 차트가 분봉이어도 항상 일봉으로 고정한다.
+        # SMMA 전략이 이미 확보한 일봉을 재사용하므로 별도 네트워크 호출은 추가하지 않는다.
+        dynamic_rsi = dynamic_rsi_daily_snapshot(arty_dd, market=market)
+
+        # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) — buy_price 전에 score 보정 ──
+        #  이전에는 buy_price가 hybrid 보정 전 score로 계산되어 조건부 진입 구간이
+        #  최종 신호와 불일치할 수 있었다. 먼저 hybrid로 score를 확정한다.
+        hybrid_score = None
+        try:
+            import sys as _sys, os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from market_briefing.stock_analyzer import enrich_with_hybrid
+            _closes  = [float(c) for c in (dd.get("Close") or []) if c is not None]
+            _highs   = [float(c) for c in (dd.get("High")  or []) if c is not None]
+            _lows    = [float(c) for c in (dd.get("Low")   or []) if c is not None]
+            _vols    = [float(c) for c in (dd.get("Volume") or []) if c is not None]
+            _opens   = [float(c) for c in (d
