@@ -42,8 +42,10 @@ def normal_cdf(x: float) -> float:
 
 def daily_log_volatility(closes: Iterable[Any], window: int = 60, min_obs: int = 15) -> tuple[float | None, int]:
     """최근 window 개 일간 로그수익률의 표본 표준편차와 관측 수를 반환한다."""
-    values = [v for v in (_finite(c) for c in closes or []) if v is not None and v > 0]
-    returns = [math.log(b / a) for a, b in zip(values[:-1], values[1:])][-window:]
+    values = [v if v is not None and v > 0 else None for v in (_finite(c) for c in closes or [])]
+    values = values[-(window + 1):]
+    returns = [math.log(b / a) for a, b in zip(values[:-1], values[1:])
+               if a is not None and b is not None]
     if len(returns) < min_obs:
         return None, len(returns)
     mean = sum(returns) / len(returns)
