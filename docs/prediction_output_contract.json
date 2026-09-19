@@ -1,70 +1,93 @@
 {
+  "contract_version": "2026-09-20",
+  "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
+  "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
+  "nullable_fields": [
+    "rsi",
+    "volume",
+    "prediction_outlook.forecast.base_price",
+    "risk_scenarios.*.tp_levels[].prob_pct",
+    "risk_scenarios.*.tp_levels[].avg_days",
+    "buy_price.*_bands[].steps[].reach_probability_pct"
+  ],
+  "data_quality": {
+    "status": "정상 | 데이터 부족 | 오래된 데이터 | 일부 데이터 수집 실패",
+    "last_bar_date": "YYYY-MM-DD or unavailable",
+    "history_bars": "integer",
+    "source": "string",
+    "warnings": ["string"],
+    "component_status": "object"
+  },
   "buy_price": {
     "current": "number",
-    "aggressive": {
-      "title": "공격적 매수",
-      "bands": [
-        {
-          "band": "A | B | C",
-          "price_range": ["number_low", "number_high"],
-          "basis": ["ATR/변동성/낙폭/추세 기반 설명"],
-          "expected_return_pct": "number",
-          "win_probability_pct": "number",
-          "loss_probability_pct": "number",
-          "distribution_basis": "백테스트 수익률 분포 + ATR + 추세 강도 + 유사 패턴 빈도 기반"
-        }
-      ]
+    "strategy_rec": {
+      "action_key": "string",
+      "action": "string",
+      "confidence_pct": "number"
     },
-    "recommended": {
-      "title": "추천 매수 구간",
-      "bands": [
-        {
-          "band": "A | B | C",
+    "aggressive_bands": [
+      {
+        "band": "A | B | C",
+        "range": ["number_low", "number_high"],
+        "steps": [{
           "price_range": ["number_low", "number_high"],
-          "expected_sharpe_ratio": "number",
-          "historical_win_rate_pct": "number",
-          "avg_holding_days": "number",
-          "distribution_basis": "유사 ATR 진입 깊이의 20거래일 목표 도달 분포 기반"
-        }
-      ]
-    },
-    "removed_fields": ["conservative"]
+          "reach_probability_pct": "number | null",
+          "days_min": "number | null",
+          "days_max": "number | null"
+        }]
+      }
+    ],
+    "recommended_bands": "same band structure",
+    "atr_pct": "number",
+    "vol_trend": "expanding | contracting | normal"
   },
   "risk_scenarios": {
+    "provisional": "boolean, optional; true when fewer than 20 valid daily closes",
     "conservative": {
       "label": "보수적",
-      "entry_range": ["number_low", "number_high"],
-      "stop_loss": "number",
-      "tp_levels": [
-        {
-          "level": "TP1 | TP2 | TP3",
-          "price": "number",
-          "return_pct": "number",
-          "hit_probability_pct": "number",
-          "avg_days_to_hit": "number_or_range_string",
-          "failed_avg_loss_pct": "number",
-          "risk_reward": "number"
-        }
-      ]
+      "target": ["number_low", "number_high"],
+      "stop": ["number_low", "number_high"],
+      "entry_eligible": "boolean",
+      "tp_levels": [{
+        "price": "number",
+        "price_range": ["number_low", "number_high"],
+        "return_pct": "number | null",
+        "prob_pct": "number | null",
+        "prob_low_pct": "number | null",
+        "prob_high_pct": "number | null",
+        "avg_days": "number | null",
+        "days_min": "number | null",
+        "days_max": "number | null",
+        "provisional": "boolean, optional"
+      }]
     },
-    "balanced": "same_as_conservative_schema",
-    "aggressive": "same_as_conservative_schema"
+    "balanced": "same scenario structure",
+    "aggressive": "same scenario structure"
   },
-  "probability_model": {
-    "inputs": ["backtest_return_distribution", "atr_volatility", "trend_strength", "similar_pattern_frequency", "debt_ratio"],
-    "market_branch": {
-      "KRX": {
-        "band_width_multiplier": 1.18,
-        "probability_adjustment_pp": -6,
-        "target_distance_multiplier": 0.95,
-        "volatility_penalty_weight": 1.2
-      },
-      "US": {
-        "band_width_multiplier": 0.92,
-        "probability_adjustment_pp": 5,
-        "target_distance_multiplier": 1.05,
-        "momentum_weight": 1.2
-      }
+  "prediction_outlook": {
+    "decision": {
+      "key": "string",
+      "label": "string",
+      "confidence": "number; signal agreement, not a calibrated rise probability"
+    },
+    "status": "array of current technical states",
+    "market_context": {"facts": "array", "data_gaps": ["string"]},
+    "scenarios": [{
+      "key": "upside | sideways | downside",
+      "probability": "number; relative scenario weight, not a calibrated outcome probability",
+      "price_range": ["number_low", "number_high"],
+      "expected_days": ["number_early", "number_late"],
+      "conditions": ["string"]
+    }],
+    "forecast": {
+      "status": "ok | limited | unavailable",
+      "reason": "string when unavailable",
+      "horizon_days": "integer",
+      "as_of_date": "YYYY-MM-DD | null",
+      "target_date": "YYYY-MM-DD | null when unavailable",
+      "base_price": "number | absent when unavailable",
+      "range_p10_p90": "[number_low, number_high] | absent when unavailable",
+      "volatility_basis": "string when calculated"
     }
   }
 }

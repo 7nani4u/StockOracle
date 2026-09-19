@@ -372,14 +372,14 @@ def _load_forecast_helpers() -> Dict[str, Any]:
 
     def _f_blend(closes, last_price, atr, atr_observed=True) -> dict:
         vals = []
-        try:
-            for c in (closes or []):
-                v = float(c)
-                if math.isfinite(v) and v > 0:
-                    vals.append(v)
-        except (TypeError, ValueError):
-            vals = []
-        rets = [math.log(b / a) for a, b in zip(vals[:-1], vals[1:])][-60:]
+        for c in (closes or []):
+            try:
+                v = float(c) if c is not None else float("nan")
+                vals.append(v if math.isfinite(v) and v > 0 else None)
+            except (TypeError, ValueError):
+                vals.append(None)
+        vals = vals[-61:]
+        rets = [math.log(b / a) for a, b in zip(vals[:-1], vals[1:]) if a is not None and b is not None]
         realized, n = None, len(rets)
         if n >= 15:
             m = sum(rets) / n
@@ -15220,19 +15220,15 @@ def build_prediction_outlook(
     if last_price <= 0:
         return {}
 
-    def _arr(key: str) -> list[float]:
-        out = []
-        for value in dd.get(key, []) or []:
-            try:
-                if value is not None and np.isfinite(float(value)):
-                    out.append(float(value))
-            except (TypeError, ValueError):
-                continue
-        return out
-
     def _last(key: str, default: float | None = None) -> float | None:
-        values = _arr(key)
-        return values[-1] if values else default
+        # The latest valid close determines the analysis bar. An older indicator
+        # must not be reused when its value on that bar is missing.
+        values = dd.get(key, []) or []
+        index = _valid_rows[-1] if _valid_rows else -1
+        if index < 0 or index >= len(values):
+            return default
+        value = _finite_or_none(values[index])
+        return value if value is not None else default
 
     def _bounded(value: float, low: float, high: float) -> float:
         return max(low, min(high, value))
@@ -15383,9 +15379,13 @@ def build_prediction_outlook(
     if ma20:
         ma20_gap = (last_price - ma20) / ma20 * 100.0
         ma_detail.append(f"MA20 대비 {ma20_gap:+.1f}%")
+    else:
+        ma_detail.append("MA20 미확보")
     if ma60:
         ma60_gap = (last_price - ma60) / ma60 * 100.0
         ma_detail.append(f"MA60 대비 {ma60_gap:+.1f}%")
+    else:
+        ma_detail.append("MA60 미확보")
     if ma120:
         ma120_gap = (last_price - ma120) / ma120 * 100.0
         ma_detail.append(f"MA120 대비 {ma120_gap:+.1f}%")
@@ -15473,6 +15473,8 @@ def build_prediction_outlook(
     base_confidence = float((signal_confidence or {}).get("confidence") or 50.0)
     tp_base = float((target_price or {}).get("reach_probability") or 50.0)
     data_penalty = ((0.0 if volume_available else 4.0)
+                    + (0.0 if ma20 is not None else 2.0)
+                    + (0.0 if ma60 is not None else 2.0)
                     + (0.0 if rsi_available else 3.0)
                     + (0.0 if macd_available else 3.0)
                     + (0.0 if atr_observed else 2.0)
@@ -15531,7 +15533,8 @@ def build_prediction_outlook(
     build_forecast_summary = _fm["build_forecast_summary"]
     touch_day_window = _fm["touch_day_window"]
     touch_probability = _fm["touch_probability"]
-    vol_model = blended_daily_sigma(closes, last_price, atr_value, atr_observed)
+    # Preserve missing-bar positions so volatility never joins prices across a gap.
+    vol_model = blended_daily_sigma(_raw_close, last_price, atr_value, atr_observed)
     sigma_d = vol_model.get("sigma")
     sigma_h = sigma_d * math.sqrt(horizon_days) if sigma_d else None
 
@@ -15744,6 +15747,8 @@ def build_prediction_outlook(
         data_gaps.append("최근 거래량 또는 20봉 비교 평균 미확보")
     if not rsi_available or not macd_available:
         data_gaps.append("일부 기술지표 미확보 — 미확보 지표는 시나리오 가중치에서 제외")
+    if ma20 is None or ma60 is None:
+        data_gaps.append("MA20 또는 MA60 미확보 — 추세 판단 표본과 신뢰도를 제한")
     if not atr_observed:
         data_gaps.append("ATR 미확보 — 현재가 2% 대체 변동폭 사용")
     if market == "KRX":
@@ -23619,7 +23624,7 @@ function renderPredictionSections(d, isKrx) {
   const decisionLabel = _escPrediction(decision.label || '관망');
   const decisionDir = _escPrediction(decision.direction || '');
   const decisionSummary = _escPrediction(decision.summary || '');
-  const decisionConf = decision.confidence != null ? Number(decision.confidence).toFixed(1) + '%' : null;
+  const decisionConf = _isFiniteNumber(decision.confidence) ? Number(decision.confidence).toFixed(1) + '%' : null;
   const decisionConfNote = _escPrediction(decision.confidence_note || '');
   const decisionHtml = `<div style="background:#0d1117;border:1px solid ${decisionColor}55;border-radius:10px;padding:14px;margin-bottom:12px">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
@@ -23659,7 +23664,7 @@ function renderPredictionSections(d, isKrx) {
       confirmed: '매수 확인', active: '관리 중', risk: '매수 보류',
       armed: '매수 준비', watch: '관찰', neutral: '관망',
     }[timing.state] || stateLabel;
-    const rsiMetric = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1) : '미확보';
+    const rsiMetric = value => _isFiniteNumber(value) ? Number(value).toFixed(1) : '미확보';
     const subInfo = `${_escPrediction(dynamicRsi.market || d.market)} ${_escPrediction(dynamicRsi.timeframe_label || '일봉')} · 기준 ${_escPrediction(dynamicRsi.as_of || '최근 종가')} · 동적 하단 ${rsiMetric(dynamicRsi.lower)} / RSI ${rsiMetric(dynamicRsi.rsi)} / 동적 상단 ${rsiMetric(dynamicRsi.upper)}`;
     // ③ 다음 확인 조건: 실행용 카드 (추격/손절)는 신호 확정 전임을 명확히
     const chaseText = timing.max_chase_price != null ? fmt(timing.max_chase_price, isKrx) : null;
@@ -23716,7 +23721,7 @@ function renderPredictionSections(d, isKrx) {
   const fc = p.forecast || null;
   let forecastHtml = '';
   if (fc) {
-    const fcPct = v => Number.isFinite(Number(v)) && v !== null ? `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '—';
+    const fcPct = v => _isFiniteNumber(v) ? `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '—';
     const fcDrivers = (fc.key_drivers_up || []).slice(0, 3).map(x => `<div>▲ ${_escPrediction(x)}</div>`).join('');
     const fcRisks = (fc.key_risks_down || []).slice(0, 3).map(x => `<div>▼ ${_escPrediction(x)}</div>`).join('');
     if (fc.status === 'unavailable' || fc.base_price == null) {
@@ -23730,6 +23735,8 @@ function renderPredictionSections(d, isKrx) {
       const fcRange = fc.range_p10_p90 || [];
       const fcRangeRet = fc.range_return_pct || [];
       const fcProb = fc.scenario_probabilities || {};
+      const probabilityText = value => _isFiniteNumber(value) ? `${Number(value)}%` : '미산정';
+      const sigmaText = _isFiniteNumber(fc.sigma_horizon_pct) ? `${Number(fc.sigma_horizon_pct).toFixed(1)}%` : '미산정';
       const fcStatusColor = fc.status === 'ok' ? '#3fb950' : '#d29922';
       forecastHtml = `<div id="prediction-forecast-summary" data-status="${_escPrediction(fc.status)}" style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;align-items:center">
@@ -23738,10 +23745,10 @@ function renderPredictionSections(d, isKrx) {
         </div>
         <div class="prediction-status-grid" style="margin-top:8px">
           <div class="prediction-status-card"><div class="prediction-status-label">현재가</div><div class="prediction-status-value">${fmt(fc.current_price, isKrx)}</div></div>
-          <div class="prediction-status-card"><div class="prediction-status-label">예상 방향</div><div class="prediction-status-value" style="color:${fcColor}">${_escPrediction(fc.direction || '—')}</div><div class="prediction-status-detail">상승 ${Number(fcProb.up || 0)}% · 횡보 ${Number(fcProb.sideways || 0)}% · 하락 ${Number(fcProb.down || 0)}%</div></div>
+          <div class="prediction-status-card"><div class="prediction-status-label">예상 방향</div><div class="prediction-status-value" style="color:${fcColor}">${_escPrediction(fc.direction || '—')}</div><div class="prediction-status-detail">상승 ${probabilityText(fcProb.up)} · 횡보 ${probabilityText(fcProb.sideways)} · 하락 ${probabilityText(fcProb.down)}</div></div>
           <div class="prediction-status-card"><div class="prediction-status-label">기준 예상가</div><div class="prediction-status-value" style="color:${fcColor}">${fmt(fc.base_price, isKrx)}</div><div class="prediction-status-detail">현재가 대비 ${fcPct(fc.expected_return_pct)}</div></div>
           <div class="prediction-status-card"><div class="prediction-status-label">예상 범위 (P10~P90)</div><div class="prediction-status-value" style="font-size:12px">${fmt(fcRange[0], isKrx)} ~ ${fmt(fcRange[1], isKrx)}</div><div class="prediction-status-detail">${fcPct(fcRangeRet[0])} ~ ${fcPct(fcRangeRet[1])}</div></div>
-          <div class="prediction-status-card"><div class="prediction-status-label">불확실성</div><div class="prediction-status-value">${_escPrediction(fc.uncertainty || '—')}</div><div class="prediction-status-detail">기간 변동성 1σ ±${Number(fc.sigma_horizon_pct || 0).toFixed(1)}%</div></div>
+          <div class="prediction-status-card"><div class="prediction-status-label">불확실성</div><div class="prediction-status-value">${_escPrediction(fc.uncertainty || '—')}</div><div class="prediction-status-detail">기간 변동성 1σ ±${sigmaText}</div></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px;font-size:11px;line-height:1.55">
           <div style="color:#3fb950"><div style="font-size:10px;color:#8b949e;margin-bottom:2px">주요 상승 요인</div>${fcDrivers}</div>
@@ -23752,7 +23759,17 @@ function renderPredictionSections(d, isKrx) {
       </div>`;
     }
   }
-  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${forecastHtml}${stagesHtml}</div>`;
+  const quality = d.data_quality || {};
+  const qualityWarnings = Array.isArray(quality.warnings) ? quality.warnings : [];
+  const qualityHtml = quality.status || quality.last_bar_date || quality.history_bars != null
+    ? `<div class="prediction-mini-list" style="margin-bottom:12px;border:1px solid #30363d;border-radius:8px;padding:9px 11px;font-size:10px;color:#8b949e;line-height:1.6">
+        <b style="color:${quality.status === '정상' ? '#3fb950' : '#d29922'}">데이터 상태: ${_escPrediction(quality.status || '확인 필요')}</b>
+        · 마지막 일봉 ${_escPrediction(quality.last_bar_date || '미확보')}
+        · 일봉 이력 ${_escPrediction(quality.history_bars ?? '미확보')}봉
+        ${quality.source ? `· 출처 ${_escPrediction(quality.source)}` : ''}
+        ${qualityWarnings.length ? `<div style="color:#d29922">${qualityWarnings.slice(0, 2).map(_escPrediction).join(' · ')}${qualityWarnings.length > 2 ? ` · 외 ${qualityWarnings.length - 2}건` : ''}</div>` : ''}
+      </div>` : '';
+  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${qualityHtml}${forecastHtml}${stagesHtml}</div>`;
   statusEl.innerHTML = technicalHtml;
 
   // ── ③/④ 조건부 시나리오: 시간축 명확화 + 중복 제거 ──
@@ -23772,7 +23789,7 @@ function renderPredictionSections(d, isKrx) {
     }).join('');
     // 시간축: expected_days를 명확히 라벨링
     const days = sc.expected_days || [];
-    const touchText = Number.isFinite(Number(sc.touch_probability)) && sc.touch_probability !== null
+    const touchText = _isFiniteNumber(sc.touch_probability)
       ? ` · 변동성상 터치 가능성 ${Number(sc.touch_probability).toFixed(0)}%(방향 무관)` : '';
     const daysText = days.length===2 ? `${isObservation ? '관찰용 ' : ''}${days[0]}~${days[1]}거래일 내${touchText}` : '';
     const response = sc.key === 'upside'
@@ -23781,7 +23798,7 @@ function renderPredictionSections(d, isKrx) {
         ? '대응: 지지 종가 이탈 시 매수 무효화, 손절·현금 비중 우선.'
         : '대응: 박스권 내에서는 지지 확인 후 소액, 저항 접근 시 관망.';
     return `<div class="prediction-scenario ${_escPrediction(sc.tone || 'neutral')}">
-      <div class="prediction-scenario-head"><div class="prediction-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="prediction-prob" style="color:${color};border-color:${color}55">${isObservation ? '관찰용 상대 비중' : '상대 비중'} ${Number(sc.probability || 0).toFixed(0)}%</div></div>
+      <div class="prediction-scenario-head"><div class="prediction-scenario-title" style="color:${color}">${_escPrediction(sc.label)}</div><div class="prediction-prob" style="color:${color};border-color:${color}55">${isObservation ? '관찰용 상대 비중' : '상대 비중'} ${_isFiniteNumber(sc.probability) ? Number(sc.probability).toFixed(0) + '%' : '미산정'}</div></div>
       <div class="prediction-price-range">${rangeText} ${daysText ? `<span style="font-size:10px;color:#8b949e">· ${daysText}</span>` : ''}</div>
       <div class="prediction-condition-list">${conditions}</div>
       <div class="prediction-checks">${checks}</div>
@@ -23908,7 +23925,7 @@ function renderForecast(d, isKrx) {
         mixed: ['#58a6ff','#0d1b33'], insufficient: ['#8b949e','#161b22'],
         provider_error: ['#f97316','#2b190c'], invalid: ['#f85149','#2d1515'],
       };
-      const artyPrice = value => Number.isFinite(Number(value)) ? fmt(Number(value), isKrx) : '—';
+      const artyPrice = value => _isFiniteNumber(value) ? fmt(Number(value), isKrx) : '—';
       const artyHtml = arty ? (() => {
         const [tone, bg] = artyToneMap[arty.status_key] || ['#8b949e','#161b22'];
         const smma = arty.smma || {};
@@ -23950,7 +23967,7 @@ function renderForecast(d, isKrx) {
           ? '#f85149'
           : validation.verdict === 'accepted' ? '#3fb950'
           : validation.verdict === 'unavailable' ? '#8b949e' : '#d29922';
-        const pctSigned = value => Number.isFinite(Number(value))
+        const pctSigned = value => _isFiniteNumber(value)
           ? `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`
           : '—';
         const factorMetric = (table, key) => {
@@ -24256,7 +24273,7 @@ function renderForecast(d, isKrx) {
           </div>` : '';
 
       const entryBandsHtml = `${aggBandsHtml}${recBandsHtml}`;
-      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml || '<div class="prediction-mini-list">진입 가격 구간을 산정할 지지·변동성 데이터가 부족합니다.</div>'}</div>`;
       if (buyRiskNotesEl) {
         buyRiskNotesEl.innerHTML = eventRiskHtml;
       }
@@ -24266,6 +24283,10 @@ function renderForecast(d, isKrx) {
   // ── 리스크 카드 ──
   const rgEl = document.getElementById('risk-grid');
   const riskEventBannerEl = document.getElementById('risk-event-banner');
+  if (rgEl && !risk) {
+    rgEl.innerHTML = '<div class="prediction-mini-list">리스크 계산에 필요한 가격·변동성 데이터가 부족합니다.</div>';
+    if (riskEventBannerEl) riskEventBannerEl.innerHTML = '';
+  }
   if (rgEl && risk) {
     // ── 이벤트 캘린더 위험 배너 (리스크 그리드 헤더) ──
     // buy-price에서 계산된 eventRiskHtml을 재사용하되, risk 카드와 동일한 소스(d.event_risk || risk.event_risk)로 재생성하여
@@ -24289,6 +24310,10 @@ function renderForecast(d, isKrx) {
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = _riskEventHtml;
     const riskEntries = ['conservative', 'balanced', 'aggressive'].map(k => risk[k]).filter(Boolean);
     if (riskTitleEl) riskTitleEl.textContent = '🛡️ 리스크 관리와 목표 청산';
+    if (!riskEntries.length) {
+      rgEl.innerHTML = '<div class="prediction-mini-list">목표·손절 시나리오를 산정할 데이터가 부족합니다.</div>';
+      return;
+    }
     const weeklyRisk = risk.weekly_analysis || d.weekly_analysis || {};
     const weeklyRiskHtml = weeklyRisk.available
       ? `<div style="grid-column:1/-1;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:9px 11px;font-size:10px;color:#8b949e;line-height:1.55">
@@ -24442,13 +24467,13 @@ function renderForecast(d, isKrx) {
               <span role="columnheader">예상 거래일</span>
             </div>
             ${sc.tp_levels.map((lv, i) => {
-              const hasProbability = Number.isFinite(Number(lv.prob_pct));
+              const hasProbability = _isFiniteNumber(lv.prob_pct);
               const isProvisionalLevel = Boolean(risk.provisional || lv.provisional);
               const tpC = !hasProbability ? '#8b949e' : lv.prob_pct >= 65 ? '#3fb950' : lv.prob_pct >= 45 ? '#d29922' : '#f97316';
               const probText = !hasProbability ? '산정 보류' : (lv.prob_low_pct != null && lv.prob_high_pct != null
                 ? `${lv.prob_low_pct}~${lv.prob_high_pct}%` : `${lv.prob_pct}%`);
               const daysText = lv.days_min != null && lv.days_max != null
-                ? `${isProvisionalLevel ? '관찰용 ' : ''}${lv.days_min}~${lv.days_max}일` : Number.isFinite(Number(lv.avg_days)) ? `${isProvisionalLevel ? '관찰용 ' : '약 '}${lv.avg_days}일` : '기간 산정 보류';
+                ? `${isProvisionalLevel ? '관찰용 ' : ''}${lv.days_min}~${lv.days_max}일` : _isFiniteNumber(lv.avg_days) ? `${isProvisionalLevel ? '관찰용 ' : '약 '}${lv.avg_days}일` : '기간 산정 보류';
               const levelRange = Array.isArray(lv.price_range) && lv.price_range.length === 2
                 ? lv.price_range : [lv.price, lv.price];
               const levelPriceText = `${fmt(levelRange[0], isKrx)} ~ ${fmt(levelRange[1], isKrx)}`;
@@ -24458,7 +24483,7 @@ function renderForecast(d, isKrx) {
               return `<div class="risk-tp-level" role="row" style="${levelBackground}border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
                 <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction([lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '', lv.probability_basis || '', lv.price_range_basis || ''].filter(Boolean).join(' · '))}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
-                <span role="cell" style="font-size:10px;color:#3fb950">+${lv.return_pct}%</span>
+                <span role="cell" style="font-size:10px;color:#3fb950">${_isFiniteNumber(lv.return_pct) ? '+' + lv.return_pct + '%' : '산정 보류'}</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}${isProvisionalLevel && hasProbability ? '<small style="display:block;color:#d29922">관찰용 추정</small>' : ''}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
               </div>`;
