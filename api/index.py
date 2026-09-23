@@ -166,6 +166,10 @@ import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
+from market_briefing.prediction_contract import (
+    apply_prediction_price_contract,
+    build_price_anchor,
+)
 try:
     from market_briefing.dynamic_rsi import (
         add_dynamic_rsi_features,
@@ -2175,6 +2179,39 @@ def add_indicators(df: pd.DataFrame, market: str = "US") -> pd.DataFrame:
     # 현재 봉을 밴드 학습에서 제외해 인과성을 유지하며 기존 점수는 변경하지 않는다.
     df = add_dynamic_rsi_features(df, market=market)
     return df
+
+
+def _refresh_current_bar_indicators(dd: Dict, market: str = "US") -> Dict:
+    """보정된 마지막 OHLCV로 가격 의존 지표를 다시 계산한다.
+
+    호출측이 캐시 원본을 오염시키지 않도록 새 dict/list를 반환한다. 시간외
+    가격에는 호출하지 않으며, 같은 거래일 정규장 현재가를 마지막 봉에 반영한
+    경우에만 사용한다.
+    """
+    required = ("Open", "High", "Low", "Close", "Volume")
+    lengths = [len(dd.get(key) or []) for key in required]
+    if not lengths or min(lengths) == 0 or len(set(lengths)) != 1:
+        return dict(dd)
+    try:
+        frame = pd.DataFrame({
+            key: pd.to_numeric(pd.Series(list(dd.get(key) or [])), errors="coerce")
+            for key in required
+        })
+        calculated = add_indicators(frame, market=market)
+    except Exception:
+        return dict(dd)
+
+    refreshed = dict(dd)
+    for column in calculated.columns:
+        values = []
+        for value in calculated[column].tolist():
+            try:
+                number = float(value)
+                values.append(number if math.isfinite(number) else None)
+            except (TypeError, ValueError):
+                values.append(None)
+        refreshed[column] = values
+    return refreshed
 
 FIXED_ANALYSIS_PERIOD = "1y"
 
@@ -16926,27 +16963,16 @@ def route(path: str, params: Dict) -> Dict:
         last = float(closes[-1]) if closes else 0
         prev = float(closes[-2]) if len(closes) > 1 else last
         pct = (last - prev) / prev * 100 if prev else 0
-        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
-        raw_technical_score = score
-        # prob_up/down은 최종 score 확정 후에 계산해야 투자자 수급·Hybrid·레짐 보정과 일치한다.
-        # 초기값은 참고용으로만 계산하고 최종 보정 후 재계산한다. (ML 블렌딩은 최종 score 확정 후 1회만 수행)
-        prob_up, prob_down = calc_probability(score, dd, market)
+        # 규칙 점수·패턴은 실시간 현재가 보정이 끝난 뒤 계산한다. 여기서 먼저
+        # 확정하면 진단은 전일 종가, 진입·목표·리스크는 현재가를 쓰는 시점 혼합이 생긴다.
+        score, raw_technical_score = 50.0, 50.0
+        steps, patterns, geo_patterns, ai_strategy = [], [], [], None
+        prob_up, prob_down = 50.0, 50.0
         ml_prediction = None
 
-        # Market Regime 필터 적용
+        # 시장·재무 컨텍스트는 먼저 수집하되 점수 반영은 현재가 확정 후 수행한다.
         regime = check_market_regime(market, sym)
-        if regime == "BEAR":
-            if isinstance(ai_strategy, dict):
-                ai_strategy["result"] += " | [시장 상태] 대표지수 60·120일선 하락 구조(BEAR): 신규 매수 신중 · 현금 비중 점검"
-            else:
-                ai_strategy = {"step": "💡 AI 종합 진단", "result": "대표지수 60·120일선 하락 구조(BEAR): 신규 매수 신중 · 현금 비중 점검"}
-            score = min(score, 40) # 하락장에서는 점수 강제 하향
-        elif regime == "BULL":
-            if isinstance(ai_strategy, dict):
-                ai_strategy["result"] += " | [시장 상태] 대표지수 60·120일선 상승 구조(BULL): 개별 종목 신호 확인을 전제로 우호적"
-            else:
-                ai_strategy = {"step": "💡 AI 종합 진단", "result": "대표지수 60·120일선 상승 구조(BULL): 개별 종목 신호 확인을 전제로 우호적"}
-            
+
         # 부채비율 검증 로직 적용 — TTL 캐시로 중복 yfinance info 호출 방지 (Vercel warm 인스턴스 재사용)
         @ttl_cache(3600)
         def _cached_ticker_info(_sym: str) -> dict:
@@ -16955,41 +16981,14 @@ def route(path: str, params: Dict) -> Dict:
             except Exception:
                 return {}
         info_for_charm = {}
+        debt_health = None
         try:
             info = _cached_ticker_info(sym)
             # 캐시 원본 dict를 아래 보강 단계에서 직접 수정하면 다음 요청에 섞이므로 복사한다.
             info_for_charm = dict(info or {})
             debt_health = validate_financial_health(info)
-            if debt_health is False:
-                if isinstance(ai_strategy, dict):
-                    ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 — 재무 레버리지 위험 확인 필요"
-                else:
-                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "⚠️ [경고] 부채비율 150% 초과 — 재무 레버리지 위험 확인 필요"}
-                score = min(score, 45)
-            elif debt_health is None:
-                if isinstance(ai_strategy, dict):
-                    ai_strategy["result"] += " | ℹ️ 부채비율 데이터 미확인 — 재무제표로 별도 점검 필요"
-                else:
-                    ai_strategy = {"step": "💡 AI 종합 진단", "result": "ℹ️ 부채비율 데이터 미확인 — 재무제표로 별도 점검 필요"}
         except Exception:
             pass
-        # ── 기하학적 패턴 → 캔들 패턴 리스트 통합 (UI 표시용) ───────────────
-        for gp in geo_patterns:
-            raw_signal = str(gp.get("signal") or "")
-            direction = gp.get("direction") or (
-                "상승" if raw_signal.startswith("매수") else
-                "하락" if raw_signal.startswith("매도") else "중립"
-            )
-            patterns.append({
-                **gp,
-                "name": gp.get("name"), "desc": gp.get("desc"),
-                "direction": direction,
-                "conf": int(round(float(gp.get("completion_score") or gp.get("conf") or 0))),
-            })
-
-        # 패턴 엔진은 서로 다른 시점에 형성된 같은 종류를 여러 건 반환할 수 있다.
-        # UI와 후속 진단에는 엔진 정렬상 가장 최신인 첫 항목만 전달한다.
-        patterns = _deduplicate_pattern_types(patterns)
 
         # ── Step 1: 외부 데이터 선제 수집 (병렬 — 50초 타임아웃 방지) ───────────────
         # 3개 I/O 작업을 병렬로 수행해 순차 합 15~25초 → 병렬 5~8초로 단축
@@ -17157,6 +17156,7 @@ def route(path: str, params: Dict) -> Dict:
                     elif last > 0:
                         last = real_price
                         realtime_meta = {"source": _src.get("source") or "naver", "trade_date": _quote_date,
+                                         "quote_time": _src.get("traded_at"),
                                          "extended": False, "market_status": _src.get("market_status")}
                         nv_prev = _src.get("prev_close")
                         if nv_prev:
@@ -17207,6 +17207,7 @@ def route(path: str, params: Dict) -> Dict:
                         realtime_meta = {
                             "source": getattr(_res, "source", "") or "us_price_fetcher",
                             "trade_date": _quote_date,
+                            "quote_time": _price_time.isoformat() if _price_time is not None else None,
                             "price_type": _res.price_type,
                             "extended": _res.price_type in ("pre_market", "post_market", "overnight"),
                         }
@@ -17231,6 +17232,7 @@ def route(path: str, params: Dict) -> Dict:
                                 pct = (last - prev) / prev * 100
                             # fast_info 는 시간외 체결을 포함할 수 있어 거래일·세션을 확정할 수 없다.
                             realtime_meta = {"source": "yfinance_fast_info", "trade_date": "",
+                                             "quote_time": None,
                                              "price_type": "unknown", "extended": not _us_regular_session_now()}
                             _route_warnings.append("미국 실시간 시세 수집기 실패 — yfinance fast_info 대체 가격을 사용했습니다.")
                 except Exception as _fi_e:
@@ -17288,6 +17290,60 @@ def route(path: str, params: Dict) -> Dict:
                 }
         except Exception as _pc_e:
             _log_route_issue(sym, "price_correction", _pc_e)
+
+        if price_correction and price_correction.get("applied_to_chart"):
+            dd = _refresh_current_bar_indicators(dd, market=market)
+            closes = dd.get("Close", [])
+
+        # 예측 탭의 모든 가격형 출력이 참조할 단일 현재가 스냅샷. 확정 일봉과
+        # 시간외 시세는 합치지 않고 각각의 기준 시점을 응답 계약에 남긴다.
+        _price_anchor = build_price_anchor(
+            current_price=last,
+            previous_close=prev,
+            market=market,
+            source=str(realtime_meta.get("source") or "yfinance_daily"),
+            session=session_name,
+            quote_date=(realtime_meta.get("trade_date") or _last_bar_date),
+            quote_time=realtime_meta.get("quote_time"),
+            last_bar_date=_last_bar_date,
+            is_extended=bool(realtime_meta.get("extended")),
+            applied_to_chart=(
+                bool(price_correction.get("applied_to_chart"))
+                if price_correction else not bool(realtime_meta.get("extended"))
+            ),
+        )
+
+        # ── Step 2.6: 현재가 확정 후 규칙 분석 ─────────────────────────────
+        # 정규장 현재가가 마지막 봉에 반영된 경우에는 그 가격을 포함해 점수·패턴을
+        # 계산한다. 시간외 시세는 확정 일봉에 합치지 않으므로 지표는 마지막 확정 봉
+        # 기준으로 유지하고 price_anchor가 두 기준 시점을 명시한다.
+        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
+        raw_technical_score = score
+        if regime == "BEAR":
+            ai_strategy["result"] += " | [시장 상태] 대표지수 60·120일선 하락 구조(BEAR): 신규 매수 신중 · 현금 비중 점검"
+            score = min(score, 40)
+        elif regime == "BULL":
+            ai_strategy["result"] += " | [시장 상태] 대표지수 60·120일선 상승 구조(BULL): 개별 종목 신호 확인을 전제로 우호적"
+        if debt_health is False:
+            ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 — 재무 레버리지 위험 확인 필요"
+            score = min(score, 45)
+        elif debt_health is None:
+            ai_strategy["result"] += " | ℹ️ 부채비율 데이터 미확인 — 재무제표로 별도 점검 필요"
+
+        # 기하학적 패턴을 동일한 현재가/확정 봉 기준의 캔들 진단에 통합한다.
+        for gp in geo_patterns:
+            raw_signal = str(gp.get("signal") or "")
+            direction = gp.get("direction") or (
+                "상승" if raw_signal.startswith("매수") else
+                "하락" if raw_signal.startswith("매도") else "중립"
+            )
+            patterns.append({
+                **gp,
+                "name": gp.get("name"), "desc": gp.get("desc"),
+                "direction": direction,
+                "conf": int(round(float(gp.get("completion_score") or gp.get("conf") or 0))),
+            })
+        patterns = _deduplicate_pattern_types(patterns)
 
         # ── Step 3: 투자자 수급 (KRX 전용) — score 보정 포함 ────────────────
         # calc_buy_price 가 score 를 사용하므로 현재가 보정 직후, 예측 계산 전 실행
@@ -17975,6 +18031,7 @@ def route(path: str, params: Dict) -> Dict:
                 "meta": (_correlation_report or {}).get("meta"),
             },
         }
+        response = apply_prediction_price_contract(response, _price_anchor)
         if str(params.get("lite") or "").lower() in {"1", "true", "yes"}:
             response = _compact_stock_response(response)
         else:
@@ -23086,6 +23143,31 @@ ${hasCompleteRadarData
   renderTechnicalDiagnosis(d, isKrx, diagEl);
 }
 
+function _diagnosisEvidenceKey(line) {
+  const text = String(line || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\[[^\]]+\]/g, ' ')
+    .replace(/[\s·/|,:;()\-–—]+/g, '')
+    .replace(/,/g, '')
+    .toLowerCase();
+  if (!text) return '';
+  if (/외국인|기관|연기금/.test(text)) return `flow:${text}`;
+  if (/대표지수|bull|bear|시장상태/.test(text)) return `market:${text}`;
+  if (/부채비율|재무레버리지/.test(text)) return `fundamental:${text}`;
+  if (/ncs|하이브리드/.test(text)) return `hybrid:${text}`;
+  return text;
+}
+
+function dedupeDiagnosisLines(lines) {
+  const seen = new Set();
+  return (Array.isArray(lines) ? lines : []).filter(line => {
+    const key = _diagnosisEvidenceKey(line);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function renderTechnicalDiagnosis(d, isKrx, diagEl) {
   // 네 번째 인자는 스마트스코어의 원본 근거 블록이다. 재무 데이터가 없을 때도 같은 흐름을 쓴다.
   if (!diagEl) return;
@@ -23273,11 +23355,11 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
   const crossDesc = stepSummary(stepPat.filter(st => st.step.startsWith('6.')), '교차 지표 분석 데이터 없음');
 
   const aiLines = (d.ai_strategy && d.ai_strategy.result)
-    ? String(d.ai_strategy.result).split(' | ').filter(line => line.trim()).slice(0, 3)
+    ? dedupeDiagnosisLines(String(d.ai_strategy.result).split(' | ').filter(line => line.trim())).slice(0, 3)
     : [];
   const aiDiagnosisHtml = aiLines.length
     ? aiLines.map(line => `<div style="margin-bottom:4px">${line}</div>`).join('')
-    : 'AI가 생성한 종합 진단이 여기에 표시됩니다.';
+    : '규칙 기반 종합 해석을 만들 근거가 부족합니다.';
 
   // ── dim 점수 → 색상·레이블 헬퍼 (5단계) ────────────────────────────
   // 75+:우수(초록) / 55+:양호(파랑) / 40+:보통(노랑) / 25+:주의(주황) / 0+:위험(빨강)
@@ -23363,19 +23445,22 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
       : '<div style="font-size:12px;color:#8b949e">시장 심리 데이터가 부족합니다.</div>');
 
   diagEl.innerHTML = `
-    <div class="diag-grade-row">
-      <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${gradeHtml}</div>
-      <div class="diag-grade-info" style="flex:1">
-        <div class="diag-grade-title" style="color:${gradeColor}">${gradeText}</div>
-        <div class="diag-grade-sub">${gradeDesc}</div>
+    <div data-diagnosis-section="decision">
+      <div class="diag-grade-row">
+        <div class="diag-grade-badge" style="border-color:${gradeColor};color:${gradeColor}">${gradeHtml}</div>
+        <div class="diag-grade-info" style="flex:1">
+          <div class="diag-grade-title" style="color:${gradeColor}">${gradeText}</div>
+          <div class="diag-grade-sub">${gradeDesc}</div>
+        </div>
+        <span id="flow-rec-badge" class="rec-badge-lg" style="flex-shrink:0;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
       </div>
-      <span id="flow-rec-badge" class="rec-badge-lg" style="flex-shrink:0;color:${gradeColor};border:1px solid ${gradeColor};background:${gradeBg}" data-grade="${grade}" data-grade-color="${gradeColor}" data-grade-bg="${gradeBg}" data-badge-text="${badgeInitText}">${badgeInitText}</span>
     </div>
 
-    ${fundamentalHtml ? `${fundamentalHtml}` : ''}
-
-    <div class="diag-dims">
+    <div data-diagnosis-section="current" class="diag-dims">
       ${pbTopHtml}
+    </div>
+
+    <div data-diagnosis-section="technical" class="diag-dims">
       ${dimBar('📊', '기술적 추세', techScore, techDesc, {accordionId:'dim-tech', accordionContent: buildStepHtml(stepTech)})}
       ${dimBar('⚡', '모멘텀 강도', momentumScore, rsiLabel, {accordionId:'dim-mom', accordionContent: buildStepHtml(stepMom)})}
       ${dimBar('🌊', '변동성 수준', volScore, volDesc, {accordionId:'dim-vol', accordionContent: buildStepHtml(stepVol)})}
@@ -23385,11 +23470,18 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
       ${renderHybridSection(d)}
     </div>
 
-    <div class="diag-dims">${supplyDetail}</div>
+    <div data-diagnosis-section="flow" class="diag-dims">${supplyDetail}</div>
 
-    ${pbBottomHtml ? `<div class="diag-dims" style="margin-top:12px">${pbBottomHtml}</div>` : ''}
+    <div data-diagnosis-section="risk" class="diag-dims" style="margin-top:12px">
+      ${pbBottomHtml || '<div style="font-size:12px;color:#8b949e">눌림목·구조 위험 데이터가 부족합니다.</div>'}
+    </div>
 
-    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px;font-size:12px;color:#cdd9e5;line-height:1.6">${aiDiagnosisHtml}</div>
+    ${fundamentalHtml ? `<div data-diagnosis-section="fundamental">${fundamentalHtml}</div>` : '<div data-diagnosis-section="fundamental" style="display:none"></div>'}
+
+    <div data-diagnosis-section="interpretation" style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:12px;font-size:12px;color:#cdd9e5;line-height:1.6">
+      <div style="font-size:10px;color:#8b949e;font-weight:700;margin-bottom:5px">규칙 기반 종합 해석</div>
+      ${aiDiagnosisHtml}
+    </div>
 
     <div style="font-size:11px;color:#484f58;margin-top:12px;padding-top:10px;border-top:1px solid #21262d">
       ⚠️ 본 진단은 기술적 지표 기반 참고 자료이며 투자 판단의 단독 근거로 사용하지 마세요. 각 항목을 클릭하면 원본 지표와 상세 분석을 확인할 수 있습니다.
@@ -23618,6 +23710,24 @@ function renderPredictionSections(d, isKrx) {
     return;
   }
 
+  // 모든 진입·목표·손절·시나리오가 공유하는 단일 현재가 기준. 기술지표는
+  // 확정 일봉 기준일 수 있으므로 가격 시점과 지표 시점을 분리해 표시한다.
+  const priceAnchor = p.price_anchor || d.price_anchor || {};
+  const anchorCurrent = _isFiniteNumber(priceAnchor.current_price)
+    ? Number(priceAnchor.current_price) : (_isFiniteNumber(d.last_close) ? Number(d.last_close) : null);
+  const anchorChange = _isFiniteNumber(priceAnchor.change_pct)
+    ? `${Number(priceAnchor.change_pct) >= 0 ? '+' : ''}${Number(priceAnchor.change_pct).toFixed(2)}%` : '미산정';
+  const anchorChangeColor = !_isFiniteNumber(priceAnchor.change_pct)
+    ? '#8b949e' : (Number(priceAnchor.change_pct) >= 0 ? '#3fb950' : '#f85149');
+  const quoteStamp = [priceAnchor.quote_date, priceAnchor.quote_time].filter(Boolean).join(' ') || '시각 미확보';
+  const priceAnchorHtml = `<div id="prediction-price-anchor" style="background:#0d1117;border:1px solid #58a6ff55;border-radius:10px;padding:12px;margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+      <div><div style="font-size:10px;color:#8b949e">${_escPrediction(priceAnchor.price_basis || '가격 기준')} · ${_escPrediction(priceAnchor.session || d.session_name || '확정 종가')}</div><div style="font-size:19px;font-weight:900;color:#58a6ff;margin-top:2px">${anchorCurrent == null ? '미확보' : fmt(anchorCurrent, isKrx)} <span style="font-size:11px;color:${anchorChangeColor}">${anchorChange}</span></div></div>
+      <div style="font-size:10px;color:#8b949e;text-align:right;line-height:1.55">${_escPrediction(priceAnchor.source || '출처 미확보')}<br>${_escPrediction(quoteStamp)}</div>
+    </div>
+    <div style="font-size:10px;color:#8b949e;margin-top:7px;line-height:1.55">기술지표 기준: ${_escPrediction(priceAnchor.indicator_basis || '최근 확정 일봉')}${priceAnchor.mixed_time_basis ? ' · 현재 시세와 확정 일봉의 기준 시점이 달라 방향 지표는 확정 봉 기준' : ' · 현재가가 마지막 분석 봉과 동기화됨'}</div>
+  </div>`;
+
   // ── ① 현재 최종 판단 (가장 먼저) ──
   const decision = p.decision || {};
   const decisionColor = _predictionTone(decision.tone || 'neutral');
@@ -23744,7 +23854,6 @@ function renderPredictionSections(d, isKrx) {
           <span style="font-size:10px;border:1px solid ${fcStatusColor}55;color:${fcStatusColor};border-radius:999px;padding:1px 7px">${_escPrediction(fc.status_label || '')}</span>
         </div>
         <div class="prediction-status-grid" style="margin-top:8px">
-          <div class="prediction-status-card"><div class="prediction-status-label">현재가</div><div class="prediction-status-value">${fmt(fc.current_price, isKrx)}</div></div>
           <div class="prediction-status-card"><div class="prediction-status-label">예상 방향</div><div class="prediction-status-value" style="color:${fcColor}">${_escPrediction(fc.direction || '—')}</div><div class="prediction-status-detail">상승 ${probabilityText(fcProb.up)} · 횡보 ${probabilityText(fcProb.sideways)} · 하락 ${probabilityText(fcProb.down)}</div></div>
           <div class="prediction-status-card"><div class="prediction-status-label">기준 예상가</div><div class="prediction-status-value" style="color:${fcColor}">${fmt(fc.base_price, isKrx)}</div><div class="prediction-status-detail">현재가 대비 ${fcPct(fc.expected_return_pct)}</div></div>
           <div class="prediction-status-card"><div class="prediction-status-label">예상 범위 (P10~P90)</div><div class="prediction-status-value" style="font-size:12px">${fmt(fcRange[0], isKrx)} ~ ${fmt(fcRange[1], isKrx)}</div><div class="prediction-status-detail">${fcPct(fcRangeRet[0])} ~ ${fcPct(fcRangeRet[1])}</div></div>
@@ -23769,7 +23878,7 @@ function renderPredictionSections(d, isKrx) {
         ${quality.source ? `· 출처 ${_escPrediction(quality.source)}` : ''}
         ${qualityWarnings.length ? `<div style="color:#d29922">${qualityWarnings.slice(0, 2).map(_escPrediction).join(' · ')}${qualityWarnings.length > 2 ? ` · 외 ${qualityWarnings.length - 2}건` : ''}</div>` : ''}
       </div>` : '';
-  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${qualityHtml}${forecastHtml}${stagesHtml}</div>`;
+  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${priceAnchorHtml}${qualityHtml}${forecastHtml}${stagesHtml}</div>`;
   statusEl.innerHTML = technicalHtml;
 
   // ── ③/④ 조건부 시나리오: 시간축 명확화 + 중복 제거 ──

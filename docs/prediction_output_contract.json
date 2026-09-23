@@ -1,5 +1,5 @@
 {
-  "contract_version": "2026-09-20",
+  "contract_version": "2026-09-23",
   "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
   "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
   "nullable_fields": [
@@ -18,8 +18,33 @@
     "warnings": ["string"],
     "component_status": "object"
   },
+  "price_anchor": {
+    "anchor_id": "16-character SHA-256 prefix identifying the quote snapshot",
+    "current_price": "number; canonical price shared by all prediction sections",
+    "previous_close": "number | null",
+    "change_pct": "number | null",
+    "market": "KRX | US",
+    "currency": "KRW | USD",
+    "source": "string",
+    "session": "string",
+    "quote_date": "YYYY-MM-DD | null",
+    "quote_time": "string | null",
+    "last_bar_date": "YYYY-MM-DD | null",
+    "is_extended": "boolean",
+    "applied_to_chart": "boolean",
+    "mixed_time_basis": "boolean; true when the quote and confirmed indicator bar use different time bases",
+    "price_basis": "현재 시세 | 최근 확정 종가",
+    "indicator_basis": "string"
+  },
+  "prediction_price_contract": {
+    "status": "ok | corrected",
+    "anchor_id": "same value as price_anchor.anchor_id",
+    "mismatches": ["response field path corrected to the canonical current price"],
+    "mixed_time_basis": "boolean"
+  },
   "buy_price": {
-    "current": "number",
+    "current": "number; equals price_anchor.current_price",
+    "price_anchor": "same snapshot as top-level price_anchor",
     "strategy_rec": {
       "action_key": "string",
       "action": "string",
@@ -42,6 +67,8 @@
     "vol_trend": "expanding | contracting | normal"
   },
   "risk_scenarios": {
+    "current_price": "number; equals price_anchor.current_price",
+    "price_anchor": "same snapshot as top-level price_anchor",
     "provisional": "boolean, optional; true when fewer than 20 valid daily closes",
     "conservative": {
       "label": "보수적",
@@ -64,7 +91,14 @@
     "balanced": "same scenario structure",
     "aggressive": "same scenario structure"
   },
+  "target_price": {
+    "current_price": "number; equals price_anchor.current_price",
+    "price_anchor": "same snapshot as top-level price_anchor",
+    "min_price": "number",
+    "max_price": "number"
+  },
   "prediction_outlook": {
+    "price_anchor": "same snapshot as top-level price_anchor",
     "decision": {
       "key": "string",
       "label": "string",
@@ -85,7 +119,9 @@
       "horizon_days": "integer",
       "as_of_date": "YYYY-MM-DD | null",
       "target_date": "YYYY-MM-DD | null when unavailable",
-      "base_price": "number | absent when unavailable",
+      "current_price": "number; equals price_anchor.current_price",
+      "price_anchor_id": "same value as price_anchor.anchor_id",
+      "base_price": "number | absent when unavailable; statistical forecast base, not a second current-price source",
       "range_p10_p90": "[number_low, number_high] | absent when unavailable",
       "volatility_basis": "string when calculated"
     }
