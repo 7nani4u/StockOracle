@@ -132,16 +132,15 @@ def test_same_session_current_bar_refreshes_price_dependent_indicators():
     assert len(refreshed["EMA20"]) == len(closes)
 
 
-def test_prediction_tab_renders_price_anchor_before_forecast_details():
+def test_prediction_tab_keeps_price_anchor_internal_to_prediction_calculation():
     renderer = HTML.split("function renderPredictionSections", 1)[1].split(
         "function renderForecast", 1
     )[0]
 
-    assert 'id="prediction-price-anchor"' in renderer
-    assert "가격 기준" in renderer
-    assert "기술지표 기준" in renderer
-    assert "priceAnchorHtml" in renderer
-    assert renderer.index("priceAnchorHtml") < renderer.index("forecastHtml")
+    assert 'id="prediction-price-anchor"' not in renderer
+    assert "priceAnchorHtml" not in renderer
+    assert "기술지표 기준" not in renderer
+    assert "data_quality" not in renderer
 
 
 def test_rule_diagnosis_uses_decision_first_order_with_named_sections():

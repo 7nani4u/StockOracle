@@ -23710,24 +23710,6 @@ function renderPredictionSections(d, isKrx) {
     return;
   }
 
-  // 모든 진입·목표·손절·시나리오가 공유하는 단일 현재가 기준. 기술지표는
-  // 확정 일봉 기준일 수 있으므로 가격 시점과 지표 시점을 분리해 표시한다.
-  const priceAnchor = p.price_anchor || d.price_anchor || {};
-  const anchorCurrent = _isFiniteNumber(priceAnchor.current_price)
-    ? Number(priceAnchor.current_price) : (_isFiniteNumber(d.last_close) ? Number(d.last_close) : null);
-  const anchorChange = _isFiniteNumber(priceAnchor.change_pct)
-    ? `${Number(priceAnchor.change_pct) >= 0 ? '+' : ''}${Number(priceAnchor.change_pct).toFixed(2)}%` : '미산정';
-  const anchorChangeColor = !_isFiniteNumber(priceAnchor.change_pct)
-    ? '#8b949e' : (Number(priceAnchor.change_pct) >= 0 ? '#3fb950' : '#f85149');
-  const quoteStamp = [priceAnchor.quote_date, priceAnchor.quote_time].filter(Boolean).join(' ') || '시각 미확보';
-  const priceAnchorHtml = `<div id="prediction-price-anchor" style="background:#0d1117;border:1px solid #58a6ff55;border-radius:10px;padding:12px;margin-bottom:12px">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
-      <div><div style="font-size:10px;color:#8b949e">${_escPrediction(priceAnchor.price_basis || '가격 기준')} · ${_escPrediction(priceAnchor.session || d.session_name || '확정 종가')}</div><div style="font-size:19px;font-weight:900;color:#58a6ff;margin-top:2px">${anchorCurrent == null ? '미확보' : fmt(anchorCurrent, isKrx)} <span style="font-size:11px;color:${anchorChangeColor}">${anchorChange}</span></div></div>
-      <div style="font-size:10px;color:#8b949e;text-align:right;line-height:1.55">${_escPrediction(priceAnchor.source || '출처 미확보')}<br>${_escPrediction(quoteStamp)}</div>
-    </div>
-    <div style="font-size:10px;color:#8b949e;margin-top:7px;line-height:1.55">기술지표 기준: ${_escPrediction(priceAnchor.indicator_basis || '최근 확정 일봉')}${priceAnchor.mixed_time_basis ? ' · 현재 시세와 확정 일봉의 기준 시점이 달라 방향 지표는 확정 봉 기준' : ' · 현재가가 마지막 분석 봉과 동기화됨'}</div>
-  </div>`;
-
   // ── ① 현재 최종 판단 (가장 먼저) ──
   const decision = p.decision || {};
   const decisionColor = _predictionTone(decision.tone || 'neutral');
@@ -23868,17 +23850,9 @@ function renderPredictionSections(d, isKrx) {
       </div>`;
     }
   }
-  const quality = d.data_quality || {};
-  const qualityWarnings = Array.isArray(quality.warnings) ? quality.warnings : [];
-  const qualityHtml = quality.status || quality.last_bar_date || quality.history_bars != null
-    ? `<div class="prediction-mini-list" style="margin-bottom:12px;border:1px solid #30363d;border-radius:8px;padding:9px 11px;font-size:10px;color:#8b949e;line-height:1.6">
-        <b style="color:${quality.status === '정상' ? '#3fb950' : '#d29922'}">데이터 상태: ${_escPrediction(quality.status || '확인 필요')}</b>
-        · 마지막 일봉 ${_escPrediction(quality.last_bar_date || '미확보')}
-        · 일봉 이력 ${_escPrediction(quality.history_bars ?? '미확보')}봉
-        ${quality.source ? `· 출처 ${_escPrediction(quality.source)}` : ''}
-        ${qualityWarnings.length ? `<div style="color:#d29922">${qualityWarnings.slice(0, 2).map(_escPrediction).join(' · ')}${qualityWarnings.length > 2 ? ` · 외 ${qualityWarnings.length - 2}건` : ''}</div>` : ''}
-      </div>` : '';
-  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${priceAnchorHtml}${qualityHtml}${forecastHtml}${stagesHtml}</div>`;
+  // 가격 앵커·시세 출처·데이터 품질·경고는 API 응답과 예측 계산에는 유지하되,
+  // 예측 탭에는 노출하지 않는다. 사용자가 보는 화면은 판단과 조건부 예측만 제공한다.
+  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${forecastHtml}${stagesHtml}</div>`;
   statusEl.innerHTML = technicalHtml;
 
   // ── ③/④ 조건부 시나리오: 시간축 명확화 + 중복 제거 ──
@@ -24423,12 +24397,6 @@ function renderForecast(d, isKrx) {
       rgEl.innerHTML = '<div class="prediction-mini-list">목표·손절 시나리오를 산정할 데이터가 부족합니다.</div>';
       return;
     }
-    const weeklyRisk = risk.weekly_analysis || d.weekly_analysis || {};
-    const weeklyRiskHtml = weeklyRisk.available
-      ? `<div style="grid-column:1/-1;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:9px 11px;font-size:10px;color:#8b949e;line-height:1.55">
-          <b style="color:#58a6ff">1년 주간 구조 분석</b> · 완성 주봉 ${Number(weeklyRisk.completed_week_count || 0)}개 · 13/26/52주 피보나치 · 주간 추세 ${_escPrediction(weeklyRisk.trend_label || '중립')} (${Number(weeklyRisk.slope_4w_pct || 0).toFixed(2)}%)<br>
-          ${_escPrediction(risk.target_range_order_basis || '시나리오별 전체 목표 범위와 단계 폭을 다르게 산정')}
-        </div>` : '';
     const rrColor = rr => rr >= 2.0 ? '#3fb950' : rr >= 1.5 ? '#d29922' : '#f85149';
     // 📌 눌림목 분석 기반 정밀 가격 — 시나리오 카드에 통합 (별도 섹션 폐지)
     // 고대비 구분선 — 카드 배경(녹/적 틴트·다크·라이트)에 무관하게 항상 보이도록
@@ -24465,7 +24433,6 @@ function renderForecast(d, isKrx) {
     rgEl.innerHTML = `
       ${provisionalRiskHtml}
       ${commonStopHtml}
-      ${weeklyRiskHtml}
       ${riskEntries.map(sc => {
         // ── 눌림목 정밀 목표가 — 1차(중립적) · 2차(공격적)만 복원, 손절/트레일링은 제외 ──
         const pbHtml = (() => {

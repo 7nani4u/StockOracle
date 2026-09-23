@@ -132,7 +132,7 @@ console.log(JSON.stringify({first, clearedRisk: elements['risk-grid'].innerHTML,
     completed = subprocess.run([node, "-"], input=script, text=True, encoding="utf-8",
                                capture_output=True, check=True, timeout=20)
     rendered = json.loads(completed.stdout)
-    assert "데이터 상태: 데이터 부족" in rendered["first"]["overview"]
+    assert "데이터 상태: 데이터 부족" not in rendered["first"]["overview"]
     assert "RSI 미확보" in rendered["first"]["overview"]
     assert "상승 미산정" in rendered["first"]["overview"]
     assert "1σ ±미산정" in rendered["first"]["overview"]

@@ -644,7 +644,7 @@ def test_removed_risk_card_sections_are_not_rendered():
     assert "이 시나리오가 실패할 수 있는 조건" not in HTML
     assert "목표가 레벨별 도달 가능성" in HTML
     assert "전체 목표 청산 범위" in HTML
-    assert "1년 주간 구조 분석" in HTML
+    assert "1년 주간 구조 분석" not in HTML
     assert "예측 목표 가격 범위" not in HTML
     for column in ("목표 가격 범위", "수익률", "도달 가능성", "예상 거래일"):
         assert f'role="columnheader">{column}</span>' in HTML
