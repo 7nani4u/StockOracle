@@ -20857,8 +20857,7 @@ input::placeholder{color:#484f58}
             <th>카테고리</th>
             <th style="text-align:center">신호</th>
             <th style="text-align:right">진입 트리거</th>
-            <th style="text-align:right">손절가</th>
-            <th style="text-align:center">브레이크아웃 품질</th>
+            <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 신뢰도</th>
             <th style="text-align:center">치명적 약점</th>
             <th style="text-align:center">순복합 점수</th>
             <th style="text-align:center">퀀트 모멘텀 점수</th>
@@ -27592,7 +27591,7 @@ function renderScanResult(d, market) {
           '<b style="color:#3fb950">🔥 돌파</b>=4조건 충족(상승기 시장 초과 +10%p 이상 · 고점 대비 −30% 이상 조정 · 신저가 중단 · 횡보 상단 돌파)<br>' +
           '<b style="color:#d29922">👀 대기</b>=돌파 직전<br>' +
           '<b style="color:#8b949e">🧱 바닥</b>=조정 진행 중 · —=해당 없음<br>' +
-          '배지 아래 수치(초과·조정·상단 이격·진입/손절가)가 근거이며, 점수 미반영 보조 지표로 매수 권유가 아닙니다.</span>'
+          '배지는 단계만 나타내는 점수 미반영 보조 지표이며 매수 권유가 아닙니다.</span>'
         : '') +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
@@ -27602,7 +27601,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
     return;
   }
 
@@ -27665,46 +27664,19 @@ function renderScanResult(d, market) {
     var promotedMark = (c.status_source === 'leader_reversal' && c.status === 'READY')
       ? '<div title="리더 반전 돌파로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#3fb950;margin-top:2px;white-space:nowrap">🔥 리더 돌파</div>'
       : '';
-    // 리더주 반전 신호 셀 (미국 전용 보조 지표 — 배지가 곧 신호, 아래 작은 글씨가 근거)
+    // 리더주 반전 신호 셀: 계산용 세부 수치·진입/손절가는 API에만 유지하고
+    // 스캔 표에는 단계 배지만 노출한다.
     var lr = c.leader_reversal || {};
     var lrStage = lr.stage || 'NONE';
-    var _lrNum = function(v, d) {
-      var n = Number(v);
-      return (v != null && isFinite(n)) ? n.toFixed(d == null ? 1 : d) : null;
-    };
     var lrCell = (function() {
-      var tip = (lr.summary || lr.stage_label || '').replace(/"/g, '&quot;');
+      var tip = '리더 반전 보조 신호 · 점수 미반영';
       if (lrStage === 'BREAKOUT' || lrStage === 'WAIT_BREAKOUT' || lrStage === 'BASE_BUILDING') {
         var badge = lrStage === 'BREAKOUT'
           ? '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 8px;white-space:nowrap">🔥 돌파</span>'
           : lrStage === 'WAIT_BREAKOUT'
           ? '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 대기</span>'
           : '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🧱 바닥</span>';
-        // 근거 1줄: 시장 초과수익 · 고점 대비 조정폭 · 횡보 상단 이격
-        var bits = [];
-        var rsTxt = _lrNum(lr.rs_edge_pp);
-        if (rsTxt != null) bits.push('초과 ' + (Number(lr.rs_edge_pp) >= 0 ? '+' : '') + rsTxt + '%p');
-        var ddTxt = _lrNum(lr.drawdown_pct);
-        if (ddTxt != null) bits.push('조정 ' + ddTxt + '%');
-        if ((lrStage === 'BREAKOUT' || lrStage === 'WAIT_BREAKOUT') && c.price != null && lr.range_high) {
-          var gap = (Number(c.price) - Number(lr.range_high)) / Number(lr.range_high) * 100;
-          if (isFinite(gap)) bits.push('상단 ' + (gap >= 0 ? '+' : '') + gap.toFixed(1) + '%');
-        } else if (lrStage === 'BASE_BUILDING' && lr.trough_ago != null) {
-          bits.push('저점 후 ' + lr.trough_ago + '거래일');
-        } else if (lr.market_confirm) {
-          bits.push('시장 역행 확인');
-        }
-        var lines = bits.length
-          ? '<div title="' + tip + '" style="font-size:9px;color:#8b949e;margin-top:3px;line-height:1.5">' + bits.join(' · ') + '</div>'
-          : '';
-        // 진입/손절 참고가 (돌파·대기 단계만)
-        var plan = '';
-        if ((lrStage === 'BREAKOUT' || lrStage === 'WAIT_BREAKOUT') && (lr.entry_trigger != null || lr.stop_price != null)) {
-          var eTxt = lr.entry_trigger != null ? fmtP(lr.entry_trigger) : '—';
-          var sTxt = lr.stop_price != null ? fmtP(lr.stop_price) : '—';
-          plan = '<div style="font-size:9px;color:#6e7681;margin-top:2px;line-height:1.5">진입 ' + eTxt + ' · 손절 ' + sTxt + '</div>';
-        }
-        return badge + lines + plan;
+        return badge;
       }
       return '<span style="font-size:11px;color:#484f58">—</span>';
     })();
@@ -27719,7 +27691,6 @@ function renderScanResult(d, market) {
       '<td><span class="cat-badge">' + cat + '</span></td>' +
       '<td style="text-align:center"><span class="signal-badge ' + sigCls + '">' + sig + '</span></td>' +
       '<td style="text-align:right;font-size:12px;color:#58a6ff">' + fmtP(c.entry_trigger) + '</td>' +
-      '<td style="text-align:right;font-size:12px;color:#f85149">' + fmtP(c.stop_price) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.fws, fwsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
