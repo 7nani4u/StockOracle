@@ -18381,6 +18381,8 @@ def route(path: str, params: Dict) -> Dict:
                 StockUniverse, run_full_scan, build_snapshot_from_ohlcv,
                 SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
                 is_scan_price_eligible, apply_leader_promotion,
+                VPD_RECENT_DAYS, VPD_BASELINE_DAYS,
+                VPD_MIN_VOLUME_RATIO, VPD_MAX_ABS_PRICE_CHANGE_PCT,
             )
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
@@ -18588,7 +18590,7 @@ def route(path: str, params: Dict) -> Dict:
             #   동일 (시장·모드·자본·리스크·종목집합) 요청은 5분간 재사용.
             #   refresh=1 파라미터로 강제 갱신 가능.
             _refresh   = str(params.get("refresh", "")).lower() in ("1", "true", "yes")
-            _cache_key = f"scan|v2|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
+            _cache_key = f"scan|v3|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -18598,12 +18600,18 @@ def route(path: str, params: Dict) -> Dict:
                 """yf.Ticker().history() DataFrame → (closes, highs, lows, volumes, opens)."""
                 if hist is None or hist.empty:
                     return None
-                cl = hist["Close"].dropna().tolist()
-                hi = hist["High"].dropna().tolist()
-                lo = hist["Low"].dropna().tolist()
-                vo = hist["Volume"].dropna().tolist()
-                op = hist["Open"].dropna().tolist()
-                n  = min(len(cl), len(hi), len(lo), len(vo), len(op))
+                required_cols = ["Close", "High", "Low", "Volume", "Open"]
+                if any(col not in hist.columns for col in required_cols):
+                    return None
+                # 열별 dropna 후 길이만 자르면 서로 다른 날짜가 결합될 수 있다.
+                # 동일 행에서 결측을 제거해 OHLCV 날짜 정렬을 보존한다.
+                aligned = hist[required_cols].dropna(subset=required_cols)
+                cl = aligned["Close"].tolist()
+                hi = aligned["High"].tolist()
+                lo = aligned["Low"].tolist()
+                vo = aligned["Volume"].tolist()
+                op = aligned["Open"].tolist()
+                n  = len(aligned)
                 if n < 60:
                     return None
                 return cl[:n], hi[:n], lo[:n], vo[:n], op[:n]
@@ -18908,6 +18916,44 @@ def route(path: str, params: Dict) -> Dict:
                 )
                 cands.append(d)
 
+            # ── 거래량-가격 괴리 매집 탐지 (전체 수집 종목 대상) ──────────────
+            # 기존 추세/QMJ 필터와 독립적으로 계산해야 신호 종목이 누락되지 않는다.
+            # 이 목록에는 두 조건(거래량 3배 이상 + 20일 가격 ±3%)을 모두 만족한
+            # 종목만 담고, 미충족 종목은 집계에만 반영한다.
+            _universe_by_ticker = {u.ticker: u for u in universe}
+            _vpd_candidates: list = []
+            _vpd_evaluated = 0
+            _vpd_unavailable = 0
+            for _vt, _vsnap in snap_map.items():
+                _sig = dict(getattr(_vsnap, "volume_price_divergence", {}) or {})
+                if not _sig.get("available"):
+                    _vpd_unavailable += 1
+                    continue
+                _vpd_evaluated += 1
+                if not _sig.get("is_match"):
+                    continue
+                _vu = _universe_by_ticker.get(_vt)
+                _vpd_candidates.append({
+                    "ticker": _vt,
+                    "name": getattr(_vu, "name", None) or name_hint.get(_vt) or _vt,
+                    "price": round(float(getattr(_vsnap, "current_price", 0.0) or 0.0), 4),
+                    "change_pct": change_map.get(_vt, 0.0),
+                    "category": sector_map.get(_vt, "") or getattr(_vu, "sector", "") or "",
+                    "cap_tier": cap_map.get(_vt, "MID"),
+                    "cap_tier_ko": SCAN_CAP_TIER_KO.get(cap_map.get(_vt, "MID"), "중형"),
+                    "recent_avg_volume": _sig.get("recent_avg_volume"),
+                    "baseline_avg_volume": _sig.get("baseline_avg_volume"),
+                    "volume_ratio": _sig.get("volume_ratio"),
+                    "price_change_pct": _sig.get("price_change_pct"),
+                    "recent_days": _sig.get("recent_days", VPD_RECENT_DAYS),
+                    "baseline_days": _sig.get("baseline_days", VPD_BASELINE_DAYS),
+                })
+            _vpd_candidates.sort(key=lambda cd: (
+                -_scan_num(cd.get("volume_ratio")),
+                abs(_scan_num(cd.get("price_change_pct"))),
+                cd.get("ticker", ""),
+            ))
+
             # ── 리더 반전 BREAKOUT 승격 (미국 전용): 상태를 진입 준비로 ──
             # 승격된 행은 진입 트리거·손절가·이격·사이징이 리더 기준으로 교체되고
             # 원래 값은 orig_* 로 남는다. 점수(BQS/FWS/NCS)는 그대로 둔다.
@@ -19026,6 +19072,18 @@ def route(path: str, params: Dict) -> Dict:
                                if (cd.get("leader_reversal") or {}).get("stage") == stage)
                     for stage in ("BREAKOUT", "WAIT_BREAKOUT", "BASE_BUILDING", "NONE")
                 } if market_p == "US" else None),
+                "volume_price_divergence": {
+                    "label": "거래량-가격 괴리 매집 탐지",
+                    "recent_days": VPD_RECENT_DAYS,
+                    "baseline_days": VPD_BASELINE_DAYS,
+                    "min_volume_ratio": VPD_MIN_VOLUME_RATIO,
+                    "max_abs_price_change_pct": VPD_MAX_ABS_PRICE_CHANGE_PCT,
+                    "evaluated_count": _vpd_evaluated,
+                    "unavailable_count": _vpd_unavailable,
+                    "match_count": len(_vpd_candidates),
+                    "candidates": _vpd_candidates,
+                    "note": "최근 20거래일 일평균 거래량이 직전 60거래일의 3배 이상이면서 20일 가격 변동이 ±3% 이내인 종목만 표시합니다. 매집 확정이나 매수 권유가 아닌 보조 신호입니다.",
+                },
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
@@ -20806,7 +20864,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px;flex-wrap:wrap;gap:18px">
       <div style="margin-right:auto">
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🔬 7단계 스캔 엔진</h2>
-        <p style="font-size:12px;color:#8b949e">BQS·FWS·NCS 복합 점수 기반 후보 종목 발굴</p>
+        <p style="font-size:12px;color:#8b949e">BQS·FWS·NCS 복합 점수 + 거래량-가격 괴리 기반 후보 종목 발굴</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap">
         <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px;flex:1 1 0;min-width:0">
@@ -20829,6 +20887,7 @@ input::placeholder{color:#484f58}
       <div style="font-size:36px;margin-bottom:12px">🔬</div>
       <div style="font-size:14px;font-weight:600;color:#8b949e;margin-bottom:8px">7단계 스캔 엔진 준비 완료</div>
       <div style="font-size:12px;line-height:1.7">종목 유니버스 → 기술필터 → 상태분류 → BQS 랭킹 → 리스크 게이트 → 추격 방지 → 포지션 사이징</div>
+      <div style="font-size:11px;color:#6e7681;margin-top:6px">별도 탐지: 최근 20일 거래량 3배 이상 + 가격 변동 ±3% 이내</div>
       <div style="font-size:11px;color:#484f58;margin-top:8px">⚠️ 실시간 데이터 수집으로 10~30초 소요될 수 있습니다</div>
     </div>
     <!-- 로딩 -->
@@ -20845,6 +20904,28 @@ input::placeholder{color:#484f58}
       <div id="scan-summary-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px"></div>
       <!-- 레짐 배지 -->
       <div id="scan-regime-bar" style="margin-bottom:14px;padding:10px 14px;background:#161b22;border:1px solid #30363d;border-radius:10px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12px"></div>
+      <!-- 거래량-가격 괴리 매집 탐지: 두 조건을 모두 충족한 종목만 출력 -->
+      <section id="scan-vpd-section" class="card" style="padding:0;margin-bottom:16px;overflow:hidden">
+        <div style="padding:14px 16px;border-bottom:1px solid #30363d">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <strong style="font-size:14px;color:#e6edf3">🔎 거래량-가격 괴리 매집 탐지</strong>
+            <span id="scan-vpd-count" style="font-size:10px;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 7px">0종목</span>
+          </div>
+          <div id="scan-vpd-note" style="font-size:11px;color:#8b949e;line-height:1.6;margin-top:5px">최근 20거래일 평균 거래량이 직전 60거래일의 3배 이상이면서 가격 변동이 ±3% 이내인 종목만 표시합니다.</div>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="screener-table" style="white-space:nowrap">
+            <thead><tr>
+              <th>#</th><th>종목</th><th style="text-align:right">현재가</th>
+              <th style="text-align:right">최근 20일 평균 거래량</th>
+              <th style="text-align:right">직전 60일 평균 거래량</th>
+              <th style="text-align:center">거래량 배수</th>
+              <th style="text-align:center">20일 가격 변동</th>
+            </tr></thead>
+            <tbody id="scan-vpd-tbody"></tbody>
+          </table>
+        </div>
+      </section>
       <!-- 후보 테이블 (셀 줄바꿈 방지 — 가로 스크롤로 표시) -->
       <div class="card" style="padding:0;overflow-x:auto">
         <table class="screener-table" id="scan-table" style="white-space:nowrap">
@@ -27493,6 +27574,11 @@ async function runScan(force) {
 
 function renderScanResult(d, market) {
   var isKrx = market === 'KRX';
+  var escScan = function(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  };
   var fmtP  = function(v) {
     if (v == null) return '—';
     return fmtPrice(v, isKrx);
@@ -27540,6 +27626,7 @@ function renderScanResult(d, market) {
       { val: d.passed_filters, label: '필터 통과',  color: '#58a6ff' },
       { val: d.ready_count,    label: '진입 준비',  color: '#3fb950' },
       { val: d.watch_count,    label: '관찰 대기',  color: '#d29922' },
+      { val: ((d.volume_price_divergence || {}).match_count || 0), label: '매집 괴리', color: '#bc8cff' },
       { val: (d.good_count != null ? d.good_count : (d.candidates||[]).length), label: '선정 종목', color: '#3fb950' },
     ];
     sumEl.innerHTML = cards.map(function(c) {
@@ -27594,6 +27681,44 @@ function renderScanResult(d, market) {
           '배지는 단계만 나타내는 점수 미반영 보조 지표이며 매수 권유가 아닙니다.</span>'
         : '') +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
+  }
+
+  // 거래량-가격 괴리: API가 두 조건을 모두 검증한 일치 종목만 별도 출력한다.
+  var vpd = d.volume_price_divergence || {};
+  var vpdCands = vpd.candidates || [];
+  var vpdCountEl = document.getElementById('scan-vpd-count');
+  var vpdNoteEl = document.getElementById('scan-vpd-note');
+  var vpdBody = document.getElementById('scan-vpd-tbody');
+  if (vpdCountEl) vpdCountEl.textContent = (vpd.match_count != null ? vpd.match_count : vpdCands.length) + '종목';
+  if (vpdNoteEl) {
+    var coverageText = ' · 계산 ' + (vpd.evaluated_count || 0) + '종목';
+    if (vpd.unavailable_count) coverageText += ' · 데이터 부족 ' + vpd.unavailable_count + '종목';
+    vpdNoteEl.textContent = (vpd.note || '최근 20거래일 거래량 3배 이상 + 가격 변동 ±3% 이내') + coverageText;
+  }
+  if (vpdBody) {
+    if (!vpdCands.length) {
+      vpdBody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:#6e7681">두 조건을 모두 충족한 종목이 없습니다.</td></tr>';
+    } else {
+      vpdBody.innerHTML = vpdCands.map(function(c, i) {
+        var ticker = String(c.ticker || '');
+        var safeTicker = ticker.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        var displayName = c.name && c.name !== ticker ? c.name : fmtSymbol(ticker, isKrx);
+        var displayCode = c.name && c.name !== ticker ? fmtSymbol(ticker, isKrx) : '';
+        var ratio = Number(c.volume_ratio || 0);
+        var priceMove = Number(c.price_change_pct || 0);
+        var moveColor = Math.abs(priceMove) <= Number(vpd.max_abs_price_change_pct || 3) ? '#bc8cff' : '#f85149';
+        return '<tr onclick="openStockDetail(\'' + safeTicker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
+          '<td style="color:#484f58;font-size:11px">' + (i + 1) + '</td>' +
+          '<td><div style="font-weight:700;color:#e6edf3">' + escScan(displayName) + '</div>' +
+            (displayCode ? '<div style="font-size:10px;color:#484f58">' + escScan(displayCode) + '</div>' : '') + '</td>' +
+          '<td style="text-align:right;font-weight:600">' + fmtP(c.price) + '</td>' +
+          '<td style="text-align:right">' + Number(c.recent_avg_volume || 0).toLocaleString('ko-KR', {maximumFractionDigits:0}) + '</td>' +
+          '<td style="text-align:right;color:#8b949e">' + Number(c.baseline_avg_volume || 0).toLocaleString('ko-KR', {maximumFractionDigits:0}) + '</td>' +
+          '<td style="text-align:center"><span style="font-weight:800;color:#3fb950">' + ratio.toFixed(2) + '배</span></td>' +
+          '<td style="text-align:center;font-weight:800;color:' + moveColor + '">' + (priceMove > 0 ? '+' : '') + priceMove.toFixed(2) + '%</td>' +
+        '</tr>';
+      }).join('');
+    }
   }
 
   // 후보 테이블

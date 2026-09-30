@@ -78,6 +78,113 @@ SCAN_US_MAX_PRICE = 70.0
 SCAN_COLLECT_CAP_US_FULL = 120
 SCAN_COLLECT_CAP_US_LITE = 48
 
+# ── 거래량-가격 괴리(매집 탐지) ────────────────────────────────────────────
+# 최근 20거래일과 그 직전 60거래일을 분리해 비교한다. 최근 구간을 기준 거래량에
+# 섞지 않아 급증 신호가 스스로 희석되는 것을 막는다.
+VPD_RECENT_DAYS = 20
+VPD_BASELINE_DAYS = 60
+VPD_MIN_VOLUME_RATIO = 3.0
+VPD_MAX_ABS_PRICE_CHANGE_PCT = 3.0
+
+
+def detect_volume_price_divergence(
+    closes: List[float],
+    volumes: List[float],
+    recent_days: int = VPD_RECENT_DAYS,
+    baseline_days: int = VPD_BASELINE_DAYS,
+    min_volume_ratio: float = VPD_MIN_VOLUME_RATIO,
+    max_abs_price_change_pct: float = VPD_MAX_ABS_PRICE_CHANGE_PCT,
+) -> Dict[str, Any]:
+    """거래량은 급증했지만 가격은 정체된 종목을 탐지한다.
+
+    ``recent_days``의 일평균 거래량을 바로 앞 ``baseline_days``의 일평균과
+    비교하고, 최근 구간 시작 직전 종가 대비 최신 종가의 순변동을 측정한다.
+    두 조건(거래량 비율 >= 기준, 절대 가격변동 <= 기준)을 모두 만족할 때만
+    ``is_match``가 참이다. 매집의 인과관계를 확정하는 지표는 아니다.
+    """
+    result: Dict[str, Any] = {
+        "available": False,
+        "is_match": False,
+        "recent_days": recent_days,
+        "baseline_days": baseline_days,
+        "min_volume_ratio": float(min_volume_ratio),
+        "max_abs_price_change_pct": float(max_abs_price_change_pct),
+        "recent_avg_volume": None,
+        "baseline_avg_volume": None,
+        "volume_ratio": None,
+        "price_change_pct": None,
+        "volume_condition": False,
+        "price_condition": False,
+        "reason": "",
+    }
+
+    if recent_days <= 0 or baseline_days <= 0:
+        result["reason"] = "분석 기간은 양수여야 합니다"
+        return result
+    if min_volume_ratio <= 0 or max_abs_price_change_pct < 0:
+        result["reason"] = "탐지 임계값이 올바르지 않습니다"
+        return result
+
+    required = recent_days + baseline_days
+    n = min(len(closes or []), len(volumes or []))
+    if n < required:
+        result["reason"] = f"데이터 부족: 최소 {required}거래일 필요 (현재 {n}일)"
+        return result
+
+    try:
+        aligned_closes = [float(v) for v in closes[-n:]]
+        aligned_volumes = [float(v) for v in volumes[-n:]]
+        close_anchor = aligned_closes[-(recent_days + 1)]
+        close_latest = aligned_closes[-1]
+        recent_volumes = aligned_volumes[-recent_days:]
+        baseline_volumes = aligned_volumes[-required:-recent_days]
+    except (TypeError, ValueError, IndexError):
+        result["reason"] = "가격 또는 거래량 데이터 형식 오류"
+        return result
+
+    values = [close_anchor, close_latest, *recent_volumes, *baseline_volumes]
+    if not all(math.isfinite(v) for v in values):
+        result["reason"] = "가격 또는 거래량에 유효하지 않은 값이 있습니다"
+        return result
+    if close_anchor <= 0 or close_latest <= 0:
+        result["reason"] = "가격은 양수여야 합니다"
+        return result
+    if any(v < 0 for v in recent_volumes) or any(v < 0 for v in baseline_volumes):
+        result["reason"] = "거래량은 음수일 수 없습니다"
+        return result
+
+    recent_avg = float(np.mean(recent_volumes))
+    baseline_avg = float(np.mean(baseline_volumes))
+    if baseline_avg <= 0:
+        result["reason"] = "기준 기간 평균 거래량이 0입니다"
+        return result
+
+    volume_ratio = recent_avg / baseline_avg
+    price_change_pct = (close_latest / close_anchor - 1.0) * 100.0
+    # 부동소수점 경계 오차로 정확히 3배/±3%인 값이 탈락하지 않게 한다.
+    epsilon = 1e-12
+    volume_condition = volume_ratio + epsilon >= min_volume_ratio
+    price_condition = abs(price_change_pct) <= max_abs_price_change_pct + epsilon
+    is_match = volume_condition and price_condition
+
+    result.update({
+        "available": True,
+        "is_match": is_match,
+        "recent_avg_volume": round(recent_avg, 2),
+        "baseline_avg_volume": round(baseline_avg, 2),
+        "volume_ratio": round(volume_ratio, 3),
+        "price_change_pct": round(price_change_pct, 3),
+        "volume_condition": volume_condition,
+        "price_condition": price_condition,
+        "reason": (
+            "거래량 급증과 가격 정체 조건을 모두 충족"
+            if is_match else
+            "거래량 기준 미충족" if not volume_condition else
+            "가격 변동폭 기준 미충족"
+        ),
+    })
+    return result
+
 
 def is_scan_price_eligible(market: str, price: Any) -> bool:
     """스캔 출력 가격 상한 판정. US는 $70 초과 제외, KRX는 제한 없음."""
@@ -193,6 +300,7 @@ class TechnicalSnapshot:
     median_atr_14:  float = 0.0
     atr_spiking:    bool  = False
     atr_collapsing: bool  = False
+    volume_price_divergence: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -266,6 +374,7 @@ class ScanCandidate:
     hurst_warn:     bool = False
 
     scan_mode: str = "FULL"
+    volume_price_divergence: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -865,6 +974,7 @@ def run_full_scan(
             hurst_exponent = snap.hurst,
             hurst_warn     = hurst_warn,
             scan_mode      = scan_mode,
+            volume_price_divergence = dict(snap.volume_price_divergence or {}),
         )
         candidates.append(candidate)
 
@@ -965,6 +1075,9 @@ def build_snapshot_from_ohlcv(
     # 거래량 비율
     vol_ratio = _calc_vol_ratio(volumes)
 
+    # 거래량-가격 괴리(매집 탐지 보조 신호)
+    volume_price_divergence = detect_volume_price_divergence(closes, volumes)
+
     # RS vs 벤치마크
     rs = 0.0
     if bench_closes and len(bench_closes) >= 2 and n >= 2:
@@ -1025,6 +1138,7 @@ def build_snapshot_from_ohlcv(
         median_atr_14   = median_atr,
         atr_spiking     = atr_spiking,
         atr_collapsing  = atr_collapsing,
+        volume_price_divergence = volume_price_divergence,
     )
 
 
