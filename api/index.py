@@ -18383,6 +18383,9 @@ def route(path: str, params: Dict) -> Dict:
                 is_scan_price_eligible, apply_leader_promotion,
                 VPD_RECENT_DAYS, VPD_BASELINE_DAYS,
                 VPD_MIN_VOLUME_RATIO, VPD_MAX_ABS_PRICE_CHANGE_PCT,
+                VPD_WATCH_MIN_VOLUME_RATIO, VPD_WATCH_MAX_PRICE_CHANGE_PCT,
+                VPD_WATCH_MIN_DAYS_GE_2X, VPD_WATCH_MIN_TURNOVER_RATIO,
+                VPD_WATCH_MAX_CANDIDATES, VPD_ROLLING_LOOKBACK_DAYS,
             )
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
@@ -18590,7 +18593,7 @@ def route(path: str, params: Dict) -> Dict:
             #   동일 (시장·모드·자본·리스크·종목집합) 요청은 5분간 재사용.
             #   refresh=1 파라미터로 강제 갱신 가능.
             _refresh   = str(params.get("refresh", "")).lower() in ("1", "true", "yes")
-            _cache_key = f"scan|v3|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
+            _cache_key = f"scan|v4|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -18916,43 +18919,113 @@ def route(path: str, params: Dict) -> Dict:
                 )
                 cands.append(d)
 
-            # ── 거래량-가격 괴리 매집 탐지 (전체 수집 종목 대상) ──────────────
+            # ── 거래량-가격 괴리 매집 탐지 Tier S (엄격식 고정) ────────────────
+            # 엄격식: 최근 20일 평균 >= 직전 60일 평균의 3배 + 20일 가격 ±3%.
             # 기존 추세/QMJ 필터와 독립적으로 계산해야 신호 종목이 누락되지 않는다.
-            # 이 목록에는 두 조건(거래량 3배 이상 + 20일 가격 ±3%)을 모두 만족한
-            # 종목만 담고, 미충족 종목은 집계에만 반영한다.
+            # 이 목록에는 두 조건을 모두 만족한 종목만 담고, 미충족 종목은
+            # 집계·관찰(Tier W) 재료로만 사용한다. 엄격 판정식은 바꾸지 않는다.
             _universe_by_ticker = {u.ticker: u for u in universe}
             _vpd_candidates: list = []
+            _vpd_watch_cands: list = []
+            _vpd_past: list = []
             _vpd_evaluated = 0
             _vpd_unavailable = 0
+            _vpd_fail_volume = 0
+            _vpd_fail_price = 0
             for _vt, _vsnap in snap_map.items():
                 _sig = dict(getattr(_vsnap, "volume_price_divergence", {}) or {})
                 if not _sig.get("available"):
                     _vpd_unavailable += 1
                     continue
                 _vpd_evaluated += 1
-                if not _sig.get("is_match"):
+                if not _sig.get("volume_condition"):
+                    _vpd_fail_volume += 1
+                elif not _sig.get("price_condition"):
+                    _vpd_fail_price += 1
+                if _sig.get("is_match"):
+                    _vu = _universe_by_ticker.get(_vt)
+                    _vpd_candidates.append({
+                        "ticker": _vt,
+                        "name": getattr(_vu, "name", None) or name_hint.get(_vt) or _vt,
+                        "price": round(float(getattr(_vsnap, "current_price", 0.0) or 0.0), 4),
+                        "change_pct": change_map.get(_vt, 0.0),
+                        "category": sector_map.get(_vt, "") or getattr(_vu, "sector", "") or "",
+                        "cap_tier": cap_map.get(_vt, "MID"),
+                        "cap_tier_ko": SCAN_CAP_TIER_KO.get(cap_map.get(_vt, "MID"), "중형"),
+                        "recent_avg_volume": _sig.get("recent_avg_volume"),
+                        "baseline_avg_volume": _sig.get("baseline_avg_volume"),
+                        "volume_ratio": _sig.get("volume_ratio"),
+                        "price_change_pct": _sig.get("price_change_pct"),
+                        "recent_days": _sig.get("recent_days", VPD_RECENT_DAYS),
+                        "baseline_days": _sig.get("baseline_days", VPD_BASELINE_DAYS),
+                    })
                     continue
-                _vu = _universe_by_ticker.get(_vt)
-                _vpd_candidates.append({
+                # ── Tier W 관찰: 엄격 미충족분 중 근거가 갖춰진 근접 종목 ──
+                _w = dict(getattr(_vsnap, "volume_price_watch", {}) or {})
+                if not _w.get("available"):
+                    continue
+                _roll = _w.get("rolling") or {}
+                if int(_roll.get("match_count") or 0) > 0:
+                    _vpd_past.append({
+                        "ticker": _vt,
+                        "name": getattr(_universe_by_ticker.get(_vt), "name", None) or name_hint.get(_vt) or _vt,
+                        "best_offset": _roll.get("best_offset"),
+                        "best_volume_ratio": _roll.get("best_volume_ratio"),
+                        "best_price_change_pct": _roll.get("best_price_change_pct"),
+                    })
+                if not _w.get("eligible"):
+                    continue
+                _vpd_watch_cands.append({
                     "ticker": _vt,
-                    "name": getattr(_vu, "name", None) or name_hint.get(_vt) or _vt,
+                    "name": getattr(_universe_by_ticker.get(_vt), "name", None) or name_hint.get(_vt) or _vt,
                     "price": round(float(getattr(_vsnap, "current_price", 0.0) or 0.0), 4),
                     "change_pct": change_map.get(_vt, 0.0),
-                    "category": sector_map.get(_vt, "") or getattr(_vu, "sector", "") or "",
+                    "category": sector_map.get(_vt, "") or getattr(_universe_by_ticker.get(_vt), "sector", "") or "",
                     "cap_tier": cap_map.get(_vt, "MID"),
                     "cap_tier_ko": SCAN_CAP_TIER_KO.get(cap_map.get(_vt, "MID"), "중형"),
                     "recent_avg_volume": _sig.get("recent_avg_volume"),
                     "baseline_avg_volume": _sig.get("baseline_avg_volume"),
-                    "volume_ratio": _sig.get("volume_ratio"),
-                    "price_change_pct": _sig.get("price_change_pct"),
-                    "recent_days": _sig.get("recent_days", VPD_RECENT_DAYS),
-                    "baseline_days": _sig.get("baseline_days", VPD_BASELINE_DAYS),
+                    "volume_ratio": _w.get("volume_ratio", _sig.get("volume_ratio")),
+                    "price_change_pct": _w.get("price_change_pct", _sig.get("price_change_pct")),
+                    "baseline_median": _w.get("baseline_median"),
+                    "median_ratio": _w.get("median_ratio"),
+                    "baseline_trimmed_avg": _w.get("baseline_trimmed_avg"),
+                    "trimmed_ratio": _w.get("trimmed_ratio"),
+                    "turnover_ratio": _w.get("turnover_ratio"),
+                    "days_ge_2x": _w.get("days_ge_2x", 0),
+                    "days_ge_3x": _w.get("days_ge_3x", 0),
+                    "max_consec_ge_2x": _w.get("max_consec_ge_2x", 0),
+                    "range_pct": _w.get("range_pct"),
+                    "max_up_dev_pct": _w.get("max_up_dev_pct"),
+                    "max_down_dev_pct": _w.get("max_down_dev_pct"),
+                    "range_to_atr": _w.get("range_to_atr"),
+                    "obv_flow": _w.get("obv_flow"),
+                    "clv_avg": _w.get("clv_avg"),
+                    "up_down_vol_ratio": _w.get("up_down_vol_ratio"),
+                    "split_suspect": bool(_w.get("split_suspect")),
+                    "price_discontinuity": bool(_w.get("price_discontinuity")),
+                    "volume_score": _w.get("volume_score", 0.0),
+                    "flatness_score": _w.get("flatness_score", 0.0),
+                    "divergence_score": _w.get("divergence_score", 0.0),
+                    "rolling_match_count": int((_w.get("rolling") or {}).get("match_count") or 0),
+                    "best_offset": (_w.get("rolling") or {}).get("best_offset"),
                 })
             _vpd_candidates.sort(key=lambda cd: (
                 -_scan_num(cd.get("volume_ratio")),
                 abs(_scan_num(cd.get("price_change_pct"))),
                 cd.get("ticker", ""),
             ))
+            _vpd_watch_cands.sort(key=lambda cd: (
+                -_scan_num(cd.get("divergence_score")),
+                -_scan_num(cd.get("volume_ratio")),
+                cd.get("ticker", ""),
+            ))
+            _vpd_watch_cands = _vpd_watch_cands[:VPD_WATCH_MAX_CANDIDATES]
+            _vpd_past.sort(key=lambda cd: (
+                -_scan_num(cd.get("best_volume_ratio")),
+                _scan_num(cd.get("best_offset"), 9999),
+            ))
+            _vpd_past = _vpd_past[:VPD_WATCH_MAX_CANDIDATES]
 
             # ── 리더 반전 BREAKOUT 승격 (미국 전용): 상태를 진입 준비로 ──
             # 승격된 행은 진입 트리거·손절가·이격·사이징이 리더 기준으로 교체되고
@@ -19083,6 +19156,27 @@ def route(path: str, params: Dict) -> Dict:
                     "match_count": len(_vpd_candidates),
                     "candidates": _vpd_candidates,
                     "note": "최근 20거래일 일평균 거래량이 직전 60거래일의 3배 이상이면서 20일 가격 변동이 ±3% 이내인 종목만 표시합니다. 매집 확정이나 매수 권유가 아닌 보조 신호입니다.",
+                    "fail_breakdown": {
+                        "volume_fail": _vpd_fail_volume,
+                        "price_fail": _vpd_fail_price,
+                    },
+                    "watch": {
+                        "label": "괴리 관찰 (엄격 미충족 근접 종목)",
+                        "min_volume_ratio": VPD_WATCH_MIN_VOLUME_RATIO,
+                        "max_abs_price_change_pct": VPD_WATCH_MAX_PRICE_CHANGE_PCT,
+                        "min_days_ge_2x": VPD_WATCH_MIN_DAYS_GE_2X,
+                        "min_turnover_ratio": VPD_WATCH_MIN_TURNOVER_RATIO,
+                        "rolling_lookback_days": VPD_ROLLING_LOOKBACK_DAYS,
+                        "match_count": len(_vpd_watch_cands),
+                        "candidates": _vpd_watch_cands,
+                        "note": "엄격식(3배·±3%)은 그대로 두고, 2배 이상·±6% 이내·지속일수·거래대금·분할가드를 함께 통과한 근접 종목만 참고로 표시합니다. 매수 권유가 아닙니다.",
+                    },
+                    "rolling_past": {
+                        "label": "과거 엄격식 흔적",
+                        "match_tickers": len(_vpd_past),
+                        "candidates": _vpd_past,
+                        "note": "최근 60거래일 안의 20일 윈도우에서 엄격식을 충족한 적이 있는 종목입니다. 최신 윈도우 충족이 아닙니다.",
+                    },
                 },
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
@@ -20904,7 +20998,7 @@ input::placeholder{color:#484f58}
       <div id="scan-summary-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px"></div>
       <!-- 레짐 배지 -->
       <div id="scan-regime-bar" style="margin-bottom:14px;padding:10px 14px;background:#161b22;border:1px solid #30363d;border-radius:10px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12px"></div>
-      <!-- 거래량-가격 괴리 매집 탐지: 두 조건을 모두 충족한 종목만 출력 -->
+      <!-- 거래량-가격 괴리 매집 탐지 Tier S: 두 조건을 모두 충족한 종목만 출력(엄격식 고정) -->
       <section id="scan-vpd-section" class="card" style="padding:0;margin-bottom:16px;overflow:hidden">
         <div style="padding:14px 16px;border-bottom:1px solid #30363d">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -20912,6 +21006,7 @@ input::placeholder{color:#484f58}
             <span id="scan-vpd-count" style="font-size:10px;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 7px">0종목</span>
           </div>
           <div id="scan-vpd-note" style="font-size:11px;color:#8b949e;line-height:1.6;margin-top:5px">최근 20거래일 평균 거래량이 직전 60거래일의 3배 이상이면서 가격 변동이 ±3% 이내인 종목만 표시합니다.</div>
+          <div id="scan-vpd-fail" style="font-size:10px;color:#6e7681;line-height:1.6;margin-top:4px"></div>
         </div>
         <div style="overflow-x:auto">
           <table class="screener-table" style="white-space:nowrap">
@@ -20923,6 +21018,28 @@ input::placeholder{color:#484f58}
               <th style="text-align:center">20일 가격 변동</th>
             </tr></thead>
             <tbody id="scan-vpd-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+      <!-- 괴리 관찰 Tier W: 엄격 미충족 근접 종목(별도 참고표, 엄격식과 혼합하지 않음) -->
+      <section id="scan-vpd-watch-section" class="card" style="padding:0;margin-bottom:16px;overflow:hidden">
+        <div style="padding:14px 16px;border-bottom:1px solid #30363d">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <strong style="font-size:14px;color:#e6edf3">👀 괴리 관찰</strong>
+            <span id="scan-vpd-watch-count" style="font-size:10px;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 7px">0종목</span>
+          </div>
+          <div id="scan-vpd-watch-note" style="font-size:11px;color:#8b949e;line-height:1.6;margin-top:5px">엄격식(3배·±3%) 미충족 중 2배 이상·±6% 이내·지속일수·거래대금·분할가드를 통과한 근접 종목만 참고로 표시합니다.</div>
+          <div id="scan-vpd-past" style="font-size:10px;color:#6e7681;line-height:1.6;margin-top:4px"></div>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="screener-table" style="white-space:nowrap">
+            <thead><tr>
+              <th>#</th><th>종목</th><th style="text-align:center">배수</th>
+              <th style="text-align:center">가격변동</th><th style="text-align:center">지속</th>
+              <th style="text-align:center">범위</th><th style="text-align:center">수급</th>
+              <th style="text-align:center">괴리점수</th>
+            </tr></thead>
+            <tbody id="scan-vpd-watch-tbody"></tbody>
           </table>
         </div>
       </section>
@@ -27627,6 +27744,7 @@ function renderScanResult(d, market) {
       { val: d.ready_count,    label: '진입 준비',  color: '#3fb950' },
       { val: d.watch_count,    label: '관찰 대기',  color: '#d29922' },
       { val: ((d.volume_price_divergence || {}).match_count || 0), label: '매집 괴리', color: '#bc8cff' },
+      { val: (((d.volume_price_divergence || {}).watch || {}).match_count || 0), label: '괴리 관찰', color: '#d29922' },
       { val: (d.good_count != null ? d.good_count : (d.candidates||[]).length), label: '선정 종목', color: '#3fb950' },
     ];
     sumEl.innerHTML = cards.map(function(c) {
@@ -27683,17 +27801,25 @@ function renderScanResult(d, market) {
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
-  // 거래량-가격 괴리: API가 두 조건을 모두 검증한 일치 종목만 별도 출력한다.
+  // 거래량-가격 괴리 Tier S: API가 두 조건을 모두 검증한 일치 종목만 별도 출력한다(엄격식 고정).
   var vpd = d.volume_price_divergence || {};
   var vpdCands = vpd.candidates || [];
   var vpdCountEl = document.getElementById('scan-vpd-count');
   var vpdNoteEl = document.getElementById('scan-vpd-note');
+  var vpdFailEl = document.getElementById('scan-vpd-fail');
   var vpdBody = document.getElementById('scan-vpd-tbody');
   if (vpdCountEl) vpdCountEl.textContent = (vpd.match_count != null ? vpd.match_count : vpdCands.length) + '종목';
   if (vpdNoteEl) {
     var coverageText = ' · 계산 ' + (vpd.evaluated_count || 0) + '종목';
     if (vpd.unavailable_count) coverageText += ' · 데이터 부족 ' + vpd.unavailable_count + '종목';
     vpdNoteEl.textContent = (vpd.note || '최근 20거래일 거래량 3배 이상 + 가격 변동 ±3% 이내') + coverageText;
+  }
+  if (vpdFailEl) {
+    var fb = vpd.fail_breakdown || {};
+    var past = vpd.rolling_past || {};
+    var failText = '탈락: 거래량 미달 ' + (fb.volume_fail || 0) + '종목 · 가격 초과 ' + (fb.price_fail || 0) + '종목';
+    if (past.match_tickers) failText += ' · 과거 흔적 ' + past.match_tickers + '종목';
+    vpdFailEl.textContent = failText;
   }
   if (vpdBody) {
     if (!vpdCands.length) {
@@ -27716,6 +27842,56 @@ function renderScanResult(d, market) {
           '<td style="text-align:right;color:#8b949e">' + Number(c.baseline_avg_volume || 0).toLocaleString('ko-KR', {maximumFractionDigits:0}) + '</td>' +
           '<td style="text-align:center"><span style="font-weight:800;color:#3fb950">' + ratio.toFixed(2) + '배</span></td>' +
           '<td style="text-align:center;font-weight:800;color:' + moveColor + '">' + (priceMove > 0 ? '+' : '') + priceMove.toFixed(2) + '%</td>' +
+        '</tr>';
+      }).join('');
+    }
+  }
+
+  // 괴리 관찰 Tier W: 엄격 미충족 근접 종목 참고표(엄격식과 혼합하지 않음)
+  var vpdWatch = vpd.watch || {};
+  var vpdWatchCands = vpdWatch.candidates || [];
+  var vpdWatchCountEl = document.getElementById('scan-vpd-watch-count');
+  var vpdWatchNoteEl = document.getElementById('scan-vpd-watch-note');
+  var vpdPastEl = document.getElementById('scan-vpd-past');
+  var vpdWatchBody = document.getElementById('scan-vpd-watch-tbody');
+  if (vpdWatchCountEl) vpdWatchCountEl.textContent = (vpdWatch.match_count != null ? vpdWatch.match_count : vpdWatchCands.length) + '종목';
+  if (vpdWatchNoteEl) vpdWatchNoteEl.textContent = vpdWatch.note || vpdWatchNoteEl.textContent;
+  if (vpdPastEl) {
+    var rollingPast = vpd.rolling_past || {};
+    var pastCands = rollingPast.candidates || [];
+    if (!pastCands.length) {
+      vpdPastEl.textContent = '과거 60거래일 내 엄격식 흔적 없음';
+    } else {
+      vpdPastEl.textContent = '과거 흔적: ' + pastCands.slice(0, 5).map(function(c) {
+        return c.ticker + '(' + c.best_volume_ratio + '배·' + c.best_price_change_pct + '%·' + c.best_offset + '일전)';
+      }).join(', ') + (pastCands.length > 5 ? ' 외 ' + (pastCands.length - 5) + '종목' : '');
+    }
+  }
+  if (vpdWatchBody) {
+    if (!vpdWatchCands.length) {
+      vpdWatchBody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:#6e7681">관찰 기준(2배·±6%·지속일수·거래대금 통과)을 충족한 종목이 없습니다.</td></tr>';
+    } else {
+      vpdWatchBody.innerHTML = vpdWatchCands.map(function(c, i) {
+        var ticker = String(c.ticker || '');
+        var safeTicker = ticker.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        var displayName = c.name && c.name !== ticker ? c.name : fmtSymbol(ticker, isKrx);
+        var ratio = Number(c.volume_ratio || 0);
+        var priceMove = Number(c.price_change_pct || 0);
+        var rangeTxt = (c.range_pct != null ? Number(c.range_pct).toFixed(1) + '%' : '—');
+        var flowTxt = 'OBV ' + (c.obv_flow != null ? Number(c.obv_flow).toFixed(2) : '—') +
+          ' · CLV ' + (c.clv_avg != null ? Number(c.clv_avg).toFixed(2) : '—');
+        var score = Number(c.divergence_score || 0);
+        var scoreColor = score >= 70 ? '#3fb950' : score >= 50 ? '#58a6ff' : '#d29922';
+        return '<tr onclick="openStockDetail(\'' + safeTicker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
+          '<td style="color:#484f58;font-size:11px">' + (i + 1) + '</td>' +
+          '<td><div style="font-weight:700;color:#e6edf3">' + escScan(displayName) + '</div>' +
+            '<div style="font-size:10px;color:#484f58">' + escScan(ticker) + ' · 2배 ' + (c.days_ge_2x || 0) + '일</div></td>' +
+          '<td style="text-align:center;font-weight:800;color:#3fb950">' + ratio.toFixed(2) + '배</td>' +
+          '<td style="text-align:center;font-weight:700;color:#bc8cff">' + (priceMove > 0 ? '+' : '') + priceMove.toFixed(2) + '%</td>' +
+          '<td style="text-align:center;font-size:11px;color:#8b949e">' + (c.days_ge_2x || 0) + '일/' + (c.max_consec_ge_2x || 0) + '연속</td>' +
+          '<td style="text-align:center;font-size:11px;color:#8b949e">' + rangeTxt + '</td>' +
+          '<td style="text-align:center;font-size:10px;color:#8b949e">' + escScan(flowTxt) + '</td>' +
+          '<td style="text-align:center;font-weight:800;color:' + scoreColor + '">' + score.toFixed(1) + '</td>' +
         '</tr>';
       }).join('');
     }
