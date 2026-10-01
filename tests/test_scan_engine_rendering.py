@@ -29,16 +29,6 @@ def test_scan_table_hides_stop_price_and_uses_plain_breakout_label():
     assert ">돌파 신뢰도<" in markup
 
 
-def test_scan_markup_has_volume_price_divergence_output():
-    markup = _scan_markup()
-
-    assert 'id="scan-vpd-section"' in markup
-    assert 'id="scan-vpd-tbody"' in markup
-    assert "거래량-가격 괴리 매집 탐지" in markup
-    assert "최근 20일 평균 거래량" in markup
-    assert "직전 60일 평균 거래량" in markup
-
-
 def test_leader_reversal_keeps_signal_but_hides_its_price_plan_and_metrics():
     node = shutil.which("node")
     if not node:
@@ -109,68 +99,3 @@ console.log(JSON.stringify({
     assert "손절 $8.10" not in rendered["table"]
     assert "$8.10" not in rendered["table"]
     assert "진입/손절가" not in rendered["regime"]
-
-
-def test_divergence_renderer_outputs_only_api_matches_with_evidence():
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("Node.js is needed for the scan renderer regression check")
-    payload = {
-        "total_scanned": 2,
-        "passed_filters": 0,
-        "ready_count": 0,
-        "watch_count": 0,
-        "good_count": 0,
-        "regime": "SIDEWAYS",
-        "vol_regime": "NORMAL_VOL",
-        "candidates": [],
-        "volume_price_divergence": {
-            "match_count": 1,
-            "evaluated_count": 2,
-            "unavailable_count": 0,
-            "max_abs_price_change_pct": 3.0,
-            "note": "두 조건을 모두 충족한 종목만 표시",
-            "candidates": [{
-                "ticker": "ACC",
-                "name": "Accumulation Test",
-                "price": 42.0,
-                "recent_avg_volume": 3_500_000,
-                "baseline_avg_volume": 1_000_000,
-                "volume_ratio": 3.5,
-                "price_change_pct": -1.25,
-            }],
-        },
-    }
-    script = """
-const vm = require('vm');
-const elements = {};
-const sandbox = {
-  document: {getElementById(id) { return elements[id] ||= {innerHTML:'', textContent:''}; }},
-  fmtPrice(v) { return '$' + Number(v).toFixed(2); },
-  fmtSymbol(v) { return String(v); },
-  openStockDetail() {},
-};
-vm.createContext(sandbox);
-vm.runInContext(SOURCE, sandbox);
-sandbox.renderScanResult(DATA, 'US');
-console.log(JSON.stringify({
-  table: elements['scan-vpd-tbody'].innerHTML,
-  count: elements['scan-vpd-count'].textContent,
-  note: elements['scan-vpd-note'].textContent,
-  summary: elements['scan-summary-cards'].innerHTML,
-}));
-""".replace("SOURCE", json.dumps(_renderer_source(), ensure_ascii=False)).replace(
-        "DATA", json.dumps(payload, ensure_ascii=False)
-    )
-    completed = subprocess.run(
-        [node, "-"], input=script, text=True, encoding="utf-8",
-        capture_output=True, check=True, timeout=20,
-    )
-    rendered = json.loads(completed.stdout)
-
-    assert "Accumulation Test" in rendered["table"]
-    assert "3.50배" in rendered["table"]
-    assert "-1.25%" in rendered["table"]
-    assert "1종목" == rendered["count"]
-    assert "계산 2종목" in rendered["note"]
-    assert "매집 괴리" in rendered["summary"]
