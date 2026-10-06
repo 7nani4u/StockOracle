@@ -529,7 +529,7 @@ def fetch_macro_news(limit: int = 15) -> list[dict]:
 
     # ── 2차: 네이버 대체 리스트 (뉴스 구조 변경 대응) ─────────────────────
     try:
-        soup2 = _get("https://finance.naver.com/news/newsList.naver?mode=LSS3D&section_id=101&section_id2=258")
+        soup2 = _get("https://finance.naver.com/news/news_list.naver?mode=LSS3D&section_id=101&section_id2=258")
         # 대체 페이지는 dl/dt/dd 또는 table 구조가 섞여 있어 넓게 탐색
         for sel in ("dl dt a", "td.title a", "ul.realtimeNewsList li a", "dd.articleSubject a"):
             for a in soup2.select(sel):

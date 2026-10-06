@@ -192,7 +192,7 @@ except Exception as _drsi_e:
                 "state": "unavailable", "tone": "neutral", "label": "계산 불가",
                 "window": "", "eligible_now": False,
                 "conditions_met": 0, "conditions_total": 3,
-                "conditions": [], "is_probability": False,
+                "conditions": [], "entry_plan": None, "is_probability": False,
             },
         }
 
@@ -19702,6 +19702,12 @@ input::placeholder{color:#484f58}
 .dynamic-rsi-condition.met{border-color:#3fb95066;background:#0d2d1a55}
 .dynamic-rsi-condition-name{font-size:10px;font-weight:800;color:#cdd9e5;line-height:1.4;margin-bottom:3px}
 .dynamic-rsi-condition-detail{font-size:9px;color:#8b949e;line-height:1.45;word-break:keep-all}
+.dynamic-rsi-buy-plan{display:flex;justify-content:space-between;align-items:center;gap:12px;background:#0d2d1a;border:1px solid #3fb95077;border-radius:9px;padding:10px 12px;margin-top:10px;min-width:0}
+.dynamic-rsi-buy-plan.passed{background:#161b22;border-color:#6e768166}
+.dynamic-rsi-buy-plan-title{font-size:11px;font-weight:900;color:#3fb950;margin-bottom:3px}
+.dynamic-rsi-buy-plan.passed .dynamic-rsi-buy-plan-title{color:#8b949e}
+.dynamic-rsi-buy-plan-price{font-size:18px;font-weight:900;color:#e6edf3;white-space:nowrap}
+.dynamic-rsi-buy-plan-detail{font-size:10px;color:#8b949e;line-height:1.5;word-break:keep-all;margin-top:3px}
 .dynamic-rsi-execution{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:9px}
 .dynamic-rsi-execution>div{background:#0d1117;border-radius:7px;padding:7px 8px;min-width:0}
 .dynamic-rsi-execution-label{font-size:9px;color:#8b949e;margin-bottom:2px}.dynamic-rsi-execution-value{font-size:11px;font-weight:800;color:#e6edf3;overflow-wrap:anywhere}
@@ -19726,17 +19732,10 @@ input::placeholder{color:#484f58}
 .prediction-checks{display:flex;flex-direction:column;gap:4px;margin-top:8px}
 .prediction-check{display:flex;justify-content:space-between;gap:8px;background:#0d1117;border-radius:6px;padding:5px 7px;font-size:10px}
 .prediction-check-label{color:#8b949e;white-space:nowrap}.prediction-check-value{color:#cdd9e5;text-align:right;font-weight:700}
-.prediction-context-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:10px}
 .prediction-context-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:13px;min-width:0}
 .prediction-context-title{font-size:12px;font-weight:800;color:#cdd9e5;margin-bottom:9px}
-.prediction-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
-.prediction-fact{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:8px;min-width:0}
-.prediction-fact-head{display:flex;justify-content:space-between;gap:6px;align-items:baseline;margin-bottom:3px}
-.prediction-fact-label{font-size:10px;color:#8b949e}.prediction-fact-value{font-size:11px;font-weight:800;text-align:right}
-.prediction-fact-detail{font-size:10px;color:#8b949e;line-height:1.45;word-break:keep-all}
 .prediction-pattern-alert{font-size:11px;line-height:1.55;border-left:3px solid #d29922;background:#2d220055;border-radius:0 7px 7px 0;padding:8px 10px;margin-bottom:8px}
 .prediction-mini-list{font-size:10px;color:#8b949e;line-height:1.55}
-.prediction-scope{font-size:10px;color:#484f58;line-height:1.5;margin-top:9px}
 
 /* 2칼럼 그리드 공통 클래스 (인라인 스타일 대체) */
 .two-col-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -19788,7 +19787,6 @@ input::placeholder{color:#484f58}
   .two-col-grid{grid-template-columns:1fr}
   .prediction-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .prediction-scenario-grid{grid-template-columns:1fr}
-  .prediction-context-grid{grid-template-columns:1fr}
   .dynamic-rsi-condition-grid,.dynamic-rsi-execution{grid-template-columns:1fr}
   /* 900px 이하: 3열 */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -19881,7 +19879,7 @@ input::placeholder{color:#484f58}
   .step-result{font-size:12px}
   .pattern-item{font-size:12px;padding:12px}
   .flow-range-meta{flex-direction:column;align-items:flex-start}
-  .prediction-status-grid,.prediction-facts{grid-template-columns:1fr}
+  .prediction-status-grid{grid-template-columns:1fr}
   .prediction-price-range{font-size:15px;white-space:normal}
   .risk-card{padding:12px}
   .risk-tp-level{grid-template-columns:30px minmax(80px,1fr) auto!important;row-gap:2px}
@@ -20655,10 +20653,6 @@ input::placeholder{color:#484f58}
         <div class="card">
           <div class="card-title">📊 기술적 현재 상태</div>
           <div id="prediction-status-section"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">🌐 시장·업종·수급</div>
-          <div id="prediction-market-context-section"></div>
         </div>
         <div class="card">
           <div class="card-title">🧠 AI·패턴 보조 진단</div>
@@ -23725,52 +23719,17 @@ function _predictionTone(tone) {
   return '#d29922';
 }
 
-function _predictionLiveFacts(d, isKrx) {
-  const facts = [];
-  const core = _marketCoreSnapshot || {};
-  if (isKrx) {
-    const indexKey = String(d.symbol || '').endsWith('.KQ') ? 'KOSDAQ' : 'KOSPI';
-    const idx = (core.indices || {})[indexKey];
-    if (idx) {
-      const change = idx.change_pct || idx.change_abs || '—';
-      facts.push({label:indexKey, value:change, detail:`홈 시장 현황의 최신 ${indexKey} 흐름 재사용`, tone:idx.direction === 'up' ? 'positive' : idx.direction === 'down' ? 'negative' : 'neutral'});
-    }
-    const fx = (core.fx || []).find(x => /미국|USD|달러/i.test(String(x.name || '')));
-    if (fx) facts.push({label:'원/달러', value:fx.value || '—', detail:`변동 ${fx.change || '—'} · 환율 급등 시 외국인 수급 부담 가능`, tone:'neutral'});
-  } else {
-    const overnight = core.overnight || [];
-    [['S&P 500',/S&P|GSPC/i],['NASDAQ',/나스닥|NASDAQ|IXIC/i]].forEach(([label, re]) => {
-      const item = overnight.find(x => re.test(`${x.name || ''} ${x.symbol || ''}`));
-      if (!item) return;
-      const pct = Number(item.change_pct);
-      const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : (item.change_pct || item.change_abs || '—');
-      facts.push({label, value:pctText, detail:'홈에서 이미 받은 미국 시장 흐름 재사용', tone:item.direction === 'up' ? 'positive' : item.direction === 'down' ? 'negative' : 'neutral'});
-    });
-  }
-
-  const sectors = (_sectorFlowSnapshot || {}).sectors || [];
-  const company = String(d.company || '').replace(/\s/g, '');
-  const sector = sectors.find(s => (s.stock_names || []).some(n => String(n).replace(/\s/g, '') === company));
-  if (sector) {
-    const pct = Number(sector.avg_change_pct);
-    facts.push({label:'업종 흐름', value:`${sector.name} ${Number.isFinite(pct) ? (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%' : '—'}`,
-      detail:'홈 업종별 흐름의 기존 응답 재사용', tone:sector.mood || 'neutral'});
-  }
-  return facts;
-}
-
 function renderPredictionSections(d, isKrx) {
   const p = d.prediction_outlook || null;
   const overviewEl = document.getElementById('prediction-overview-section');
   const statusEl = document.getElementById('prediction-status-section');
   const scenariosEl = document.getElementById('prediction-scenarios-section');
-  const marketContextEl = document.getElementById('prediction-market-context-section');
   const aiContextEl = document.getElementById('prediction-ai-context-section');
-  if (!overviewEl || !statusEl || !scenariosEl || !marketContextEl || !aiContextEl) return;
+  if (!overviewEl || !statusEl || !scenariosEl || !aiContextEl) return;
   if (!p || !p.decision) {
     const fallback = '<p style="color:#8b949e;font-size:12px">현재 앱에서 확보한 데이터가 부족해 상세 조건부 시나리오를 만들 수 없습니다.</p>';
     overviewEl.innerHTML = fallback; statusEl.innerHTML = fallback; scenariosEl.innerHTML = fallback;
-    marketContextEl.innerHTML = fallback; aiContextEl.innerHTML = fallback;
+    aiContextEl.innerHTML = fallback;
     return;
   }
 
@@ -23835,6 +23794,24 @@ function renderPredictionSections(d, isKrx) {
       ? `${Number(timing.valid_for_bars).toFixed(0)}봉 이내 유효`
       : `${Number(timing.conditions_met || 0).toFixed(0)}/${Number(timing.conditions_total || 3).toFixed(0)} 충족`;
     const validDetail = timing.valid_for_bars != null ? '조건 유효 기간' : '진행 현황';
+    const entryPlan = timing.entry_plan || {};
+    const allConditionsMet = Number(timing.conditions_total || 0) === 3
+      && Number(timing.conditions_met || 0) === Number(timing.conditions_total || 0)
+      && (timing.conditions || []).length === 3
+      && (timing.conditions || []).every(item => !!item.met);
+    const entryReferenceText = _isFiniteNumber(entryPlan.reference_price)
+      ? fmt(Number(entryPlan.reference_price), isKrx) : null;
+    const entryMaxText = _isFiniteNumber(entryPlan.max_price)
+      ? fmt(Number(entryPlan.max_price), isKrx) : null;
+    const entryPlanPassed = entryPlan.status === 'passed';
+    const entryPlanHtml = allConditionsMet && entryReferenceText ? `
+      <div class="dynamic-rsi-buy-plan ${entryPlanPassed ? 'passed' : ''}" data-entry-status="${_escPrediction(entryPlan.status || '')}">
+        <div style="min-width:0">
+          <div class="dynamic-rsi-buy-plan-title">${entryPlanPassed ? '✓ 3단계 완료 · 신호 당시 매수 기준가' : '✓ 3단계 완료 · 1차 매수 기준가'}</div>
+          <div class="dynamic-rsi-buy-plan-detail">${_escPrediction(entryPlan.price_basis || '')}${entryMaxText ? ` · 추격 금지 상한 ${entryMaxText}` : ''}<br>${_escPrediction(entryPlan.instruction || '')}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0"><div class="dynamic-rsi-buy-plan-price">${entryReferenceText}</div><div style="font-size:9px;color:${entryPlanPassed ? '#8b949e' : '#3fb950'}">${_escPrediction(entryPlan.execution_time || '')}</div></div>
+      </div>` : '';
     stagesHtml = `<section id="dynamic-rsi-purchase-timing" class="dynamic-rsi-timing" data-state="${_escPrediction(timing.state)}" aria-label="동적 RSI 현재 진행 단계" aria-live="polite">
       <div class="dynamic-rsi-timing-head">
         <div><div style="font-size:10px;color:#8b949e;letter-spacing:0.04em">${featureName} · 현재 진행 단계</div><div style="font-size:15px;font-weight:900;color:${timingColor};margin-top:2px">${stateLabel}</div><div class="dynamic-rsi-timing-sub" style="margin-top:4px">${subInfo}</div></div>
@@ -23843,6 +23820,7 @@ function renderPredictionSections(d, isKrx) {
       ${timing.window ? `<div class="dynamic-rsi-window" style="margin-top:8px;font-size:11px;color:#8b949e">${_escPrediction(timing.window)}</div>` : ''}
       ${timing.action ? `<div class="dynamic-rsi-action" style="font-size:12px;color:#cdd9e5;background:#0d1117;border-radius:6px;padding:6px 8px">${_escPrediction(timing.action)}</div>` : ''}
       <div class="dynamic-rsi-condition-grid" style="margin-top:10px">${stageItems}</div>
+      ${entryPlanHtml}
       <div class="dynamic-rsi-execution" style="margin-top:10px">
         <div><div class="dynamic-rsi-execution-label">${timing.valid_for_bars != null ? '설정 유효 기간' : '조건 진행 현황'}</div><div class="dynamic-rsi-execution-value" style="color:${timingColor}">${_escPrediction(validText)}</div><div style="font-size:9px;color:#6e7681">${validDetail}</div></div>
         <div><div class="dynamic-rsi-execution-label">추격 제한 참고가</div>${chaseHtml}</div>
@@ -23956,20 +23934,7 @@ function renderPredictionSections(d, isKrx) {
     ? `<div class="prediction-scenario-grid">${scenariosHtml}</div>${horizonNote ? `<div style="font-size:10px;color:#6e7681;margin-top:8px">${horizonNote}</div>` : ''}`
     : `<div class="prediction-mini-list" style="padding:10px;border:1px solid #30363d;border-radius:8px">조건부 시나리오를 만들 데이터가 부족합니다. 일봉과 거래량이 누적되면 상승·횡보·하락 조건을 표시합니다.</div>`;
 
-  // ── ⑥ 시장 환경: 직접 사용되는 데이터와 참고 데이터 구분, 신선도 명확화 ──
-  const marketContext = p.market_context || {};
-  const factMap = new Map();
-  (marketContext.facts || []).forEach(f => factMap.set(f.label, f));
-  _predictionLiveFacts(d, isKrx).forEach(f => factMap.set(f.label, f));
-  const factsHtml = [...factMap.values()].map(f => {
-    const color = _predictionTone(f.tone);
-    // 직접 판단에 쓰이는지 여부에 따라 아이콘 구분 (사실상 모두 참고지만, 외국인·기관은 직접)
-    const isDirect = /외국인·기관|종목 중기 구조/.test(f.label);
-    const badge = isDirect ? '<span style="font-size:9px;background:#3fb95022;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:1px 5px;margin-left:4px">판단 반영</span>' : '<span style="font-size:9px;background:#21262d;color:#8b949e;border-radius:999px;padding:1px 5px;margin-left:4px">참고</span>';
-    return `<div class="prediction-fact"><div class="prediction-fact-head"><span class="prediction-fact-label">${_escPrediction(f.label)}${badge}</span><span class="prediction-fact-value" style="color:${color}">${_escPrediction(f.value)}</span></div><div class="prediction-fact-detail">${_escPrediction(f.detail)}</div></div>`;
-  }).join('') || '<div class="prediction-mini-list">시장 데이터가 부족해 종목 내부 신호를 우선합니다.</div>';
-
-  // ── ⑦ 패턴/AI 보조 진단: 논리 순서 재구성 + 세력 표현 완화 ──
+  // ── ⑥ 패턴/AI 보조 진단: 논리 순서 재구성 + 세력 표현 완화 ──
   const pattern = p.pattern_context || {};
   const patternColor = pattern.manipulation_detected ? '#d29922' : '#3fb950';
   // 패턴 감지 → 근거 → 확인 조건 → 무효화 → 영향 → 행동
@@ -23987,12 +23952,10 @@ function renderPredictionSections(d, isKrx) {
     }
     return `• ${_escPrediction(x)}`;
   }).join('<br>');
-  const gapsHtml = (marketContext.data_gaps || []).map(x => `<div>• ${_escPrediction(x)}</div>`).join('');
   // 무효화 조건과 과거 이력 분리
   const invalidationNote = timing.invalidation ? `<div style="margin-top:6px;font-size:10px;color:#f85149;background:#2d0d0d55;border-left:3px solid #f85149;padding:4px 6px;border-radius:0 6px 6px 0">무효화: ${_escPrediction(timing.invalidation)}</div>` : '';
   const aiBodyHtml = `${patternEvidence || ''}${wickHtml}${aiEvidenceFiltered ? `<div style="margin-top:6px;border-top:1px solid #21262d;padding-top:6px">${aiEvidenceFiltered}</div>` : ''}`
     || '<div style="font-size:11px;color:#8b949e">패턴·AI 보조 근거를 확보하지 못했습니다. 일봉과 거래량이 누적되면 의심 패턴과 지표 근거를 표시합니다.</div>';
-  marketContextEl.innerHTML = `<div class="prediction-context-card"><div class="prediction-facts">${factsHtml}</div><div class="prediction-scope" style="font-size:10px;color:#6e7681">${_escPrediction(marketContext.basis || '')}</div>${gapsHtml ? `<div class="prediction-mini-list" style="margin-top:7px;border-top:1px solid #21262d;padding-top:6px"><div style="font-size:9px;color:#6e7681;margin-bottom:3px">데이터 보완 필요</div>${gapsHtml}</div>` : ''}</div>`;
   aiContextEl.innerHTML = `<div class="prediction-context-card">
     <div style="font-size:11px;font-weight:800;color:${patternColor};margin-bottom:4px">${patternHeader}</div>
     <div class="prediction-pattern-alert" style="border-color:${patternColor};color:${patternColor};font-size:11px">${pattern.manipulation_detected ? '지지 종가와 거래량 회복이 함께 확인될 때만 반등 근거로 사용' : '패턴 근거 부족 — 가격·거래량 기본 조건 우선'}</div>

@@ -328,6 +328,18 @@ def _event_date(dd: Dict[str, Any], age: Optional[int]) -> Optional[str]:
     return str(value) if value is not None else None
 
 
+def _number_at_age(dd: Dict[str, Any], key: str, age: Optional[int]) -> Optional[float]:
+    """이벤트가 발생한 봉의 수치를 현재 봉 수치와 섞지 않고 읽는다."""
+    values = dd.get(key) or []
+    if age is None or age < 0 or age >= len(values):
+        return None
+    try:
+        value = float(values[-(age + 1)])
+        return value if np.isfinite(value) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _purchase_timing(
     dd: Dict[str, Any],
     config: DynamicRSIConfig,
@@ -412,12 +424,39 @@ def _purchase_timing(
     signal_reference = _last_number(dd, "DRSI_Entry") if (signal == 1 or position == 1) else None
     reference_close = signal_reference if signal_reference is not None else close
     atr = _last_number(dd, "ATR")
+    signal_atr = _number_at_age(dd, "ATR", entry_signal_age) or atr
     stop = _last_number(dd, "DRSI_Stop")
     max_chase_price = (
-        reference_close + atr * 0.5
-        if reference_close is not None and atr is not None and atr > 0 and (signal == 1 or position == 1)
+        reference_close + signal_atr * 0.5
+        if reference_close is not None and signal_atr is not None and signal_atr > 0 and (signal == 1 or position == 1)
         else None
     )
+    entry_plan = None
+    if signal == 1 and reference_close is not None:
+        entry_plan = {
+            "status": "ready",
+            "label": "1차 매수 기준가",
+            "reference_price": reference_close,
+            "max_price": max_chase_price,
+            "signal_atr": signal_atr,
+            "price_basis": "RSI 50 상향 회복이 확정된 신호 봉 종가",
+            "execution_time": "다음 거래일 정규장 시가 이후",
+            "instruction": (
+                "다음 정규장 시가가 추격 금지 상한 이하일 때 신호 종가 부근에서 "
+                "소액 1차 분할 매수를 검토합니다."
+            ),
+        }
+    elif position == 1 and reference_close is not None:
+        entry_plan = {
+            "status": "passed",
+            "label": "신호 당시 매수 기준가",
+            "reference_price": reference_close,
+            "max_price": max_chase_price,
+            "signal_atr": signal_atr,
+            "price_basis": "직전 동적 RSI 매수 신호 봉 종가",
+            "execution_time": "신규 진입 시점 경과",
+            "instruction": "현재는 신규 추격 매수보다 기존 포지션의 손절 기준을 우선합니다.",
+        }
     market_note = (
         "KRX 정규장 시가와 VI·갭 상승 여부를 확인합니다."
         if config.market == "KRX"
@@ -472,6 +511,7 @@ def _purchase_timing(
         "signal_date": _event_date(dd, entry_signal_age),
         "reference_close": reference_close,
         "max_chase_price": max_chase_price,
+        "entry_plan": entry_plan,
         "stop": stop,
         "execution_rule": "신호 봉 종가 확정 → 다음 거래일 정규장 시가 확인 → 최대 0.5 ATR 갭 한도 내 분할 검토",
         "market_note": market_note,
@@ -498,6 +538,7 @@ def dynamic_rsi_snapshot(dd: Dict[str, Any], market: str = "US") -> Dict[str, An
                 "state": "unavailable", "tone": "neutral", "label": "계산 데이터 부족",
                 "window": "과거 데이터 확보 후 재계산", "eligible_now": False,
                 "conditions_met": 0, "conditions_total": 3, "conditions": [],
+                "entry_plan": None,
                 "is_probability": False,
             },
         }
