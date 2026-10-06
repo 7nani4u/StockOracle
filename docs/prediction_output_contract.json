@@ -1,5 +1,5 @@
 {
-  "contract_version": "2026-09-23",
+  "contract_version": "2026-10-07",
   "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
   "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
   "nullable_fields": [
@@ -106,6 +106,18 @@
     },
     "status": "array of current technical states",
     "market_context": {"facts": "array", "data_gaps": ["string"]},
+    "dynamic_rsi": {
+      "purchase_timing": {
+        "conditions": "three ordered condition states",
+        "entry_plan": {
+          "status": "ready | passed | null",
+          "reference_price": "number; signal-bar close used as the first-buy reference",
+          "max_price": "number | null; reference_price + 0.5 * signal-bar ATR",
+          "signal_atr": "number | null",
+          "execution_time": "string"
+        }
+      }
+    },
     "scenarios": [{
       "key": "upside | sideways | downside",
       "probability": "number; relative scenario weight, not a calibrated outcome probability",
