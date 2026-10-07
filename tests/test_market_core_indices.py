@@ -161,3 +161,42 @@ def test_mobile_volume_card_stretches_to_match_atr_card_height():
 
     assert ".metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:stretch}" in mobile_css
     assert ".metric-volume-card,.metric-atr-card{grid-column:span 2}" in mobile_css
+
+
+def test_reconcile_uses_kospi_composite_when_kospi200_symbol_is_unavailable():
+    # Yahoo ^KS200 은 1행만 반환해 overnight 목록에 없다 — ^KS11 의 최근 거래일로 휴장·미갱신을 판단한다.
+    indices = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        indices,
+        [{"symbol": "^KS11", "as_of": "2026-07-17"}],
+        datetime(2026, 7, 20, 10, 0, tzinfo=data_fetcher.KST),
+    )
+    assert indices["KOSPI"]["trade_date"] == "2026-07-17"
+    assert indices["KOSPI"]["market_status"] == "휴장 또는 데이터 미갱신 · 최근 영업일 종가"
+
+    live = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        live,
+        [{"symbol": "^KS11", "as_of": "2026-07-20"}],
+        datetime(2026, 7, 20, 10, 0, tzinfo=data_fetcher.KST),
+    )
+    assert live["KOSPI"]["market_status"] == "장중"       # 오늘 봉이 있으면 '확인 불가'로 떨어지지 않는다
+
+
+def test_proxy_changes_ignore_a_nan_last_close(monkeypatch):
+    import numpy as np
+    import pandas as pd
+    import pytest
+
+    frame = pd.DataFrame({"Close": [100.0, 101.0, 102.0, 103.0, np.nan]}, index=pd.bdate_range("2026-10-01", periods=5))
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, **_):
+            return frame
+
+    monkeypatch.setattr("yfinance.Ticker", FakeTicker)
+    changes = data_fetcher.fetch_proxy_changes(["SPY"])
+    assert changes["SPY"] == pytest.approx((103.0 - 102.0) / 102.0 * 100.0)
