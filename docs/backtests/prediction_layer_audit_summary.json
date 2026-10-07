@@ -1,0 +1,187 @@
+{
+  "rows": 8368,
+  "tickers": 52,
+  "period": [
+    "2022-10-07",
+    "2026-09-02"
+  ],
+  "horizon_sessions": 22,
+  "base_up_rate": 0.5668,
+  "direction_all": {
+    "prob_l0": {
+      "mean_pred": 0.5075,
+      "base_rate": 0.5668,
+      "auc": 0.511,
+      "auc_ci95": [
+        0.4943,
+        0.5274
+      ],
+      "brier": 0.2732,
+      "brier_skill": -0.1127,
+      "calibration_slope": 0.052
+    },
+    "prob_final": {
+      "mean_pred": 0.5083,
+      "base_rate": 0.5668,
+      "auc": 0.5081,
+      "auc_ci95": [
+        0.4915,
+        0.524
+      ],
+      "brier": 0.2713,
+      "brier_skill": -0.105,
+      "calibration_slope": 0.0367
+    },
+    "up_share": {
+      "mean_pred": 0.5145,
+      "base_rate": 0.5668,
+      "auc": 0.5004,
+      "auc_ci95": [
+        0.4843,
+        0.5158
+      ],
+      "brier": 0.2964,
+      "brier_skill": -0.207,
+      "calibration_slope": -0.0008
+    }
+  },
+  "direction_KRX": {
+    "prob_l0": {
+      "mean_pred": 0.4681,
+      "base_rate": 0.5465,
+      "auc": 0.5199,
+      "auc_ci95": [
+        0.4979,
+        0.5414
+      ],
+      "brier": 0.266,
+      "brier_skill": -0.0731,
+      "calibration_slope": 0.1277
+    },
+    "prob_final": {
+      "mean_pred": 0.4721,
+      "base_rate": 0.5465,
+      "auc": 0.5175,
+      "auc_ci95": [
+        0.4946,
+        0.5391
+      ],
+      "brier": 0.2647,
+      "brier_skill": -0.0679,
+      "calibration_slope": 0.1149
+    },
+    "up_share": {
+      "mean_pred": 0.4713,
+      "base_rate": 0.5465,
+      "auc": 0.5062,
+      "auc_ci95": [
+        0.483,
+        0.5342
+      ],
+      "brier": 0.2847,
+      "brier_skill": -0.1486,
+      "calibration_slope": 0.0306
+    }
+  },
+  "direction_US": {
+    "prob_l0": {
+      "mean_pred": 0.5456,
+      "base_rate": 0.5864,
+      "auc": 0.4957,
+      "auc_ci95": [
+        0.4758,
+        0.5243
+      ],
+      "brier": 0.2802,
+      "brier_skill": -0.1553,
+      "calibration_slope": -0.0215
+    },
+    "prob_final": {
+      "mean_pred": 0.5431,
+      "base_rate": 0.5864,
+      "auc": 0.4922,
+      "auc_ci95": [
+        0.4724,
+        0.5207
+      ],
+      "brier": 0.2777,
+      "brier_skill": -0.1451,
+      "calibration_slope": -0.0416
+    },
+    "up_share": {
+      "mean_pred": 0.5562,
+      "base_rate": 0.5864,
+      "auc": 0.4876,
+      "auc_ci95": [
+        0.4663,
+        0.5127
+      ],
+      "brier": 0.3076,
+      "brier_skill": -0.2685,
+      "calibration_slope": -0.0463
+    }
+  },
+  "score_auc": {
+    "raw": 0.4951,
+    "final": 0.4863
+  },
+  "hybrid": {
+    "regime_counts": {
+      "SIDEWAYS": 8368
+    },
+    "action_share": {
+      "CONDITIONAL": 0.9363,
+      "AUTO_YES": 0.0637
+    },
+    "fws_min": 0.0,
+    "ncs_auc": 0.5114
+  },
+  "bear_cap_violation_share": 0.0,
+  "forecast_band_coverage": {
+    "p10_p90": {
+      "coverage": 0.789,
+      "nominal": 0.8
+    },
+    "p05_p95": {
+      "coverage": 0.8805,
+      "nominal": 0.9
+    }
+  },
+  "upside_touch_calibration": {
+    "mean_pred": 0.7239,
+    "realized": 0.7672,
+    "auc": 0.7242,
+    "brier": 0.1619,
+    "brier_constant": 0.1786
+  },
+  "target_range_inside_share": {
+    "base": 0.3009,
+    "final": 0.3111
+  },
+  "agreement": {
+    "median": 0.62,
+    "share_at_narrow_floor": 0.0
+  },
+  "decision_outcomes": {
+    "caution": {
+      "n": 3689,
+      "up_rate": 0.5695,
+      "mean_fwd_ret_pct": 3.805,
+      "p_drawdown_8pct": 0.4448
+    },
+    "conditional": {
+      "n": 3228,
+      "up_rate": 0.5682,
+      "mean_fwd_ret_pct": 3.965,
+      "p_drawdown_8pct": 0.3996
+    },
+    "watch": {
+      "n": 1451,
+      "up_rate": 0.5569,
+      "mean_fwd_ret_pct": 3.815,
+      "p_drawdown_8pct": 0.4114
+    }
+  },
+  "generated_at": "2026-10-08T01:14:23",
+  "stride": 6
+}

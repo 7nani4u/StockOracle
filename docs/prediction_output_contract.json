@@ -1,5 +1,5 @@
 {
-  "contract_version": "2026-10-07",
+  "contract_version": "2026-10-08",
   "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
   "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
   "nullable_fields": [
@@ -112,7 +112,10 @@
     "current_price": "number; equals price_anchor.current_price",
     "price_anchor": "same snapshot as top-level price_anchor",
     "min_price": "number",
-    "max_price": "number"
+    "max_price": "number",
+    "reach_probability": "number; chance of touching min_price within horizon_days under the zero-drift volatility model, recomputed after any range adjustment",
+    "reach_probability_basis": "touch_probability | heuristic_fallback (only when volatility is unavailable)",
+    "reach_probability_inputs": "object | null; {sigma_daily, horizon_days} behind reach_probability"
   },
   "prediction_outlook": {
     "price_anchor": "same snapshot as top-level price_anchor",

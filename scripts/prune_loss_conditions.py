@@ -80,7 +80,7 @@ DEFAULT_TICKERS = {
     },
 }
 TIERS = ("LARGE", "MID", "SMALL")
-BENCH = {"KRX": "^KS200", "US": "SPY"}
+BENCH = {"KRX": "^KS11", "US": "SPY"}  # Yahoo ^KS200 은 1행만 반환해 KRX 벤치 유무 조건이 항상 비었다
 
 TECHNIQUES = (
     "hybrid_breakout",
