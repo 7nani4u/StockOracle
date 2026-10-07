@@ -1,5 +1,6 @@
-"""예측 탭 매수 밴드의 5단계 가격·확률·기간 계약 검증."""
+"""예측 탭 매수 밴드의 차트 구조·가격·확률·기간 계약 검증."""
 
+import copy
 import math
 
 from api.index import HTML, calc_buy_price
@@ -49,18 +50,18 @@ def _sample_buy_dd(size=180):
     }
 
 
-def _calculate(dd):
+def _calculate(dd, market="KRX", market_regime="NEUTRAL"):
     return calc_buy_price(
         dd=dd,
         last_price=dd["Close"][-1],
         atr=dd["ATR"][-1],
         score=65,
         indicator_signals={"signals": {}},
-        market="KRX",
+        market=market,
         period="1y",
         event_risk={"score": 8, "reasons": []},
         learning_adjustment={},
-        market_regime="NEUTRAL",
+        market_regime=market_regime,
         reference_prev_close=dd["Close"][-2],
         reference_pct_change=0.2,
     )
@@ -157,6 +158,78 @@ def test_band_cards_are_strictly_lower_and_use_distinct_ranges():
                 assert previous_step["price_range"][1] > current_step["price_range"][1]
 
 
+def test_chart_price_candidates_are_clustered_and_entry_families_do_not_overlap():
+    result = _calculate(_sample_buy_dd())
+    structure = result["price_structure"]
+    sources = {
+        source
+        for cluster in structure["clusters"]
+        for source in cluster["sources"]
+    }
+
+    assert structure["ready"] is True
+    assert structure["candidate_count"] > structure["cluster_count"] >= 2
+    assert {"ma20", "bb_lower", "volume_node", "swing_low"} <= sources
+    assert structure["bollinger_width_pct"] is not None
+    assert structure["recent_intraday_range_pct"] > 0
+    assert structure["first_second_separated"] is True
+    assert max(band["range"][1] for band in result["recommended_bands"]) < min(
+        band["range"][0] for band in result["aggressive_bands"]
+    )
+    assert all(band["structure_note"] for band in result["aggressive_bands"])
+    assert all(band["structure_note"] for band in result["recommended_bands"])
+
+
+def test_market_regime_moves_entry_ranges_without_overriding_chart_structure():
+    dd = _sample_buy_dd()
+    bull = _calculate(dd, market_regime="BULL")
+    neutral = _calculate(dd, market_regime="NEUTRAL")
+    bear = _calculate(dd, market_regime="BEAR")
+
+    assert bull["price_structure"]["market_weighting"] == "가까운 지지 가중"
+    assert bear["price_structure"]["market_weighting"] == "깊은 지지 가중"
+    assert bull["aggressive_bands"][0]["range"][0] >= neutral["aggressive_bands"][0]["range"][0]
+    assert bear["aggressive_bands"][0]["range"][0] < neutral["aggressive_bands"][0]["range"][0]
+    assert bear["recommended_bands"][0]["range"][1] < neutral["recommended_bands"][0]["range"][1]
+    assert all(band["is_available"] for band in bear["recommended_bands"])
+
+
+def test_volatility_expands_real_order_ranges_instead_of_using_fixed_percentages():
+    base = _sample_buy_dd()
+
+    def with_volatility(multiplier):
+        dd = copy.deepcopy(base)
+        for index, close in enumerate(dd["Close"]):
+            dd["High"][index] = close + (dd["High"][index] - close) * multiplier
+            dd["Low"][index] = close - (close - dd["Low"][index]) * multiplier
+            dd["ATR"][index] *= multiplier
+            if dd["BB_Middle"][index] is not None:
+                middle = dd["BB_Middle"][index]
+                dd["BB_Lower"][index] = middle - (middle - dd["BB_Lower"][index]) * multiplier
+                dd["BB_Upper"][index] = middle + (dd["BB_Upper"][index] - middle) * multiplier
+        return dd
+
+    quiet = _calculate(with_volatility(0.45), market="US")
+    volatile = _calculate(with_volatility(2.0), market="US")
+    quiet_width = sum(band["range"][1] - band["range"][0] for band in quiet["aggressive_bands"])
+    volatile_width = sum(band["range"][1] - band["range"][0] for band in volatile["aggressive_bands"])
+
+    assert quiet["atr_pct"] < volatile["atr_pct"]
+    assert quiet["price_structure"]["bollinger_width_pct"] < volatile["price_structure"]["bollinger_width_pct"]
+    assert volatile_width > quiet_width * 2
+
+
+def test_top_result_support_cards_are_removed_but_internal_support_contract_remains():
+    assert "바로 아래 버팀목(단기 지지)" not in HTML
+    assert "중기 버팀목 구간" not in HTML
+    assert 'id="r-support-short"' not in HTML
+    assert 'id="r-support-mid"' not in HTML
+
+    result = _calculate(_sample_buy_dd())
+    assert result["support_zone"] > 0
+    assert result["fib"]["f382"] > 0
+
+
 def test_insufficient_history_never_fabricates_probability_or_period():
     result = _calculate(_sample_buy_dd(size=35))
 
@@ -170,6 +243,16 @@ def test_insufficient_history_never_fabricates_probability_or_period():
                 assert step["period_label"] == "기간 산정 불가"
                 assert step["period_source"] is None
                 assert step["period_note"] is None
+
+
+def test_insufficient_chart_structure_suppresses_precise_entry_ranges():
+    result = _calculate(_sample_buy_dd(size=12))
+
+    assert result["price_structure"]["ready"] is False
+    for family in ("aggressive_bands", "recommended_bands"):
+        assert all(band["is_available"] is False for band in result[family])
+        assert all(band["steps"] == [] for band in result[family])
+        assert all("부족" in band["availability_note"] for band in result[family])
 
 
 def test_period_uses_atr_speed_model_when_probability_path_sample_is_short():

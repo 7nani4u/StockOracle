@@ -117,6 +117,16 @@ def test_purchase_timing_waits_for_three_conditions_then_uses_next_open():
     assert "다음 거래일" in confirmed["window"]
     assert confirmed["reference_close"] == confirmed_frame.iloc[-1]["Close"]
     assert confirmed["max_chase_price"] == confirmed["reference_close"] + 1.0
+    assert confirmed["entry_plan"] == {
+        "status": "ready",
+        "label": "1차 매수 기준가",
+        "reference_price": confirmed["reference_close"],
+        "max_price": confirmed["max_chase_price"],
+        "signal_atr": 2.0,
+        "price_basis": "RSI 50 상향 회복이 확정된 신호 봉 종가",
+        "execution_time": "다음 거래일 정규장 시가 이후",
+        "instruction": "다음 정규장 시가가 추격 금지 상한 이하일 때 신호 종가 부근에서 소액 1차 분할 매수를 검토합니다.",
+    }
     assert "프리마켓" in confirmed["market_note"]
 
 
@@ -124,11 +134,18 @@ def test_purchase_timing_does_not_treat_active_position_as_fresh_entry():
     enriched = add_dynamic_rsi_features(_strategy_frame(), market="KRX")
     active_frame = enriched.iloc[:78]
     active_dd = active_frame.where(pd.notna(active_frame), None).to_dict(orient="list")
+    # 신호 이후 ATR이 바뀌어도 당시 매수 상한은 신호 봉 ATR로 고정되어야 한다.
+    active_dd["ATR"][-1] = 10.0
     timing = dynamic_rsi_snapshot(active_dd, market="KRX")["purchase_timing"]
 
     assert timing["state"] == "active"
     assert timing["eligible_now"] is False
     assert timing["reference_close"] == enriched.iloc[76]["Close"]
+    assert timing["entry_plan"]["status"] == "passed"
+    assert timing["entry_plan"]["reference_price"] == enriched.iloc[76]["Close"]
+    assert timing["entry_plan"]["signal_atr"] == enriched.iloc[76]["ATR"]
+    assert timing["entry_plan"]["max_price"] == enriched.iloc[76]["Close"] + 1.0
+    assert "신규 추격 매수보다" in timing["entry_plan"]["instruction"]
     assert "VI" in timing["market_note"]
 
 

@@ -112,7 +112,6 @@ const sandbox = {
   _isFiniteNumber(v) { return (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v)); },
   _escPrediction(v) { return String(v == null ? '' : v); },
   _predictionTone() { return '#8b949e'; },
-  _predictionLiveFacts() { return []; },
   fmt(v) { return v == null ? '—' : String(v); },
 };
 vm.createContext(sandbox);
@@ -140,3 +139,86 @@ console.log(JSON.stringify({first, clearedRisk: elements['risk-grid'].innerHTML,
     assert "기간 산정 보류" in rendered["first"]["risk"]
     assert "리스크 계산에 필요한" in rendered["clearedRisk"]
     assert "진입 가격 구간을 산정할" in rendered["emptyEntry"]
+
+
+def test_completed_dynamic_rsi_renders_entry_price_and_clears_it_when_waiting():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is needed for the browser renderer regression check")
+    source = "function renderPredictionSections" + HTML.split(
+        "function renderPredictionSections", 1
+    )[1].split("function renderForecast", 1)[0]
+    payload = {
+        "market": "US",
+        "prediction_outlook": {
+            "decision": {"key": "conditional", "label": "조건부 분할 접근", "tone": "positive"},
+            "status": [],
+            "scenarios": [],
+            "pattern_context": {},
+            "dynamic_rsi": {
+                "available": True,
+                "market": "US",
+                "timeframe_label": "일봉",
+                "as_of": "2026-10-07",
+                "rsi": 55,
+                "lower": 30,
+                "upper": 70,
+                "purchase_timing": {
+                    "state": "confirmed",
+                    "tone": "positive",
+                    "label": "매수 확인 봉 발생",
+                    "conditions_met": 3,
+                    "conditions_total": 3,
+                    "conditions": [
+                        {"label": "동적 과매도 구간 접촉", "met": True},
+                        {"label": "확정 상승 다이버전스", "met": True},
+                        {"label": "RSI 50 상향 회복", "met": True},
+                    ],
+                    "entry_plan": {
+                        "status": "ready",
+                        "reference_price": 96,
+                        "max_price": 97,
+                        "price_basis": "신호 봉 종가",
+                        "execution_time": "다음 거래일 정규장 시가 이후",
+                        "instruction": "상한 이하에서만 분할 매수 검토",
+                    },
+                },
+            },
+        },
+    }
+    script = """
+const vm = require('vm');
+const elements = {};
+const sandbox = {
+  document: {getElementById(id) { return elements[id] ||= {innerHTML:''}; }},
+  _isFiniteNumber(v) { return v !== null && v !== '' && Number.isFinite(Number(v)); },
+  _escPrediction(v) { return String(v == null ? '' : v); },
+  _predictionTone() { return '#3fb950'; },
+  fmt(v) { return '$' + Number(v).toFixed(2); },
+};
+vm.createContext(sandbox);
+vm.runInContext(SOURCE, sandbox);
+const data = DATA;
+sandbox.renderPredictionSections(data, false);
+const ready = elements['prediction-overview-section'].innerHTML;
+data.prediction_outlook.dynamic_rsi.purchase_timing.state = 'armed';
+data.prediction_outlook.dynamic_rsi.purchase_timing.conditions_met = 2;
+data.prediction_outlook.dynamic_rsi.purchase_timing.conditions[2].met = false;
+data.prediction_outlook.dynamic_rsi.purchase_timing.entry_plan = null;
+sandbox.renderPredictionSections(data, false);
+console.log(JSON.stringify({ready, waiting: elements['prediction-overview-section'].innerHTML}));
+""".replace("SOURCE", json.dumps(source, ensure_ascii=False)).replace(
+        "DATA", json.dumps(payload, ensure_ascii=False)
+    )
+    completed = subprocess.run(
+        [node, "-"], input=script, text=True, encoding="utf-8",
+        capture_output=True, check=True, timeout=20,
+    )
+    rendered = json.loads(completed.stdout)
+
+    assert "3단계 완료 · 1차 매수 기준가" in rendered["ready"]
+    assert "$96.00" in rendered["ready"]
+    assert "추격 금지 상한 $97.00" in rendered["ready"]
+    assert "dynamic-rsi-buy-plan" in rendered["ready"]
+    assert "3단계 완료 · 1차 매수 기준가" not in rendered["waiting"]
+    assert "$96.00" not in rendered["waiting"]

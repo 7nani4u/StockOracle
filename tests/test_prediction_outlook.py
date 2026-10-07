@@ -754,10 +754,9 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     scenario_pos = forecast_html.index('id="prediction-scenarios-section"')
     risk_pos = forecast_html.index('id="risk-grid"')
     status_pos = forecast_html.index('id="prediction-status-section"')
-    market_pos = forecast_html.index('id="prediction-market-context-section"')
     ai_pos = forecast_html.index('id="prediction-ai-context-section"')
 
-    assert overview_pos < status_pos < market_pos < ai_pos < buy_pos < risk_pos < scenario_pos
+    assert overview_pos < status_pos < ai_pos < buy_pos < risk_pos < scenario_pos
     assert "분석 흐름" not in forecast_html
     assert "📈 목표 가격 범위" not in forecast_html
     assert 'id="target-price-section"' not in forecast_html
@@ -765,13 +764,13 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     assert "AI 진단 탭의 추가 근거" not in forecast_html
     assert 'class="prediction-context-inline"' not in forecast_html
     assert 'id="prediction-context-section"' not in forecast_html
-    assert 'id="prediction-market-context-section"' in forecast_html
+    assert 'id="prediction-market-context-section"' not in forecast_html
     assert 'id="prediction-ai-context-section"' in forecast_html
     assert 'id="forecast-entry-title"' in forecast_html
     assert 'id="forecast-risk-title"' in forecast_html
     assert "시장·AI 판단 근거 상세 보기" not in forecast_html
     assert "<details" not in forecast_html
-    assert "시장·업종·수급" in HTML
+    assert "시장·업종·수급" not in HTML
     assert "AI·패턴 보조 진단" in HTML
     assert '<div class="card forecast-scenario-group">' in forecast_html
 
@@ -850,6 +849,10 @@ def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
     assert 'id="dynamic-rsi-purchase-timing"' in renderer
     assert "동적 RSI 구매 타이밍" in renderer
     assert "dynamic-rsi-condition-grid" in renderer
+    assert "3단계 완료 · 1차 매수 기준가" in renderer
+    assert "entryPlan.reference_price" in renderer
+    assert "entryPlan.max_price" in renderer
+    assert "추격 금지 상한" in renderer
     assert "추격 제한 참고가" in renderer
     assert "const isExpired = /유효 기간 초과|없음/" in renderer
     assert "설정 유효 기간" in renderer

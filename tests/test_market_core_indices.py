@@ -114,6 +114,23 @@ def test_weekday_without_current_trading_bar_is_not_labeled_live():
     assert no_date["KOSPI"]["market_status"] == "시장 상태 확인 불가 · 최근 수신 지수"
 
 
+def test_macro_news_fallback_uses_live_naver_route(monkeypatch):
+    requested_urls = []
+
+    def fake_get(url):
+        requested_urls.append(url)
+        return BeautifulSoup("<html></html>", "html.parser")
+
+    monkeypatch.setattr(data_fetcher, "_get", fake_get)
+    monkeypatch.setattr(data_fetcher, "_FEEDPARSER_AVAILABLE", False)
+
+    assert data_fetcher.fetch_macro_news() == []
+    assert requested_urls == [
+        "https://finance.naver.com/news/mainnews.naver",
+        "https://finance.naver.com/news/news_list.naver?mode=LSS3D&section_id=101&section_id2=258",
+    ]
+
+
 def test_ai_sector_card_removed_and_market_detail_reuses_home_snapshot():
     ai_html = SOURCE.split('<!-- AI 탭 -->', 1)[1].split('<!-- 단계별 분석 리포트 탭 -->', 1)[0]
     drawer = SOURCE.split("function _buildImmuneHtml", 1)[1].split("</script>", 1)[0]
