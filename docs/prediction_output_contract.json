@@ -63,6 +63,23 @@
       }
     ],
     "recommended_bands": "same band structure",
+    "price_structure": {
+      "method": "OHLCV, moving-average, Bollinger, swing-low and volume-price candidate clustering",
+      "candidate_count": "integer",
+      "candidate_source_count": "integer",
+      "cluster_count": "integer",
+      "cluster_tolerance": "number; volatility and tick-size adjusted",
+      "atr_pct": "number",
+      "bollinger_width_pct": "number | null",
+      "recent_intraday_range_pct": "number",
+      "market_regime": "BULL | NEUTRAL | BEAR",
+      "market_weighting": "string",
+      "ready": "boolean",
+      "first_second_separated": "boolean",
+      "first_entry_floor": "number",
+      "second_entry_ceiling": "number",
+      "clusters": "ordered support clusters with center, range, score, source_count, sources and labels"
+    },
     "atr_pct": "number",
     "vol_trend": "expanding | contracting | normal"
   },

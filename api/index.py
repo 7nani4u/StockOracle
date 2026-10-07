@@ -12329,6 +12329,250 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     if not downside_reasons:
         downside_reasons.append("이평선·MACD·거래량 기준의 뚜렷한 하락 가속 신호 없음")
 
+    # ── 차트 구조 기반 가격 후보 생성·군집화 ──────────────────────────
+    # 차트 탭과 같은 OHLCV·이평·볼린저 데이터를 사용해 먼저 기술적 가격 후보를
+    # 만든다. 가까운 후보는 ATR·일중 변동폭으로 정한 허용 거리 안에서 묶고,
+    # 서로 다른 근거가 많이 겹치는 군집을 실제 매수 밴드의 중심으로 사용한다.
+    _tick = float(_market_tick_size(last_price, market))
+    _recent_intraday_pct = 0.0
+    _intraday_samples = [
+        (high - low) / close
+        for high, low, close in zip(highs[-20:], lows[-20:], closes[-20:])
+        if close > 0 and high >= low
+    ]
+    if _intraday_samples:
+        _recent_intraday_pct = float(np.mean(_intraday_samples)) * 100.0
+    _bb_width_pct = (
+        (float(bb_u_raw) - float(bb_l_raw)) / float(bb_m_raw) * 100.0
+        if bb_u_raw and bb_l_raw and bb_m_raw and float(bb_m_raw) > 0 else None
+    )
+    _cluster_tolerance = max(
+        _tick,
+        atr_d * (0.15 if vol_trend == "contracting" else 0.22 if vol_trend == "expanding" else 0.18),
+        last_price * 0.0018,
+    )
+    _candidate_floor = max(_band_floor, last_price - atr_d * 4.6)
+    _candidate_ceiling = last_price - _tick * 0.5
+    _price_candidates: list[Dict] = []
+
+    def _add_price_candidate(value: Any, weight: float, label: str, source: str,
+                             role: str = "both") -> None:
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            return
+        if (not np.isfinite(price) or price <= 0
+                or price < _candidate_floor or price > _candidate_ceiling):
+            return
+        depth_atr = (last_price - price) / max(atr_d, 1e-9)
+        regime_multiplier = 1.0
+        if market_regime == "BULL":
+            regime_multiplier = 1.16 if depth_atr <= 1.45 else 0.90
+        elif market_regime == "BEAR":
+            regime_multiplier = 0.78 if depth_atr <= 1.45 else 1.22
+        _price_candidates.append({
+            "price": price,
+            "weight": float(weight) * regime_multiplier,
+            "label": label,
+            "source": source,
+            "role": role,
+            "depth_atr": depth_atr,
+        })
+
+    # 이동평균·볼린저·VWAP: 현재 차트에 직접 표시되는 기준선.
+    _add_price_candidate(ema20, 2.0 if ma20_slope >= 0 else 1.35, "EMA20", "ema20", "near")
+    _add_price_candidate(ma20_raw, 2.45 if ma20_slope >= 0 else 1.55, "MA20", "ma20", "near")
+    _add_price_candidate(ma60_raw, 2.55 if ma60_slope >= 0 else 1.85, "MA60", "ma60", "deep")
+    _add_price_candidate(ma120_raw, 1.80, "MA120", "ma120", "deep")
+    _add_price_candidate(bb_m_raw, 1.85, "볼린저 중앙선", "bb_middle", "near")
+    _add_price_candidate(bb_l_raw, 2.25, "볼린저 하단", "bb_lower", "deep")
+    _add_price_candidate(vwap_approx, 2.35, "20일 거래량 가중 가격", "vwap", "near")
+    _add_price_candidate(strong_support if len(lows20) >= 3 else None,
+                         2.15, "최근 저점 밀집", "low_cluster", "deep")
+    _add_price_candidate(support_zone if len(recent_lows) >= 5 else None,
+                         1.65, "최근 30일 저점군", "low_zone", "deep")
+
+    # 기간별 최근 저점은 같은 값이 반복되더라도 하나의 근거(source)로만 센다.
+    for _window, _weight in ((5, 1.10), (10, 1.25), (20, 1.45), (60, 1.60)):
+        if len(lows) >= min(_window, 5):
+            _window_lows = [value for value in lows[-_window:] if value > 0]
+            if _window_lows:
+                _add_price_candidate(min(_window_lows), _weight,
+                                     f"최근 {_window}봉 저점", "recent_low", "deep")
+
+    # 확정 스윙 저점(양옆 2봉보다 낮음)과 아래꼬리 반등 캔들.
+    _raw_open = list(dd.get("Open") or [])
+    _raw_high = list(dd.get("High") or [])
+    _raw_low = list(dd.get("Low") or [])
+    _raw_close = list(dd.get("Close") or [])
+    _raw_volume = list(dd.get("Volume") or [])
+    _ohlcv_n = min(len(_raw_open), len(_raw_high), len(_raw_low), len(_raw_close))
+
+    def _aligned_number(values: list, index: int) -> float | None:
+        try:
+            value = float(values[index])
+            return value if np.isfinite(value) else None
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    _volume_mean20 = float(np.mean(volumes[-20:])) if len(volumes) >= 20 else None
+    for _idx in range(max(2, _ohlcv_n - 90), max(2, _ohlcv_n - 2)):
+        pivot_low = _aligned_number(_raw_low, _idx)
+        neighbours = [_aligned_number(_raw_low, j) for j in range(_idx - 2, _idx + 3)]
+        if pivot_low is not None and all(value is not None for value in neighbours):
+            if pivot_low <= min(value for j, value in enumerate(neighbours) if j != 2):
+                recency = 1.0 - ((_ohlcv_n - 1 - _idx) / max(90.0, float(_ohlcv_n)))
+                pivot_volume = _aligned_number(_raw_volume, _idx)
+                volume_boost = (
+                    min(0.85, max(0.0, pivot_volume / _volume_mean20 - 1.0))
+                    if pivot_volume is not None and _volume_mean20 else 0.0
+                )
+                _add_price_candidate(
+                    pivot_low, 1.35 + max(0.0, recency) * 0.65 + volume_boost,
+                    "확정 스윙 저점", "swing_low", "deep",
+                )
+
+    for _idx in range(max(0, _ohlcv_n - 20), _ohlcv_n):
+        open_value = _aligned_number(_raw_open, _idx)
+        high_value = _aligned_number(_raw_high, _idx)
+        low_value = _aligned_number(_raw_low, _idx)
+        close_value = _aligned_number(_raw_close, _idx)
+        if None in (open_value, high_value, low_value, close_value):
+            continue
+        body = abs(close_value - open_value)
+        lower_wick = min(open_value, close_value) - low_value
+        candle_range = high_value - low_value
+        if candle_range > 0 and lower_wick >= max(body * 1.15, candle_range * 0.28):
+            pivot_volume = _aligned_number(_raw_volume, _idx)
+            volume_boost = (
+                min(1.0, max(0.0, pivot_volume / _volume_mean20 - 0.8))
+                if pivot_volume is not None and _volume_mean20 else 0.0
+            )
+            _add_price_candidate(
+                low_value + lower_wick * 0.28,
+                1.15 + volume_boost + (0.35 if close_value >= open_value else 0.0),
+                "아래꼬리 반등", "lower_wick", "near",
+            )
+
+    # 최근 60봉 거래량 가격대: 전형가격을 변동성 단위로 묶어 거래가 집중된 노드를 찾는다.
+    _volume_bins: Dict[int, Dict[str, float]] = {}
+    _volume_bucket = max(_cluster_tolerance * 0.72, _tick * 4.0)
+    for _idx in range(max(0, _ohlcv_n - 60), _ohlcv_n):
+        high_value = _aligned_number(_raw_high, _idx)
+        low_value = _aligned_number(_raw_low, _idx)
+        close_value = _aligned_number(_raw_close, _idx)
+        volume_value = _aligned_number(_raw_volume, _idx)
+        if None in (high_value, low_value, close_value, volume_value) or volume_value <= 0:
+            continue
+        typical_price = (high_value + low_value + close_value) / 3.0
+        bucket_key = int(round(typical_price / _volume_bucket))
+        bucket = _volume_bins.setdefault(bucket_key, {"turnover": 0.0, "volume": 0.0})
+        bucket["turnover"] += typical_price * volume_value
+        bucket["volume"] += volume_value
+    _volume_nodes = sorted(
+        (bucket for bucket in _volume_bins.values() if bucket["volume"] > 0),
+        key=lambda item: item["volume"], reverse=True,
+    )[:5]
+    _median_node_volume = float(np.median([item["volume"] for item in _volume_nodes])) if _volume_nodes else 0.0
+    for _node in _volume_nodes:
+        node_price = _node["turnover"] / _node["volume"]
+        node_weight = 1.45 + min(1.55, _node["volume"] / max(_median_node_volume, 1.0) * 0.55)
+        _add_price_candidate(node_price, node_weight, "거래량 집중 가격대", "volume_node", "both")
+
+    # 직전 고점 돌파 후 그 가격이 현재가 아래에 있으면 지지 전환 후보로 본다.
+    _prior_highs = highs[-65:-5] if len(highs) >= 10 else []
+    if _prior_highs:
+        _breakout_level = max(_prior_highs)
+        _touches = sum(1 for value in _prior_highs if abs(value - _breakout_level) <= _cluster_tolerance)
+        _add_price_candidate(
+            _breakout_level, 1.35 + min(1.2, _touches * 0.18),
+            "이전 돌파 가격", "breakout_retest", "deep",
+        )
+
+    for _value, _label, _weight in (
+        (fib_382, "피보나치 38.2%", 1.45),
+        (fib_500, "피보나치 50%", 1.55),
+        (fib_618, "피보나치 61.8%", 1.65),
+    ):
+        _add_price_candidate(_value, _weight, _label, "fibonacci", "deep")
+    if weekly_available:
+        for _weekly_anchor in ((weekly_context or {}).get("support_anchors") or [])[:6]:
+            _add_price_candidate(
+                _weekly_anchor.get("price"), 1.75,
+                _weekly_anchor.get("label") or "주간 지지", "weekly_support", "deep",
+            )
+
+    _raw_clusters: list[list[Dict]] = []
+    for _candidate in sorted(_price_candidates, key=lambda item: item["price"]):
+        if not _raw_clusters:
+            _raw_clusters.append([_candidate])
+            continue
+        previous = _raw_clusters[-1]
+        previous_center = sum(item["price"] * item["weight"] for item in previous) / sum(item["weight"] for item in previous)
+        if _candidate["price"] - previous_center <= _cluster_tolerance:
+            previous.append(_candidate)
+        else:
+            _raw_clusters.append([_candidate])
+
+    _support_clusters: list[Dict] = []
+    for _items in _raw_clusters:
+        total_weight = sum(item["weight"] for item in _items)
+        center = sum(item["price"] * item["weight"] for item in _items) / max(total_weight, 1e-9)
+        sources = sorted({item["source"] for item in _items})
+        labels = list(dict.fromkeys(item["label"] for item in sorted(
+            _items, key=lambda item: item["weight"], reverse=True
+        )))
+        source_count = len(sources)
+        # 밴드 폭은 ATR·볼린저 폭·최근 일중 변동폭을 함께 반영하되 과도한 폭을 제한한다.
+        volatility_scale = min(1.55, max(
+            0.65,
+            max(atr_pct, _recent_intraday_pct, (_bb_width_pct or 0.0) / 2.0) / 4.0,
+        ))
+        pad = atr_d * (0.12 + min(0.12, source_count * 0.018)) * volatility_scale
+        zone_low = max(_candidate_floor, min(item["price"] for item in _items) - pad)
+        zone_high = min(_candidate_ceiling, max(item["price"] for item in _items) + pad)
+        _support_clusters.append({
+            "center": float(center),
+            "range": [float(zone_low), float(zone_high)],
+            "score": round(float(total_weight + source_count * 0.45), 3),
+            "source_count": source_count,
+            "sources": sources,
+            "labels": labels[:5],
+            "depth_atr": round((last_price - center) / max(atr_d, 1e-9), 3),
+        })
+
+    _support_clusters.sort(key=lambda item: item["center"], reverse=True)
+    _meaningful_clusters = [
+        cluster for cluster in _support_clusters
+        if cluster["source_count"] >= 2 or cluster["score"] >= 4.2
+    ]
+    _candidate_source_count = len({item["source"] for item in _price_candidates})
+    _has_confluent_cluster = bool(
+        len(_meaningful_clusters) >= 2
+        or any(int(cluster["source_count"]) >= 4 for cluster in _meaningful_clusters)
+    )
+    _price_structure_ready = bool(
+        len(closes) >= 20 and _atr_observed
+        and _candidate_source_count >= 3 and _has_confluent_cluster
+    )
+    _structure_summary = {
+        "method": "OHLCV·이평·볼린저·거래량 가격 후보의 ATR 거리 군집화",
+        "candidate_count": len(_price_candidates),
+        "candidate_source_count": _candidate_source_count,
+        "cluster_count": len(_meaningful_clusters),
+        "cluster_tolerance": float(_round_market_price(_cluster_tolerance, market)),
+        "atr_pct": round(atr_pct, 3),
+        "bollinger_width_pct": round(_bb_width_pct, 3) if _bb_width_pct is not None else None,
+        "recent_intraday_range_pct": round(_recent_intraday_pct, 3),
+        "market_regime": market_regime,
+        "market_weighting": (
+            "가까운 지지 가중" if market_regime == "BULL" else
+            "깊은 지지 가중" if market_regime == "BEAR" else "중립 가중"
+        ),
+        "ready": _price_structure_ready,
+        "clusters": _meaningful_clusters[:8],
+    }
+
     # ── 구간별 핵심 앵커 가격 선택 ────────────────────────────────────
     bb_l  = float(bb_l_raw) if bb_l_raw else last_price * 0.97
     bb_m  = float(bb_m_raw) if bb_m_raw else last_price
@@ -12882,6 +13126,36 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # 지지선 기반 클램프를 적용하면 밴드가 현재가에서 비현실적으로 멀어지므로 건너뛴다.
     _support_is_near = bool(strong_support) and strong_support >= last_price - atr_d * 4.0
 
+    def _select_structure_clusters(pool: list[Dict], targets: list[float]) -> list[Dict | None]:
+        """시장별 목표 깊이에 가깝고 근거 점수가 높은 서로 다른 군집을 고른다."""
+        remaining = list(pool)
+        selected: list[Dict] = []
+        for target in targets:
+            if not remaining:
+                break
+            chosen = min(
+                remaining,
+                key=lambda item: abs(float(item["depth_atr"]) - target)
+                - min(1.25, float(item["score"]) * 0.075),
+            )
+            selected.append(chosen)
+            remaining.remove(chosen)
+        selected.sort(key=lambda item: float(item["center"]), reverse=True)
+        return selected + [None] * (len(targets) - len(selected))
+
+    _aggressive_targets = {
+        "BULL": [0.30, 0.72, 1.20],
+        "BEAR": [0.72, 1.35, 2.05],
+    }.get(market_regime, [0.45, 0.95, 1.55])
+    _aggressive_cluster_pool = [
+        cluster for cluster in _meaningful_clusters
+        if 0.03 <= float(cluster["depth_atr"]) <= 2.85
+    ]
+    _selected_aggressive_clusters = _select_structure_clusters(
+        _aggressive_cluster_pool, _aggressive_targets,
+    )
+    _aggressive_cluster_by_zone = dict(zip(["A", "B", "C"], _selected_aggressive_clusters))
+
     def _ensure_orderable_band(lo: float, hi: float, upper_mode: str) -> tuple[float, float]:
         rounded_hi = float(_round_market_price(hi, market, upper_mode))
         rounded_lo = float(_round_market_price(lo, market, "floor"))
@@ -12904,9 +13178,10 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                     _market_tick_size(previous_hi, market),
                     _market_tick_size(hi, market),
                 )
-                # 상단은 앞 카드보다 낮추고, 폭은 앞 카드보다 최소 1호가 넓힌다.
-                # 그러면 상·하단이 모두 A > B > C가 되며 동일 범위도 사라진다.
-                hi = min(hi, previous_hi - tick)
+                family_step_gap = max(tick, atr_d * 0.08)
+                # 상단은 앞 카드보다 변동성 기준으로 유의미하게 낮추고, 폭은 앞
+                # 카드보다 최소 1호가 넓혀 사실상 같은 범위가 반복되지 않게 한다.
+                hi = min(hi, previous_hi - family_step_gap)
                 width = max(width, previous_width + tick)
                 lo = hi - width
 
@@ -12970,21 +13245,38 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 round((hi - last_price) / last_price * 100, 2),
             ]
             band["steps"] = steps
-            band["range_order_basis"] = (
-                "밴드 A→B→C 순으로 중심가·범위 상하단을 최소 1호가씩 낮추고 "
-                "카드별 전체 폭을 다르게 산정"
-            )
+            if band.get("structure_cluster"):
+                cluster = band["structure_cluster"]
+                band["range_order_basis"] = (
+                    f"차트 후보 {int(cluster.get('source_count') or 0)}종 중첩"
+                    f"(점수 {float(cluster.get('score') or 0):.1f}) · "
+                    "ATR·볼린저 폭·일중 변동폭으로 주문 범위 조절"
+                )
+            else:
+                band["range_order_basis"] = (
+                    "독립 가격 군집이 부족해 ATR·가용 지표 보조 범위 사용 · "
+                    "밴드 A→B→C 가격 순서 검증"
+                )
             used_widths.append(hi - lo)
             previous_band = band
 
     for _zn in ["A", "B", "C"]:
         _z = _btz[_zn]
+        _structure_cluster = _aggressive_cluster_by_zone.get(_zn)
         _k1 = _z["k1"] + _base_depth_offset + depth_shift
         _k2 = _z["k2"] + _base_depth_offset + depth_shift
         if downside_level == "severe":
             _k1 = max(_k1, 1.55)
             _k2 = max(_k2, 2.15)
-        _center = last_price - ((_k1 + _k2) / 2) * atr_d
+        _center = (
+            float(_structure_cluster["center"])
+            if _structure_cluster else
+            last_price - ((_k1 + _k2) / 2) * atr_d
+        )
+        if market_regime == "BULL":
+            _center += atr_d * 0.35
+        elif market_regime == "BEAR":
+            _center -= atr_d * 0.30
         # 밴드 자체도 단계별 가변·대형화로 동일 폭 문제를 해소한다.
         # 기존 0.4*ATR 폭은 5단계 분할 시 틱 단위에서 0이 되는 경우가 많아
         # 2.2~3배로 확대해 단계별 범위가 유의미하게 보이도록 한다.
@@ -13000,7 +13292,18 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         # 틱 단위에서 5단계가 모두 유의미한 폭(2틱 이상)을 갖도록 밴드 자체를 최소 보장한다.
         _min_band_hw = _market_tick_size(last_price, market) * (7.0 if _zn == "A" else 8.0 if _zn == "B" else 9.0)
         _hw = max(_hw, _min_band_hw)
+        if _structure_cluster:
+            _cluster_lo, _cluster_hi = (float(value) for value in _structure_cluster["range"])
+            _cluster_hw = max(_center - _cluster_lo, _cluster_hi - _center)
+            _structure_min_hw = atr_d * (0.20 if _zn == "A" else 0.28 if _zn == "B" else 0.36)
+            _structure_max_hw = atr_d * (0.38 if _zn == "A" else 0.50 if _zn == "B" else 0.62)
+            _hw = min(_structure_max_hw, max(_cluster_hw, _structure_min_hw, _min_band_hw))
         _lo, _hi = _center - _hw, _center + _hw
+        _aggressive_ceiling = last_price - max(atr_d * 0.05, _tick * 0.5)
+        if _hi > _aggressive_ceiling:
+            _ceiling_shift = _hi - _aggressive_ceiling
+            _hi -= _ceiling_shift
+            _lo -= _ceiling_shift
         if downside_level in ("high", "severe") and _support_is_near:
             _zone_idx = {"A": 0, "B": 1, "C": 2}.get(_zn, 0)
             _support_gap = atr_d * (0.10 + _zone_idx * (0.35 if downside_level == "severe" else 0.22))
@@ -13020,8 +13323,17 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "pct":   [round((_lo - last_price) / last_price * 100, 2),
                       round((_hi - last_price) / last_price * 100, 2)],
             "steps": [],
-            "atr_basis": f"ATR×{_k1:.2f}~{_k2:.2f} 보수 눌림 (기본 {_z['k1']:.2f}~{_z['k2']:.2f} + 시장/위험 보정 {(_base_depth_offset + depth_shift):.2f})",
+            "atr_basis": (
+                f"차트 지지 후보 군집 + ATR 변동폭(ATR {atr_d:,.{_disp_rnd(market, rnd)}f})"
+                if _structure_cluster else
+                f"ATR×{_k1:.2f}~{_k2:.2f} 보수 눌림 (기본 {_z['k1']:.2f}~{_z['k2']:.2f} + 시장/위험 보정 {(_base_depth_offset + depth_shift):.2f})"
+            ),
             "tech_note": _agg_tech[_zn],
+            "structure_cluster": _structure_cluster,
+            "structure_note": (
+                " · ".join(_structure_cluster["labels"][:4])
+                if _structure_cluster else "독립 가격 군집 부족 · ATR 보조 범위"
+            ),
             "risk_note": f"{downside_label}: 확률 -{_risk_penalty:.1f}pp 반영",
             "entry_role": "소액 탐색 진입",
             "allocation_pct": _band_allocation,
@@ -13035,6 +13347,34 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         })
 
     _order_band_family(aggressive_bands, False)
+
+    # 2차 구간은 1차 탐색 전체보다 아래에 있는 별도 지지 군집만 우선 사용한다.
+    # 구조가 분리되지 않으면 뒤의 가용성 검증에서 가격 표시를 보류한다.
+    _first_entry_floor = min(
+        (float(band["range"][0]) for band in aggressive_bands),
+        default=last_price - atr_d,
+    )
+    _family_gap = max(atr_d * 0.12, last_price * 0.0015, _tick)
+    _second_entry_ceiling = _first_entry_floor - _family_gap
+    _second_ceiling_depth = (last_price - _second_entry_ceiling) / max(atr_d, 1e-9)
+    _recommended_targets = [
+        _second_ceiling_depth + offset
+        for offset in (
+            (0.18, 0.62, 1.12) if market_regime == "BULL" else
+            (0.35, 0.90, 1.55) if market_regime == "BEAR" else
+            (0.25, 0.75, 1.30)
+        )
+    ]
+    _recommended_cluster_pool = [
+        cluster for cluster in _meaningful_clusters
+        if float(cluster["center"]) <= _second_entry_ceiling + _cluster_tolerance * 2.0
+        and float(cluster["depth_atr"]) <= 4.6
+    ]
+    _selected_recommended_clusters = _select_structure_clusters(
+        _recommended_cluster_pool, _recommended_targets,
+    )
+    _recommended_cluster_by_zone = dict(zip(["A", "B", "C"], _selected_recommended_clusters))
+    _deep_structure_ready = any(_selected_recommended_clusters)
 
     # ── 추천 매수 밴드 A/B/C ─────────────────────────────────────────
     # 개념: 기술적 지표 앵커(VWAP·BB·MA·Fib) 기반 고확률 진입 구간
@@ -13084,6 +13424,15 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _anc_B = max(_anc_B, last_price - atr_d * 3.10)
         _anc_C = max(_anc_C, last_price - atr_d * 3.60)
 
+    # 고정 ATR 깊이보다 실제 차트 군집을 우선한다. 시장 체제는 위 군집 선택의
+    # 목표 깊이와 후보 가중치에 이미 반영되어 있다.
+    if _recommended_cluster_by_zone.get("A"):
+        _anc_A = float(_recommended_cluster_by_zone["A"]["center"])
+    if _recommended_cluster_by_zone.get("B"):
+        _anc_B = float(_recommended_cluster_by_zone["B"]["center"])
+    if _recommended_cluster_by_zone.get("C"):
+        _anc_C = float(_recommended_cluster_by_zone["C"]["center"])
+
     _rec_anchor = {"A": _anc_A, "B": _anc_B, "C": _anc_C}
     # 추천 밴드도 동일하게 가변 대형화한다 (A<B<C, 변동성 확대 시 추가 확대)
     _rec_expand = {"A": 2.05, "B": 2.40, "C": 2.80}
@@ -13119,15 +13468,31 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _bk  = _rec_btmap[_zn]
         _z   = _btz[_bk]
         _anc = _rec_anchor[_zn]
+        if market_regime == "BULL":
+            _anc += atr_d * 0.20
+        elif market_regime == "BEAR":
+            _anc -= atr_d * 0.34
         _hw  = _rec_hw[_zn]
+        _structure_cluster = _recommended_cluster_by_zone.get(_zn)
+        if _structure_cluster:
+            _cluster_lo, _cluster_hi = (float(value) for value in _structure_cluster["range"])
+            _cluster_hw = max(_anc - _cluster_lo, _cluster_hi - _anc)
+            _structure_min_hw = atr_d * (0.28 if _zn == "A" else 0.38 if _zn == "B" else 0.50)
+            _structure_max_hw = atr_d * (0.50 if _zn == "A" else 0.65 if _zn == "B" else 0.80)
+            _hw = min(_structure_max_hw, max(_cluster_hw, _structure_min_hw, _market_tick_size(last_price, market) * 6.5))
         _lo  = _anc - _hw
-        _hi  = min(_anc + _hw, _price_ceiling)   # 현재가 위로 올라가지 않도록 클램프
+        _hi  = _anc + _hw
+        _recommended_ceiling = min(_price_ceiling, _second_entry_ceiling)
+        if _hi > _recommended_ceiling:
+            _ceiling_shift = _hi - _recommended_ceiling
+            _hi -= _ceiling_shift
+            _lo -= _ceiling_shift
         _lo  = min(_lo, _hi - atr_d * 0.05)      # 하단이 상단보다 낮도록 보장
         _idx = {"A": 0, "B": 1, "C": 2}.get(_zn, 0)
         if _idx < len(aggressive_bands):
             _agg_lo = float(aggressive_bands[_idx]["range"][0])
             _min_gap = max(atr_d * (0.18 + _idx * 0.08), last_price * 0.002)
-            _max_core_hi = _agg_lo - _min_gap
+            _max_core_hi = min(_agg_lo - _min_gap, _second_entry_ceiling)
             if _hi > _max_core_hi:
                 _shift = _hi - _max_core_hi
                 _hi -= _shift
@@ -13150,6 +13515,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                       round((_hi - last_price) / last_price * 100, 2)],
             "steps": [],
             "basis":         _rec_basis[_zn],
+            "structure_cluster": _structure_cluster,
+            "structure_note": (
+                " · ".join(_structure_cluster["labels"][:4])
+                if _structure_cluster else "독립 심층 군집 부족 · 변동성 하단 보조 범위"
+            ),
             "hold_note":     _rec_hold[_zn],
             "risk_note":     f"{downside_label}: 지지선 확인 전 상단 추격 제한",
             "entry_role":     "주 진입",
@@ -13207,14 +13577,25 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         return True
 
     for _band in aggressive_bands:
-        _band["is_available"] = _validate_entry_steps(_band)
+        _band["is_available"] = _price_structure_ready and _validate_entry_steps(_band)
         if not _band["is_available"]:
-            _band["availability_note"] = "독립적인 탐색 가격 구조를 확인하지 못해 표시를 보류했습니다."
+            _band["availability_note"] = (
+                "캔들·이평·볼린저·거래량 중 서로 다른 가격 근거가 부족해 탐색 범위 표시를 보류했습니다."
+                if not _price_structure_ready else
+                "독립적인 탐색 가격 구조를 확인하지 못해 표시를 보류했습니다."
+            )
             _band["steps"] = []
     for _core in recommended_bands:
-        _core["is_available"] = _validate_entry_steps(_core)
+        _core["is_available"] = (
+            _price_structure_ready and _deep_structure_ready
+            and _validate_entry_steps(_core)
+        )
         if not _core["is_available"]:
-            _core["availability_note"] = "독립적인 주 진입 가격 구조를 확인하지 못해 표시를 보류했습니다."
+            _core["availability_note"] = (
+                "중기 이평·스윙 저점·거래량 가격대 등 심층 근거가 부족해 주 진입 범위 표시를 보류했습니다."
+                if not (_price_structure_ready and _deep_structure_ready) else
+                "독립적인 주 진입 가격 구조를 확인하지 못해 표시를 보류했습니다."
+            )
             _core["steps"] = []
 
     if not _validate_band_family(aggressive_bands):
@@ -13227,6 +13608,19 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             _band["is_available"] = False
             _band["steps"] = []
             _band["availability_note"] = "밴드 A·B·C의 주 진입 가격 순서를 분리하지 못해 표시를 보류했습니다."
+
+    _families_separated = bool(aggressive_bands and recommended_bands) and (
+        max(float(band["range"][1]) for band in recommended_bands)
+        < min(float(band["range"][0]) for band in aggressive_bands)
+    )
+    if not _families_separated:
+        for _band in recommended_bands:
+            _band["is_available"] = False
+            _band["steps"] = []
+            _band["availability_note"] = (
+                "1차 탐색 구간과 겹치지 않는 독립적인 하단 지지를 확인하지 못해 "
+                "2차 매수 가격 표시를 보류했습니다."
+            )
 
     # ── 타이밍 산출 ──────────────────────────────────────────────────
     now = dt.now()
@@ -13445,6 +13839,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         "vol_trend": vol_trend,
         "market": _mkt,
         "prediction_profile": _profile,
+        "price_structure": {
+            **_structure_summary,
+            "first_second_separated": _families_separated,
+            "first_entry_floor": r(_first_entry_floor),
+            "second_entry_ceiling": r(_second_entry_ceiling),
+        },
         "weekly_analysis": weekly_context,
         "downside_risk": {
             "score": downside_score,
@@ -19356,13 +19756,12 @@ input::placeholder{color:#484f58}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* 메트릭 카드 */
-.metrics-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:16px}
+.metrics-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
 .metric-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:14px}
-/* 카드 기본 span — 데스크탑 기준 (7열 그리드: 2+1+1+1+1+1) */
+/* 카드 기본 span — 데스크탑 기준 (5열 그리드: 2+1+1+1) */
 .metric-price-card{grid-column:span 2}
 .metric-volume-card{grid-column:span 1}
 .metric-atr-card{grid-column:span 1}
-.metric-support-card{grid-column:span 1}
 .metric-toss-card{grid-column:span 1}
 /* 토스증권 AI 요약 카드 내부 스타일 */
 .toss-ai-summary{font-size:13px;font-weight:600;color:#e6edf3;line-height:1.55;margin-top:4px;word-break:keep-all}
@@ -19820,7 +20219,6 @@ input::placeholder{color:#484f58}
   .metric-price-card{grid-column:span 2}
   .metric-volume-card{grid-column:span 1}
   .metric-atr-card{grid-column:span 1}
-  .metric-support-card{grid-column:span 2}
   .metric-toss-card{grid-column:span 4}
   .metric-price-row{gap:14px}
   .two-col-grid{grid-template-columns:1fr;gap:10px}
@@ -19857,7 +20255,6 @@ input::placeholder{color:#484f58}
   .metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:stretch}
   .metric-price-card{grid-column:1/-1}
   .metric-volume-card,.metric-atr-card{grid-column:span 2}
-  .metric-support-card{grid-column:span 2}
   .metric-toss-card{grid-column:1/-1}
   /* 480px 이하: 2열, 카드 패딩 축소로 내용 확보 */
   .sector-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
@@ -20572,8 +20969,6 @@ input::placeholder{color:#484f58}
         <div class="metric-card metric-price-card"><div class="m-label">현재가 <span id="r-session-badge" style="display:none;font-size:10px;font-weight:600;padding:1px 6px;border-radius:4px;background:#1f6feb33;color:#58a6ff;margin-left:4px;vertical-align:middle"></span></div><div class="metric-price-row"><div style="display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"><div class="m-value" id="r-price" style="white-space:nowrap"></div><div class="m-sub" id="r-pct" style="margin-top:0"></div></div><div id="r-prob" style="display:none;flex-direction:column;gap:4px;align-items:flex-start;font-size:11px;font-weight:600;padding-top:4px"></div></div></div>
         <div class="metric-card metric-volume-card"><div class="m-label">거래량</div><div class="m-value" id="r-vol" style="font-size:18px"></div><div id="r-vol-source" style="font-size:10px;color:#8b949e;margin-top:4px"></div></div>
         <div class="metric-card metric-atr-card"><div class="m-label">하루 평균 움직임(ATR)</div><div class="m-value" id="r-atr" style="font-size:18px"></div><div id="r-atr-pct" style="display:none;font-size:11px;color:#8b949e;margin-top:4px"></div></div>
-        <div class="metric-card metric-support-card"><div class="m-label">바로 아래 버팀목(단기 지지)</div><div class="m-value" id="r-support-short" style="font-size:18px"></div></div>
-        <div class="metric-card metric-support-card"><div class="m-label">중기 버팀목 구간</div><div class="m-value" id="r-support-mid" style="font-size:18px"></div></div>
         <div class="metric-card metric-toss-card" id="r-toss-card">
           <div class="m-label">외부 요약 · 토스증권 AI</div>
           <div class="toss-ai-summary" id="r-toss-summary" style="color:#484f58;font-size:11px">-</div>
@@ -22262,15 +22657,6 @@ function renderResult(d) {
   } else if (atrPctEl) {
     atrPctEl.style.display = 'none';
   }
-  // 바로 아래/중기 버팀목 — 상단 메트릭 카드에 표시 (예측 탭과 동일 원천)
-  const _bpTop = d.buy_price || {};
-  const _fibTop = _bpTop.fib || {};
-  const _midTop = _fibTop.f382 != null && _fibTop.f500 != null ? [_fibTop.f382, _fibTop.f500].sort((a,b)=>a-b) : null;
-  const supShortEl = document.getElementById('r-support-short');
-  if (supShortEl) supShortEl.textContent = _bpTop.support_zone != null ? fmt(_bpTop.support_zone, isKrx) : '데이터 부족';
-  const supMidEl = document.getElementById('r-support-mid');
-  if (supMidEl) supMidEl.textContent = _midTop ? `${fmt(_midTop[0], isKrx)} ~ ${fmt(_midTop[1], isKrx)}` : '데이터 부족';
-
   // 📐 피보나치 되돌림 기준 카드 및 "🔗 연계 밴드" 연동 표시는 모두 폐지됨.
   //    (ATR 밴드 가격과 피보나치 레벨 가격이 독립 계산되어 정합이 어려움 — renderForecast 참조)
 
@@ -24324,10 +24710,12 @@ function renderForecast(d, isKrx) {
           : isRec
           ? `<div class="buy-band-detail">매수 가격 범위=주문을 나눠 넣는 구간 / 하락률=현재가보다 얼마나 아래인지 / 도달 확률·예상 기간=과거 변동성 기준 참고치</div>
              ${rangeOrderDetail}
+             <div class="buy-band-detail">• 가격 근거: ${_escPrediction(b.structure_note || b.basis || '차트 구조 확인 필요')}</div>
              <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
               <div class="buy-band-detail">• ${b.hold_note || '버티는 힘이 다시 확인되면 본 진입'}</div>`
           : `<div class="buy-band-detail">소액 탐색: 본 진입보다 적게 들어가 반등 여부를 가볍게 확인하는 단계입니다.</div>
               ${rangeOrderDetail}
+              <div class="buy-band-detail">• 가격 근거: ${_escPrediction(b.structure_note || b.tech_note || '차트 구조 확인 필요')}</div>
               <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
               <div class="buy-band-detail">• ${b.atr_basis}</div>`;
         return `<div class="buy-band-card" style="${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
