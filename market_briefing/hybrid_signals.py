@@ -118,7 +118,12 @@ def _calc_adx(highs, lows, closes, period: int = 14) -> dict | None:
     if len(dx_list) < period:
         return None
 
-    adx = float(np.mean(dx_list[-period:]))
+    # Wilder ADX: 첫 값은 앞 period 개 DX 의 평균, 이후 (직전*(period-1)+DX)/period.
+    # 이전 구현은 최근 period 개 DX 의 단순평균이라 add_indicators 의 ADX(Wilder EWM)와
+    # 최대 ±14포인트 어긋났고 ADX 25 기준을 서로 다르게 넘나들었다(표본의 약 9%).
+    adx = float(np.mean(dx_list[:period]))
+    for dx in dx_list[period:]:
+        adx = (adx * (period - 1) + dx) / period
     return {
         "adx":      round(adx, 2),
         "plus_di":  round(di_plus_list[-1], 2) if di_plus_list else 0.0,
@@ -238,7 +243,7 @@ def compute_bis(
 
 def compute_regime(
     price: float,
-    ma200: float,
+    ma200: float | None,
     adx_data: dict | None,
     vix: float | None = None,
     advance_decline_ratio: float | None = None,
@@ -248,7 +253,8 @@ def compute_regime(
 
     Args:
         price:    현재가 (SPY 또는 KOSPI200)
-        ma200:    200일 이동평균
+        ma200:    200일 이동평균. None/0 이면 ①가격 대 MA200 점수와 ⑤CHOP 밴드를 건너뛴다
+                  (호출측이 종목 자신의 가격으로 대체하면 항상 약세 3점+CHOP 이 되므로 금지).
         adx_data: calc_adx() 반환 dict {"adx", "plus_di", "minus_di", "bullish"}
         vix:      VIX 현재값 (미국: 공포지수, 한국은 None 가능)
         advance_decline_ratio: 상승/하락 비율 (없으면 None)
@@ -332,6 +338,7 @@ def compute_regime(
         "bear_pts":  bear_pts,
         "chop_band": chop_band,
         "vol_regime": vol_regime,
+        "ma200_available": bool(ma200 and ma200 > 0),
     }
 
 
@@ -647,7 +654,8 @@ def compute_hybrid_score(
         lows:         일별 저가 리스트
         volumes:      일별 거래량 리스트
         open_prices:  일별 시가 리스트 (BIS용, 없어도 됨)
-        bench_closes: 벤치마크(SPY/KOSPI200) 종가 (RS/레짐용)
+        bench_closes: 벤치마크(SPY/KOSPI200) 종가 (RS/레짐용). 없으면 시장 레짐은 '알 수 없음'(SIDEWAYS)이고
+                      CHOP 밴드·FWS '레짐 불안정' 점수를 부여하지 않는다(시장 레짐은 호출측이 따로 적용).
         bench_ma200:  벤치마크 200일 MA (레짐용)
         vix:          VIX 현재값 (미국 시장)
         adv_decline:  A/D ratio (breadth)
@@ -743,10 +751,13 @@ def compute_hybrid_score(
         _calc_ma(bench_closes, 200) if bench_closes and len(bench_closes) >= 200 else None
     )
 
-    # 레짐 감지
+    # 레짐 감지 — 벤치마크 MA200이 없으면 '알 수 없음'으로 두어야 한다.
+    # 예전에는 `ma200 or cur_price` 로 종목 자신의 가격을 MA200 자리에 넣었는데,
+    # 그러면 price == ma200 이라 ① 가격<=MA200 약세 3점이 항상 부여되고 ⑤ CHOP 밴드가
+    # 항상 켜져 레짐이 SIDEWAYS 로 고정되며 FWS 에 '레짐 불안정' +10점이 상수로 더해졌다.
     regime_data  = compute_regime(
         price=bench_price or cur_price,
-        ma200=ma200 or cur_price,
+        ma200=ma200,
         adx_data=adx_data,
         vix=vix,
         advance_decline_ratio=adv_decline,

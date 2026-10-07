@@ -25,7 +25,27 @@ SELFREFINE /EVAL-SELF  과거 학습 로그(prediction_learning.jsonl)가 있으
 from __future__ import annotations
 
 import math
+import os
 from typing import Any, Dict, List, Tuple
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# 워크포워드 감사(2022-10~2026-09, 52종목, 22거래일 선행, scripts/audit_prediction_layers.py)로 정한 기본값.
+#  · RANGE_NARROWING(기본 꺼짐): 신호 일치도로 목표가 범위를 좁히는 기능. 일치도 오류를 고친 뒤에도
+#    일치도 5분위별 기준 범위 포함률이 0.30→0.28로 평평해(정보 없음) 좁힐수록 포함률만 30.1%→24.3%로
+#    떨어졌다(오류 상태에서는 21.0%). 범위 폭은 검증된 변동성 기반 기준 범위를 유지한다.
+#    켜려면 STOCKORACLE_CORRELATION_NARROWING=1 로 감사를 다시 돌려 포함률이 유지되는지 확인한다.
+#  · PROBABILITY_PULL(기본 켜짐): 일치도로 상승 확률을 당기는 기능. 부호·분모 오류를 고친 뒤에는 AUC
+#    -0.003(.5110→.5081)·Brier -0.002 로 사실상 중립이라 기존 동작을 유지한다.
+RANGE_NARROWING = _env_flag("STOCKORACLE_CORRELATION_NARROWING", False)
+PROBABILITY_PULL = _env_flag("STOCKORACLE_CORRELATION_PROB_PULL", True)
+
 
 def _num(v, default=0.0) -> float:
     try:
@@ -254,9 +274,13 @@ def correlate_and_narrow(
         if ml_prediction and ml_prediction.get("fallback"):
             ml_bias *= 0.5  # 휴리스틱 폴백은 절반만 반영 (SYSTEMATIC BIAS CHECK)
         signals["ml"] = ml_bias
-        # 신호 신뢰도
+        # 신호 신뢰도 — confidence 는 '신호가 중립에서 얼마나 극단적인가'(50~88)이지 방향이 아니다.
+        # 부호 없이 투표에 넣으면 SELL(하락) 신호의 높은 신뢰도가 항상 '상승' 표로 집계돼 하락 국면의
+        # 일치도가 희석되고 확률 당김이 약해진다(낙관 편향). 신호 방향(BUY +1 / SELL -1 / 그 외 0)을 곱한다.
         base_conf = _num((signal_confidence or {}).get("confidence"), 50)
-        conf_bias = _clamp((base_conf - 50) * 0.04, -2.0, 2.0)
+        _signal_dir = {"BUY": 1.0, "SELL": -1.0}.get(
+            str((signal_confidence or {}).get("signal") or "").upper(), 0.0)
+        conf_bias = _clamp((base_conf - 50) * 0.04, -2.0, 2.0) * _signal_dir
         signals["confidence"] = conf_bias
         # 시장 체제/섹터
         regime_bias = 0.0
@@ -290,7 +314,10 @@ def correlate_and_narrow(
                 return -1
             return 0
         signs = {k: _sign(v) for k, v in signals.items()}
-        # 가중 다수결
+        # 가중 다수결 — 기권(0)표도 분모에 포함한다.
+        # 예전에는 분모를 '방향이 있는 표'의 가중치만으로 계산해, 신호 하나만 약하게 켜져도(예: 점수 50의
+        # AAPL 에서 레짐 표 하나) 일치도가 100%가 됐다. 그 결과 일치도 중앙값이 1.0, 표본의 51%가 범위
+        # 축소 하한(0.55)에 붙어 일치도가 정보와 무관한 상수로 작동했다.
         total_w = 0.0
         pos_w = neg_w = 0.0
         for k, s in signs.items():
@@ -300,16 +327,15 @@ def correlate_and_narrow(
                 w *= 0.5
             if k == "pattern" and pat_info.get("confirmed", 0) == 0 and pat_info.get("count", 0) > 0:
                 w *= 0.6  # 미확정 패턴만 있으면 가중 하향
-            total_w += w if s != 0 else 0
+            total_w += w
             if s == 1:
                 pos_w += w
             elif s == -1:
                 neg_w += w
-        if total_w > 0:
-            agreement = max(pos_w, neg_w) / total_w if total_w else 0.5
+        if total_w > 0 and (pos_w > 0 or neg_w > 0):
+            # 순방향 우위(0~1)를 0.5~1.0 일치도로 재매핑: 전원 만장일치 1.0, 방향 상쇄·전원 기권 0.5
+            agreement = 0.5 + 0.5 * abs(pos_w - neg_w) / total_w
             dominant = 1 if pos_w > neg_w else (-1 if neg_w > pos_w else 0)
-            # 가중 일치도가 0.5 근처에서 과도하게 극단으로 치우치지 않도록 0.5~1.0으로 재매핑
-            # (기존 단순 다수결 대비, 가중치가 분산을 부드럽게 함)
         else:
             agreement = 0.5
             dominant = 0
@@ -336,7 +362,11 @@ def correlate_and_narrow(
             narrow_factor = 1.15 - agreement * 0.60  # 0.5→0.85, 1.0→0.55
             narrow_factor = _clamp(narrow_factor, 0.55, 0.85)
             uncertainty = "중간" if agreement >= 0.62 else "높음"
-            narrow_reason = f"신호 일치도 {agreement*100:.0f}% — 목표가 범위 {(1-narrow_factor)*100:.0f}% 축소"
+            if RANGE_NARROWING:
+                narrow_reason = f"신호 일치도 {agreement*100:.0f}% — 목표가 범위 {(1-narrow_factor)*100:.0f}% 축소"
+            else:
+                narrow_factor = 1.0
+                narrow_reason = f"신호 일치도 {agreement*100:.0f}% — 변동성 기반 범위 유지(일치도로 범위를 좁히지 않음)"
         else:
             # 0.5→0.85, 0.3→1.03, 0.0→1.15
             narrow_factor = 0.85 + (0.5 - agreement) * 0.60
@@ -379,15 +409,24 @@ def correlate_and_narrow(
                 direction_pull += event_bias * 0.8
 
         # 최종 확률
-        corr_up = _clamp(base_up + direction_pull, 8, 92)
-        # 거래량·수급 블라인드스팟이 있으면 확률을 50으로 10% 회귀
-        blindspot_damping = 0.0
-        if "수급" in sup_info.get("blindspot","") or "데이터 없음" in sup_info.get("blindspot",""):
-            blindspot_damping = 0.12
-            corr_up = 50 + (corr_up - 50) * (1 - blindspot_damping)
+        if PROBABILITY_PULL:
+            corr_up = _clamp(base_up + direction_pull, 8, 92)
+            # 거래량·수급 블라인드스팟이 있으면 확률을 50으로 10% 회귀
+            blindspot_damping = 0.0
+            if "수급" in sup_info.get("blindspot","") or "데이터 없음" in sup_info.get("blindspot",""):
+                blindspot_damping = 0.12
+                corr_up = 50 + (corr_up - 50) * (1 - blindspot_damping)
+        else:
+            corr_up = base_up
         corr_up = round(corr_up, 1)
-        side_corr = round(side_base * (0.7 if agreement >= 0.75 else 1.0 if agreement >= 0.5 else 1.25), 1)
-        side_corr = _clamp(side_corr, 10, 45)
+        # 횡보 비중은 호출측이 up+down<100 으로 넘긴 경우에만 존재한다. route 는 up+down=100 을 넘기므로
+        # side_base=0 인데, 예전에는 그때도 하한 10 으로 올려 down 에서 10p 를 빼 상수 '횡보 10%'를 만들었다.
+        # (그 결과 downstream 의 up/(up+down) 이 항상 약 11% 부풀었다.)
+        if side_base > 0:
+            side_corr = round(side_base * (0.7 if agreement >= 0.75 else 1.0 if agreement >= 0.5 else 1.25), 1)
+            side_corr = _clamp(side_corr, 10, 45)
+        else:
+            side_corr = 0.0
         corr_down = round(max(5.0, 100 - corr_up - side_corr), 1)
         # 합 100 보정
         total = corr_up + corr_down + side_corr
@@ -410,7 +449,9 @@ def correlate_and_narrow(
 
         # ── 7. CAUSAL MAP / FALSIFY / TIMELINE ─────────────────────
         causal = []
-        if signals["pattern"] > 1 and signals["supply"] > 1 and volume_ratio if 'volume_ratio' in locals() else 1.2 > 1.2:
+        # (이전 식은 `... and volume_ratio if 'volume_ratio' in locals() else 1.2 > 1.2` 로 파싱돼
+        #  거래량 배수를 검사하지 않고 0이 아니면 '거래량 동반'으로 서술했다.)
+        if signals["pattern"] > 1 and signals["supply"] > 1 and volume_ratio >= 1.2:
             causal.append("패턴 확정 + 수급 매수 + 거래량 동반 → 추세 추종 원인→결과 일치")
         if rsi >= 72 and signals["pattern"] > 0:
             causal.append("과매수(RSI≥72)에서 패턴 상승 — 시차적 반전 원인 가능, 추격 리스크")

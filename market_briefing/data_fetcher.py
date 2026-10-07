@@ -438,7 +438,9 @@ def _parse_index_change(raw: str, direction_hint: str | None = None) -> dict:
 def _reconcile_index_market_status(indices: dict, overnight: list[dict], now_kst: datetime | None = None) -> None:
     """이미 수집한 KOSPI 200 최근 거래일로 평일 휴장·미갱신 가능성을 보수적으로 표시한다."""
     now = now_kst or datetime.now(KST)
-    benchmark = next((item for item in overnight if item.get("symbol") == "^KS200"), None)
+    # Yahoo 의 ^KS200 은 5일 조회에도 1행만 반환해 overnight 목록에서 항상 빠졌다. 그 결과 평일 장중마다
+    # 모든 지수가 '시장 상태 확인 불가'로 표시됐다. 일봉이 정상 반환되는 ^KS11(KOSPI)을 우선 사용한다.
+    benchmark = next((item for item in overnight if item.get("symbol") in ("^KS11", "^KS200")), None)
     trade_date_raw = (benchmark or {}).get("as_of")
     try:
         trade_date = datetime.fromisoformat(str(trade_date_raw)).date()
@@ -622,7 +624,7 @@ def fetch_overnight_markets() -> list[dict]:
         ("^DJI",     "다우존스"),
         ("^IXIC",    "나스닥"),
         ("^VIX",     "VIX"),
-        ("^KS200",   "KOSPI200 (종가)"),
+        ("^KS11",    "KOSPI (종가)"),
         ("CL=F",     "WTI 원유"),
         ("GC=F",     "금"),
         ("BTC-USD",  "비트코인"),
@@ -1005,10 +1007,12 @@ def fetch_proxy_changes(tickers: list[str]) -> dict[str, float]:
     for sym in tickers:
         try:
             h = yf.Ticker(sym).history(period="5d", auto_adjust=True)
-            if len(h) < 2:
+            # 마지막 행 종가가 NaN 일 수 있어(장 시작 전·장중) 유효 종가만으로 전일 대비를 계산한다.
+            closes = h["Close"].dropna() if "Close" in h.columns else h.iloc[:0]
+            if len(closes) < 2:
                 continue
-            prev = float(h.iloc[-2]["Close"])
-            last = float(h.iloc[-1]["Close"])
+            prev = float(closes.iloc[-2])
+            last = float(closes.iloc[-1])
             if prev:
                 out[sym] = (last - prev) / prev * 100
         except Exception as e:

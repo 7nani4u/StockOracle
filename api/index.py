@@ -556,6 +556,9 @@ def ttl_cache(ttl: int):
                     should_cache = False
                 elif fn.__name__ == "_peer_fundamentals" and isinstance(r, dict) and not r.get("available"):
                     should_cache = False
+                elif fn.__name__ in ("_index_regime_cached", "fetch_sentiment") and r is None:
+                    # 지수 조회 실패가 NEUTRAL/None 으로 10~15분 고착되면 BEAR 상한·심리 지표가 조용히 꺼진다.
+                    should_cache = False
             except Exception:
                 pass
             if should_cache:
@@ -3767,13 +3770,42 @@ def fetch_naver(code: str):
         r["fundamentals_source"] = "naver_html" if not _naver_missing(r.get("per")) else "unavailable"
     return r
 
+# 시장 벤치마크 후보. Yahoo 의 ^KS200 은 history() 가 1행만 반환해(2026-10 재확인, ml_predictor 도
+# 같은 이유로 제외) KRX 레짐·상대강도·심리 지표가 조용히 비어 있었다. 일봉이 충분히 나오는 지수/ETF 를
+# 순서대로 시도하고, 모두 실패하면 빈 DataFrame 을 돌려 호출측이 중립으로 처리하게 한다.
+_KRX_BENCHMARK_CANDIDATES = (("^KS11", "KOSPI"), ("069500.KS", "KODEX 200 (KOSPI200 ETF)"))
+_BENCHMARK_MIN_ROWS = 20
+
+
+def _benchmark_history(market: str, period: str = "1y", min_rows: int = _BENCHMARK_MIN_ROWS):
+    """사용 가능한 첫 벤치마크 일봉을 (DataFrame, 심볼, 라벨)로 반환한다."""
+    candidates = _KRX_BENCHMARK_CANDIDATES if market == "KRX" else (("SPY", "S&P 500 (SPY)"),)
+    for sym, label in candidates:
+        try:
+            df = yf.Ticker(sym).history(period=period)
+        except Exception as exc:
+            print(f"[benchmark] {sym} history failed: {type(exc).__name__}")
+            continue
+        # 조회 실패 시 yfinance 는 열이 없는 빈 DataFrame 을 돌려줄 수 있다.
+        rows = 0 if df is None or "Close" not in df.columns else int(df["Close"].notna().sum())
+        if rows >= min_rows:
+            return df, sym, label
+        print(f"[benchmark] {sym} returned {rows} usable rows — trying next candidate")
+    return pd.DataFrame(), "", ""
+
+
 @ttl_cache(600)
 def fetch_sentiment(market: str):
     try:
-        tkr = "^VIX" if market == "US" else "^KS200"
-        name = "VIX (공포지수)" if market == "US" else "KOSPI 200"
-        df = yf.Ticker(tkr).history(period="1mo")
-        if df.empty: return None
+        if market == "US":
+            tkr, name = "^VIX", "VIX (공포지수)"
+            df = yf.Ticker(tkr).history(period="1mo")
+        else:
+            df, tkr, name = _benchmark_history(market, period="1mo", min_rows=2)
+        # 장 시작 전·장중에는 마지막 행의 종가가 NaN 일 수 있어 제거한 뒤 최근 두 거래일을 쓴다.
+        if df is not None:
+            df = df.dropna(subset=["Close"])
+        if df is None or df.empty or len(df) < 2: return None
         cur, prv = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2])
         chg = (cur - prv) / prv * 100
         sent = "중립"
@@ -8425,27 +8457,45 @@ def check_market_regime(market: str, symbol: str = "") -> str:
     return _index_regime(index_ticker)
 
 
-@ttl_cache(900)
+def classify_index_regime(current_close: float, ma60: float, ma120: float) -> str:
+    """대표지수 60/120일선 구조 → BEAR / BULL / NEUTRAL (실서비스와 감사 스크립트가 같은 규칙을 쓴다)."""
+    if not all(math.isfinite(v) for v in (current_close, ma60, ma120)):
+        return "NEUTRAL"
+    if current_close < ma120 and ma60 < ma120:
+        return "BEAR"
+    if current_close > ma60 > ma120:
+        return "BULL"
+    return "NEUTRAL"
+
+
 def _index_regime(index_ticker: str) -> str:
-    """대표지수 60/120일선 구조. 종목마다 같은 지수를 반복 조회하지 않도록 15분 캐시한다."""
+    """대표지수 60/120일선 구조. 조회 실패는 NEUTRAL 로 보되 캐시에는 남기지 않는다."""
+    return _index_regime_cached(index_ticker) or "NEUTRAL"
+
+
+@ttl_cache(900)
+def _index_regime_cached(index_ticker: str) -> Optional[str]:
+    """BULL/BEAR/NEUTRAL, 조회·표본 실패는 None(ttl_cache 가 캐시하지 않음 → 일시 장애가 15분 고착되지 않음).
+
+    종목마다 같은 지수를 반복 조회하지 않도록 15분 캐시한다.
+    """
     try:
         # 6개월은 휴장일에 따라 120봉 경계에 걸려 NEUTRAL로 떨어질 수 있어 1년을 조회한다.
         df = yf.Ticker(index_ticker).history(period="1y")
-        if df.empty or len(df) < 120:
-            print(f"[regime][warn] {index_ticker} history insufficient rows={len(df)} -> NEUTRAL")
-            return "NEUTRAL"
-        current_close = df['Close'].iloc[-1]
-        ma60 = df['Close'].rolling(60).mean().iloc[-1]
-        ma120 = df['Close'].rolling(120).mean().iloc[-1]
-        
-        if current_close < ma120 and ma60 < ma120:
-            return "BEAR"
-        elif current_close > ma60 > ma120:
-            return "BULL"
-        else:
-            return "NEUTRAL"
-    except:
-        return "NEUTRAL"
+        # 장 시작 전·장중에는 Yahoo 가 마지막 행의 종가를 NaN 으로 줄 수 있다(^KS11·^KQ11 에서 확인).
+        # 그대로 쓰면 마지막 값과 60일 평균이 NaN 이라 모든 비교가 False → 하락 구조(BEAR)에서도 NEUTRAL 이 된다.
+        closes = df["Close"].dropna() if df is not None and "Close" in df.columns else None
+        if closes is None or len(closes) < 120:
+            print(f"[regime][warn] {index_ticker} history insufficient rows={0 if closes is None else len(closes)} -> NEUTRAL")
+            return None
+        return classify_index_regime(
+            float(closes.iloc[-1]),
+            float(closes.rolling(60).mean().iloc[-1]),
+            float(closes.rolling(120).mean().iloc[-1]),
+        )
+    except Exception as exc:
+        print(f"[regime][warn] {index_ticker} regime lookup failed: {type(exc).__name__}: {exc}")
+        return None
 
 def validate_financial_health(ticker_info: dict) -> Optional[bool]:
     """Return leverage health; Yahoo values below 1 are ratios, otherwise percentages."""
@@ -8532,6 +8582,67 @@ def _ai_scenario_lines(close: float, bb_u: float, bb_l: float, atr: float, marke
         f"📉 하락 시나리오: 볼린저 하단({price(bb_l)}) 이탈 및 MACD 시그널선 하회 시 리스크 관리 ({stop_text})",
         f"➡️ 횡보 시나리오: {price(bb_l)} ~ {price(bb_u)} 밴드 내 박스권 대응 (하단 지지 확인 후 진입, 상단 저항 시 청산)",
     ]
+
+
+def _hybrid_action_fallback(ncs: float, fws: float) -> str:
+    """hybrid 결과에 action 이 없을 때만 쓰는 ncs_action 동등 분류(임계값을 새로 만들지 않는다)."""
+    try:
+        from market_briefing.hybrid_signals import ncs_action
+        return ncs_action(ncs, fws)
+    except Exception:
+        return "AUTO_NO" if fws > 65.0 else ("AUTO_YES" if ncs >= 70.0 and fws <= 30.0 else "CONDITIONAL")
+
+
+def finalize_rule_score(score: float, *, regime: str | None = None, debt_healthy: bool | None = None,
+                        flow_adjust: float = 0, hybrid: Dict | None = None) -> Dict:
+    """규칙 점수 보정을 한 곳에서 확정한다: 가산 보정을 모두 적용한 뒤 상한(cap)을 마지막에 적용한다.
+
+    - 가산: KRX 수급(±5 한도), HybridTurtle NCS(우수 +5 / 취약 -10).
+    - 상한: 대표지수 BEAR → 40, 부채비율 150% 초과 → 45, 하이브리드 레짐 BEARISH → 40.
+    예전에는 BEAR·부채 상한을 먼저 적용한 뒤 수급(+5)·NCS(+5)를 더해 '약세장 40점 이하'가
+    실제로는 50점까지 올라갔다. 상한이 설명 문구(“신규 매수 신중”)와 같은 뜻이 되도록 순서를 고정한다.
+
+    Returns: {"score", "uncapped_score", "caps": [(사유, 상한)], "binding_cap": 사유|None, "notes": [NCS 문구]}
+    """
+    value = score
+    notes: list[str] = []
+    if flow_adjust:
+        value = max(0, min(100, value + max(-5, min(5, flow_adjust))))
+    caps: list[tuple[str, float]] = []
+    if regime == "BEAR":
+        caps.append(("regime_bear", 40))
+    if debt_healthy is False:
+        caps.append(("debt", 45))
+    hybrid_bearish = False
+    if isinstance(hybrid, dict) and "ncs" in hybrid and "error" not in hybrid:
+        try:
+            ncs_v = float(hybrid["ncs"])
+            fws_v = float(hybrid.get("fws", 50))
+        except (TypeError, ValueError):
+            ncs_v = fws_v = None
+        if ncs_v is not None:
+            # 행동 분류는 hybrid_signals.ncs_action(AUTO_YES: NCS≥70·FWS≤30 / AUTO_NO: FWS>65)이 단일 기준이다.
+            # 예전 route 는 여기에 `NCS<40` 을 덧붙였는데, NCS 는 '20일 고점 근접 돌파 품질'이라 돌파권이
+            # 아닌 종목 대부분(워크포워드 표본의 72%)이 40 미만이다. 그 결과 '취약' 감점 -10 이 개별 약점이
+            # 아니라 상수 이동(평균 -8.6점)으로 작동해 대다수 종목이 SELL 문구로 떨어졌다.
+            action = hybrid.get("action") or _hybrid_action_fallback(ncs_v, fws_v)
+            if action == "AUTO_YES":
+                value = min(100, value + 5)
+                notes.append(f"[NCS {ncs_v:.0f}] 브레이크아웃 품질 우수 — 신뢰도 상향")
+            elif action == "AUTO_NO":
+                value = max(0, value - 10)
+                notes.append(f"[NCS {ncs_v:.0f}] 기술적 취약 — 주의")
+            if hybrid.get("regime") == "BEARISH":
+                caps.append(("hybrid_bearish", 40))
+                hybrid_bearish = True
+    uncapped = value
+    binding = None
+    for reason, cap in caps:
+        if value > cap:
+            value, binding = cap, reason
+    if hybrid_bearish and uncapped > 40:
+        notes.append("[레짐 BEARISH] 약세장 국면")
+    return {"score": value, "uncapped_score": uncapped, "caps": caps, "binding_cap": binding, "notes": notes}
 
 
 def _sync_ai_strategy_summary(ai_strategy: Dict | None, final_score: float, raw_score: float,
@@ -8745,8 +8856,9 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
         })
         if not df.empty and len(df) > 20:
             geo_patterns = ChartPatternAnalyzer(df, timeframe=period).detect_patterns()
-    except:
-        pass
+    except Exception as exc:
+        # 패턴 분석 실패는 점수에 영향 없이 진행하되 조용히 사라지지 않게 남긴다.
+        print(f"[analyze_score] chart pattern analysis skipped: {type(exc).__name__}: {exc}")
 
     cp_msgs = []
     cp_score = 0.0
@@ -9406,11 +9518,32 @@ def _github_append_prediction_learning_line(line: str) -> None:
     except Exception as e:
         print(f"[PredictionLearning] github append failed: {e}")
 
+def _dedupe_learning_outcomes(rows) -> list[dict]:
+    """같은 종목·신호일·구간의 결과는 한 번만 센다(먼저 기록된 건 유지).
+
+    예측 id 에 장중 현재가가 들어 있어 같은 날 새로고침마다 별개 예측·결과가 쌓였다. 중복을 그대로 세면
+    자주 조회한 종목·날짜가 표본 수와 비율을 지배해 학습 보정이 과대/과소 반응한다. 종목이나 신호일이
+    없는 오래된 행은 서로 합치지 않고 그대로 둔다.
+    """
+    seen: set[tuple] = set()
+    unique: list[dict] = []
+    for row in rows:
+        symbol, signal_date = row.get("symbol"), row.get("signal_date")
+        if symbol and signal_date:
+            key = (symbol, signal_date, row.get("zone"))
+            if key in seen:
+                continue
+            seen.add(key)
+        unique.append(row)
+    return unique
+
+
 def calc_learning_adjustment(market: str) -> Dict:
     """저장된 예측-실현 기록으로 월별 ATR 깊이/보류 임계값을 보정."""
-    rows = [r for r in _read_prediction_learning_events()
-            if r.get("type") == "outcome" and r.get("market") == market
-            and r.get("execution_model") == "band_overlap_stop_first_v2"]
+    rows = _dedupe_learning_outcomes(
+        r for r in _read_prediction_learning_events()
+        if r.get("type") == "outcome" and r.get("market") == market
+        and r.get("execution_model") == "band_overlap_stop_first_v2")
     if len(rows) < 20:
         return {"depth_extra": 0.0, "hold_score_delta": 0, "allocation_scale": 1.0,
                 "sample_n": 0, "applied": False,
@@ -9694,11 +9827,16 @@ def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str
                    and r.get("market") == market and r.get("execution_model") == "band_overlap_stop_first_v2"]
     date_to_idx = {d: i for i, d in enumerate(dates)}
 
+    evaluated_days: set[tuple] = set()
     for p in predictions[-200:]:
         pid = p.get("id")
         sd = p.get("signal_date")
         if not pid or sd not in date_to_idx:
             continue
+        # 과거에 같은 날 중복 적재된 예측은 첫 건만 평가해 결과 표본이 부풀지 않게 한다.
+        if (sd, p.get("period")) in evaluated_days:
+            continue
+        evaluated_days.add((sd, p.get("period")))
         i = date_to_idx[sd]
         if i + 20 >= len(closes):
             continue
@@ -9755,6 +9893,13 @@ def _record_prediction_and_update_outcomes(symbol: str, market: str, period: str
     today = dates[-1]
     current = buy_price.get("current")
     pid = f"{symbol}|{today}|{period}|{current}"
+    # 같은 종목·거래일·기간의 예측은 하루 한 건만 남긴다. id 에 현재가가 들어 있어 장중 새로고침마다
+    # 새 표본이 쌓였고(실측: AAPL 2026-09-08 하루 10건) 학습 보정이 자주 조회한 종목·날짜에 치우쳤다.
+    # 결과 평가는 신호일 이후 봉만 쓰므로 하루 첫 예측으로 충분하다.
+    if any(r.get("type") == "prediction" and r.get("symbol") == symbol and r.get("market") == market
+           and r.get("signal_date") == today and r.get("period") == period
+           and r.get("execution_model") == "band_overlap_stop_first_v2" for r in events):
+        return
     if any(r.get("type") == "prediction" and r.get("id") == pid for r in events[-300:]):
         return
     def _range_of(rows, key):
@@ -14392,6 +14537,12 @@ def calc_pullback_analysis(dd: Dict, last_price: float, atr: float, score: float
     }
 
 
+# 목표가 도달 확률의 기준 거래일 수 — 예측 탭(build_prediction_outlook)의 horizon_days 와 같은 값.
+_TARGET_HORIZON_DAYS = {
+    "1d": 1, "3d": 3, "1wk": 5, "1mo": 22, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504, "5y": 1260,
+}
+
+
 def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, market: str = "KRX",
                       weekly_context: Dict | None = None) -> Dict:
     """
@@ -14500,6 +14651,23 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
     _dist_adj  = max(-20.0, -(dist_pct - 5.0) * 1.5) if dist_pct > 5.0 else 0.0
     _profile_prob_adj = float(_profile.get("prob_adj_pp") or 0.0) * 0.55
     reach_probability = round(min(92.0, max(8.0, _base_prob + _rsi_adj + _vol_adj + _dist_adj + _profile_prob_adj)), 1)
+    # 위 추세 가점식은 목표가가 멀어질수록(추세가 강할수록 min_target=+4ATR) 확률이 오르는 구조라 워크포워드
+    # 감사(52종목, 22거래일)에서 실현 터치율과 역상관(AUC 0.31)이고 Brier 가 상수 예측보다 나빴다.
+    # 같은 모듈의 무추세 변동성 터치 확률(예측 탭이 쓰는 값, AUC 0.72·보정 양호)로 대체하고,
+    # 변동성을 못 구할 때만 위 가점식을 폴백으로 남긴다.
+    reach_basis, reach_inputs = "heuristic_fallback", None
+    try:
+        _fm = _load_forecast_helpers()
+        _vol_model = _fm["blended_daily_sigma"](dd.get("Close") or [], last_price, atr, True)
+        _sigma_d = _vol_model.get("sigma")
+        _reach_days = _TARGET_HORIZON_DAYS.get(period, 22)
+        _touch = _fm["touch_probability"](last_price, min_target, _sigma_d, _reach_days) if _sigma_d else None
+        if _touch is not None:
+            reach_probability = round(min(99.0, max(1.0, _touch * 100.0)), 1)
+            reach_basis = "touch_probability"
+            reach_inputs = {"sigma_daily": float(_sigma_d), "horizon_days": int(_reach_days)}
+    except Exception as _reach_e:
+        print(f"[calc_target_price] analytic reach probability unavailable: {type(_reach_e).__name__}: {_reach_e}")
 
     # ── 예상 소요 기간 ─────────────────────────────────────────────────
     _period_days = {
@@ -14563,6 +14731,8 @@ def calc_target_price(dd: Dict, last_price: float, atr: float, period: str, mark
         "trend_strength":          trend_strength,
         "base_price":              round(last_price, rnd),
         "reach_probability":       reach_probability,
+        "reach_probability_basis": reach_basis,
+        "reach_probability_inputs": reach_inputs,
         "expected_trading_days":   expected_trading_days,
         "failure_factors":         failure_factors,
         "risk_level":              risk_level,
@@ -14612,6 +14782,11 @@ def _apply_signal_confidence_to_target(target: Dict, signal_confidence: Dict | N
         prob_adj = _clip((conf - 50.0) * 0.18 - uncertainty * 5.0, -10.0, 9.0)
         if sig == "SELL":
             prob_adj -= max(0.0, conf - 55.0) * 0.08
+        # 도달 확률이 변동성 터치 확률(검증·보정된 값)이면 신뢰도로 임의 가감하지 않는다. 신뢰도는 방향이
+        # 아닌 '중립에서 얼마나 극단인가'라 상승 목표의 도달 확률을 SELL 에서도 올리는 부호 충돌이 있었고,
+        # 범위가 바뀌면 최종 확률은 _normalize_target_output 이 새 하단 가격으로 다시 계산한다.
+        if target.get("reach_probability_basis") == "touch_probability":
+            prob_adj = 0.0
 
         target["min_price"] = round(new_lo, rnd)
         target["max_price"] = round(new_hi, rnd)
@@ -14651,6 +14826,10 @@ def _apply_learning_adjustment_to_target(target: Dict, learning: Dict | None) ->
             adj -= min(5.0, (stop - 45.0) * 0.12)
         if bounce >= 70.0:
             adj += min(4.0, (bounce - 65.0) * 0.10)
+        # 학습 지표(눌림 진입 구간의 추가하락·손절·반등률)는 상승 목표 터치와 직접 관계가 없다.
+        # 변동성 터치 확률로 계산된 도달 확률은 보정을 덧붙이지 않는다(밴드 깊이·비중 보정은 별도 경로로 유지).
+        if target.get("reach_probability_basis") == "touch_probability":
+            adj = 0.0
         target["reach_probability"] = round(_clip(prob + adj, 5.0, 94.0), 1)
         target["learning_adjustment"] = {**learning, "target_probability_adj_pp": round(adj, 2)}
     except Exception as e:
@@ -14824,6 +15003,17 @@ def _normalize_target_output(target: Dict, current_price: float, market: str = "
 
     _normalize_pair(target)
     target["base_price"] = _round_market_price(current_price, market)
+    # 신뢰도·상관 보정으로 범위가 바뀌었을 수 있으므로, 변동성 터치 확률로 계산된 도달 확률은 최종 하단
+    # 가격 기준으로 다시 계산해 가격 범위와 확률이 항상 같은 값을 가리키게 한다.
+    inputs = target.get("reach_probability_inputs")
+    if target.get("reach_probability_basis") == "touch_probability" and isinstance(inputs, dict):
+        try:
+            _touch = _load_forecast_helpers()["touch_probability"](
+                current_price, _num(target.get("min_price")), float(inputs["sigma_daily"]), int(inputs["horizon_days"]))
+            if _touch is not None:
+                target["reach_probability"] = round(min(99.0, max(1.0, _touch * 100.0)), 1)
+        except (KeyError, TypeError, ValueError):
+            pass
     for row in target.get("long_term") or []:
         if isinstance(row, dict):
             _normalize_pair(row)
@@ -17755,14 +17945,13 @@ def route(path: str, params: Dict) -> Dict:
         # 기준으로 유지하고 price_anchor가 두 기준 시점을 명시한다.
         score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
         raw_technical_score = score
+        # BEAR·부채 상한(40/45)은 수급·NCS 가산이 모두 끝난 뒤 finalize_rule_score 가 마지막에 적용한다.
         if regime == "BEAR":
             ai_strategy["result"] += " | [시장 상태] 대표지수 60·120일선 하락 구조(BEAR): 신규 매수 신중 · 현금 비중 점검"
-            score = min(score, 40)
         elif regime == "BULL":
             ai_strategy["result"] += " | [시장 상태] 대표지수 60·120일선 상승 구조(BULL): 개별 종목 신호 확인을 전제로 우호적"
         if debt_health is False:
             ai_strategy["result"] += " | ⚠️ [경고] 부채비율 150% 초과 — 재무 레버리지 위험 확인 필요"
-            score = min(score, 45)
         elif debt_health is None:
             ai_strategy["result"] += " | ℹ️ 부채비율 데이터 미확인 — 재무제표로 별도 점검 필요"
 
@@ -17784,6 +17973,7 @@ def route(path: str, params: Dict) -> Dict:
         # ── Step 3: 투자자 수급 (KRX 전용) — score 보정 포함 ────────────────
         # calc_buy_price 가 score 를 사용하므로 현재가 보정 직후, 예측 계산 전 실행
         investor_flow = {"ok": False, "reason": "KRX 종목 아님"}
+        flow_score_adjust = 0   # 점수 가산은 finalize_rule_score 에서 상한보다 먼저 반영한다.
         if market == "KRX":
             investor_flow = fetch_investor_flow(sym)
             _component_status["investor_flow"] = "ok" if investor_flow.get("ok") else "failed"
@@ -17798,7 +17988,7 @@ def route(path: str, params: Dict) -> Dict:
                 elif inst < 0: adj -= 2
                 if pension > 0: adj += 1
                 elif pension < 0: adj -= 1
-                score = max(0, min(100, score + max(-5, min(5, adj))))
+                flow_score_adjust = adj
                 flow_notes = []
                 if foreign != 0: flow_notes.append(f"외국인 {foreign:+,}주")
                 if inst    != 0: flow_notes.append(f"기관 {inst:+,}주")
@@ -17914,27 +18104,21 @@ def route(path: str, params: Dict) -> Dict:
                     volumes     = _vols   if len(_vols)  == len(_closes) else None,
                     open_prices = _opens  if len(_opens) == len(_closes) else None,
                 )
-                # NCS 기반 score 보정 (NCS가 높으면 최대 +5, 낮으면 최대 -10)
-                if hybrid_score and "ncs" in hybrid_score and "error" not in hybrid_score:
-                    ncs_v = float(hybrid_score["ncs"])
-                    fws_v = float(hybrid_score.get("fws", 50))
-                    if ncs_v >= 70 and fws_v <= 30:
-                        score = min(100, score + 5)
-                        if isinstance(ai_strategy, dict):
-                            ai_strategy["result"] += f" | [NCS {ncs_v:.0f}] 브레이크아웃 품질 우수 — 신뢰도 상향"
-                    elif ncs_v < 40 or fws_v > 65:
-                        score = max(0, score - 10)
-                        if isinstance(ai_strategy, dict):
-                            ai_strategy["result"] += f" | [NCS {ncs_v:.0f}] 기술적 취약 — 주의"
-                    # 레짐 BEARISH 시 score 추가 하향
-                    if hybrid_score.get("regime") == "BEARISH" and score > 40:
-                        score = min(score, 40)
-                        if isinstance(ai_strategy, dict):
-                            ai_strategy["result"] += " | [레짐 BEARISH] 약세장 국면"
         except Exception as _e:
             # hybrid 실패 시 기존 점수 유지
             _log_route_issue(sym, "hybrid_score", _e)
             _component_status["hybrid_score"] = "failed"
+
+        # 가산 보정(KRX 수급·NCS)을 모두 반영한 뒤 BEAR·부채·하이브리드 BEARISH 상한을 마지막에 적용한다.
+        # (NCS 가산은 최대 +5, 취약 -10 / 상한은 40·45 — 상한을 먼저 적용하면 가산이 상한을 뚫는다.)
+        _final_score = finalize_rule_score(
+            score, regime=regime, debt_healthy=debt_health,
+            flow_adjust=flow_score_adjust, hybrid=hybrid_score,
+        )
+        score = _final_score["score"]
+        if isinstance(ai_strategy, dict):
+            for _score_note in _final_score["notes"]:
+                ai_strategy["result"] += f" | {_score_note}"
 
         # AI 종합 진단의 BUY/HOLD/SELL 요약은 보정 전 기술 점수로 만들어졌다. 최종 점수(수급·NCS·
         # 레짐·재무 보정 반영)와 실시간 현재가 기준으로 다시 써서 탭 간 판단이 어긋나지 않게 한다.
@@ -19053,18 +19237,20 @@ def route(path: str, params: Dict) -> Dict:
             # 벤치마크 데이터 (레짐 감지용) — Ticker.history() 사용
             # 수집 전체에 시간 예산을 공유한다 (Vercel 60s 대응)
             _collect_start = time.time()
-            bench_sym = "^KS200" if market_p == "KRX" else "SPY"
+            # KRX 의 ^KS200 은 Yahoo 가 history() 에 1행만 돌려줘 레짐·RS 가 조용히 상수가 됐다.
+            # _benchmark_history 가 일봉이 충분한 지수/ETF 를 순서대로 고른다.
             bench_closes = []
             bench_highs  = []
             bench_lows   = []
-            try:
-                _bh = yf.Ticker(bench_sym).history(period="1y")
-                if not _bh.empty:
-                    bench_closes = _bh["Close"].dropna().tolist()
-                    bench_highs  = _bh["High"].dropna().tolist()
-                    bench_lows   = _bh["Low"].dropna().tolist()
-            except Exception:
-                pass
+            _bh, bench_sym, _bench_label = _benchmark_history(market_p)
+            if not _bh.empty:
+                # 열별 dropna 는 서로 다른 날짜를 이어 붙일 수 있어 한 번에 정렬해 제거한다.
+                _bh = _bh.dropna(subset=["Close", "High", "Low"])
+                bench_closes = _bh["Close"].tolist()
+                bench_highs  = _bh["High"].tolist()
+                bench_lows   = _bh["Low"].tolist()
+            else:
+                print(f"[scan] benchmark unavailable for {market_p} — regime/RS fall back to neutral")
 
             # 레짐 감지
             regime     = REGIME_SIDEWAYS
@@ -19081,10 +19267,11 @@ def route(path: str, params: Dict) -> Dict:
                 try:
                     _vh = yf.Ticker("^VIX").history(period="5d")
                     if not _vh.empty:
-                        vix_v = float(_vh["Close"].iloc[-1])
+                        vix_v = float(_vh["Close"].dropna().iloc[-1])
                 except Exception:
                     pass
-                rd = compute_regime(bench_closes[-1], ma200 or bench_closes[-1], adx_d, vix_v)
+                # ma200 이 없을 때 지수 자신의 가격을 넣으면 price==ma200 → 약세 3점+CHOP 으로 고정된다.
+                rd = compute_regime(bench_closes[-1], ma200, adx_d, vix_v)
                 regime = rd["regime"]
                 atr_v  = _calc_atr(bench_highs[-20:], bench_lows[-20:], bench_closes[-20:]) if _bn >= 20 else None
                 if atr_v and bench_closes[-1] > 0:
@@ -19548,22 +19735,28 @@ def route(path: str, params: Dict) -> Dict:
             # 지수 데이터 자동 수집 — Ticker.history() 사용
             idx_sym = params.get("index", "SPY")
             try:
-                _ih   = yf.Ticker(idx_sym).history(period="1y")
+                if str(idx_sym).upper() == "^KS200":
+                    # 화면의 'KOSPI 200' 옵션: Yahoo ^KS200 은 1행만 주므로 동작하는 벤치마크로 대체한다.
+                    _ih, _resolved_sym, _ = _benchmark_history("KRX")
+                else:
+                    _ih = yf.Ticker(idx_sym).history(period="1y")
                 vix_v = None
                 try:
                     _vh = yf.Ticker("^VIX").history(period="5d")
                     if not _vh.empty:
-                        vix_v = float(_vh["Close"].iloc[-1])
+                        vix_v = float(_vh["Close"].dropna().iloc[-1])
                 except Exception:
                     pass
 
                 if _ih.empty:
                     return {"error": f"지수({idx_sym}) 데이터 없음"}
 
+                # 열별 dropna 는 날짜가 어긋날 수 있어 종가·고가·저가가 모두 있는 행만 쓴다.
+                _ih = _ih.dropna(subset=["Close", "High", "Low"])
                 ir = mi.assess(
-                    index_closes = _ih["Close"].dropna().tolist(),
-                    index_highs  = _ih["High"].dropna().tolist(),
-                    index_lows   = _ih["Low"].dropna().tolist(),
+                    index_closes = _ih["Close"].tolist(),
+                    index_highs  = _ih["High"].tolist(),
+                    index_lows   = _ih["Low"].tolist(),
                     vix          = vix_v,
                 )
                 return ir.to_dict()
