@@ -1,0 +1,149 @@
+{
+  "samples": 12657,
+  "tickers": 52,
+  "period": [
+    "2021-11-08",
+    "2026-10-05"
+  ],
+  "horizon_sessions": 30,
+  "invariants": {
+    "samples_with_agg_problem": 0,
+    "samples_with_rec_problem": 3,
+    "samples_not_separated": 0,
+    "samples_order_relaxed": 3,
+    "problem_counts": {
+      "band_order": 3,
+      "cross_band_step_order": 3
+    }
+  },
+  "steps_per_sample": {
+    "30": 12657
+  },
+  "evidence_mix": {
+    "structure": 0.8557,
+    "volatility": 0.1089,
+    "indicator": 0.0354
+  },
+  "reach_probability": {
+    "n": 370350,
+    "realized_touch_rate": 0.4717,
+    "mean_predicted": 0.4901,
+    "brier": 0.1881,
+    "brier_constant": 0.2492,
+    "auc": 0.7866,
+    "reliability": [
+      {
+        "bin": "(-0.1, 5.0]",
+        "n": 14923,
+        "predicted_pct": 2.2,
+        "realized_pct": 2.4
+      },
+      {
+        "bin": "(5.0, 15.0]",
+        "n": 26288,
+        "predicted_pct": 10.2,
+        "realized_pct": 10.8
+      },
+      {
+        "bin": "(15.0, 25.0]",
+        "n": 37294,
+        "predicted_pct": 20.3,
+        "realized_pct": 21.6
+      },
+      {
+        "bin": "(25.0, 35.0]",
+        "n": 46860,
+        "predicted_pct": 30.2,
+        "realized_pct": 30.0
+      },
+      {
+        "bin": "(35.0, 45.0]",
+        "n": 48934,
+        "predicted_pct": 40.0,
+        "realized_pct": 37.6
+      },
+      {
+        "bin": "(45.0, 55.0]",
+        "n": 42650,
+        "predicted_pct": 49.9,
+        "realized_pct": 46.9
+      },
+      {
+        "bin": "(55.0, 65.0]",
+        "n": 36739,
+        "predicted_pct": 60.1,
+        "realized_pct": 56.8
+      },
+      {
+        "bin": "(65.0, 75.0]",
+        "n": 39079,
+        "predicted_pct": 70.1,
+        "realized_pct": 66.6
+      },
+      {
+        "bin": "(75.0, 85.0]",
+        "n": 39214,
+        "predicted_pct": 80.1,
+        "realized_pct": 77.0
+      },
+      {
+        "bin": "(85.0, 95.0]",
+        "n": 29699,
+        "predicted_pct": 89.6,
+        "realized_pct": 86.7
+      },
+      {
+        "bin": "(95.0, 100.1]",
+        "n": 8670,
+        "predicted_pct": 97.6,
+        "realized_pct": 94.2
+      }
+    ],
+    "reference_zero_drift_model": {
+      "brier": 0.1881,
+      "auc": 0.7866
+    }
+  },
+  "by_band": {
+    "aggA": {
+      "n": 61725,
+      "predicted_pct": 82.7,
+      "realized_pct": 79.6
+    },
+    "aggB": {
+      "n": 61725,
+      "predicted_pct": 69.6,
+      "realized_pct": 66.6
+    },
+    "aggC": {
+      "n": 61725,
+      "predicted_pct": 56.5,
+      "realized_pct": 54.0
+    },
+    "recA": {
+      "n": 61725,
+      "predicted_pct": 35.5,
+      "realized_pct": 34.2
+    },
+    "recB": {
+      "n": 61725,
+      "predicted_pct": 28.7,
+      "realized_pct": 27.9
+    },
+    "recC": {
+      "n": 61725,
+      "predicted_pct": 21.0,
+      "realized_pct": 20.8
+    }
+  },
+  "expected_period": {
+    "n_touched": 174708,
+    "inside_window": 0.6524,
+    "before_window": 0.1015,
+    "after_window": 0.2462,
+    "mean_window_width_days": 8.79,
+    "median_first_day": 7.0
+  },
+  "generated_at": "2026-10-09T02:00:27",
+  "merged_files": 8
+}

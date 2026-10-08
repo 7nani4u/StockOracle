@@ -1,5 +1,5 @@
 {
-  "contract_version": "2026-10-08",
+  "contract_version": "2026-10-09",
   "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
   "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
   "nullable_fields": [
@@ -8,7 +8,7 @@
     "prediction_outlook.forecast.base_price",
     "risk_scenarios.*.tp_levels[].prob_pct",
     "risk_scenarios.*.tp_levels[].avg_days",
-    "buy_price.*_bands[].steps[].reach_probability_pct"
+    "buy_price.*_bands[].steps[].reach_probability_pct (null only if the volatility model itself is unavailable)"
   ],
   "data_quality": {
     "status": "정상 | 데이터 부족 | 오래된 데이터 | 일부 데이터 수집 실패",
@@ -42,6 +42,19 @@
     "mismatches": ["response field path corrected to the canonical current price"],
     "mixed_time_basis": "boolean"
   },
+  "direction_probability": {
+    "prob_up": "number; displayed 22-session rise probability, calibrated to realised frequency (market base rate +/- a near-zero tilt) when probability_calibration.applied",
+    "prob_down": "number; 100 - prob_up",
+    "prob_up_raw": "number; rule-score based probability before calibration (signal score, not a verified probability)",
+    "prob_down_raw": "number",
+    "probability_calibration": "{applied, method, slope, base_rate_pct, horizon_sessions, fitted_period, fitted_rows, note}; applied=false (identity) when models/probability_calibration.json is missing or broken"
+  },
+  "regime_layers": {
+    "index_structure": "{key BULL|BEAR|NEUTRAL, label, value, basis, tone, used_for}; index close vs 60/120-day averages (also exposed as market_regime)",
+    "long_regime": "{key BULLISH|BEARISH|SIDEWAYS, label, value, basis, tone, used_for} | null; benchmark 200-day average + ADX + VIX, only when a benchmark is supplied",
+    "stock_trend": "{key, label, value, basis, tone, used_for} | null; the stock's own ADX/DI when no benchmark is supplied (not a market regime)",
+    "note": "string | null; explains that the layers can disagree on the same day"
+  },
   "buy_price": {
     "current": "number; equals price_anchor.current_price",
     "price_anchor": "same snapshot as top-level price_anchor",
@@ -54,15 +67,28 @@
       {
         "band": "A | B | C",
         "range": ["number_low", "number_high"],
+        "is_available": "always true: the 1st (aggressive_bands) and 2nd (recommended_bands) entry families are always returned with 3 bands x 5 steps",
+        "evidence_level": "structure (2+ independent price sources overlap the range) | indicator (one source) | volatility (no chart source; range sized by ATR and touch probability)",
+        "evidence_label": "string",
+        "evidence_sources": ["Korean source names inside the band"],
+        "evidence_note": "string",
+        "nearest_reference": "{label, price, gap_pct} | null; closest chart level to the band centre",
+        "reach_probability_range_pct": "[min of probability_low_pct, max of probability_high_pct] | null",
+        "reach_probability_mid_pct": "number | null",
         "steps": [{
           "price_range": ["number_low", "number_high"],
-          "reach_probability_pct": "number | null",
-          "days_min": "number | null",
-          "days_max": "number | null"
+          "reach_probability_pct": "number; chance the low touches the step price within 30 sessions, zero-drift volatility model",
+          "probability_low_pct": "number; same model with sigma x0.836 (25th percentile of forward/predicted volatility)",
+          "probability_high_pct": "number; same model with sigma x1.268 (75th percentile)",
+          "probability_source": "touch_model",
+          "probability_note": "string",
+          "days_min": "number; 25th percentile of the first-touch day given a touch within 30 sessions (1..30)",
+          "days_max": "number; 75th percentile (1..30)",
+          "period_source": "touch_model"
         }]
       }
     ],
-    "recommended_bands": "same band structure",
+    "recommended_bands": "same band structure, always strictly below every aggressive band",
     "price_structure": {
       "method": "OHLCV, moving-average, Bollinger, swing-low and volume-price candidate clustering",
       "candidate_count": "integer",
@@ -74,7 +100,11 @@
       "recent_intraday_range_pct": "number",
       "market_regime": "BULL | NEUTRAL | BEAR",
       "market_weighting": "string",
-      "ready": "boolean",
+      "ready": "boolean; chart-structure completeness only, it no longer hides prices",
+      "deep_structure_ready": "boolean; a separate support cluster exists below the 1st-entry family",
+      "display_policy": "always_display_with_evidence_level",
+      "evidence_summary": "{aggressive|recommended: {structure, indicator, volatility}} band counts per evidence level",
+      "ordering_relaxed": "{aggressive, recommended}: true only when the A>B>C step ordering could not be restored above the 10% price floor",
       "first_second_separated": "boolean",
       "first_entry_floor": "number",
       "second_entry_ceiling": "number",

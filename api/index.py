@@ -350,6 +350,8 @@ def _load_forecast_helpers() -> Dict[str, Any]:
             build_forecast_summary as _summary,
             touch_day_window as _window,
             touch_probability as _touch,
+            touch_probability_range as _touch_range,
+            touch_time_window as _time_window,
         )
         _FORECAST_HELPERS.update({
             "Z_P90": _Z90, "Z_P95": _Z95,
@@ -357,6 +359,8 @@ def _load_forecast_helpers() -> Dict[str, Any]:
             "build_forecast_summary": _summary,
             "touch_day_window": _window,
             "touch_probability": _touch,
+            "touch_probability_range": _touch_range,
+            "touch_time_window": _time_window,
             "basis": "market_briefing.forecast_model",
         })
         return _FORECAST_HELPERS
@@ -377,6 +381,8 @@ def _load_forecast_helpers() -> Dict[str, Any]:
             "build_forecast_summary": _fm.build_forecast_summary,
             "touch_day_window": _fm.touch_day_window,
             "touch_probability": _fm.touch_probability,
+            "touch_probability_range": _fm.touch_probability_range,
+            "touch_time_window": _fm.touch_time_window,
             "basis": "file-direct forecast_model.py",
         })
         return _FORECAST_HELPERS
@@ -447,6 +453,39 @@ def _load_forecast_helpers() -> Dict[str, Any]:
         except (TypeError, ValueError):
             return {"days": [1, max(1, horizon_days)], "within_horizon": False, "basis": "변동성 미확보"}
 
+    def _f_touch_range(price, level, sigma_d, days):
+        mid = _f_touch(price, level, sigma_d, days)
+        if mid is None:
+            return None
+        low = _f_touch(price, level, sigma_d * 0.836, days)
+        high = _f_touch(price, level, sigma_d * 1.268, days)
+        return {"low": min(mid, low if low is not None else mid), "mid": mid,
+                "high": max(mid, high if high is not None else mid)}
+
+    def _f_time_window(price, level, sigma_d, horizon_days, lower_q=0.25, upper_q=0.75):
+        h = max(1, int(horizon_days))
+        try:
+            if not price or not level or price <= 0 or level <= 0 or not sigma_d or sigma_d <= 0:
+                return {"days": [1, h], "within_horizon": False, "probability": None, "basis": "변동성 미확보"}
+            gap = abs(math.log(level / price))
+            if gap == 0:
+                return {"days": [1, 1], "within_horizon": True, "probability": 1.0, "basis": "현재가와 같은 가격"}
+            z = gap / (sigma_d * math.sqrt(h))
+            prob = 2.0 * (1.0 - _f_cdf(z))
+            if prob <= 1e-9:
+                return {"days": [h, h], "within_horizon": False, "probability": prob, "basis": "도달 거의 불가(폴백)"}
+            from statistics import NormalDist as _ND
+
+            def _qday(q):
+                tail = min(max(1.0 - q * prob / 2.0, 0.5 + 1e-12), 1.0 - 1e-12)
+                return h * z * z / max(_ND().inv_cdf(tail) ** 2, 1e-12)
+
+            lo = min(h, max(1, math.floor(_qday(lower_q))))
+            hi = min(h, max(lo, math.ceil(_qday(upper_q))))
+            return {"days": [lo, hi], "within_horizon": True, "probability": prob, "basis": "무추세 첫 도달일 분위수(폴백)"}
+        except (TypeError, ValueError):
+            return {"days": [1, h], "within_horizon": False, "probability": None, "basis": "변동성 미확보"}
+
     def _f_summary(*, last_price, sigma_daily, horizon_days, up_prob, down_prob, tilt=0.35):
         try:
             if not sigma_daily or sigma_daily <= 0 or not last_price or last_price <= 0 or horizon_days <= 0:
@@ -480,6 +519,8 @@ def _load_forecast_helpers() -> Dict[str, Any]:
         "build_forecast_summary": _f_summary,
         "touch_day_window": _f_window,
         "touch_probability": _f_touch,
+        "touch_probability_range": _f_touch_range,
+        "touch_time_window": _f_time_window,
         "basis": "stdlib fallback",
     })
     return _FORECAST_HELPERS
@@ -6518,11 +6559,21 @@ def _krx_tick_size(price: float, market: str = "KOSPI") -> int:
     return 1_000
 
 
+def _snap_tick_units(units: float) -> float:
+    """호가 단위로 나눈 값이 정수와 부동소수점 오차만큼만 다르면 그 정수로 맞춘다.
+
+    4.26 / 0.01 = 425.99999999999994 처럼 이미 호가에 맞는 가격이 floor 에서 한 호가 내려가거나
+    ceil 에서 한 호가 올라가면, 같은 가격을 두 번 맞췄을 때 값이 달라지고 단계 가격이 밴드 경계를 벗어난다.
+    """
+    nearest = round(units)
+    return float(nearest) if abs(units - nearest) <= 1e-9 * max(1.0, abs(units)) else units
+
+
 def _round_krx_price(price: float, market: str = "KOSPI", mode: str = "nearest") -> int:
     """목표가·손절가를 해당 시장의 유효 호가로 맞춘다."""
     value = max(0.0, _kr_surge_float(price))
     tick = _krx_tick_size(value, market)
-    units = value / tick
+    units = _snap_tick_units(value / tick)
     if mode == "floor":
         rounded = math.floor(units) * tick
     elif mode == "ceil":
@@ -6544,7 +6595,7 @@ def _round_market_price(price: float, market: str = "KRX", mode: str = "nearest"
     if str(market).upper() != "US":
         return _round_krx_price(value, market, mode)
     tick = _market_tick_size(value, market)
-    units = value / tick
+    units = _snap_tick_units(value / tick)
     if mode == "floor":
         rounded = math.floor(units) * tick
     elif mode == "ceil":
@@ -8455,6 +8506,71 @@ def check_market_regime(market: str, symbol: str = "") -> str:
     else:
         index_ticker = "^GSPC"
     return _index_regime(index_ticker)
+
+
+def _regime_index_name(market: str, symbol: str = "") -> str:
+    if str(market).upper() == "KRX":
+        return "KOSDAQ" if str(symbol).upper().endswith(".KQ") else "KOSPI"
+    return "S&P 500"
+
+
+def index_structure_fact(market: str, symbol: str, regime: str) -> Dict[str, Any]:
+    """대표지수 60·120일선 구조(BULL/BEAR/NEUTRAL)를 사용자에게 보이는 사실 카드 한 장으로 만든다.
+
+    이 값은 종목이 아니라 지수의 구조다. 예전에는 '종목 중기 구조 · 해당 종목의 60일·120일 가격 구조'라고 표시해
+    지수가 하락 구조인 날 상승 중인 종목도 약세로 읽혔다.
+    """
+    name = _regime_index_name(market, symbol)
+    value = {"BULL": "상승 구조", "BEAR": "하락 구조"}.get(regime, "혼조")
+    return {
+        "label": f"{name} 중기 구조",
+        "value": value,
+        "detail": (f"{name} 종가와 60일·120일선 배열 기준(종목 자체의 추세가 아님) · "
+                   "하락 구조=종가<120일선이고 60일선<120일선, 상승 구조=종가>60일선>120일선"),
+        "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral",
+    }
+
+
+def build_regime_layers(market: str, symbol: str, regime: str, hybrid: Dict | None) -> Dict[str, Any]:
+    """서로 다른 기준으로 계산되는 '레짐' 세 가지를 이름을 분리해 한 곳에서 설명한다.
+
+    · index_structure — 대표지수의 60·120일선 구조(BULL/BEAR/NEUTRAL). 점수 상한·매수 밴드 깊이·신뢰도에 쓰인다.
+    · long_regime — 지수 200일선·ADX·VIX 로 판정한 시장 장기 국면(BULLISH/BEARISH/SIDEWAYS). 벤치마크가 주어질 때만 존재한다.
+    · stock_trend — 벤치마크 없이 종목 자신의 ADX·DI 로만 판정한 추세 국면. 시장 국면이 아니며 5점 기준에 닿지 못해 대부분 '방향 불명'이다.
+    같은 날 KOSPI 가 '하락 구조(BEAR)'이면서 장기 국면 '강세(BULLISH)'로 나올 수 있는데, 서로 다른 기준이라는 점을 note 로 알린다.
+    """
+    fact = index_structure_fact(market, symbol, regime)
+    layers: Dict[str, Any] = {
+        "index_structure": {
+            "key": regime if regime in ("BULL", "BEAR") else "NEUTRAL", "label": fact["label"] + " (60·120일선)",
+            "value": fact["value"], "basis": fact["detail"], "tone": fact["tone"],
+            "used_for": "BEAR 이면 규칙 점수 40 상한 · 매수 밴드 깊이 가중 · 신호 신뢰도의 시장 점수",
+        },
+        "long_regime": None, "stock_trend": None, "note": None,
+    }
+    if isinstance(hybrid, dict) and not hybrid.get("error"):
+        key = str(hybrid.get("regime") or "SIDEWAYS")
+        detail = hybrid.get("regime_detail") or {}
+        tone = "positive" if key == "BULLISH" else "negative" if key == "BEARISH" else "neutral"
+        if detail.get("ma200_available"):
+            layers["long_regime"] = {
+                "key": key, "label": "시장 장기 국면 (200일선·ADX·VIX)",
+                "value": {"BULLISH": "강세장", "BEARISH": "약세장"}.get(key, "횡보장"), "tone": tone,
+                "basis": "벤치마크 지수의 200일선 위치(±2% 구간은 횡보)와 ADX·DI 방향, VIX 를 5점 기준으로 합산",
+                "used_for": "하이브리드 BEARISH 이면 규칙 점수 40 상한 · 하락 위험 점수(FWS)의 국면 안정성",
+            }
+        else:
+            layers["stock_trend"] = {
+                "key": key, "label": "종목 추세 국면 (ADX·DI, 시장 기준 미적용)",
+                "value": {"BULLISH": "상승 추세", "BEARISH": "하락 추세"}.get(key, "방향 불명"), "tone": tone,
+                "basis": "벤치마크 200일선 없이 종목 자신의 ADX·DI 만으로 판정 — 시장 국면이 아니며 5점 기준에 닿기 어려워 대개 '방향 불명'",
+                "used_for": "복합 기술 신호 점수(NCS)의 국면 항목",
+            }
+    long_regime = layers["long_regime"]
+    if long_regime and ((regime == "BEAR" and long_regime["key"] == "BULLISH") or (regime == "BULL" and long_regime["key"] == "BEARISH")):
+        layers["note"] = (f"{fact['label']}({fact['value']})와 시장 장기 국면({long_regime['value']})은 서로 다른 기준이라 "
+                          "같은 날 엇갈릴 수 있습니다. 단기 구조와 장기 국면의 차이로 읽으세요.")
+    return layers
 
 
 def classify_index_regime(current_close: float, ma60: float, ma120: float) -> str:
@@ -12858,66 +12974,26 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     # 가격은 기존 밴드의 상·하단을 절대 벗어나지 않는다. 내부 3개 가격은
     # ATR/추세/위험으로 기울인 가격 밀도와 기술적 앵커의 커널 밀도를 결합한
     # 가중 분위수로 산출하므로 단순 고정 간격이 아니다.
-    _raw_closes = list(dd.get("Close") or [])
-    _raw_lows = list(dd.get("Low") or [])
-    _raw_highs = list(dd.get("High") or [])
-    _raw_atrs = list(dd.get("ATR") or [])
-    _hist_n = min(len(_raw_closes), len(_raw_lows), len(_raw_highs))
-    _true_ranges: list[float | None] = [None] * _hist_n
-    for _i in range(_hist_n):
-        try:
-            _hc = float(_raw_highs[_i])
-            _lc = float(_raw_lows[_i])
-            _pc = float(_raw_closes[_i - 1]) if _i > 0 else float(_raw_closes[_i])
-            if all(np.isfinite(v) for v in (_hc, _lc, _pc)):
-                _true_ranges[_i] = max(_hc - _lc, abs(_hc - _pc), abs(_lc - _pc))
-        except (TypeError, ValueError, IndexError):
-            pass
-
-    def _historical_atr_at(index: int) -> float | None:
-        if index < len(_raw_atrs):
-            try:
-                value = float(_raw_atrs[index])
-                if np.isfinite(value) and value > 0:
-                    return value
-            except (TypeError, ValueError):
-                pass
-        window = [v for v in _true_ranges[max(0, index - 13):index + 1] if v is not None]
-        return float(np.mean(window)) if len(window) >= 10 else None
-
-    # 최근 최대 180개 기준일에서 이후 30거래일의 ATR 정규화 최대 하락폭을
-    # 관찰한다. 현재 종목의 실제 경로가 부족하면 확률/기간을 만들지 않는다.
-    _reach_paths: list[list[float]] = []
-    for _i in range(max(0, _hist_n - 181), max(0, _hist_n - 1)):
-        try:
-            _start_close = float(_raw_closes[_i])
-        except (TypeError, ValueError, IndexError):
-            continue
-        _hist_atr = _historical_atr_at(_i)
-        if not np.isfinite(_start_close) or _start_close <= 0 or not _hist_atr:
-            continue
-        _running_drop = 0.0
-        _path: list[float] = []
-        for _j in range(_i + 1, min(_hist_n, _i + 31)):
-            try:
-                _future_low = float(_raw_lows[_j])
-                if np.isfinite(_future_low) and _future_low > 0:
-                    _running_drop = max(_running_drop, (_start_close - _future_low) / _hist_atr)
-            except (TypeError, ValueError, IndexError):
-                pass
-            _path.append(max(0.0, _running_drop))
-        if len(_path) >= 5:
-            _reach_paths.append(_path)
-
-    _technical_data_ready = bool(
-        ma20_raw or ma60_raw or bb_l_raw or bb_m_raw or vwap_approx or len(recent_lows) >= 5
-    )
-    _step_stats_ready = bool(
-        _atr_observed
-        and len(_reach_paths) >= 40
-        and len(volumes) >= 20
-        and _technical_data_ready
-    )
+    # 도달 확률·예상 기간은 예측 탭의 무추세 변동성 터치 모델로 계산한다. 이전에는 최근 180개 시작일의
+    # ATR 정규화 낙폭 경로에 임의 가산(model_adjustment)을 더했는데, 52종목·2022-10~2026-09(192,570 단계)
+    # 워크포워드 검증에서 표시 확률 1.6%가 실제 19.5%, 98.6%가 83.1%로 어긋났고(Brier 0.2139, AUC 0.730)
+    # 같은 단계에 터치 모델을 쓰면 Brier 0.1913, AUC 0.781 이었다. 두 값을 섞어도 정보가 늘지 않아
+    # (로지스틱 결합 가중치: 모델 1.05 / 기존 -0.08) 모델 하나로 통일한다.
+    _model_sigma_daily = None
+    _model_sigma_basis = None
+    _model_touch_range = None
+    _model_time_window = None
+    try:
+        _forecast_helpers = _load_forecast_helpers()
+        _model_vol = _forecast_helpers["blended_daily_sigma"](
+            list(dd.get("Close") or []), last_price, atr, _atr_observed)
+        _model_sigma_daily = _model_vol.get("sigma")
+        _model_sigma_basis = _model_vol.get("basis")
+        _model_touch_range = _forecast_helpers["touch_probability_range"]
+        _model_time_window = _forecast_helpers["touch_time_window"]
+    except Exception as _model_exc:
+        print(f"[calc_buy_price] volatility model unavailable: {type(_model_exc).__name__}: {_model_exc}")
+    _model_probability_ready = bool(_model_sigma_daily and _model_touch_range and _model_time_window)
 
     def _clip(value: float, lower: float, upper: float) -> float:
         return min(upper, max(lower, value))
@@ -12953,6 +13029,8 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 pass
         return result
 
+    _STEP_HORIZON_DAYS = 30  # 도달 확률·예상 기간의 기준 기간(거래일)
+
     def _build_buy_steps(lo: float, hi: float, is_recommended: bool,
                          band_allocation_pct: float) -> list[Dict]:
         lo, hi = float(min(lo, hi)), float(max(lo, hi))
@@ -12987,6 +13065,17 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         for _idx in range(1, len(rounded_prices)):
             rounded_prices[_idx] = min(rounded_prices[_idx], _round_market_price(rounded_prices[_idx - 1] - price_epsilon, market, "floor"))
         rounded_prices[-1] = _round_market_price(lo, market, "floor")
+        # 위에서 아래로 한 호가씩 밀다 보면 마지막 단계가 밴드 하단으로 고정되어 4·5단계가 같은 호가가 될 수 있다
+        # (밴드 폭이 4~5호가인 저가주). 밴드 폭이 4호가 이상이면 5단계가 모두 다른 호가를 가질 수 있으므로,
+        # 아래에서 위로 한 번 더 밀어 서로 다른 가격을 보장한다. 이전에는 이 충돌이 검증 실패로 이어져
+        # 1차·2차 구간이 통째로 '표시 보류'가 되었다.
+        _bottom_up_prices = list(rounded_prices)
+        for _idx in range(len(_bottom_up_prices) - 2, -1, -1):
+            _minimum_price = _round_market_price(_bottom_up_prices[_idx + 1] + price_epsilon, market, "ceil")
+            if _bottom_up_prices[_idx] < _minimum_price:
+                _bottom_up_prices[_idx] = _minimum_price
+        if _bottom_up_prices[0] <= rounded_prices[0]:  # 밴드 상단을 넘지 않는 경우에만 채택
+            rounded_prices = _bottom_up_prices
 
         # 단계별 범위는 중심가 간 가변 가중 중간값으로 분할해 동일 폭 문제를 해소한다.
         # 얕은 단계는 좁게, 깊은 단계는 넓게 — 변동성 확대 시 전체가 더 넓어진다.
@@ -13075,56 +13164,6 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             band_allocation_pct - sum(allocations[:-1]),
         ), 1)
 
-        model_adjustment = (
-            (2.0 - _trend) * 1.8
-            + downside_score * 0.065
-            + (vol_ratio - 1.0) * (4.0 if heavy_sell_volume else 1.8)
-            + (2.5 if vol_trend == "expanding" else -1.0 if vol_trend == "contracting" else 0.0)
-            + (4.0 if market_regime == "BEAR" else -2.5 if market_regime == "BULL" else 0.0)
-            + event_points * 0.035
-            + (2.0 if vwap_approx and last_price < vwap_approx else -1.0 if vwap_approx else 0.0)
-        )
-        recent_moves = [
-            abs(closes[_idx] - closes[_idx - 1]) / atr_d
-            for _idx in range(max(1, len(closes) - 10), len(closes))
-            if atr_d > 0
-        ]
-        recent_speed = float(np.mean(recent_moves)) if recent_moves else 1.0
-        speed_factor = _clip(
-            (1.0 / max(0.35, recent_speed)) ** 0.35
-            * (0.90 if vol_ratio >= 1.25 else 1.10 if vol_ratio < 0.70 else 1.0)
-            * (0.90 if _trend <= 1 else 1.08 if _trend >= 3 else 1.0),
-            0.65, 1.55,
-        )
-        # 도달 확률은 충분한 과거 경로 표본이 필요하지만, 예상 기간은 현재 ATR과
-        # 최근 실제 이동속도만으로도 조건부 추정이 가능하다. 두 준비 조건을 분리해
-        # 확률 표본이 희소한 종목에서 기간만 불필요하게 비는 현상을 방지한다.
-        _period_model_ready = bool(
-            _atr_observed
-            and np.isfinite(atr_d) and atr_d > 0
-            and len(closes) >= 40
-            and len(_raw_lows) >= 40
-            and len(_raw_highs) >= 40
-            and np.isfinite(recent_speed) and recent_speed > 0
-        )
-
-        def _model_period(distance_atr: float, probability: float | None,
-                          prev_min: int, prev_max: int) -> tuple[int, int]:
-            """ATR 거리·최근 속도·거래량·추세로 30거래일 이내 조건부 기간을 계산한다."""
-            effective_speed = _clip(recent_speed, 0.12, 1.80)
-            base_days = max(1.0, distance_atr / effective_speed) * speed_factor
-            # 확률이 있으면 희소 도달일수록 기간을 늘리고, 없으면 중립 보정만 적용한다.
-            rarity_factor = 1.0 + _clip(
-                (50.0 - float(probability)) / 100.0 if probability is not None else 0.18,
-                0.0, 0.50,
-            )
-            raw_min = max(1, math.floor(base_days * 0.70 * rarity_factor))
-            raw_max = max(raw_min, math.ceil(base_days * 1.80 * rarity_factor))
-            return (
-                min(30, max(prev_min, raw_min)),
-                min(30, max(prev_max, raw_max, raw_min)),
-            )
-
         result = []
         previous_prob_mid = previous_prob_low = previous_prob_high = 100.0
         previous_days_min = previous_days_max = 0
@@ -13133,83 +13172,30 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             distance_atr = max(0.0, (last_price - price) / max(atr_d, 1e-9))
             probability_mid = probability_low = probability_high = None
             days_min = days_max = None
+            probability_source = None
             period_source = None
             period_note = None
-            if _step_stats_ready:
-                hit_days = []
-                for path in _reach_paths:
-                    first_hit = next(
-                        (day for day, adverse in enumerate(path, start=1) if adverse >= distance_atr),
-                        None,
-                    )
-                    if first_hit is not None:
-                        hit_days.append(first_hit)
-                empirical_probability = len(hit_days) / len(_reach_paths) * 100.0
-                probability_mid = _clip(empirical_probability + model_adjustment, 0.0, 100.0)
-                probability_mid = min(previous_prob_mid, probability_mid)
-                p_ratio = probability_mid / 100.0
-                sample_margin = 1.96 * math.sqrt(
-                    max(0.0001, p_ratio * (1.0 - p_ratio)) / len(_reach_paths)
-                ) * 100.0
-                model_margin = (
-                    2.0
-                    + (2.0 if vol_trend == "expanding" else 0.0)
-                    + min(3.0, event_points * 0.05)
-                    + min(2.5, downside_score * 0.02)
-                )
-                total_margin = min(18.0, sample_margin + model_margin)
-                probability_low = min(
-                    previous_prob_low,
-                    _clip(probability_mid - total_margin, 0.0, 100.0),
-                )
-                probability_high = min(
-                    previous_prob_high,
-                    _clip(probability_mid + total_margin, 0.0, 100.0),
-                )
-                probability_mid = _clip(probability_mid, probability_low, probability_high)
-                previous_prob_mid = probability_mid
-                previous_prob_low = probability_low
-                previous_prob_high = probability_high
-
-                min_hits = max(5, math.ceil(len(_reach_paths) * 0.05))
-                if len(hit_days) >= min_hits:
-                    raw_days_min = max(1, math.floor(float(np.percentile(hit_days, 25)) * speed_factor))
-                    raw_days_max = max(raw_days_min, math.ceil(float(np.percentile(hit_days, 75)) * speed_factor))
-                    days_min = max(previous_days_min, raw_days_min)
-                    days_max = max(previous_days_max, raw_days_max, days_min)
-                    period_source = "empirical"
-                    period_note = f"과거 도달 사례 {len(hit_days)}건의 25~75백분위"
-                else:
-                    # 가격·ATR·거래량 데이터는 충분하지만 해당 깊이의 과거 도달 사례가
-                    # 희소한 경우, 기간만 비워 두면 확률과 기간의 데이터 상태가 서로
-                    # 모순된다. ATR 거리÷최근 변동 속도를 중심값으로 삼고 거래량·추세
-                    # 보정(speed_factor)과 도달 희소도를 반영해 조건부 기간을 추정한다.
-                    days_min, days_max = _model_period(
-                        distance_atr, probability_mid,
-                        previous_days_min, previous_days_max,
-                    )
-                    period_source = "model"
+            if _model_probability_ready:
+                _touch = _model_touch_range(last_price, price, _model_sigma_daily, _STEP_HORIZON_DAYS)
+                if _touch is not None:
+                    # 깊을수록 확률이 단조롭게 낮아지도록(호가 반올림으로 같은 가격이 되는 경우 포함) 직전 단계로 상한을 둔다.
+                    probability_mid = min(previous_prob_mid, _clip(_touch["mid"] * 100.0, 0.0, 100.0))
+                    probability_low = min(previous_prob_low, _clip(_touch["low"] * 100.0, 0.0, probability_mid))
+                    probability_high = min(previous_prob_high, _clip(_touch["high"] * 100.0, probability_mid, 100.0))
+                    probability_mid = _clip(probability_mid, probability_low, probability_high)
+                    previous_prob_mid, previous_prob_low, previous_prob_high = (
+                        probability_mid, probability_low, probability_high)
+                    probability_source = "touch_model"
+                    _window_info = _model_time_window(last_price, price, _model_sigma_daily, _STEP_HORIZON_DAYS)
+                    _raw_days = _window_info.get("days") or [1, _STEP_HORIZON_DAYS]
+                    days_min = min(_STEP_HORIZON_DAYS, max(previous_days_min, int(_raw_days[0]), 1))
+                    days_max = min(_STEP_HORIZON_DAYS, max(previous_days_max, int(_raw_days[1]), days_min))
+                    previous_days_min, previous_days_max = days_min, days_max
+                    period_source = "touch_model"
                     period_note = (
-                        f"과거 도달 사례 {len(hit_days)}건(<{min_hits}) · "
-                        "ATR 거리·최근 변동 속도·거래량·추세 기반 추정"
+                        f"{_STEP_HORIZON_DAYS}거래일 안에 닿는 경우의 첫 도달일 25~75백분위 "
+                        f"(무추세 변동성 모델, ATR 거리 {distance_atr:.1f}배)"
                     )
-                previous_days_min, previous_days_max = days_min, days_max
-
-            # 경험 경로 기반 확률 산정 조건을 통과하지 못해도, 가격·ATR·최근 속도
-            # 데이터가 충분하면 기간은 독립적으로 계산한다. 데이터 부족과 희소 표본을
-            # 같은 상태로 취급하지 않기 위한 최종 정합성 보정이다.
-            if days_min is None and _period_model_ready:
-                days_min, days_max = _model_period(
-                    distance_atr, probability_mid,
-                    previous_days_min, previous_days_max,
-                )
-                period_source = "model"
-                period_note = (
-                    "과거 경로 표본 부족 · ATR 거리·최근 변동 속도·거래량·추세 기반 추정"
-                    if probability_mid is None else
-                    "과거 도달 기간 표본 부족 · ATR 거리·최근 변동 속도·거래량·추세 기반 추정"
-                )
-                previous_days_min, previous_days_max = days_min, days_max
 
             nearest_anchor = min(anchors, key=lambda item: abs(item[0] - price), default=None)
             anchor_label = (
@@ -13241,6 +13227,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 "probability_low_pct": round(probability_low, 1) if probability_low is not None else None,
                 "probability_high_pct": round(probability_high, 1) if probability_high is not None else None,
                 "probability_label": None if probability_mid is not None else "분석 데이터 부족",
+                "probability_source": probability_source,
+                "probability_note": (
+                    f"{_STEP_HORIZON_DAYS}거래일 안에 이 가격에 한 번이라도 닿을 확률 — 무추세 변동성 모델"
+                    f"({_model_sigma_basis or '일간 변동성'}). 범위는 변동성 추정 오차(25~75백분위)를 반영"
+                    if probability_source == "touch_model" else None
+                ),
                 "days_min": days_min,
                 "days_max": days_max,
                 "period_label": None if days_min is not None else "기간 산정 불가",
@@ -13493,8 +13485,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
 
     _order_band_family(aggressive_bands, False)
 
-    # 2차 구간은 1차 탐색 전체보다 아래에 있는 별도 지지 군집만 우선 사용한다.
-    # 구조가 분리되지 않으면 뒤의 가용성 검증에서 가격 표시를 보류한다.
+    # 2차 구간은 1차 탐색 전체보다 아래에 있는 별도 지지 군집을 우선 사용한다.
+    # 그런 군집이 없으면 ATR 깊이·도달 확률로 산정한 범위를 쓰고, 뒤의 근거 등급 단계에서
+    # 그 범위가 '변동성 기반 추정'임을 밝혀 표시한다(가격을 숨기지 않는다).
     _first_entry_floor = min(
         (float(band["range"][0]) for band in aggressive_bands),
         default=last_price - atr_d,
@@ -13679,9 +13672,12 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
 
     _order_band_family(recommended_bands, True)
 
-    # 최종 출력 전 가격 구간의 방향·중첩을 검증한다. 2차 주 진입은 같은 전략의
-    # 1차 탐색보다 실제로 더 깊은 구조가 확인될 때만 표시한다. 데이터가 이를
-    # 뒷받침하지 않으면 억지로 가격을 낮추지 않고 해당 전략을 보류 처리한다.
+    # ── 가격 구간 검증·복구 + 가격 근거 등급 ──────────────────────────────
+    # 예전에는 차트 구조 근거가 부족하거나 밴드 순서 검증이 실패하면 가격과 단계를 지우고
+    # '표시 보류'로 바꿨다. 하락·붕괴 구간의 종목은 현재가 아래에 구조적 지지가 없는 것이
+    # 오히려 정상이라 2차 구간이 29%, 1차 구간이 5% 시점에서 통째로 사라졌다(52종목·5년 재현).
+    # 이제 계산된 범위는 항상 표시하고, 각 밴드가 서 있는 근거 수준(구조·단일 지표·변동성)과
+    # 도달 확률·예상 기간을 함께 밝혀 사용자가 신뢰 수준을 직접 판단하게 한다.
     def _validate_entry_steps(band: Dict) -> bool:
         steps = band.get("steps") or []
         if not steps:
@@ -13695,6 +13691,25 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
                 return False
         return True
 
+    def _pair_is_ordered(previous: Dict, current: Dict) -> bool:
+        """앞 밴드(A→B)가 뒤 밴드보다 범위·단계 가격 모두 엄격히 위에 있는지 확인한다."""
+        previous_range = previous.get("range") or []
+        current_range = current.get("range") or []
+        if (len(previous_range) != 2 or len(current_range) != 2
+                or previous_range[0] <= current_range[0]
+                or previous_range[1] <= current_range[1]):
+            return False
+        previous_steps = previous.get("steps") or []
+        current_steps = current.get("steps") or []
+        if len(previous_steps) != len(current_steps):
+            return False
+        for previous_step, current_step in zip(previous_steps, current_steps):
+            if (previous_step["price"] <= current_step["price"]
+                    or previous_step["price_range"][0] <= current_step["price_range"][0]
+                    or previous_step["price_range"][1] <= current_step["price_range"][1]):
+                return False
+        return True
+
     def _validate_band_family(bands: list[Dict]) -> bool:
         widths = [
             float(band["range"][1]) - float(band["range"][0])
@@ -13703,69 +13718,208 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         ]
         if len(widths) != len(bands) or len({round(width, 8) for width in widths}) != len(widths):
             return False
-        for previous, current in zip(bands, bands[1:]):
-            previous_range = previous.get("range") or []
-            current_range = current.get("range") or []
-            if (len(previous_range) != 2 or len(current_range) != 2
-                    or previous_range[0] <= current_range[0]
-                    or previous_range[1] <= current_range[1]):
-                return False
-            previous_steps = previous.get("steps") or []
-            current_steps = current.get("steps") or []
-            if len(previous_steps) != len(current_steps):
-                return False
-            for previous_step, current_step in zip(previous_steps, current_steps):
-                if (previous_step["price"] <= current_step["price"]
-                        or previous_step["price_range"][0] <= current_step["price_range"][0]
-                        or previous_step["price_range"][1] <= current_step["price_range"][1]):
-                    return False
-        return True
+        return all(_pair_is_ordered(previous, current) for previous, current in zip(bands, bands[1:]))
 
-    for _band in aggressive_bands:
-        _band["is_available"] = _price_structure_ready and _validate_entry_steps(_band)
-        if not _band["is_available"]:
-            _band["availability_note"] = (
-                "캔들·이평·볼린저·거래량 중 서로 다른 가격 근거가 부족해 탐색 범위 표시를 보류했습니다."
-                if not _price_structure_ready else
-                "독립적인 탐색 가격 구조를 확인하지 못해 표시를 보류했습니다."
-            )
-            _band["steps"] = []
-    for _core in recommended_bands:
-        _core["is_available"] = (
-            _price_structure_ready and _deep_structure_ready
-            and _validate_entry_steps(_core)
-        )
-        if not _core["is_available"]:
-            _core["availability_note"] = (
-                "중기 이평·스윙 저점·거래량 가격대 등 심층 근거가 부족해 주 진입 범위 표시를 보류했습니다."
-                if not (_price_structure_ready and _deep_structure_ready) else
-                "독립적인 주 진입 가격 구조를 확인하지 못해 표시를 보류했습니다."
-            )
-            _core["steps"] = []
+    def _family_is_valid(bands: list[Dict]) -> bool:
+        return all(_validate_entry_steps(band) for band in bands) and _validate_band_family(bands)
 
-    if not _validate_band_family(aggressive_bands):
-        for _band in aggressive_bands:
-            _band["is_available"] = False
-            _band["steps"] = []
-            _band["availability_note"] = "밴드 A·B·C의 탐색 가격 순서를 분리하지 못해 표시를 보류했습니다."
-    if not _validate_band_family(recommended_bands):
-        for _band in recommended_bands:
-            _band["is_available"] = False
-            _band["steps"] = []
-            _band["availability_note"] = "밴드 A·B·C의 주 진입 가격 순서를 분리하지 못해 표시를 보류했습니다."
+    def _restack_family(bands: list[Dict], is_recommended: bool,
+                        ceiling: float | None = None) -> bool:
+        """검증에 실패한 A/B/C 가족을 위에서 아래로 최소 이동만 해서 다시 쌓는다.
 
+        가격과 단계를 지우는 대신, 각 밴드의 원래 폭은 유지하면서(최소 5호가) 직전 밴드보다 한 호가 이상
+        아래로 내리고, 단계별 가격 순서가 맞을 때까지 한 호가씩 더 내린다. 현재가 10% 하한에 닿아
+        순서를 만들 수 없으면 False 를 돌려 호출측이 '순서 검증 완화'로 표시한다.
+        """
+        gap = max(_tick, atr_d * 0.02)
+        min_width = _tick * 5.0
+        placed_all = True
+        previous: Dict | None = None
+        for band in bands:
+            lo0, hi0 = (float(value) for value in band["range"])
+            width = max(hi0 - lo0, min_width)
+            hi = hi0
+            if previous is not None:
+                previous_lo, previous_hi = (float(value) for value in previous["range"])
+                hi = min(hi, previous_hi - gap)
+                width = max(width, (previous_hi - previous_lo) + _tick)
+            if ceiling is not None:
+                hi = min(hi, ceiling)
+            lo = hi - width
+            placed = False
+            candidate: Dict = {}
+            for _attempt in range(16):
+                if lo < _band_floor:
+                    break
+                lo_r, hi_r = _ensure_orderable_band(lo, hi, "floor" if is_recommended else "ceil")
+                candidate = {
+                    "range": [lo_r, hi_r],
+                    "steps": _build_buy_steps(lo_r, hi_r, is_recommended, float(band["allocation_pct"])),
+                }
+                if _validate_entry_steps(candidate) and (previous is None or _pair_is_ordered(previous, candidate)):
+                    placed = True
+                    break
+                lo -= _tick
+                hi -= _tick
+            if not candidate:
+                # 현재가 대비 하한(10%)에 걸려 한 번도 계산하지 못한 경우: 기존 범위를 그대로 두고 단계만 다시 만든다.
+                lo_r, hi_r = _ensure_orderable_band(max(_band_floor, lo0), max(hi0, _band_floor + min_width),
+                                                    "floor" if is_recommended else "ceil")
+                candidate = {
+                    "range": [lo_r, hi_r],
+                    "steps": _build_buy_steps(lo_r, hi_r, is_recommended, float(band["allocation_pct"])),
+                }
+            placed_all = placed_all and placed
+            lo_r, hi_r = candidate["range"]
+            band["range"] = [lo_r, hi_r]
+            band["steps"] = candidate["steps"]
+            band["pct"] = [round((lo_r - last_price) / last_price * 100, 2),
+                           round((hi_r - last_price) / last_price * 100, 2)]
+            band["range_order_basis"] = (
+                f"{band.get('range_order_basis') or ''} · 단계별 가격 순서(A>B>C)를 맞추려고 범위를 아래로 재배치"
+            ).strip(" ·")
+            previous = band
+        return placed_all and _family_is_valid(bands)
+
+    _order_relaxed = {"aggressive": False, "recommended": False}
+    if not _family_is_valid(aggressive_bands):
+        _restack_family(aggressive_bands, False)
+        _order_relaxed["aggressive"] = not _family_is_valid(aggressive_bands)
     _families_separated = bool(aggressive_bands and recommended_bands) and (
         max(float(band["range"][1]) for band in recommended_bands)
         < min(float(band["range"][0]) for band in aggressive_bands)
     )
-    if not _families_separated:
-        for _band in recommended_bands:
-            _band["is_available"] = False
-            _band["steps"] = []
-            _band["availability_note"] = (
-                "1차 탐색 구간과 겹치지 않는 독립적인 하단 지지를 확인하지 못해 "
-                "2차 매수 가격 표시를 보류했습니다."
-            )
+    if not _families_separated or not _family_is_valid(recommended_bands):
+        _ceiling_for_second = min(
+            _second_entry_ceiling,
+            min(float(band["range"][0]) for band in aggressive_bands) - _family_gap,
+        )
+        _restack_family(recommended_bands, True, ceiling=_ceiling_for_second)
+        _order_relaxed["recommended"] = not _family_is_valid(recommended_bands)
+        _families_separated = bool(aggressive_bands and recommended_bands) and (
+            max(float(band["range"][1]) for band in recommended_bands)
+            < min(float(band["range"][0]) for band in aggressive_bands)
+        )
+
+    # 가격 근거 수집: 현재 가격 후보(4.6ATR 이내) + 더 깊은 구간 확인용 장기 기준선.
+    # 밴드가 현재가에서 멀리 떨어져 있어도 52주 저점·피보나치·주간 지지 등과 겹치는지 확인한다.
+    def _collect_reference_levels() -> list[Dict]:
+        refs: list[Dict] = [
+            {"price": float(item["price"]), "label": item["label"], "source": item["source"],
+             "weight": float(item["weight"])}
+            for item in _price_candidates
+        ]
+        seen = {(item["source"], round(item["price"] / max(_tick, 1e-9))) for item in refs}
+
+        def add(value: Any, label: str, source: str, weight: float = 1.0) -> None:
+            try:
+                price = float(value)
+            except (TypeError, ValueError):
+                return
+            if not np.isfinite(price) or price < _band_floor or price >= last_price:
+                return
+            key = (source, round(price / max(_tick, 1e-9)))
+            if key in seen:
+                return
+            seen.add(key)
+            refs.append({"price": price, "label": label, "source": source, "weight": weight})
+
+        add(ma20_raw, "MA20", "ma20")
+        add(ma60_raw, "MA60", "ma60")
+        add(ma120_raw, "MA120", "ma120")
+        add(bb_l_raw, "볼린저 하단", "bb_lower")
+        for _window in (60, 120, 252):
+            _window_lows = [value for value in lows[-_window:] if value > 0]
+            if len(_window_lows) >= min(_window, 20):
+                add(min(_window_lows), f"최근 {_window}봉 저점", "recent_low")
+        add(l60, f"{fib_period_label} 저점", "period_low")
+        for _value, _label in ((fib_382, "피보나치 38.2%"), (fib_500, "피보나치 50%"),
+                               (fib_618, "피보나치 61.8%"), (fib_786, "피보나치 78.6%")):
+            add(_value, _label, "fibonacci")
+        for _anchor in ((weekly_context or {}).get("support_anchors") or [])[:8]:
+            add(_anchor.get("price"), _anchor.get("label") or "주간 지지", "weekly_support")
+        for _idx in range(2, max(2, _ohlcv_n - 2)):
+            _pivot = _aligned_number(_raw_low, _idx)
+            _near = [_aligned_number(_raw_low, _j) for _j in range(_idx - 2, _idx + 3)]
+            if _pivot is not None and all(value is not None for value in _near):
+                if _pivot <= min(value for _j, value in enumerate(_near) if _j != 2):
+                    add(_pivot, "확정 스윙 저점", "swing_low")
+        for _node in _volume_nodes:
+            add(_node["turnover"] / _node["volume"], "거래량 집중 가격대", "volume_node")
+        return refs
+
+    _reference_levels = _collect_reference_levels()
+    _source_ko = {
+        "ma20": "MA20", "ma60": "MA60", "ma120": "MA120", "ema20": "EMA20", "bb_lower": "볼린저 하단",
+        "bb_middle": "볼린저 중앙", "vwap": "거래량 가중 가격", "low_cluster": "최근 저점 밀집",
+        "low_zone": "30일 저점군", "recent_low": "최근 저점", "swing_low": "스윙 저점",
+        "lower_wick": "아래꼬리 반등", "volume_node": "거래량 집중 가격대", "breakout_retest": "이전 돌파 가격",
+        "fibonacci": "피보나치", "weekly_support": "주간 지지", "period_low": "기간 저점",
+    }
+
+    def _assign_band_evidence(bands: list[Dict], is_recommended: bool) -> None:
+        for band in bands:
+            band["is_available"] = True
+            band["availability_note"] = None
+            lo, hi = (float(value) for value in band["range"])
+            center = (lo + hi) / 2.0
+            inside = [item for item in _reference_levels
+                      if lo - _cluster_tolerance <= item["price"] <= hi + _cluster_tolerance]
+            sources = sorted({item["source"] for item in inside})
+            labels = list(dict.fromkeys(
+                item["label"] for item in sorted(inside, key=lambda row: row["weight"], reverse=True)
+            ))
+            depth_lo = (last_price - hi) / max(atr_d, 1e-9)
+            depth_hi = (last_price - lo) / max(atr_d, 1e-9)
+            nearest = min(_reference_levels, key=lambda item: abs(item["price"] - center), default=None)
+            if len(sources) >= 2:
+                level, label = "structure", "차트 구조 근거"
+                note = (f"{' · '.join(labels[:4])} — 서로 다른 가격 근거 {len(sources)}종이 이 범위 안에 있습니다")
+            elif len(sources) == 1:
+                level, label = "indicator", "단일 지표 근거"
+                note = (f"{labels[0]} 한 가지만 이 범위 안에 있어 다른 근거와 겹치지 않습니다. "
+                        "범위는 ATR 변동폭으로 보정했습니다")
+            else:
+                level, label = "volatility", "변동성 기반 추정"
+                note = (f"이 가격대에는 이평·볼린저·저점·거래량 가격대 같은 차트 근거가 없어 변동성(ATR {atr_pct:.1f}%)과 "
+                        f"도달 확률로 산정한 참고 범위입니다(현재가 대비 ATR {depth_lo:.1f}~{depth_hi:.1f}배)")
+            band["evidence_level"] = level
+            band["evidence_label"] = label
+            band["evidence_sources"] = [_source_ko.get(source, source) for source in sources]
+            band["evidence_note"] = note
+            band["structure_note"] = note if level != "structure" else " · ".join(labels[:4])
+            if nearest is not None and abs(nearest["price"] - center) / max(last_price, 1e-9) <= 0.30:
+                band["nearest_reference"] = {
+                    "label": nearest["label"],
+                    "price": float(_round_market_price(nearest["price"], market)),
+                    "gap_pct": round((nearest["price"] - center) / center * 100.0, 2) if center > 0 else None,
+                }
+            else:
+                band["nearest_reference"] = None
+            probabilities = [
+                (step.get("probability_low_pct"), step.get("probability_high_pct"), step.get("reach_probability_pct"))
+                for step in band.get("steps") or []
+                if step.get("reach_probability_pct") is not None
+            ]
+            if probabilities:
+                band["reach_probability_range_pct"] = [
+                    round(min(item[0] for item in probabilities), 1),
+                    round(max(item[1] for item in probabilities), 1),
+                ]
+                band["reach_probability_mid_pct"] = round(float(np.mean([item[2] for item in probabilities])), 1)
+            else:
+                band["reach_probability_range_pct"] = None
+                band["reach_probability_mid_pct"] = None
+
+    _assign_band_evidence(aggressive_bands, False)
+    _assign_band_evidence(recommended_bands, True)
+    _evidence_summary = {
+        family_name: {
+            level: sum(1 for band in family if band.get("evidence_level") == level)
+            for level in ("structure", "indicator", "volatility")
+        }
+        for family_name, family in (("aggressive", aggressive_bands), ("recommended", recommended_bands))
+    }
 
     # ── 타이밍 산출 ──────────────────────────────────────────────────
     now = dt.now()
@@ -13907,9 +14061,9 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
         _ma_parts.append(f"MA60 {float(ma60_raw):,.{_disp_rnd(market, rnd)}f} {'상회' if last_price >= float(ma60_raw) else '하회'}")
     _market_index = "KOSPI/KOSDAQ 대표지수" if market == "KRX" else "S&P 500"
     _market_note = {
-        "BULL": f"{_market_index} 중기 추세 우호 — 개별 지지 확인 시에만 분할 접근",
-        "BEAR": f"{_market_index} 중기 추세 약세 — 종목 신호가 좋아도 신규 진입 비중 축소",
-        "NEUTRAL": f"{_market_index} 방향 중립 — 개별 가격·거래량 확인을 우선",
+        "BULL": f"{_market_index} 60·120일선 상승 구조 — 개별 지지 확인 시에만 분할 접근",
+        "BEAR": f"{_market_index} 60·120일선 하락 구조 — 종목 신호가 좋아도 신규 진입 비중 축소",
+        "NEUTRAL": f"{_market_index} 60·120일선 혼조 — 개별 가격·거래량 확인을 우선",
     }.get(market_regime, f"{_market_index} 흐름은 현재 확보 데이터 기준으로 중립 처리")
     _volume_note = (
         f"20일 평균 대비 {vol_ratio:.1f}배 거래량을 동반한 {'상승' if _price_up_reference else '하락'} — "
@@ -13989,6 +14143,11 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
             "first_second_separated": _families_separated,
             "first_entry_floor": r(_first_entry_floor),
             "second_entry_ceiling": r(_second_entry_ceiling),
+            # 구조 근거가 부족해도 두 구간 모두 표시한다. 근거 수준은 밴드별 evidence_level 로 구분한다.
+            "deep_structure_ready": bool(_deep_structure_ready),
+            "evidence_summary": _evidence_summary,
+            "ordering_relaxed": dict(_order_relaxed),
+            "display_policy": "always_display_with_evidence_level",
         },
         "weekly_analysis": weekly_context,
         "downside_risk": {
@@ -15741,9 +15900,7 @@ def _degraded_prediction_outlook(
 
         facts: list[dict] = []
         if market == "KRX":
-            facts.append({"label": "종목 중기 구조",
-                          "value": {"BULL": "중기 상승", "BEAR": "중기 약세"}.get(regime, "중립"),
-                          "detail": "해당 종목의 60일·120일 가격 구조 기준(잠정)", "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
+            facts.append(index_structure_fact(market, symbol, regime))
             if flow.get("ok") and flow_txt:
                 facts.append({"label": "외국인·기관", "value": "수급 참고", "detail": flow_txt, "tone": "neutral"})
             industry = ((naver or {}).get("industry") or (naver or {}).get("sector")
@@ -15751,9 +15908,7 @@ def _degraded_prediction_outlook(
             if industry:
                 facts.append({"label": "업종", "value": str(industry), "detail": "종목 분류 정보(잠정)", "tone": "neutral"})
         else:
-            facts.append({"label": "종목 중기 구조",
-                          "value": {"BULL": "중기 상승", "BEAR": "중기 약세"}.get(regime, "중립"),
-                          "detail": "해당 종목의 60일·120일 가격 구조 기준(잠정)", "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
+            facts.append(index_structure_fact(market, symbol, regime))
         gaps = [f"상세 예측 계산 중단({err_detail}) — 아래는 기확보 지표 기준 잠정 범위"]
         for w in (data_warnings or []):
             if w and str(w) not in gaps:
@@ -15874,6 +16029,7 @@ def build_prediction_outlook(
     dynamic_rsi: Dict | None = None,
     quote_date: str | None = None,
     data_warnings: List[str] | None = None,
+    regime_layers: Dict | None = None,
 ) -> Dict:
     """이미 계산된 분석 결과를 예측 탭용 조건부 구조로 재조합한다.
 
@@ -16159,20 +16315,14 @@ def build_prediction_outlook(
     )))
     directional_total = max(float(prob_up or 0.0) + float(prob_down or 0.0), 1.0)
     raw_up_share = float(prob_up or 50.0) / directional_total * 100.0
-    direction_adjust = (score - 50.0) * 0.10 + (trend_points - 2) * 1.75 + flow_bias + pattern_bias
-    direction_adjust += 2.5 if regime == "BULL" else -3.5 if regime == "BEAR" else 0.0
-    direction_adjust += _bounded(float(pct_change or 0.0) * 0.8, -4.0, 4.0)
-    if volume_available and volume_ratio >= 1.2:
-        direction_adjust += 3.0 if candle_up else -3.0
-    if rsi_available and rsi >= 72:
-        direction_adjust -= 2.5  # 과열권 추격 신뢰를 낮춘다.
-    elif rsi_available and rsi <= 28:
-        direction_adjust += 2.0  # 과매도 반등 여지는 반영하되 확정 신호로 보지 않는다.
-    direction_adjust -= min(5.0, breakdown_count * 1.5)
+    # 방향 비중은 라우트가 넘긴 보정 확률(prob_up/prob_down)을 그대로 쓴다. 점수·수급·패턴·시장 체제·전일 등락·거래량·RSI
+    # 는 그 확률의 입력(점수·상관 보정)에 이미 반영되어 있어, 여기서 ±수 %p 를 다시 더하면 같은 정보를 두 번 세게 된다.
+    # 실제로 다시 더한 시나리오 비중은 워크포워드 검증(52종목·8,368 시점)에서 AUC 0.500, Brier 0.296 으로 더하기 전
+    # 확률(0.511, 0.273)보다 나빴고, 방향 확률을 실현 빈도에 맞춘 뒤에는 이 가산이 보정을 다시 무너뜨린다.
+    # 그 요인들은 아래 근거 문장(key_drivers_up / key_risks_down)과 위험 라벨에만 쓴다.
     event_score = _number((event_risk or {}).get("score"))
-    direction_adjust -= min(4.0, event_score / 15.0)
-    adjusted_up_share = _bounded(raw_up_share + direction_adjust, 8.0, 92.0) / 100.0
-    up_prob = int(round((100 - side_prob) * adjusted_up_share))
+    up_share = _bounded(raw_up_share, 5.0, 95.0) / 100.0
+    up_prob = int(round((100 - side_prob) * up_share))
     down_prob = 100 - side_prob - up_prob
 
     horizon_days = {
@@ -16374,7 +16524,7 @@ def build_prediction_outlook(
     n_valid = len(closes)
     if n_valid < 20:
         decision_key, decision_label, decision_tone = "observation", "신규상장 관찰", "neutral"
-    elif down_prob >= 48 or breakdown_count >= 2 or event_score >= 60:
+    elif breakdown_count >= 2 or event_score >= 60:
         decision_key, decision_label, decision_tone = "caution", "주의·매수 보류", "negative"
     elif action_key in ("band_a", "split_buy", "recovery_buy") and breakdown_count == 0:
         decision_key, decision_label, decision_tone = "conditional", "조건부 분할 접근", "positive"
@@ -16414,12 +16564,15 @@ def build_prediction_outlook(
         data_gaps.append("MA20 또는 MA60 미확보 — 추세 판단 표본과 신뢰도를 제한")
     if not atr_observed:
         data_gaps.append("ATR 미확보 — 현재가 2% 대체 변동폭 사용")
+    # 레짐은 기준이 다른 개념이 셋이다(지수 60·120일선 구조 / 시장 장기 국면 / 종목 추세). 이름을 분리해 보여 준다.
+    market_facts.append(index_structure_fact(market, symbol, regime))
+    _long_regime = (regime_layers or {}).get("long_regime")
+    if _long_regime:
+        market_facts.append({"label": _long_regime["label"], "value": _long_regime["value"],
+                             "detail": _long_regime["basis"], "tone": _long_regime["tone"]})
+    if (regime_layers or {}).get("note"):
+        data_gaps.append(str(regime_layers["note"]))
     if market == "KRX":
-        index_name = "KOSDAQ" if str(symbol).upper().endswith(".KQ") else "KOSPI"
-        index_value = {"BULL": "중기 상승", "BEAR": "중기 약세", "NEUTRAL": "중립"}.get(regime, "중립")
-        market_facts.append({"label": "종목 중기 구조", "value": index_value,
-                             "detail": f"{index_name} 상장 종목 · 해당 종목의 60일·120일 가격 구조 기준",
-                             "tone": "positive" if regime == "BULL" else "negative" if regime == "BEAR" else "neutral"})
         industry = ((naver or {}).get("industry") or (naver or {}).get("sector") or
                     (toss_industry or {}).get("industry") or (toss_industry or {}).get("sector"))
         if industry:
@@ -18380,6 +18533,28 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as _corr_e:
             _correlation_report = {"error": str(_corr_e), "prob_up_corr": prob_up, "prob_down_corr": prob_down}
             # 실패 시 원본 유지이므로 별도 처리 없음
+
+        # 방향 확률 보정: 규칙 점수가 만든 상승 확률(10~91%)은 22거래일 뒤 실제 상승 빈도와 거의 무관했다
+        # (52종목·8,368 시점: AUC 0.51, 보정 기울기 0.005, Brier 0.276 > 기저율 상수 0.246).
+        # 표시 확률은 실현 빈도에 맞춘 값으로 바꾸고, 원래 값은 신호 점수(prob_up_raw)로 따로 남긴다.
+        # 시나리오 비중·예측 요약도 이 보정 값을 기준으로 삼는다(점수·수급·패턴을 한 번 더 더하지 않는다).
+        prob_up_raw, prob_down_raw = prob_up, prob_down
+        probability_calibration = {"applied": False, "method": "unavailable"}
+        try:
+            from market_briefing.probability_calibration import calibrate_direction_probability
+            probability_calibration = calibrate_direction_probability(prob_up, market)
+            if probability_calibration.get("applied"):
+                prob_up = float(probability_calibration["prob_up"])
+                prob_down = float(probability_calibration["prob_down"])
+        except Exception as _cal_e:
+            _log_route_issue(sym, "probability_calibration", _cal_e)
+            _component_status["probability_calibration"] = "failed"
+        # 레짐 세 가지(지수 60·120일선 구조 / 시장 장기 국면 / 종목 추세)를 이름을 분리해 응답에 싣는다.
+        try:
+            regime_layers = build_regime_layers(market, sym, regime, hybrid_score)
+        except Exception as _layer_e:
+            _log_route_issue(sym, "regime_layers", _layer_e)
+            regime_layers = None
         # build_prediction_outlook: NaN/inf safe + isolated failure
         try:
             _atr_observed_flag = False
@@ -18402,6 +18577,7 @@ def route(path: str, params: Dict) -> Dict:
                 dynamic_rsi=dynamic_rsi,
                 quote_date=realtime_meta.get("trade_date") or None,
                 data_warnings=list(_route_warnings),
+                regime_layers=regime_layers,
             )
         except Exception as e:
             print(f"[route] build_prediction_outlook failed symbol={sym} market={market} err={type(e).__name__}:{e} atr={atr_val}")
@@ -18583,6 +18759,8 @@ def route(path: str, params: Dict) -> Dict:
                        if (dd.get("Volume") or []) and _is_finite_number((dd.get("Volume") or [])[-1]) else None),
             "atr": round(_safe_finite_float(atr_val, last*0.02 if math.isfinite(last) and last>0 else 0.02), _price_rnd),
             "score": score, "prob_up": prob_up, "prob_down": prob_down,
+            "prob_up_raw": prob_up_raw, "prob_down_raw": prob_down_raw,
+            "probability_calibration": probability_calibration,
             "prob_neutral": round(max(0.0, 100.0 - float(prob_up or 0) - float(prob_down or 0)), 1),
             "technical_score": raw_technical_score,
               "ml_prediction": ml_prediction,
@@ -18626,6 +18804,7 @@ def route(path: str, params: Dict) -> Dict:
             "pullback_analysis": pullback_analysis,
             "prediction_outlook": prediction_outlook,
             "market_regime": regime,
+            "regime_layers": regime_layers,
             "news": news or [], "naver": naver, "us_enriched": us_enriched,
             "news_quality": news_quality,
             "toss_industry": toss_industry,
@@ -21923,7 +22102,8 @@ function shareToTelegram() {
   // 제목 바로 아래에 확률 라인 연속 출력 — 사이에 빈 줄을 넣지 않는다
   L.push('📊 종목 분석 | ' + company + ' (' + ticker + ')');
   if (typeof d.prob_up === 'number' && typeof d.prob_down === 'number') {
-    L.push('▲ 상승 가능성 ' + d.prob_up.toFixed(1) + '%   ▼ 하락 가능성 ' + d.prob_down.toFixed(1) + '%');
+    L.push('▲ 상승 가능성 ' + d.prob_up.toFixed(1) + '%   ▼ 하락 가능성 ' + d.prob_down.toFixed(1) + '%'
+      + ((d.probability_calibration || {}).applied ? ' (과거 실제 빈도로 보정)' : ''));
   }
   L.push('');
   L.push('현재 시간 ' + sentTime + ' 기준 / 💰 현재가 ' + price + pctTxt);
@@ -22801,11 +22981,20 @@ function renderResult(d) {
   if (probEl && _isFiniteNumber(d.prob_up) && _isFiniteNumber(d.prob_down)) {
     probEl.style.display = 'flex';
     probEl.style.flexDirection = 'column';
+    // 보정 적용 시: 표시 값은 과거 22거래일 뒤 실제 상승 빈도에 맞춘 확률이고, 규칙 점수가 만든 원래 값은 신호 점수로 따로 둔다.
+    const probCal = d.probability_calibration || {};
+    const probCalibrated = Boolean(probCal.applied);
+    const probWord = probCalibrated ? '확률' : '점수';
+    const probTip = _escPrediction(probCalibrated
+      ? `${probCal.horizon_sessions || 22}거래일 뒤 종가가 현재가보다 높을 확률 — 과거 실제 빈도에 맞춰 보정한 값입니다. ${probCal.note || ''}`
+      : (probCal.note || '규칙 점수 기반 값이며 검증된 상승 확률이 아닙니다.'));
     probEl.innerHTML =
-      `<span style="color:#3fb950">▲ 상승 점수 ${Number(d.prob_up).toFixed(1)}%</span>` +
-      `<span style="color:#f85149">▼ 하락 점수 ${Number(d.prob_down).toFixed(1)}%</span>` +
+      `<span style="color:#3fb950" title="${probTip}">▲ 상승 ${probWord} ${Number(d.prob_up).toFixed(1)}%</span>` +
+      `<span style="color:#f85149" title="${probTip}">▼ 하락 ${probWord} ${Number(d.prob_down).toFixed(1)}%</span>` +
       (_isFiniteNumber(d.prob_neutral) && Number(d.prob_neutral) > 0
-        ? `<span style="color:#8b949e">■ 횡보·불확실 ${Number(d.prob_neutral).toFixed(1)}%</span>` : '');
+        ? `<span style="color:#8b949e">■ 횡보·불확실 ${Number(d.prob_neutral).toFixed(1)}%</span>` : '') +
+      (probCalibrated && _isFiniteNumber(d.prob_up_raw) && _isFiniteNumber(d.prob_down_raw)
+        ? `<span style="color:#6e7681;font-size:10px" title="${probTip}">신호 점수 ▲ ${Number(d.prob_up_raw).toFixed(0)} · ▼ ${Number(d.prob_down_raw).toFixed(0)} (보정 전)</span>` : '');
   } else if (probEl) {
     probEl.style.display = 'none';
   }
@@ -23349,13 +23538,21 @@ function renderHybridSection(d) {
   };
   const act = actionMap[action] || actionMap['CONDITIONAL'];
 
-  // 시장 국면 배지
+  // 국면 배지 — 기준이 다른 레짐을 이름으로 구분한다.
+  //   · 시장 장기 국면(지수 200일선·ADX·VIX): 벤치마크가 주어질 때만
+  //   · 종목 추세 국면(ADX·DI): 단일 종목 분석처럼 벤치마크가 없을 때 — 시장 국면이 아니다
+  //   (지수 60·120일선 구조는 매수 카드의 '지수 중기 구조'로 따로 표시한다)
+  const layers = d.regime_layers || {};
+  const layerInfo = layers.long_regime || layers.stock_trend || null;
+  const marketBased = Boolean(layers.long_regime) || Boolean((hs.regime_detail || {}).ma200_available);
   const regimeMap = {
-    'BULLISH':  { color: C.green,  bg: '#0d2d1a', icon: '🐂', text: '강세장' },
-    'BEARISH':  { color: C.red,    bg: '#2d1515', icon: '🐻', text: '약세장' },
-    'SIDEWAYS': { color: C.gray,   bg: '#21262d', icon: '↔️', text: '횡보장' },
+    'BULLISH':  { color: C.green,  bg: '#0d2d1a', icon: '🐂', text: marketBased ? '강세장' : '상승 추세' },
+    'BEARISH':  { color: C.red,    bg: '#2d1515', icon: '🐻', text: marketBased ? '약세장' : '하락 추세' },
+    'SIDEWAYS': { color: C.gray,   bg: '#21262d', icon: '↔️', text: marketBased ? '횡보장' : '방향 불명' },
   };
   const reg = regimeMap[regime] || regimeMap['SIDEWAYS'];
+  const regPrefix = marketBased ? '시장 장기 국면' : '종목 추세';
+  const regTip = _escPrediction(layerInfo ? `${layerInfo.label}: ${layerInfo.basis}` : (marketBased ? '지수 200일선·ADX·VIX 기준' : '종목 자신의 ADX·DI 기준 — 시장 국면이 아닙니다'));
 
   // 추세 지속성 (허스트 지수) 레이블
   const hurstLabel = hurst == null ? '—'
@@ -23478,7 +23675,7 @@ function renderHybridSection(d) {
       <div class="diag-bar-bg"><div class="diag-bar-fill" style="width:${ncs}%;background:${ncsColor}"></div></div>
       <div class="diag-dim-desc" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="background:${act.bg};color:${act.color};border:1px solid ${act.color};border-radius:5px;padding:1px 7px;font-size:11px;font-weight:600">${act.text}</span>
-        <span style="background:${reg.bg};color:${reg.color};border:1px solid ${reg.color};border-radius:5px;padding:1px 7px;font-size:11px">${reg.icon} ${reg.text}</span>
+        <span title="${regTip}" style="background:${reg.bg};color:${reg.color};border:1px solid ${reg.color};border-radius:5px;padding:1px 7px;font-size:11px">${reg.icon} ${regPrefix} ${reg.text}</span>
         <span style="color:#8b949e;font-size:11px">추세강도 ${adx ? adx.toFixed(0) : '—'} · 돌파신뢰도 ${bis}/15</span>
       </div>
     </div>
@@ -24838,10 +25035,12 @@ function renderForecast(d, isKrx) {
         const isActive = activeBands.includes(b.band);
         const isPriority = b.band === sr.priority_band;
         const dimStyle = isActive ? '' : 'opacity:0.4;';
-        if (b.is_available === false) {
+        // 가격 범위가 있으면 항상 표시한다(구조 근거가 약해도 근거 등급과 도달 확률로 신뢰 수준을 밝힌다).
+        // 범위 자체가 없는 비정상 응답에서만 대체 카드를 쓴다.
+        if (!(Array.isArray(b.range) && b.range.length === 2)) {
           return `<div class="buy-band-card" style="${dimStyle}border:1px solid #30363d;background:#161b22">
-            <div class="buy-band-head"><div class="buy-band-title" style="color:${bc}">${b.strategy_label || `밴드 ${b.band}`}</div><span style="font-size:9px;color:#8b949e">가격 표시 보류</span></div>
-            <div class="buy-band-detail warning">${_escPrediction(b.availability_note || '유효한 독립 가격 구조를 확인하지 못했습니다.')}</div>
+            <div class="buy-band-head"><div class="buy-band-title" style="color:${bc}">${b.strategy_label || `밴드 ${b.band}`}</div><span style="font-size:9px;color:#8b949e">가격 계산 불가</span></div>
+            <div class="buy-band-detail warning">현재가 또는 변동성 데이터가 없어 이 밴드의 가격 범위를 계산하지 못했습니다.</div>
           </div>`;
         }
         const allocationTag = isProvisional
@@ -24881,7 +25080,7 @@ function renderForecast(d, isKrx) {
             <span class="buy-stage-name" role="cell" style="color:${bc}">${s.label}</span>
             <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}</span>
             <span class="buy-stage-drop" role="cell">${declineText}</span>
-            <span class="buy-stage-prob ${hasProbability ? '' : 'buy-stage-unavailable'}" role="cell" style="color:${probabilityColor}">${probabilityText}</span>
+            <span class="buy-stage-prob ${hasProbability ? '' : 'buy-stage-unavailable'}" role="cell" style="color:${probabilityColor}" title="${_escPrediction(s.probability_note || '')}">${probabilityText}</span>
             <span class="buy-stage-days ${s.days_min == null ? 'buy-stage-unavailable' : ''}" role="cell">${periodText}</span>
           </div>`;
         }).join('');
@@ -24896,19 +25095,37 @@ function renderForecast(d, isKrx) {
           ${stepRows || '<div class="buy-stage-unavailable">분석 데이터 부족</div>'}
         </div>`;
         const rangeOrderDetail = `<div class="buy-band-detail">• ${_escPrediction(b.range_order_basis || '밴드별 기술 지지와 변동성에 따라 서로 다른 가격 범위를 산정')}</div>`;
+        // 가격 근거 등급: 구조(서로 다른 근거 2종 이상 겹침) / 단일 지표 / 변동성 기반. 표시를 보류하지 않고
+        // 사용자가 신뢰 수준을 판단하도록 등급·가장 가까운 근거·단계별 도달 확률 범위를 함께 보여준다.
+        const evidenceColor = ({ structure: '#3fb950', indicator: '#d29922', volatility: '#f97316' })[b.evidence_level] || '#8b949e';
+        const evidenceChip = b.evidence_label
+          ? `<span style="font-size:9px;color:${evidenceColor};background:${evidenceColor}1f;border-radius:3px;padding:1px 5px">${_escPrediction(b.evidence_label)}</span>` : '';
+        const reachRangeText = Array.isArray(b.reach_probability_range_pct) && b.reach_probability_range_pct.length === 2
+          ? `${Number(b.reach_probability_range_pct[0]).toFixed(0)}~${Number(b.reach_probability_range_pct[1]).toFixed(0)}%` : null;
+        // 가장 가까운 근거가 밴드 안에 있으면 위 '가격 근거' 문장과 중복이므로, 밴드 밖에 있거나 근거가 없을 때만 보여준다.
+        const nearestInsideBand = b.nearest_reference && Array.isArray(b.range) && b.range.length === 2
+          && Number(b.nearest_reference.price) >= Number(b.range[0]) && Number(b.nearest_reference.price) <= Number(b.range[1]);
+        const nearestGap = b.nearest_reference && b.nearest_reference.gap_pct != null ? Number(b.nearest_reference.gap_pct) : null;
+        const nearestRef = b.nearest_reference && b.nearest_reference.label && !nearestInsideBand
+          ? `가장 가까운 가격 근거: ${_escPrediction(b.nearest_reference.label)} ${fmt(b.nearest_reference.price, isKrx)}${nearestGap != null && Number.isFinite(nearestGap) ? ` (밴드 중심보다 ${Math.abs(nearestGap).toFixed(1)}% ${nearestGap < 0 ? '아래' : '위'})` : ''}`
+          : '';
+        const evidenceHtml = `<div class="buy-band-detail">• 가격 근거(${_escPrediction(b.evidence_label || '확인 필요')}): ${_escPrediction(b.evidence_note || b.structure_note || b.tech_note || '차트 구조 확인 필요')}</div>
+              ${nearestRef ? `<div class="buy-band-detail">• ${nearestRef}</div>` : ''}
+              ${reachRangeText ? `<div class="buy-band-detail">• 단계별 도달 확률 ${reachRangeText} (30거래일 안에 한 번이라도 닿을 확률 · 무추세 변동성 모델 · 깊은 단계일수록 낮음)</div>` : ''}`;
         const detailHtml = isProvisional
           ? `<div class="buy-band-detail">신규상장 관찰: 가격과 종가·거래량 흐름을 확인하는 범위이며, 실제 주문·진입 판단에는 사용하지 마세요.</div>
               ${rangeOrderDetail}
+              ${evidenceHtml}
               <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>`
           : isRec
           ? `<div class="buy-band-detail">매수 가격 범위=주문을 나눠 넣는 구간 / 하락률=현재가보다 얼마나 아래인지 / 도달 확률·예상 기간=과거 변동성 기준 참고치</div>
              ${rangeOrderDetail}
-             <div class="buy-band-detail">• 가격 근거: ${_escPrediction(b.structure_note || b.basis || '차트 구조 확인 필요')}</div>
+             ${evidenceHtml}
              <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
               <div class="buy-band-detail">• ${b.hold_note || '버티는 힘이 다시 확인되면 본 진입'}</div>`
           : `<div class="buy-band-detail">소액 탐색: 본 진입보다 적게 들어가 반등 여부를 가볍게 확인하는 단계입니다.</div>
               ${rangeOrderDetail}
-              <div class="buy-band-detail">• 가격 근거: ${_escPrediction(b.structure_note || b.tech_note || '차트 구조 확인 필요')}</div>
+              ${evidenceHtml}
               <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
               <div class="buy-band-detail">• ${b.atr_basis}</div>`;
         return `<div class="buy-band-card" style="${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
@@ -24916,6 +25133,7 @@ function renderForecast(d, isKrx) {
             <div class="buy-band-title" style="color:${bc}">${b.strategy_label || `밴드 ${b.band}`}${priTag}</div>
             <div class="buy-band-badges">
               <span style="font-size:9px;color:#58a6ff;background:#58a6ff1f;border-radius:3px;padding:1px 5px">${isProvisional ? '관찰 가격 구간' : (isWaitMode ? '참고 구간' : (b.entry_role || (isRec ? '주 진입' : '소액 탐색 진입')))}</span>
+              ${evidenceChip}
               ${allocationTag}
             </div>
           </div>
@@ -24928,16 +25146,36 @@ function renderForecast(d, isKrx) {
         </div>`;
       };
 
+      // 두 구간은 어떤 종목이든 항상 같은 제목으로 표시한다. 차트 근거가 얇은 종목은 표시를 보류하는 대신
+      // 밴드별 근거 등급(구조/단일 지표/변동성 추정)과 도달 확률을 공개해 신뢰 수준을 직접 판단하게 한다.
+      const evidenceSummary = (bp.price_structure && bp.price_structure.evidence_summary) || {};
+      const evidenceSummaryText = (family) => {
+        const counts = evidenceSummary[family] || {};
+        const parts = [];
+        if (counts.structure) parts.push(`구조 근거 ${counts.structure}`);
+        if (counts.indicator) parts.push(`단일 지표 ${counts.indicator}`);
+        if (counts.volatility) parts.push(`변동성 추정 ${counts.volatility}`);
+        return parts.length ? `근거 등급: ${parts.join(' · ')}` : '';
+      };
+      const provisionalChip = isProvisional
+        ? ' <span style="font-size:9px;font-weight:600;color:#d29922;background:#d299221f;border-radius:3px;padding:1px 5px;vertical-align:middle">관찰 전용</span>'
+        : '';
+      const orderingRelaxed = (bp.price_structure && bp.price_structure.ordering_relaxed) || {};
+      const recSubtitle = [
+        isProvisional ? '데이터 축적 전까지 주문·비중 산정 보류' : (isWaitMode ? '지금은 대기 · 참고용 가격대' : '1차 구간보다 아래에서 버티는 힘을 확인한 뒤 본 진입'),
+        evidenceSummaryText('recommended'),
+        orderingRelaxed.recommended ? '극단적 변동성으로 현재가 10% 하한에 닿아 밴드 순서 일부 완화' : '',
+      ].filter(Boolean).join(' · ');
       const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
         ? `<div class="buy-card recommended" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">${isProvisional ? '📍 관찰 가격 구간' : '📍 2차 매수 구간 · 본 진입'}</div>
-              <div style="font-size:10px;color:#8b949e">의미 있는 자리만 표시 · 겹치는 가격을 억지로 만들지 않습니다</div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 2차 매수 구간 · 본 진입${provisionalChip}</div>
+              <div style="font-size:10px;color:#8b949e">${recSubtitle}</div>
             </div>
             <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
           </div>` : '';
 
-      const aggTitle = isProvisional ? '⚡ 관찰 가격 구간 · 흐름 확인' : '⚡ 1차 탐색 구간 · 소액 테스트';
+      const aggTitle = '⚡ 1차 탐색 구간 · 소액 테스트';
       const aggNote = isProvisional
         ? '데이터 축적 전까지 주문·비중 산정 보류'
         : isWaitMode
@@ -24957,8 +25195,8 @@ function renderForecast(d, isKrx) {
       const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
         ? `<div class="buy-card aggressive" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
-              <div class="buy-label" style="margin-bottom:0;font-size:13px">${aggTitle}</div>
-              <div style="font-size:10px;color:#8b949e">${aggNote} · 의미 있는 자리만 단계로 표시</div>
+              <div class="buy-label" style="margin-bottom:0;font-size:13px">${aggTitle}${provisionalChip}</div>
+              <div style="font-size:10px;color:#8b949e">${[aggNote, evidenceSummaryText('aggressive'), orderingRelaxed.aggressive ? '극단적 변동성으로 밴드 순서 일부 완화' : ''].filter(Boolean).join(' · ')}</div>
             </div>
             <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
           </div>` : '';
@@ -28163,7 +28401,7 @@ function renderScanResult(d, market) {
     var volColor = d.vol_regime === 'HIGH_VOL' ? '#f97316' : d.vol_regime === 'LOW_VOL' ? '#58a6ff' : '#8b949e';
     var ts = d.generated_at ? new Date(d.generated_at).toLocaleTimeString('ko-KR') : '';
     regEl.innerHTML =
-      '<span style="color:#484f58;font-size:11px">시장 국면</span>' +
+      '<span style="color:#484f58;font-size:11px" title="벤치마크 지수의 200일선·ADX·VIX 기준">시장 장기 국면</span>' +
       '<span style="color:' + regColor + ';font-weight:700">' + (_regimeKo[d.regime] || d.regime || '—') + '</span>' +
       '<span style="color:#484f58;font-size:11px;margin-left:16px">변동성</span>' +
       '<span style="color:' + volColor + ';font-weight:700">' + (_volKo[d.vol_regime] || d.vol_regime || '—') + '</span>' +
