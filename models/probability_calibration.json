@@ -1,0 +1,50 @@
+{
+  "version": "2026-10-09",
+  "target": "close(t+22 sessions) > close(t)",
+  "horizon_sessions": 22,
+  "input": "route prob_up after correlation adjustments (prob_final)",
+  "method": "linear_shrink_market_intercept",
+  "slope": 0.0367,
+  "intercept_at_half": {
+    "ALL": 0.5665,
+    "KRX": 0.5475,
+    "US": 0.5848
+  },
+  "clip_pct": [
+    5.0,
+    95.0
+  ],
+  "slope_bootstrap_ci95": [
+    -0.0548,
+    0.1346
+  ],
+  "fitted_on": {
+    "rows": 8368,
+    "tickers": 52,
+    "period": [
+      "2022-10-07",
+      "2026-09-02"
+    ],
+    "base_up_rate": {
+      "ALL": 0.5668,
+      "KRX": 0.5465,
+      "US": 0.5864
+    }
+  },
+  "oos": {
+    "split": "2024-07-25",
+    "train_rows": 3844,
+    "test_rows": 4524,
+    "train_slope": 0.0629,
+    "brier_raw": 0.2752,
+    "brier_calibrated": 0.2446,
+    "brier_base_rate": 0.2444,
+    "ece_raw": 0.1315,
+    "ece_calibrated": 0.0438
+  },
+  "notes": [
+    "p_cal = intercept_at_half[market] + slope * (p_raw - 0.5), clip_pct 로 제한. 입력은 상관 보정 후 prob_up.",
+    "시장별 기울기는 표본 밖에서 부호가 뒤집혀 채택하지 않고 시장 합산 기울기 + 시장별 기저율 절편을 쓴다.",
+    "기울기의 95% 구간이 0 을 포함한다: 규칙 점수가 22거래일 방향을 구분한다는 증거가 없고, 보정 후 확률은 시장별 기저 상승률 부근에 모인다."
+  ]
+}
