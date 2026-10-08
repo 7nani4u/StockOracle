@@ -683,13 +683,51 @@ def test_krx_outlook_uses_final_score_flow_and_selected_horizon():
 
     bullish_up = next(s for s in bullish_result["scenarios"] if s["key"] == "upside")
     bearish_up = next(s for s in bearish_result["scenarios"] if s["key"] == "upside")
-    assert bullish_up["probability"] > bearish_up["probability"]
+    # 방향 비중은 라우트가 넘긴 (보정된) prob_up/prob_down 에서만 나온다. 점수·수급·전일 등락을 여기서 한 번 더
+    # 더하면 같은 정보를 두 번 세게 되므로(워크포워드 검증에서 AUC 0.500, Brier 0.296) 입력 확률이 같으면 같아야 한다.
+    assert bullish_up["probability"] == bearish_up["probability"]
+    # 대신 점수·수급·등락은 근거 문장(상승 요인/하락 위험)에 그대로 드러난다.
+    bearish_risks = " ".join(bearish_result["forecast"]["key_risks_down"])
+    assert "순매도" in bearish_risks
+    assert "순매도" not in " ".join(bullish_result["forecast"]["key_risks_down"])
     assert max(bullish_up["expected_days"]) <= 3
     assert "3거래일 분석 범위" in bullish_result["scenario_note"]
     assert "최근 20봉 평균" in " ".join(bullish_up["conditions"])
     assert any(check["label"] == "현재 충족" for check in bullish_up["checks"])
     assert bullish_result["levels"]["support_gap_pct"] < 0
     assert bullish_result["levels"]["resistance_gap_pct"] > 0
+
+
+def test_scenario_shares_follow_the_calibrated_direction_probability_only():
+    def shares(prob_up, prob_down, **overrides):
+        kwargs = _base_kwargs()
+        kwargs.update(prob_up=prob_up, prob_down=prob_down, **overrides)
+        result = build_prediction_outlook(**kwargs)
+        by_key = {s["key"]: s["probability"] for s in result["scenarios"]}
+        return by_key, result
+
+    base, _ = shares(57.0, 43.0)
+    # 같은 방향 확률이면 점수·시장 체제·등락률이 달라도 시나리오 비중은 그대로다
+    for overrides in ({"score": 90}, {"score": 10}, {"regime": "BEAR"}, {"regime": "BULL"}, {"pct_change": -6.0}):
+        other, _ = shares(57.0, 43.0, **overrides)
+        assert other == base, overrides
+    # 방향 확률이 달라지면 같은 방향으로 움직이고 세 비중의 합은 100이다
+    higher, _ = shares(70.0, 30.0)
+    lower, _ = shares(40.0, 60.0)
+    assert higher["upside"] > base["upside"] > lower["upside"]
+    assert higher["downside"] < base["downside"] < lower["downside"]
+    for by_key in (base, higher, lower):
+        assert sum(by_key.values()) == 100
+
+
+def test_caution_label_no_longer_depends_on_an_unvalidated_downside_share():
+    # 하락 시나리오 비중이 48% 이상이라는 이유만으로 '주의·매수 보류'를 붙이지 않는다(검증된 방향 정보가 아님).
+    kwargs = _base_kwargs()
+    kwargs.update(prob_up=35.0, prob_down=65.0)
+    result = build_prediction_outlook(**kwargs)
+    downside = next(s for s in result["scenarios"] if s["key"] == "downside")["probability"]
+    assert downside >= 48
+    assert result["decision"]["key"] != "caution" or result["pattern_context"]["breakdown_count"] >= 2         or (kwargs["event_risk"] or {}).get("score", 0) >= 60 or kwargs["buy_price"]["strategy_rec"]["action_key"] == "wait_breakdown"
 
 
 def test_krx_outlook_marks_missing_inputs_instead_of_claiming_normal_state():

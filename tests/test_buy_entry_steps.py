@@ -2,6 +2,9 @@
 
 import copy
 import math
+import random
+
+import pytest
 
 from api.index import HTML, calc_buy_price
 
@@ -75,10 +78,8 @@ def test_all_buy_bands_expose_only_ordered_independent_structure_steps():
         assert [band["strategy_label"] for band in result[family]] == ["밴드 A", "밴드 B", "밴드 C"]
         for band in result[family]:
             steps = band["steps"]
-            if band.get("is_available") is False:
-                assert steps == []
-                assert band.get("availability_note")
-                continue
+            assert band["is_available"] is True
+            assert band["availability_note"] is None
             assert [step["label"] for step in steps] == [f"{index}단계" for index in range(1, len(steps) + 1)]
             assert 1 <= len(steps) <= 5
             assert all(band["range"][0] <= step["price"] <= band["range"][1] for step in steps)
@@ -230,57 +231,75 @@ def test_top_result_support_cards_are_removed_but_internal_support_contract_rema
     assert result["fib"]["f382"] > 0
 
 
-def test_insufficient_history_never_fabricates_probability_or_period():
-    result = _calculate(_sample_buy_dd(size=35))
-
-    for family in ("aggressive_bands", "recommended_bands"):
-        for band in result[family]:
-            for step in band["steps"]:
-                assert step["reach_probability_pct"] is None
-                assert step["probability_label"] == "분석 데이터 부족"
-                assert step["days_min"] is None
-                assert step["days_max"] is None
-                assert step["period_label"] == "기간 산정 불가"
-                assert step["period_source"] is None
-                assert step["period_note"] is None
-
-
-def test_insufficient_chart_structure_suppresses_precise_entry_ranges():
+def test_very_short_history_still_returns_both_families_with_evidence_levels():
+    # 12개 봉에서는 차트 구조가 완성되지 않았다(ready=False). 예전에는 두 구간의 가격과 단계를 지우고
+    # '표시 보류'로 바꿨지만, 이제는 계산된 범위를 항상 표시하고 근거 등급으로 신뢰 수준을 밝힌다.
     result = _calculate(_sample_buy_dd(size=12))
+    structure = result["price_structure"]
 
-    assert result["price_structure"]["ready"] is False
+    assert structure["ready"] is False
+    assert structure["display_policy"] == "always_display_with_evidence_level"
     for family in ("aggressive_bands", "recommended_bands"):
-        assert all(band["is_available"] is False for band in result[family])
-        assert all(band["steps"] == [] for band in result[family])
-        assert all("부족" in band["availability_note"] for band in result[family])
+        assert [band["band"] for band in result[family]] == ["A", "B", "C"]
+        for band in result[family]:
+            assert band["is_available"] is True
+            assert band["availability_note"] is None
+            assert len(band["steps"]) == 5
+            assert band["evidence_level"] in {"structure", "indicator", "volatility"}
+            assert band["evidence_label"] and band["evidence_note"]
+    assert max(band["range"][1] for band in result["recommended_bands"]) < min(
+        band["range"][0] for band in result["aggressive_bands"]
+    )
+    for family_name, family in (
+        ("aggressive", result["aggressive_bands"]),
+        ("recommended", result["recommended_bands"]),
+    ):
+        counts = structure["evidence_summary"][family_name]
+        assert sum(counts.values()) == 3
+        assert counts == {
+            level: sum(1 for band in family if band["evidence_level"] == level)
+            for level in ("structure", "indicator", "volatility")
+        }
 
 
-def test_period_uses_atr_speed_model_when_probability_path_sample_is_short():
-    # 44개 봉은 확률용 과거 경로 40건 기준에는 미달하지만, ATR·최근 속도 기반
-    # 기간 추정에는 충분하다. 이 경우 확률은 보류해도 기간까지 비우지 않는다.
-    result = _calculate(_sample_buy_dd(size=44))
+@pytest.mark.parametrize("size", [12, 35, 44, 180])
+def test_every_step_probability_and_period_come_from_the_touch_model(size):
+    # 도달 확률·예상 기간은 과거 표본 길이와 무관하게 같은 무추세 변동성 터치 모델에서 나온다.
+    # (52종목·2022-10~2026-09 워크포워드 검증: 기존 경험 경로+가산 방식 Brier 0.2139 → 터치 모델 0.1913)
+    from market_briefing import forecast_model as fm
+
+    dd = _sample_buy_dd(size=size)
+    result = _calculate(dd)
+    last = dd["Close"][-1]
+    sigma = fm.blended_daily_sigma(dd["Close"], last, dd["ATR"][-1], True)["sigma"]
 
     for family in ("aggressive_bands", "recommended_bands"):
         for band in result[family]:
-            steps = band["steps"]
-            assert all(step["reach_probability_pct"] is None for step in steps)
-            assert all(step["probability_label"] == "분석 데이터 부족" for step in steps)
-            assert all(step["period_source"] == "model" for step in steps)
-            assert all(step["period_label"] is None for step in steps)
-            assert all(1 <= step["days_min"] <= step["days_max"] <= 30 for step in steps)
-            assert [step["days_min"] for step in steps] == sorted(
-                step["days_min"] for step in steps
-            )
-            assert [step["days_max"] for step in steps] == sorted(
-                step["days_max"] for step in steps
-            )
-            assert all("ATR 거리" in step["period_note"] for step in steps)
+            previous_probability, previous_days = 100.0, (0, 0)
+            for step in band["steps"]:
+                assert step["probability_source"] == "touch_model"
+                assert step["period_source"] == "touch_model"
+                assert step["probability_label"] is None and step["period_label"] is None
+                assert "무추세 변동성 모델" in step["probability_note"]
+                expected = fm.touch_probability_range(last, step["price"], sigma, 30)
+                # 같은 호가로 반올림되는 단계의 단조 보정만 허용한다(값은 모델보다 커질 수 없다).
+                assert step["reach_probability_pct"] <= expected["mid"] * 100.0 + 0.06
+                assert step["probability_low_pct"] <= step["reach_probability_pct"] <= step["probability_high_pct"]
+                assert 0.0 <= step["probability_low_pct"] and step["probability_high_pct"] <= 100.0
+                assert step["reach_probability_pct"] <= previous_probability
+                previous_probability = step["reach_probability_pct"]
+                assert 1 <= step["days_min"] <= step["days_max"] <= 30
+                assert step["days_min"] >= previous_days[0] and step["days_max"] >= previous_days[1]
+                previous_days = (step["days_min"], step["days_max"])
+                assert "첫 도달일" in step["period_note"]
+            first = band["steps"][0]
+            expected_first = fm.touch_probability(last, first["price"], sigma, 30) * 100.0
+            assert first["reach_probability_pct"] == pytest.approx(expected_first, abs=0.06)
 
 
-def test_sparse_empirical_hits_use_dynamic_model_period_instead_of_unavailable():
+def test_extreme_atr_still_gives_bounded_probabilities_and_periods():
     dd = _sample_buy_dd()
-    # 최근 변동성이 과거보다 급격히 확대된 종목을 재현한다. 깊은 밴드는
-    # 과거 도달 사례가 최소 표본 수보다 적지만 가격·ATR·거래량 데이터는 충분하다.
+    # 최근 변동성이 과거보다 급격히 확대된 종목: 깊은 밴드의 확률은 낮아지고 기간은 30일 상한에 붙는다.
     dd["ATR"][-1] = 25.0
     result = _calculate(dd)
     all_steps = [
@@ -290,17 +309,10 @@ def test_sparse_empirical_hits_use_dynamic_model_period_instead_of_unavailable()
         for step in band["steps"]
     ]
 
-    assert any(step["period_source"] == "model" for step in all_steps)
-    assert all(step["days_min"] is not None for step in all_steps)
-    assert all(step["days_max"] is not None for step in all_steps)
+    assert all(step["probability_source"] == "touch_model" for step in all_steps)
+    assert all(0.0 <= step["reach_probability_pct"] <= 100.0 for step in all_steps)
     assert all(1 <= step["days_min"] <= step["days_max"] <= 30 for step in all_steps)
     assert all(step["period_label"] is None for step in all_steps)
-    assert all(
-        step["period_note"] and "ATR 거리" in step["period_note"]
-        for step in all_steps
-        if step["period_source"] == "model"
-    )
-
     for family in ("aggressive_bands", "recommended_bands"):
         for band in result[family]:
             assert [step["days_min"] for step in band["steps"]] == sorted(
@@ -309,6 +321,22 @@ def test_sparse_empirical_hits_use_dynamic_model_period_instead_of_unavailable()
             assert [step["days_max"] for step in band["steps"]] == sorted(
                 step["days_max"] for step in band["steps"]
             )
+
+
+def test_deeper_steps_are_less_likely_and_slower_than_shallower_ones():
+    result = _calculate(_sample_buy_dd())
+    steps = [
+        step
+        for family in ("aggressive_bands", "recommended_bands")
+        for band in result[family]
+        for step in band["steps"]
+    ]
+    steps.sort(key=lambda step: step["price"], reverse=True)
+
+    probabilities = [step["reach_probability_pct"] for step in steps]
+    assert probabilities == sorted(probabilities, reverse=True)
+    assert steps[0]["reach_probability_pct"] > 80.0 > 20.0 > steps[-1]["reach_probability_pct"]
+    assert steps[0]["days_max"] <= steps[-1]["days_max"]
 
 
 def test_forecast_band_ui_uses_aligned_five_column_stage_rows():
@@ -325,3 +353,173 @@ def test_forecast_band_ui_uses_aligned_five_column_stage_rows():
         "const recBandsHtml", 1
     )[0]
     assert "1차 탐색 구간 · 소액 테스트" in HTML
+
+
+# ── 어떤 종목이든 1차·2차 구간이 항상 유효하게 나오는지 확인하는 형태별 회귀 검증 ──────────────
+
+def _dd_from_closes(closes, wick=0.015):
+    """종가열만으로 calc_buy_price 입력(OHLCV + 지표)을 만든다. 저가주·급락·급등 같은 형태 검증용."""
+    size = len(closes)
+    opens = [close * (1.0 - 0.002 * math.sin(index)) for index, close in enumerate(closes)]
+    highs = [max(open_, close) * (1.0 + wick * (1.0 + (index % 3) * 0.05))
+             for index, (open_, close) in enumerate(zip(opens, closes))]
+    lows = [min(open_, close) * (1.0 - wick * (1.0 + (index % 4) * 0.04))
+            for index, (open_, close) in enumerate(zip(opens, closes))]
+    volumes = [100_000 + (index % 11) * 4_500 for index in range(size)]
+    true_ranges = [high - low for high, low in zip(highs, lows)]
+    atrs = [
+        sum(true_ranges[max(0, index - 13):index + 1]) / len(true_ranges[max(0, index - 13):index + 1])
+        for index in range(size)
+    ]
+
+    def sma(period):
+        return [
+            None if index + 1 < period else sum(closes[index - period + 1:index + 1]) / period
+            for index in range(size)
+        ]
+
+    def band_offset(index, multiple):
+        window = closes[max(0, index - 19):index + 1]
+        mean = sum(window) / len(window)
+        return multiple * math.sqrt(sum((value - mean) ** 2 for value in window) / len(window))
+
+    ma20 = sma(20)
+    return {
+        "Open": opens, "High": highs, "Low": lows, "Close": list(closes), "Volume": volumes, "ATR": atrs,
+        "MA20": ma20, "MA60": sma(60), "MA120": sma(120), "EMA20": ma20, "BB_Middle": ma20,
+        "BB_Lower": [None if value is None else value - band_offset(index, 2.0) for index, value in enumerate(ma20)],
+        "BB_Upper": [None if value is None else value + band_offset(index, 2.0) for index, value in enumerate(ma20)],
+        "RSI": [50.0] * size, "MACD": [0.0] * size, "Signal_Line": [0.0] * size,
+        "ADX": [20.0] * size, "DI_Plus": [20.0] * size, "DI_Minus": [20.0] * size,
+    }
+
+
+def _shape_closes(kind, size, base):
+    rng = random.Random(f"{kind}-{size}")
+    if kind == "uptrend":
+        return [base * (1.0 + 0.0025 * index) + base * 0.01 * math.sin(index / 3.0) for index in range(size)]
+    if kind == "downtrend":
+        return [base * (1.0 - 0.0018 * index) + base * 0.008 * math.sin(index / 3.0) for index in range(size)]
+    if kind == "crash":  # 평탄하다가 5거래일에 -35%: 현재가 아래에 구조적 지지가 전혀 없다
+        closes = [base] * size
+        crash_at = max(1, size - 6)
+        for index in range(crash_at, size):
+            closes[index] = base * (1.0 - 0.07 * (index - crash_at + 1))
+        return closes
+    if kind == "spike":  # 평탄하다가 급등
+        closes = [base] * size
+        start = max(1, size - 4)
+        for index in range(start, size):
+            closes[index] = base * (1.0 + 0.15 * (index - start + 1))
+        return closes
+    if kind == "flat":
+        return [base * (1.0 + 0.002 * math.sin(index)) for index in range(size)]
+    if kind == "volatile":
+        price, closes = base, []
+        for _ in range(size):
+            price *= 1.0 + rng.gauss(0.0, 0.04)
+            closes.append(price)
+        return closes
+    raise ValueError(kind)
+
+
+def _assert_family_contract(family):
+    assert [band["band"] for band in family] == ["A", "B", "C"]
+    for band in family:
+        steps = band["steps"]
+        assert band["is_available"] is True
+        assert len(steps) == 5
+        low, high = band["range"]
+        assert 0 < low < high
+        prices = [step["price"] for step in steps]
+        assert len(set(prices)) == 5, f"밴드 {band['band']} 단계 가격 중복: {prices}"
+        assert prices == sorted(prices, reverse=True)
+        assert all(low <= price <= high for price in prices)
+        assert all(
+            steps[index]["price_range"][0] >= steps[index + 1]["price_range"][1]
+            for index in range(4)
+        )
+        probabilities = [step["reach_probability_pct"] for step in steps]
+        assert all(value is not None and 0.0 <= value <= 100.0 for value in probabilities)
+        assert probabilities == sorted(probabilities, reverse=True)
+        assert all(step["days_min"] is not None and 1 <= step["days_min"] <= step["days_max"] <= 30
+                   for step in steps)
+        assert band["evidence_level"] in {"structure", "indicator", "volatility"}
+    for upper, lower in zip(family, family[1:]):
+        assert upper["range"][0] > lower["range"][0] and upper["range"][1] > lower["range"][1]
+        assert all(a["price"] > b["price"] for a, b in zip(upper["steps"], lower["steps"]))
+
+
+@pytest.mark.parametrize("market,base", [("KRX", 1_250.0), ("KRX", 48_500.0), ("KRX", 650_000.0), ("US", 3.4), ("US", 187.5)])
+@pytest.mark.parametrize("kind", ["uptrend", "downtrend", "crash", "spike", "flat", "volatile"])
+def test_both_entry_families_are_always_valid_for_every_chart_shape(kind, market, base):
+    for size in (12, 35, 80, 180):
+        dd = _dd_from_closes(_shape_closes(kind, size, base))
+        result = _calculate(dd, market=market)
+
+        _assert_family_contract(result["aggressive_bands"])
+        _assert_family_contract(result["recommended_bands"])
+        # 2차 구간은 항상 1차 전체보다 아래에 있다
+        assert max(band["range"][1] for band in result["recommended_bands"]) < min(
+            band["range"][0] for band in result["aggressive_bands"]
+        ), f"{kind}/{market}/{base}/size={size}: 2차가 1차와 겹침"
+        # 현재가의 10% 하한 아래로는 내려가지 않는다
+        floor_price = dd["Close"][-1] * 0.10
+        assert all(
+            band["range"][0] >= floor_price - 1e-9
+            for family in ("aggressive_bands", "recommended_bands") for band in result[family]
+        )
+
+
+def test_narrow_low_priced_band_keeps_five_distinct_step_prices():
+    # 호가 1원인 저가주에서 1차 밴드 폭이 4호가(112~116)일 때 4·5단계가 같은 112원으로 겹쳐
+    # 검증이 실패했고, 그 결과 1차 구간 전체가 '표시 보류'가 되던 결함의 회귀 검증이다.
+    dd = _sample_buy_dd()
+    for regime in ("BULL", "NEUTRAL", "BEAR"):
+        result = _calculate(dd, market_regime=regime)
+        for family in ("aggressive_bands", "recommended_bands"):
+            for band in result[family]:
+                assert band["is_available"] is True
+                prices = [step["price"] for step in band["steps"]]
+                assert len(set(prices)) == 5, (regime, family, band["band"], prices)
+
+
+def test_evidence_levels_reflect_how_many_independent_price_sources_overlap():
+    result = _calculate(_sample_buy_dd())
+    summary = result["price_structure"]["evidence_summary"]
+
+    for family_name, family in (
+        ("aggressive", result["aggressive_bands"]),
+        ("recommended", result["recommended_bands"]),
+    ):
+        assert sum(summary[family_name].values()) == 3
+        for band in family:
+            sources = band["evidence_sources"]
+            if band["evidence_level"] == "structure":
+                assert len(sources) >= 2
+            elif band["evidence_level"] == "indicator":
+                assert len(sources) == 1
+            else:
+                assert sources == []
+                assert "변동성" in band["evidence_note"]
+            assert band["nearest_reference"] is None or band["nearest_reference"]["label"]
+            probabilities = [step["reach_probability_pct"] for step in band["steps"]]
+            low, high = band["reach_probability_range_pct"]
+            assert low <= min(probabilities) and high >= max(probabilities)
+            assert min(probabilities) <= band["reach_probability_mid_pct"] <= max(probabilities)
+
+
+def test_entry_sections_always_use_fixed_titles_and_never_show_withheld_cards():
+    assert "⚡ 1차 탐색 구간 · 소액 테스트" in HTML
+    assert "📍 2차 매수 구간 · 본 진입" in HTML
+    # 제목은 신규상장(관찰 전용)에서도 바뀌지 않고, 칩으로만 구분한다
+    assert "⚡ 관찰 가격 구간 · 흐름 확인" not in HTML
+    assert "관찰 전용</span>" in HTML
+    # 옛 '표시 보류' 카드 문구가 더는 없어야 한다
+    for withheld_text in ("가격 표시 보류", "탐색 범위 표시를 보류했습니다", "주 진입 범위 표시를 보류했습니다"):
+        assert withheld_text not in HTML
+    # 근거 등급과 추정 확률 표기
+    assert "b.evidence_label" in HTML
+    assert "b.nearest_reference" in HTML
+    assert "b.reach_probability_range_pct" in HTML
+    assert "probability_note" in HTML
