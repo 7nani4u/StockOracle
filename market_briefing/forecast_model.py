@@ -17,9 +17,11 @@ import math
 import re
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from statistics import NormalDist
 from typing import Any, Iterable
 
 KST = timezone(timedelta(hours=9))
+_NORMAL = NormalDist()
 Z_P90 = 1.2815515655446004   # 10%/90% 분위
 Z_P95 = 1.6448536269514722   # 5%/95% 분위
 _TOUCH_Z_25 = 1.1503493803760079  # P(max≥a)=25% 가 되는 a/(σ√n)
@@ -103,6 +105,64 @@ def touch_day_window(price: float, level: float, sigma_daily: float, horizon_day
         "raw_days": [early, typical],
         "within_horizon": typical <= horizon,
         "basis": "무추세 변동성 기준 도달 가능성 25%~50% 구간",
+    }
+
+
+# 52종목(KRX 26·US 26)·2022-10~2026-09·6,211 시점에서 '이후 30거래일 실현 일간 변동성 ÷ 예측 σ' 의 분포:
+# 25백분위 0.836, 중앙값 1.02(편향 없음), 75백분위 1.268. 변동성 추정이 빗나갈 때 도달 확률이 얼마나
+# 흔들리는지를 low~high 범위로 옮길 때 쓰는 배율이다(scripts/audit_prediction_layers.py 참조).
+VOL_ERROR_Q25 = 0.836
+VOL_ERROR_Q75 = 1.268
+
+
+def touch_probability_range(price: float, level: float, sigma_daily: float, days: int) -> dict | None:
+    """touch_probability 의 중앙값과, 변동성 추정 오차(25~75 백분위)를 반영한 low~high 범위(0~1)."""
+    mid = touch_probability(price, level, sigma_daily, days)
+    if mid is None:
+        return None
+    low = touch_probability(price, level, sigma_daily * VOL_ERROR_Q25, days)
+    high = touch_probability(price, level, sigma_daily * VOL_ERROR_Q75, days)
+    return {
+        "low": min(mid, low if low is not None else mid),
+        "mid": mid,
+        "high": max(mid, high if high is not None else mid),
+    }
+
+
+def touch_time_window(price: float, level: float, sigma_daily: float, horizon_days: int,
+                      lower_q: float = 0.25, upper_q: float = 0.75) -> dict:
+    """horizon_days 안에 level 에 닿는 경우를 가정한 '첫 도달일'의 lower_q~upper_q 분위수(무추세).
+
+    무추세 브라운 운동의 첫 통과시간 분포 P(T≤t)=2(1-Φ(a/σ√t)) 를 기간 안에 닿는 경우로 조건화해
+    t_q = H·z² / Φ⁻¹(1 - q·P(T≤H)/2)² (z=a/σ√H) 로 구한다. 확률(touch_probability)과 같은 분포에서
+    나오므로 두 숫자가 서로 어긋나지 않는다. 52종목·4년 검증에서 실제 첫 도달일의 63%가 중간 50% 구간에 들어왔다.
+    """
+    horizon = max(1, int(horizon_days))
+    if not price or not level or price <= 0 or level <= 0 or not sigma_daily or sigma_daily <= 0:
+        return {"days": [1, horizon], "within_horizon": False, "probability": None, "basis": "변동성 미확보"}
+    gap = abs(math.log(level / price))
+    if gap == 0:
+        return {"days": [1, 1], "raw_days": [0.0, 0.0], "within_horizon": True, "probability": 1.0,
+                "basis": "현재가와 같은 가격"}
+    z = gap / (sigma_daily * math.sqrt(horizon))
+    probability = 2.0 * (1.0 - normal_cdf(z))
+    if probability <= 1e-9:
+        return {"days": [horizon, horizon], "raw_days": [float(horizon), float(horizon)],
+                "within_horizon": False, "probability": probability, "basis": "무추세 변동성 기준 도달 거의 불가"}
+
+    def quantile_day(q: float) -> float:
+        tail = min(max(1.0 - q * probability / 2.0, 0.5 + 1e-12), 1.0 - 1e-12)
+        return horizon * z * z / max(_NORMAL.inv_cdf(tail) ** 2, 1e-12)
+
+    low_raw, high_raw = quantile_day(lower_q), quantile_day(upper_q)
+    low_day = min(horizon, max(1, math.floor(low_raw)))
+    high_day = min(horizon, max(low_day, math.ceil(high_raw)))
+    return {
+        "days": [low_day, high_day],
+        "raw_days": [low_raw, high_raw],
+        "within_horizon": True,
+        "probability": probability,
+        "basis": f"무추세 변동성 기준, 기간 안에 닿는 경우의 첫 도달일 {int(lower_q * 100)}~{int(upper_q * 100)}백분위",
     }
 
 
