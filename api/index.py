@@ -7502,6 +7502,38 @@ def _has_valid_latest_ohlcv(df) -> bool:
         return False
 
 
+def _with_financial_validation(value: Dict | None, technique: str, market: str) -> Dict:
+    """Keep financial rankings descriptive unless historical evidence permits trades."""
+    from market_briefing.technique_prune import technique_allowed, technique_evidence
+    result = dict(value or {})
+    evidence = technique_evidence(technique, market)
+    allowed, reason = technique_allowed(technique, market)
+    result["validation"] = evidence
+    result["actionable"] = bool(allowed and evidence["publishable"])
+    result["research_only"] = not result["actionable"]
+    if not result["actionable"]:
+        result["actionability_reason"] = reason if not allowed else "과거 시점 재무자료 기반 매매 검증 미완료"
+    return result
+
+
+def _validated_longterm_payload(payload: Dict, market: str) -> Dict:
+    if not isinstance(payload, dict):
+        return {"items": [], "error": "장기 조회 응답 형식 오류", "actionable_count": 0}
+    result = dict(payload)
+    items = []
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        checked = _with_financial_validation(item, "garp", market)
+        if isinstance(checked.get("peter_lynch"), dict):
+            checked["peter_lynch"] = _with_financial_validation(checked["peter_lynch"], "garp", market)
+        items.append(checked)
+    result["items"] = items
+    result["validation"] = _with_financial_validation({}, "garp", market)["validation"]
+    result["actionable_count"] = sum(bool(item.get("actionable")) for item in items)
+    return result
+
+
 def _longterm_garp_rank(assessment, technical_score):
     """Prioritize strict GARP qualification while preserving technical order."""
     assessment = assessment or {}
@@ -8975,6 +9007,16 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
     cur_vol = float(vols[-1]) if vols else 0
     avg_vol = float(np.mean([x for x in vols[-20:] if x])) if vols else 1
 
+    from market_briefing.technique_prune import technique_allowed, context_conditions
+    _trade_context = context_conditions(dd.get("Close", []), dd.get("High", []), dd.get("Low", []), dd.get("Volume", []))
+    _runtime_states = calc_indicator_signals(dd, market=market).get("signals", {})
+    def _validated_gain(value, *techniques):
+        for _tech in techniques:
+            _info = _runtime_states.get(_tech, {})
+            if not technique_allowed("indicator_" + _tech, market, {**_trade_context, "state": _info.get("state")})[0]:
+                return 0.0
+        return value
+
     score = 50.0
     steps = []
 
@@ -8983,23 +9025,23 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
     max_ts = w_trend / 2.0
     if ema20 and ema50:
         if ema20 > ema50:
-            ts += max_ts * 0.35; msgs.append("EMA20 > EMA50 정배열 → 중기 상승 추세")
+            ts += _validated_gain(max_ts * 0.35, "ma"); msgs.append("EMA20 > EMA50 정배열 → 중기 상승 추세")
         else:
             ts -= max_ts * 0.35; msgs.append("EMA20 < EMA50 역배열 → 중기 하락 추세")
     if ema20 and close:
         if close > ema20:
-            ts += max_ts * 0.25; msgs.append("현재가 EMA20 상회 → 단기 강세")
+            ts += _validated_gain(max_ts * 0.25, "ma"); msgs.append("현재가 EMA20 상회 → 단기 강세")
         else:
             ts -= max_ts * 0.25; msgs.append("현재가 EMA20 하회 → 단기 약세")
     if macd > sig:
-        ts += max_ts * 0.25; msgs.append("MACD 골든크로스 → 상승 전환 신호")
+        ts += _validated_gain(max_ts * 0.25, "macd"); msgs.append("MACD 골든크로스 → 상승 전환 신호")
     else:
         ts -= max_ts * 0.25; msgs.append("MACD 데드크로스 → 하락 전환 신호")
     psar_dir = v("PSAR_DIR")
     psar_dir_arr = dd.get("PSAR_DIR", [])
     _prev_pdir = float(psar_dir_arr[-2]) if len(psar_dir_arr) >= 2 and psar_dir_arr[-2] is not None else psar_dir
     if psar_dir == 1.0:
-        ts += max_ts * 0.15
+        ts += _validated_gain(max_ts * 0.15, "psar")
         msgs.append("PSAR 상승" + (" 전환 (신규)" if _prev_pdir != 1.0 else " 추세 지속"))
     elif psar_dir == -1.0:
         ts -= max_ts * 0.15
@@ -9014,15 +9056,15 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
     max_ms = w_mom / 2.0
     if not rsi_available: msgs.append("RSI 미확보 — 모멘텀 점수에서 제외")
     elif rsi > 70: ms -= max_ms * 0.4; msgs.append(f"RSI {rsi:.1f} 과매수 → 하락 압력 주의")
-    elif rsi < 30: ms += max_ms * 0.5; msgs.append(f"RSI {rsi:.1f} 과매도 → 강한 반등 기대")
+    elif rsi < 30: ms += _validated_gain(max_ms * 0.5, "rsi"); msgs.append(f"RSI {rsi:.1f} 과매도 → 강한 반등 기대")
     elif rsi > 55: ms -= max_ms * 0.1; msgs.append(f"RSI {rsi:.1f} 고점권 — 완만한 하락 압력")
-    elif rsi < 45: ms += max_ms * 0.2; msgs.append(f"RSI {rsi:.1f} 저점권 → 매수 관심 구간")
+    elif rsi < 45: ms += _validated_gain(max_ms * 0.2, "rsi"); msgs.append(f"RSI {rsi:.1f} 저점권 → 매수 관심 구간")
     else:                      msgs.append(f"RSI {rsi:.1f} 중립")
     if not adx_available:
         msgs.append("ADX 미확보 — 추세 강도 판단 제외")
     elif adx > 25:
         if dip > dim:
-            ms += max_ms * 0.5; msgs.append(f"ADX {adx:.0f} + +DI 우세 → 강한 상승 추세 신뢰")
+            ms += _validated_gain(max_ms * 0.5, "adx"); msgs.append(f"ADX {adx:.0f} + +DI 우세 → 강한 상승 추세 신뢰")
         else:
             ms -= max_ms * 0.5; msgs.append(f"ADX {adx:.0f} + -DI 우세 → 강한 하락 추세 신뢰")
     elif adx > 20:
@@ -9043,16 +9085,16 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
         if close >= bb_u * 0.98:
             vs -= max_vs * 0.5; msgs.append("볼린저 상단 터치 → 단기 과매수/저항")
         elif close <= bb_l * 1.02:
-            vs += max_vs * 0.5; msgs.append("볼린저 하단 터치 → 단기 과매도/지지")
+            vs += _validated_gain(max_vs * 0.5, "bb"); msgs.append("볼린저 하단 터치 → 단기 과매도/지지")
         elif pos > 0.7:
             vs -= max_vs * 0.2; msgs.append("볼린저 상단권 (70%+) → 매도 압력")
         elif pos < 0.3:
-            vs += max_vs * 0.2; msgs.append("볼린저 하단권 (30%-) → 지지 기대")
+            vs += _validated_gain(max_vs * 0.2, "bb"); msgs.append("볼린저 하단권 (30%-) → 지지 기대")
         else:
             msgs.append("볼린저 중간권 → 중립")
         bb_pct = bb_range / close * 100
         if bb_pct < 3.0:
-            vs += max_vs * 0.3; msgs.append(f"밴드 수렴 ({bb_pct:.1f}%) → 큰 방향 돌파 임박")
+            vs += _validated_gain(max_vs * 0.3, "bb"); msgs.append(f"밴드 수렴 ({bb_pct:.1f}%) → 큰 방향 돌파 임박")
         elif atr and close:
             atr_pct = atr / close * 100
             if atr_pct > 4.0:
@@ -9116,6 +9158,29 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
         # 패턴 분석 실패는 점수에 영향 없이 진행하되 조용히 사라지지 않게 남긴다.
         print(f"[analyze_score] chart pattern analysis skipped: {type(exc).__name__}: {exc}")
 
+    from market_briefing.technique_prune import technique_allowed, technique_evidence, pattern_conditions
+    from market_briefing.strategy_registry import candle_id, candle_conditions
+    from market_briefing.pattern_engine import RETAINED_PATTERN_REGISTRY
+    for _pattern in patterns + geo_patterns:
+        _is_geo = _pattern in geo_patterns
+        _pid = str(_pattern.get("id") or "unknown")
+        _pid = next((key for key in RETAINED_PATTERN_REGISTRY if _pid.startswith(key)), _pid.split(":")[0])
+        _tech = "pattern_" + _pid if _is_geo else candle_id(str(_pattern.get("name") or "unknown"))
+        _pattern["context_conditions"] = dict(_trade_context)
+        _conditions = {**_trade_context, **(pattern_conditions(_pattern) if _is_geo else candle_conditions(_pattern))}
+        _pattern["validation"] = technique_evidence(_tech, market)
+        _allow, _reason = technique_allowed(_tech, market, _conditions)
+        if _is_geo and _allow:
+            _allow, _reason = technique_allowed("pattern_breakout", market, _conditions)
+        if not _allow:
+            _pattern["score_eligible"] = False
+            _pattern["pruned"] = True
+            _pattern["prune_reason"] = _reason
+            _pattern["raw_signal"] = _pattern.get("signal")
+            if str(_pattern.get("signal") or "").startswith("매수"):
+                _pattern["signal"] = "관망"
+                _pattern["direction"] = "중립"
+
     cp_msgs = []
     cp_score = 0.0
     bull_patterns = []
@@ -9140,7 +9205,7 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
     # ── RSI × 캔들 패턴 연동 시너지 (팩터 하이브리드 핵심) ─────────
     # RSI 과매도 + 상승 패턴 동시 발생 → 추가 가산
     if rsi < 35 and bull_patterns:
-        cp_score += 1.5
+        cp_score += _validated_gain(1.5, "rsi")
         cp_msgs.append(f"⚡ RSI 과매도({rsi:.1f}) + 상승 패턴 시너지 → 반전 신호 강화")
     # RSI 과매수 + 하락 패턴 동시 발생 → 추가 감산
     elif rsi > 65 and bear_patterns:
@@ -9174,15 +9239,15 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
        obv_arr[-1] is not None and obv_arr[-5] is not None:
         obv_d   = float(obv_arr[-1]) - float(obv_arr[-5])
         price_d = float(closes[-1])  - float(closes[-5])
-        if   price_d > 0 and obv_d > 0: sx += 1.5; msgs.append("OBV + 가격 동반 상승 → 추세 신뢰↑")
+        if   price_d > 0 and obv_d > 0: sx += _validated_gain(1.5, "obv"); msgs.append("OBV + 가격 동반 상승 → 추세 신뢰↑")
         elif price_d < 0 and obv_d < 0: sx -= 1.5; msgs.append("OBV + 가격 동반 하락 → 하락 추세 신뢰↑")
         elif price_d > 0 and obv_d < 0: sx -= 1.0; msgs.append("가격↑·OBV↓ 다이버전스 → 매수세 약화 경고")
-        elif price_d < 0 and obv_d > 0: sx += 1.0; msgs.append("가격↓·OBV↑ 다이버전스 → 저가 누적 추정")
+        elif price_d < 0 and obv_d > 0: sx += _validated_gain(1.0, "obv"); msgs.append("가격↓·OBV↑ 다이버전스 → 저가 누적 추정")
 
     # Aroon + TRIX 이중 모멘텀 확인
     if aroon_up_v is not None and aroon_dn_v is not None and trix_v is not None:
         if aroon_up_v > 70 and trix_v > 0:
-            sx += 1.5; msgs.append(f"Aroon Up {aroon_up_v:.0f} + TRIX 양전 → 중기 상승 이중 확인")
+            sx += _validated_gain(1.5, "aroon"); msgs.append(f"Aroon Up {aroon_up_v:.0f} + TRIX 양전 → 중기 상승 이중 확인")
         elif aroon_dn_v > 70 and trix_v < 0:
             sx -= 1.5; msgs.append(f"Aroon Down {aroon_dn_v:.0f} + TRIX 음전 → 중기 하락 이중 확인")
         elif aroon_up_v > aroon_dn_v:
@@ -9193,7 +9258,7 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
     # Buy Pressure + RSI 시너지
     if bp_v is not None:
         if bp_v > 55 and rsi < 50:
-            sx += 1.0; msgs.append(f"매수압력 {bp_v:.0f}% + RSI 저점 → 저점 매집 신호")
+            sx += _validated_gain(1.0, "buy_pressure", "rsi"); msgs.append(f"매수압력 {bp_v:.0f}% + RSI 저점 → 저점 매집 신호")
         elif bp_v < 45 and rsi > 60:
             sx -= 1.0; msgs.append(f"매수압력 {bp_v:.0f}% + RSI 고점 → 상승 동력 약화")
 
@@ -9203,7 +9268,7 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
     if _pdir is not None and ema20 is not None:
         above_ema = close > ema20
         if _pdir == 1.0 and above_ema:
-            sx += 0.5; msgs.append("PSAR 상승 + EMA20 상회 → 추세 지표 일치")
+            sx += _validated_gain(0.5, "psar", "ma"); msgs.append("PSAR 상승 + EMA20 상회 → 추세 지표 일치")
         elif _pdir == -1.0 and not above_ema:
             sx -= 0.5; msgs.append("PSAR 하락 + EMA20 하회 → 추세 지표 일치")
         elif _pdir == 1.0 and not above_ema:
@@ -11431,6 +11496,33 @@ def calc_indicator_signals(dd: Dict, market: str = "US") -> Dict:
         signals["buy_pressure"] = {"name":"Buy Pressure (14)", "state":st, "signal":sig, "desc":desc,
                                    "value":f"{bp:.1f}%"}
         weighted.append((sc, 0.7, "BuyPressure"))
+
+    # Validation affects the same components used by the aggregate score.
+    from market_briefing.technique_prune import technique_allowed, technique_evidence, context_conditions, drsi_conditions
+    _indicator_context = context_conditions(dd.get("Close", []), dd.get("High", []), dd.get("Low", []), dd.get("Volume", []))
+    _indicator_labels = {"rsi": "RSI", "macd": "MACD", "ma": "MA",
+                         "adx": "ADX", "bb": "BB", "psar": "PSAR", "obv": "OBV",
+                         "stoch14": "Stochastic", "aroon": "Aroon", "buy_pressure": "BuyPressure"}
+    _blocked_labels = set()
+    for _key, _signal in signals.items():
+        _tech = "dynamic_rsi" if _key == "dynamic_rsi" else "indicator_" + _key
+        _signal["validation"] = technique_evidence(_tech, market)
+        _conditions = {**_indicator_context, "state": _signal.get("state")}
+        if _key == "dynamic_rsi":
+            _snapshot = dynamic_rsi_snapshot(dd, market=market)
+            _stop = _snapshot.get("stop")
+            _reference_close = (dd.get("Close") or [None])[-1]
+            _stop_dist = ((float(_reference_close)-float(_stop))/float(_reference_close)*100
+                          if _reference_close and _stop else None)
+            _conditions.update(drsi_conditions(market, _snapshot.get("rsi"), _stop_dist))
+        _allowed, _reason = technique_allowed(_tech, market, _conditions)
+        if not _allowed and _signal.get("signal") == "매수":
+            _signal["raw_signal"] = _signal["signal"]
+            _signal["signal"] = "관망"
+            _signal["pruned"] = True
+            _signal["prune_reason"] = _reason
+            _blocked_labels.add(_indicator_labels.get(_key))
+    weighted = [row for row in weighted if row[2] not in _blocked_labels]
 
     # ── 종합 판단: 가중 점수 기반 5단계 ─────────────────────────────────────
     adx_v = v("ADX") or 0.0; dip_v = v("DI_Plus") or 0.0; dim_v = v("DI_Minus") or 0.0
@@ -14252,6 +14344,24 @@ def calc_buy_price(dd: Dict, last_price: float, atr: float, score: float, indica
     arty_smma_fractal = calc_arty_smma_fractal(
         arty_dd or dd, last_price, market=market
     )
+    from market_briefing.technique_prune import technique_allowed, technique_evidence, context_conditions
+    from market_briefing.strategy_registry import arty_conditions
+    _arty_dd = arty_dd or dd
+    _arty_context = context_conditions(_arty_dd.get("Close", []), _arty_dd.get("High", []), _arty_dd.get("Low", []), _arty_dd.get("Volume", []))
+    _arty_conditions = {**_arty_context, **arty_conditions({
+        "retest_line": str((arty_smma_fractal.get("retest") or {}).get("line") or 21).replace("SMMA", ""),
+        "slope200_pct20": (arty_smma_fractal.get("slope_pct_20bars") or {}).get("200")})}
+    arty_smma_fractal["validation"] = technique_evidence("arty_smma_fractal", market)
+    _arty_allowed, _arty_reason = technique_allowed("arty_smma_fractal", market, _arty_conditions)
+    if not _arty_allowed:
+        arty_smma_fractal["pruned"] = True
+        arty_smma_fractal["prune_reason"] = _arty_reason
+        arty_smma_fractal["raw_entry_plan"] = {k: arty_smma_fractal.get(k) for k in ("entry", "stop", "target")}
+        for _key in ("entry", "stop", "target"):
+            arty_smma_fractal[_key] = None
+        arty_smma_fractal["status"] = "검증 손실조건 제외"
+        if isinstance(arty_smma_fractal.get("entry_timing"), dict):
+            arty_smma_fractal["entry_timing"]["state"] = "pruned"
     r = lambda v: _round_market_price(v, market)
     return {
         "current": r(last_price),
@@ -16407,6 +16517,8 @@ def build_prediction_outlook(
     bullish_pattern_notes: list[str] = []
     bearish_pattern_notes: list[str] = []
     for pattern in candlestick_patterns or []:
+        if pattern.get("pruned") or pattern.get("score_eligible") is False:
+            continue
         direction = str(pattern.get("direction") or "")
         status = str(pattern.get("pattern_status") or pattern.get("status") or "")
         completion = _number(pattern.get("completion_score") or pattern.get("conf"))
@@ -17798,7 +17910,32 @@ def _bar_in_progress(market: str, last_bar_date: str, now: dt | None = None) -> 
         return False
 
 
+def _scan_signal_options(params: Dict) -> tuple[bool, bool]:
+    """Resolve signal switches once for both cache identity and execution."""
+    disabled = {"0", "false", "no", "off"}
+    return tuple(
+        str(params.get(name, os.getenv(env, "1"))).strip().lower() not in disabled
+        for name, env in (("momentum", "STOCKORACLE_MOMENTUM_SCAN"),
+                          ("vcp", "STOCKORACLE_VCP_SCAN"))
+    )
+
+
+def _scan_last_bar_date(hist) -> str:
+    """Keep the date of the last complete OHLCV row, before losing its index."""
+    required = ["Close", "High", "Low", "Volume", "Open"]
+    if hist is None or hist.empty or any(col not in hist.columns for col in required):
+        return ""
+    aligned = hist[required].dropna(subset=required)
+    if aligned.empty:
+        return ""
+    stamp = aligned.index[-1]
+    return stamp.date().isoformat() if hasattr(stamp, "date") else str(stamp)[:10]
+
+
 def route(path: str, params: Dict) -> Dict:
+    if path == "/api/technique-validation":
+        from market_briefing.technique_prune import pruning_report
+        return pruning_report()
     # trailing slash는 do_GET에서 rstrip("/") 처리됨
     # path는 항상 /api/stock 형식 (슬래시 없음)
     if path == "/api/stock":
@@ -18405,6 +18542,22 @@ def route(path: str, params: Dict) -> Dict:
         # 예측 탭의 동적 RSI 매수 타이밍은 선택한 차트가 분봉이어도 항상 일봉으로 고정한다.
         # SMMA 전략이 이미 확보한 일봉을 재사용하므로 별도 네트워크 호출은 추가하지 않는다.
         dynamic_rsi = dynamic_rsi_daily_snapshot(arty_dd, market=market)
+        from market_briefing.technique_prune import drsi_conditions, technique_allowed, technique_evidence, context_conditions
+        _drsi_context = context_conditions(arty_dd.get("Close", []), arty_dd.get("High", []), arty_dd.get("Low", []), arty_dd.get("Volume", []))
+        _drsi_close = (arty_dd.get("Close") or [None])[-1]
+        _drsi_stop = dynamic_rsi.get("stop")
+        _drsi_dist = ((float(_drsi_close) - float(_drsi_stop)) / float(_drsi_close) * 100
+                      if _drsi_close and _drsi_stop else None)
+        dynamic_rsi["validation"] = technique_evidence("dynamic_rsi", market)
+        _drsi_allowed, _drsi_reason = technique_allowed(
+            "dynamic_rsi", market, {**_drsi_context, **drsi_conditions(market, dynamic_rsi.get("rsi"), _drsi_dist)})
+        if not _drsi_allowed and dynamic_rsi.get("signal") == 1:
+            dynamic_rsi["raw_signal"] = 1
+            dynamic_rsi["signal"] = 0
+            dynamic_rsi["signal_label"] = "검증 손실조건 제외"
+            dynamic_rsi["pruned"] = True
+            dynamic_rsi["prune_reason"] = _drsi_reason
+            dynamic_rsi["purchase_timing"] = {"state": "pruned", "action": "관망", "reason": _drsi_reason}
 
         # ── Step 5: HybridTurtle 복합 점수 (NCS/BQS/FWS) — buy_price 전에 score 보정 ──
         #  이전에는 buy_price가 hybrid 보정 전 score로 계산되어 조건부 진입 구간이
@@ -18429,11 +18582,24 @@ def route(path: str, params: Dict) -> Dict:
                     volumes     = _vols   if len(_vols)  == len(_closes) else None,
                     open_prices = _opens  if len(_opens) == len(_closes) else None,
                     volume_in_progress = _volume_in_progress,
+                    market = market,
                 )
         except Exception as _e:
             # hybrid 실패 시 기존 점수 유지
             _log_route_issue(sym, "hybrid_score", _e)
             _component_status["hybrid_score"] = "failed"
+
+        from market_briefing.technique_prune import (
+            hybrid_conditions, technique_allowed, technique_evidence, context_conditions)
+        if isinstance(hybrid_score, dict):
+            hybrid_score["validation"] = technique_evidence("hybrid_breakout", market)
+            _hybrid_ok, _hybrid_reason = technique_allowed(
+                "hybrid_breakout", market, {**context_conditions(dd.get("Close", []), dd.get("High", []), dd.get("Low", []), dd.get("Volume", [])), **hybrid_conditions(hybrid_score)})
+            if not _hybrid_ok and hybrid_score.get("action") == "AUTO_YES":
+                hybrid_score["raw_action"] = hybrid_score["action"]
+                hybrid_score["action"] = "WAIT"
+                hybrid_score["pruned"] = True
+                hybrid_score["prune_reason"] = _hybrid_reason
 
         # 가산 보정(KRX 수급·NCS)을 모두 반영한 뒤 BEAR·부채·하이브리드 BEARISH 상한을 마지막에 적용한다.
         # (NCS 가산은 최대 +5, 취약 -10 / 상한은 40·45 — 상한을 먼저 적용하면 가산이 상한을 뚫는다.)
@@ -18842,6 +19008,9 @@ def route(path: str, params: Dict) -> Dict:
             key_metrics = {"market_cap_str": "N/A", "per_str": "N/A", "pbr_str": "N/A", "psr_str": "N/A", "roe_str": "N/A", "dy_str": "N/A"}
             peter_lynch = {"status": "unavailable", "eligible": False, "criteria": [], "error": str(_charm_e)}
 
+        investment_charm = _with_financial_validation(investment_charm, "investment_charm", market)
+        peter_lynch = _with_financial_validation(peter_lynch, "garp", market)
+
         # ── 통화·단위 명시: 프론트엔드가 market 외에 명시적 currency로 표시하도록 ──
         currency = "KRW" if market == "KRX" else "USD"
         price_unit = "원" if market == "KRX" else "달러"
@@ -18942,6 +19111,7 @@ def route(path: str, params: Dict) -> Dict:
             "probability_calibration": probability_calibration,
             "prob_neutral": round(max(0.0, 100.0 - float(prob_up or 0) - float(prob_down or 0)), 1),
             "technical_score": raw_technical_score,
+            "technique_validation": __import__("market_briefing.technique_prune", fromlist=["pruning_report"]).pruning_report(),
               "ml_prediction": ml_prediction,
             "analysis_steps": steps, "ai_strategy": ai_strategy,
             "candlestick_patterns": patterns,
@@ -19323,7 +19493,7 @@ def route(path: str, params: Dict) -> Dict:
         # 화면의 🔄 새로고침이 보내는 refresh=1 을 처리한다(예전에는 무시돼 4시간 캐시가 그대로 반환됐다).
         if str(params.get("refresh") or "") == "1":
             _CACHE.pop("fetch_kr_longterm_reco|()|[]", None)
-        return fetch_kr_longterm_reco()
+        return _validated_longterm_payload(fetch_kr_longterm_reco(), "KRX")
 
     if path == "/api/kr/opening-surge/performance":
         return _kr_surge_performance_payload(update=True)
@@ -19336,7 +19506,7 @@ def route(path: str, params: Dict) -> Dict:
     if path == "/api/us/longterm":
         if str(params.get("refresh") or "") == "1":
             _CACHE.pop("fetch_us_longterm_reco|()|[]", None)
-        return fetch_us_longterm_reco()
+        return _validated_longterm_payload(fetch_us_longterm_reco(), "US")
 
     if path == "/api/us/opening-surge":
         if str(params.get("refresh") or "") == "1":
@@ -19594,7 +19764,10 @@ def route(path: str, params: Dict) -> Dict:
             #   동일 (시장·모드·자본·리스크·종목집합) 요청은 5분간 재사용.
             #   refresh=1 파라미터로 강제 갱신 가능.
             _refresh   = str(params.get("refresh", "")).lower() in ("1", "true", "yes")
-            _cache_key = f"scan|v5|{market_p}|{mode_p}|{equity}|{risk_pct}|{','.join(raw_list)}"
+            _momentum_on, _vcp_on = _scan_signal_options(params)
+            from market_briefing.technique_prune import rules_cache_token
+            _prune_cache_token = rules_cache_token()
+            _cache_key = f"scan|v6|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -19609,7 +19782,12 @@ def route(path: str, params: Dict) -> Dict:
                     return None
                 # 열별 dropna 후 길이만 자르면 서로 다른 날짜가 결합될 수 있다.
                 # 동일 행에서 결측을 제거해 OHLCV 날짜 정렬을 보존한다.
-                aligned = hist[required_cols].dropna(subset=required_cols)
+                # Missing sessions must not be compressed into adjacent daily returns.
+                if hist[required_cols].isna().any().any():
+                    return None
+                if not hist.index.is_monotonic_increasing or hist.index.has_duplicates:
+                    return None
+                aligned = hist[required_cols]
                 cl = aligned["Close"].tolist()
                 hi = aligned["High"].tolist()
                 lo = aligned["Low"].tolist()
@@ -19668,6 +19846,7 @@ def route(path: str, params: Dict) -> Dict:
             # OHLCV는 yf.download 1회로 전수 확보하고 info만 개별 조회한다.
             # 실패 시 Phase B에서 기존 개별 수집으로 폴백한다.
             _bulk_ohlcv: dict = {}
+            _scan_bar_dates: dict = {}
             try:
                 _bd = yf.download(" ".join(raw_list), period="1y", group_by="ticker",
                                   threads=True, progress=False, timeout=25)
@@ -19698,6 +19877,7 @@ def route(path: str, params: Dict) -> Dict:
                             _n = min(len(_cl), len(_hi), len(_lo), len(_vo), len(_op))
                             if _n < 60:
                                 continue
+                            _scan_bar_dates[_t] = _scan_last_bar_date(_sub)
                             _bulk_ohlcv[_t] = (_cl[:_n], _hi[:_n], _lo[:_n], _vo[:_n], _op[:_n])
                         except Exception:
                             continue
@@ -19723,15 +19903,7 @@ def route(path: str, params: Dict) -> Dict:
 
             _ETF_SET = {"QQQ", "SPY", "SOXL", "TQQQ", "SQQQ", "DIA", "IWM"}
 
-            # 정규장 중 수집한 일봉의 마지막 막대는 오늘 진행 중인 막대(거래량 누적 중)다.
-            # 모든 종목의 거래량 비율이 같은 비율로 낮아져 NCS/FWS 절대 기준이 시각마다 흔들리므로,
-            # 거래량 비율은 직전 확정 막대 기준으로 계산한다(종목별 마지막 날짜를 모르므로 시장 단위 판정).
-            try:
-                from market_briefing.session_bars import market_session_in_progress
-                _scan_volume_in_progress = market_session_in_progress(
-                    market_p, is_trading_day=lambda _day: _is_scheduled_session(market_p, _day))
-            except Exception:
-                _scan_volume_in_progress = False
+            # Last-bar dates are retained per symbol; stale symbols must not shift a completed bar.
 
             # ── Phase B: 2단계 수집 (히스토리 벌크 → info 소수 워커) ──
             # 112연타 (history+info) 호출은 야후 401 Invalid Crumb를 유발하므로,
@@ -19743,7 +19915,9 @@ def route(path: str, params: Dict) -> Dict:
                     if pre is not None:
                         closes, highs, lows, volumes, opens = pre
                     else:
-                        ohlcv = _hist_to_lists(yf.Ticker(tkr).history(period="1y"))
+                        hist = yf.Ticker(tkr).history(period="1y")
+                        ohlcv = _hist_to_lists(hist)
+                        _scan_bar_dates[tkr] = _scan_last_bar_date(hist)
                         if ohlcv is None:
                             return None
                         closes, highs, lows, volumes, opens = ohlcv
@@ -19751,7 +19925,7 @@ def route(path: str, params: Dict) -> Dict:
                         ticker=tkr, closes=closes, highs=highs,
                         lows=lows, volumes=volumes, opens=opens,
                         bench_closes=bench_closes,
-                        volume_in_progress=_scan_volume_in_progress,
+                        volume_in_progress=_bar_in_progress(market_p, _scan_bar_dates.get(tkr, "")),
                     )
                     change = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2) \
                              if len(closes) >= 2 and closes[-2] != 0 else 0.0
@@ -19917,6 +20091,13 @@ def route(path: str, params: Dict) -> Dict:
                     for _lt, _lr in list(leader_map.items()):
                         if not isinstance(_lr, dict) or _lr.get("stage") != "BREAKOUT":
                             continue
+                        from market_briefing.technique_prune import context_conditions
+                        _context_snap = snap_map.get(_lt)
+                        if _context_snap is not None:
+                            _cut = -1 if _bar_in_progress(market_p, _scan_bar_dates.get(_lt, "")) else None
+                            _lr["context_conditions"] = context_conditions(
+                                _context_snap.closes[:_cut], _context_snap.highs[:_cut],
+                                _context_snap.lows[:_cut], _context_snap.volumes[:_cut])
                         _ok, _why = technique_allowed(
                             "leader_reversal", "US", leader_conditions(_lr))
                         if not _ok:
@@ -19931,7 +20112,6 @@ def route(path: str, params: Dict) -> Dict:
 
             # ── 모멘텀 지속 신호 (KRX/US 공통 보조 지표, 점수 미반영) ──
             # +20% 급등 후 3일 절반수성 PASS만 승격 후보. 연구용이라 env로 끌 수 있다.
-            _momentum_on = str(params.get("momentum", os.getenv("STOCKORACLE_MOMENTUM_SCAN", "1"))).strip().lower() not in {"0", "false", "no", "off"}
             momentum_map: dict = {}
             if _momentum_on:
                 for _mt, _msnap in snap_map.items():
@@ -19941,6 +20121,7 @@ def route(path: str, params: Dict) -> Dict:
                             highs=list(_msnap.highs or []),
                             lows=list(_msnap.lows or []),
                             volumes=list(_msnap.volumes or []),
+                            in_progress=_bar_in_progress(market_p, _scan_bar_dates.get(_mt, "")),
                         )
                     except Exception as _me:
                         momentum_map[_mt] = {"available": False, "stage": "NONE",
@@ -19955,6 +20136,13 @@ def route(path: str, params: Dict) -> Dict:
                     for _mt, _mo in list(momentum_map.items()):
                         if not isinstance(_mo, dict) or _mo.get("stage") != "PASS":
                             continue
+                        from market_briefing.technique_prune import context_conditions
+                        _context_snap = snap_map.get(_mt)
+                        if _context_snap is not None:
+                            _cut = -1 if _bar_in_progress(market_p, _scan_bar_dates.get(_mt, "")) else None
+                            _mo["context_conditions"] = context_conditions(
+                                _context_snap.closes[:_cut], _context_snap.highs[:_cut],
+                                _context_snap.lows[:_cut], _context_snap.volumes[:_cut])
                         _ok, _why = _tech_allowed(
                             "momentum_persistence", market_p, _momentum_conds(_mo))
                         if not _ok:
@@ -19969,7 +20157,6 @@ def route(path: str, params: Dict) -> Dict:
 
             # ── VCP 수축 신호 (KRX/US 공통 보조 지표, 점수 미반영) ──
             # 피벗 돌파 PASS 중 가짜돌파 위험없음만 승격 후보. 연구용이라 env로 끌 수 있다.
-            _vcp_on = str(params.get("vcp", os.getenv("STOCKORACLE_VCP_SCAN", "1"))).strip().lower() not in {"0", "false", "no", "off"}
             vcp_map: dict = {}
             if _vcp_on:
                 for _vt, _vsnap in snap_map.items():
@@ -19994,6 +20181,13 @@ def route(path: str, params: Dict) -> Dict:
                     for _vt, _vc in list(vcp_map.items()):
                         if not isinstance(_vc, dict) or _vc.get("stage") != "PASS":
                             continue
+                        from market_briefing.technique_prune import context_conditions
+                        _context_snap = snap_map.get(_vt)
+                        if _context_snap is not None:
+                            _cut = -1 if _bar_in_progress(market_p, _scan_bar_dates.get(_vt, "")) else None
+                            _vc["context_conditions"] = context_conditions(
+                                _context_snap.closes[:_cut], _context_snap.highs[:_cut],
+                                _context_snap.lows[:_cut], _context_snap.volumes[:_cut])
                         _ok, _why = _tech_allowed_vcp(
                             "vcp", market_p, _vcp_conds(_vc))
                         if not _ok:
@@ -20046,7 +20240,7 @@ def route(path: str, params: Dict) -> Dict:
             if market_p == "US" and leader_map:
                 try:
                     _promoted = int(apply_leader_promotion(
-                        cands, leader_map, equity, risk_pct).get("promoted", 0))
+                        cands, leader_map, equity, risk_pct, market=market_p).get("promoted", 0))
                 except Exception as _pm_e:
                     print(f"[scan] leader promotion failed ({type(_pm_e).__name__}: {_pm_e})")
 
@@ -20056,7 +20250,7 @@ def route(path: str, params: Dict) -> Dict:
             if _momentum_on and momentum_map:
                 try:
                     _momentum_promoted = int(apply_momentum_promotion(
-                        cands, momentum_map, equity, risk_pct).get("promoted", 0))
+                        cands, momentum_map, equity, risk_pct, market=market_p).get("promoted", 0))
                 except Exception as _mm_e:
                     print(f"[scan] momentum promotion failed ({type(_mm_e).__name__}: {_mm_e})")
 
@@ -20066,7 +20260,7 @@ def route(path: str, params: Dict) -> Dict:
             if _vcp_on and vcp_map:
                 try:
                     _vcp_promoted = int(apply_vcp_promotion(
-                        cands, vcp_map, equity, risk_pct).get("promoted", 0))
+                        cands, vcp_map, equity, risk_pct, market=market_p).get("promoted", 0))
                 except Exception as _mv_e:
                     print(f"[scan] vcp promotion failed ({type(_mv_e).__name__}: {_mv_e})")
 

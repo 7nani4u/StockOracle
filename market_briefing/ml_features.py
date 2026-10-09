@@ -384,6 +384,7 @@ def engineer_ticker_features(
         sub = sub.drop(columns=["NIFTY_cum20"])
 
     # Label - no lookahead beyond current row; uses future price via shift(-14)
+    sub["label_end_date"] = pd.to_datetime(sub["date"]).shift(-FORWARD_DAYS)
     sub["future_close"] = price.shift(-FORWARD_DAYS)
     sub["forward_return"] = (sub["future_close"] - price) / price * 100
     # Three states match the live decision problem: the former binary dataset
@@ -577,40 +578,53 @@ def compute_feature_vector(
         return None
 
 
+def chronological_label_frame(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
+    """Preserve label availability before removing feature gaps; legacy inference is conservative."""
+    d = df.copy()
+    d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_convert(None)
+    if d[date_col].isna().any():
+        raise ValueError("Missing observation dates")
+    d = d.sort_values(date_col, kind="stable").reset_index(drop=True)
+    if "label_end_date" in d:
+        d["label_end_date"] = pd.to_datetime(d["label_end_date"], utc=True).dt.tz_convert(None)
+    elif "ticker" in d:
+        d["label_end_date"] = d.groupby("ticker", sort=False)[date_col].shift(-FORWARD_DAYS)
+    else:
+        dates = d[date_col].drop_duplicates().reset_index(drop=True)
+        availability = dict(zip(dates, dates.shift(-FORWARD_DAYS)))
+        d["label_end_date"] = d[date_col].map(availability)
+    return d
+
+
+def purged_training_rows(df: pd.DataFrame, test_start, date_col: str = "date") -> pd.DataFrame:
+    return df[(df[date_col] < test_start) & (df["label_end_date"] < test_start)].copy()
+
+
 def walk_forward_splits(
     df: pd.DataFrame,
     date_col: str = "date",
     n_splits: int = 5,
     test_size: float = 0.2,
 ) -> List[Tuple[pd.DataFrame, pd.DataFrame]]:
+    """Expanding training with nonoverlapping date groups and actual label-end purging.
+
+    test_size caps each fold's fraction of unique dates. No same-date symbols are
+    shared between train/test, and unavailable label ends are excluded from training.
     """
-    Expanding walk-forward splits sorted by date.
-    Each split trains on [0: split_point) and tests on [split_point: split_point+test_len).
-    Prevents look-ahead leakage vs ShuffleSplit.
-    """
-    d = df.copy()
-    try:
-        d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_convert(None)
-    except Exception:
-        d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_localize(None)
-    d = d.sort_values(date_col).reset_index(drop=True)
-    n = len(d)
-    splits: List[Tuple[pd.DataFrame, pd.DataFrame]] = []
-    test_len = max(1, int(n * test_size))
-    # generate n_splits expanding windows
-    for i in range(n_splits):
-        # expand train window progressively
-        train_end = int(n * 0.5 + i * (n * 0.5 / n_splits))
-        test_end = min(n, train_end + test_len)
-        if test_end <= train_end or train_end < 100:
-            continue
-        train_df = d.iloc[:train_end].copy()
-        test_df = d.iloc[train_end:test_end].copy()
-        if len(train_df) < 100 or len(test_df) < 20:
-            continue
-        splits.append((train_df, test_df))
-    if not splits:
-        # fallback single 80/20 time split
-        split_point = int(n * 0.8)
-        splits.append((d.iloc[:split_point].copy(), d.iloc[split_point:].copy()))
+    if n_splits < 1 or not 0 < test_size < 1:
+        raise ValueError("Invalid chronological split parameters")
+    d = chronological_label_frame(df, date_col)
+    dates = d[date_col].drop_duplicates().tolist()
+    if len(dates) < 2:
+        return []
+    first = max(1, len(dates) // 2)
+    step = max(1, math.ceil((len(dates) - first) / n_splits))
+    width = min(step, max(1, int(len(dates) * test_size)))
+    splits = []
+    for start in range(first, len(dates), step):
+        test_dates = dates[start:start + width]
+        train = purged_training_rows(d, test_dates[0], date_col)
+        test = d[d[date_col].isin(test_dates)].copy()
+        if not train.empty and not test.empty:
+            splits.append((train, test))
     return splits

@@ -318,3 +318,42 @@ GitHub 리포지토리 연동 시 `push` → 자동 배포됩니다.
 - **실행 시간**: Hobby 플랜 기본 10초, `vercel.json`으로 최대 60초 설정
 - **패키지 제한**: TA-Lib·Prophet 등 C 컴파일 패키지 설치 불가 → 전 기능 순수 Python 구현으로 대체
 - **캐시 전략**: `/api/stock` 60초, `/api/screener` 1시간, HTML 1시간 캐시 적용
+
+
+## 2026-10-09 모멘텀·학습 검증 보완
+
+구조 분석과 수정 근거: [감사 보고서](docs/system_momentum_review_20261009.md).
+모멘텀은 20% 이상 급등 뒤 3개 확정 거래일 종가가 상승분의 절반을 유지할 때 PASS입니다.
+진행 중 일봉은 관찰일에 포함하지 않으며, 유지선·손절을 이탈한 현재가에서는 READY로 승격하지 않습니다.
+확인 종가는 참고값이며 오프라인 평가는 기본적으로 다음 거래일 시가 진입을 사용합니다.
+
+```bash
+python -m pytest -q
+python scripts/backtest_momentum_persistence.py --offline --out docs/backtests/momentum_persistence_next_open_20261009.json
+```
+
+학습·평가 분할은 미래 라벨 확정일 전에 학습 자료가 끝나도록 분리합니다.
+검증 실패·합성 데이터·출처 불명 모델은 기본 저장이 차단됩니다.
+실험용 `--allow-unvalidated` 저장 모델은 운영 추론에서 거부합니다.
+기존 모델은 이번 작업에서 재학습하지 않았으며 전략 수익 우위는 입증되지 않았습니다.
+
+
+## 최근 1년 기법별 반복 손실 조건 제거 (v2)
+
+[구조·검증·적용 보고서](docs/subtractive_optimization_20261009.md).
+한국·미국 각각 38개 기술 기법을 동일한 다음 시가 진입·최대 20세션·손절/목표·비용 정책으로 평가합니다.
+개발/조건 확인/최종 검증 구간과 제거 조건 각각 최소 20회가 필요합니다.
+표본 부족을 억지로 채우지 않으며, 검증 통과 기법만 매매 점수·추천에 반영합니다.
+
+```bash
+python scripts/optimize_techniques.py --as-of 2026-10-09 --publish
+python scripts/optimize_techniques.py --as-of 2026-10-09 --offline --publish
+python scripts/prune_loss_conditions.py --as-of 2026-10-09 --full --offline --publish
+python -m pytest -q
+```
+
+현재 활성 규칙은 `models/technique_prune.json` v2입니다. 원본 거래·조건별 손실·기법 요약은
+`docs/backtests/technique_validation_20261009/`에 있습니다. `/api/technique-validation`에서
+실제 활성 기법과 제외·검증 부족 상태를 조회합니다.
+뉴스·재무·현재 ML 모델의 과거 재연은 시점 보존 자료가 없으면 검증되지 않은 것으로 취급합니다.
+기술 분석의 과거 양수 평균 손익은 미래 수익이나 최적 가격 예측을 보장하지 않습니다.

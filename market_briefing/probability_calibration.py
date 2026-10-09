@@ -95,7 +95,20 @@ def calibrate_direction_probability(prob_up_pct: Any, market: Any,
     }
     try:
         payload = calibration if calibration is not None else load_calibration()
-        slope = _finite(payload.get("slope"))
+        changed_rule_basis = False
+        if calibration is None:
+            from .technique_prune import load_rules
+            active_rules = load_rules()
+            if active_rules.get("version") == 2 and active_rules.get("strict_validated_only") is True:
+                import hashlib
+                semantic_rules = {"strict": True, "rules": {
+                    tech: {market: {"status": node.get("status"), "validated": node.get("validated"),
+                                    "exclusions": node.get("exclusions", [])}
+                           for market, node in markets.items()}
+                    for tech, markets in active_rules.get("rules", {}).items()}}
+                fingerprint = hashlib.sha256(json.dumps(semantic_rules, sort_keys=True).encode()).hexdigest()
+                changed_rule_basis = payload.get("technique_rules_fingerprint") != fingerprint
+        slope = 0.0 if changed_rule_basis else _finite(payload.get("slope"))
         intercepts = payload.get("intercept_at_half") or {}
         intercept = _finite(intercepts.get(_market_key(market)), _finite(intercepts.get("ALL")))
         if slope is None or intercept is None:
@@ -114,6 +127,10 @@ def calibrate_direction_probability(prob_up_pct: Any, market: Any,
             "note": (f"규칙 점수의 상승 확률을 과거 {horizon}거래일 뒤 실제 상승 빈도에 맞춰 보정했습니다. "
                      "점수와 실제 방향의 관계가 약해(보정 기울기 ≈ 0) 시장별 기저 상승률 부근에 모입니다."),
         })
+        if changed_rule_basis:
+            result.update({"method": "historical_market_prior_rule_set_changed",
+                           "rule_basis_compatible": False,
+                           "note": "기법 제외로 규칙 점수의 분포가 달라져 기존 점수 보정 기울기를 적용하지 않았습니다. 과거 시장 기저율만 표시하며 새 기법의 적중률이 아닙니다."})
     except Exception as exc:  # 보정 실패가 분석 전체를 막지 않게 한다
         result["note"] = f"보정 실패로 원래 값을 표시합니다({type(exc).__name__})."
     return result

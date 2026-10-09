@@ -191,6 +191,24 @@ def load_model(force_reload: bool = False) -> bool:
         _FEATURE_COLS = list(FEATURE_COLS)
         return False
 
+    # Explicitly rejected/experimental artifacts must not become production predictions.
+    try:
+        with open(model_dir / METADATA_FILENAME, encoding="utf-8") as handle:
+            candidate_meta = json.load(handle)
+    except (OSError, ValueError):
+        candidate_meta = {}
+    provenance = candidate_meta.get("data_provenance") or {}
+    if ((candidate_meta.get("validation") or {}).get("passed") is False
+            or provenance.get("synthetic_present") is True
+            or provenance.get("known") is False
+            or candidate_meta.get("experimental_override") is True):
+        logger.warning("[ML] Rejected experimental/unvalidated model metadata")
+        _MODEL, _MODEL_AVAILABLE, _MODEL_TYPE = None, False, "none"
+        _MODEL_META = candidate_meta
+        _FEATURE_COLS = list(FEATURE_COLS)
+        _CALIB_PARAMS, _ACTION_CONFIDENCE_MIN = None, 0.5
+        return False
+
     # columns
     _FEATURE_COLS = _load_columns(model_dir)
 
@@ -739,29 +757,28 @@ def predict_direction(metrics: Dict[str, Any]) -> Dict[str, Any]:
         else:
             market = "KRX" if ticker.endswith(".KS") or ticker.endswith(".KQ") else "US"
 
-    # extract OHLCV from various possible keys
-    closes = metrics.get("closes") or metrics.get("price_history") or metrics.get("Close") or []
-    highs = metrics.get("highs") or metrics.get("high_history") or metrics.get("High") or []
-    lows = metrics.get("lows") or metrics.get("low_history") or metrics.get("Low") or []
-    volumes = metrics.get("volumes") or metrics.get("volume_history") or metrics.get("Volume") or []
+    # Select sequences without evaluating NumPy/pandas truth values.
+    def sequence(source, *keys):
+        for key in keys:
+            value = source.get(key)
+            if value is not None:
+                try:
+                    if len(value):
+                        return list(value)
+                except TypeError:
+                    continue
+        return []
 
-    # if dd dict with list values directly
+    closes = sequence(metrics, "closes", "price_history", "Close")
+    highs = sequence(metrics, "highs", "high_history", "High")
+    lows = sequence(metrics, "lows", "low_history", "Low")
+    volumes = sequence(metrics, "volumes", "volume_history", "Volume")
     if not closes and isinstance(metrics.get("dd"), dict):
         dd = metrics["dd"]
-        closes = dd.get("Close") or dd.get("close") or []
-        highs = dd.get("High") or dd.get("high") or []
-        lows = dd.get("Low") or dd.get("low") or []
-        volumes = dd.get("Volume") or dd.get("volume") or []
-
-    # if DataFrame-like dict with lists
-    if isinstance(closes, np.ndarray):
-        closes = closes.tolist()
-    if isinstance(highs, np.ndarray):
-        highs = highs.tolist()
-    if isinstance(lows, np.ndarray):
-        lows = lows.tolist()
-    if isinstance(volumes, np.ndarray):
-        volumes = volumes.tolist()
+        closes = sequence(dd, "Close", "close")
+        highs = sequence(dd, "High", "high")
+        lows = sequence(dd, "Low", "low")
+        volumes = sequence(dd, "Volume", "volume")
 
     # if we have enough data, use direct path
     if len(closes) >= 60 and len(highs) >= 60 and len(lows) >= 60 and len(volumes) >= 60:

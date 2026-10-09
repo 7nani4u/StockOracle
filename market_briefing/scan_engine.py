@@ -106,6 +106,7 @@ def apply_leader_promotion(
     leader_map: Dict[str, Dict] | None,
     equity: float = 10_000_000.0,
     risk_pct: float = 1.0,
+    market: str = "US",
 ) -> Dict[str, int]:
     """리더 반전 BREAKOUT 후보를 진입 준비(READY)로 승격한다.
 
@@ -130,6 +131,12 @@ def apply_leader_promotion(
                 lr = ((leader_map or {}).get(cd.get("ticker")) or {})
                 if not isinstance(lr, dict) or lr.get("stage") != "BREAKOUT":
                     continue
+                from .technique_prune import technique_allowed, technique_evidence, leader_conditions
+                cd["leader_reversal_validation"] = technique_evidence("leader_reversal", market)
+                _allowed, _reason = technique_allowed("leader_reversal", market, leader_conditions(lr))
+                if not _allowed:
+                    cd["leader_reversal_prune_reason"] = _reason
+                    continue
                 try:
                     entry_f = float(lr.get("entry_trigger"))
                     stop_f = float(lr.get("stop_price"))
@@ -139,7 +146,7 @@ def apply_leader_promotion(
                 if not (math.isfinite(entry_f) and math.isfinite(stop_f)
                         and math.isfinite(price_f)):
                     continue
-                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= 0:
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= stop_f:
                     continue
                 cd["orig_status"] = cd.get("status")
                 cd["orig_entry_trigger"] = cd.get("entry_trigger")
@@ -167,33 +174,7 @@ def apply_leader_promotion(
     return {"promoted": promoted}
 
 
-def momentum_conditions(info: Dict[str, Any] | None) -> Dict[str, str]:
-    """모멘텀 지속 prune 게이트용 조건 키 (향후 규칙 대비, 현재는 허용-only).
-
-    규칙 파일에 momentum_persistence 항목이 없으면 technique_allowed()가
-    fail-open으로 전량 허용한다. surge_pct 20-25/25-40/40%+ 버킷만 기록한다.
-    """
-    try:
-        from .technique_prune import bucket as _bucket
-    except Exception:  # pragma: no cover - 단독 로드 시 폴백
-        def _bucket(value: Any, edges: List[float], labels: List[str], unknown: str = "na") -> str:  # type: ignore
-            try:
-                vv = float(value)
-            except (TypeError, ValueError):
-                return unknown
-            import math as _m
-            if not _m.isfinite(vv):
-                return unknown
-            for _e, _lb in zip(edges, labels):
-                if vv < _e:
-                    return _lb
-            return labels[-1]
-    info = info or {}
-    return {
-        "surge_bucket": _bucket(info.get("surge_pct"), [25.0, 40.0],
-                                ["20-25%", "25-40%", ">=40%"]),
-        "stage": str(info.get("stage") or "na"),
-    }
+from .technique_prune import momentum_conditions
 
 
 def apply_momentum_promotion(
@@ -201,6 +182,7 @@ def apply_momentum_promotion(
     momentum_map: Dict[str, Dict] | None,
     equity: float = 10_000_000.0,
     risk_pct: float = 1.0,
+    market: str = "KRX",
 ) -> Dict[str, int]:
     """모멘텀 지속 PASS 후보를 진입 준비(READY)로 승격한다.
 
@@ -228,6 +210,17 @@ def apply_momentum_promotion(
                 mo = ((momentum_map or {}).get(cd.get("ticker")) or {})
                 if not isinstance(mo, dict) or mo.get("stage") != "PASS":
                     continue
+                from .technique_prune import technique_allowed, technique_evidence, momentum_conditions
+                cd["momentum_persistence_validation"] = technique_evidence("momentum_persistence", market)
+                _allowed, _reason = technique_allowed("momentum_persistence", market, momentum_conditions(mo))
+                if not _allowed:
+                    cd["momentum_persistence_prune_reason"] = _reason
+                    continue
+                if mo.get("entry_eligible") is False:
+                    continue
+                midpoint = mo.get("midpoint")
+                if midpoint is not None and float(cd.get("price") or 0) < float(midpoint):
+                    continue
                 try:
                     entry_f = float(mo.get("entry_trigger"))
                     stop_f = float(mo.get("stop_price"))
@@ -237,7 +230,7 @@ def apply_momentum_promotion(
                 if not (math.isfinite(entry_f) and math.isfinite(stop_f)
                         and math.isfinite(price_f)):
                     continue
-                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= 0:
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= stop_f:
                     continue
                 cd["orig_status"] = cd.get("status")
                 cd["orig_entry_trigger"] = cd.get("entry_trigger")
@@ -265,40 +258,7 @@ def apply_momentum_promotion(
     return {"promoted": promoted}
 
 
-def vcp_conditions(info: Dict[str, Any] | None) -> Dict[str, str]:
-    """VCP prune 게이트용 조건 키 (향후 규칙 대비, 현재는 허용-only).
-
-    규칙 파일에 momentum 항목과 마찬가지로 vcp 항목이 없으면
-    technique_allowed()가 fail-open으로 전량 허용한다.
-    """
-    try:
-        from .technique_prune import bucket as _bucket
-    except Exception:  # pragma: no cover - 단독 로드 시 폴백
-        def _bucket(value: Any, edges: List[float], labels: List[str], unknown: str = "na") -> str:  # type: ignore
-            try:
-                vv = float(value)
-            except (TypeError, ValueError):
-                return unknown
-            import math as _m
-            if not _m.isfinite(vv):
-                return unknown
-            for _e, _lb in zip(edges, labels):
-                if vv < _e:
-                    return _lb
-            return labels[-1]
-    info = info or {}
-    depths = info.get("depths_pct") or []
-    try:
-        first_depth = float(depths[0]) if depths else float("nan")
-    except (TypeError, ValueError, IndexError):
-        first_depth = float("nan")
-    return {
-        "contractions": str(info.get("contractions") or "na"),
-        "first_depth_bucket": _bucket(first_depth, [20.0, 30.0],
-                                      ["<20%", "20-30%", ">=30%"]),
-        "risk_flag": "risky" if info.get("false_breakout_risk") else "clean",
-        "stage": str(info.get("stage") or "na"),
-    }
+from .technique_prune import vcp_conditions
 
 
 def apply_vcp_promotion(
@@ -306,6 +266,7 @@ def apply_vcp_promotion(
     vcp_map: Dict[str, Dict] | None,
     equity: float = 10_000_000.0,
     risk_pct: float = 1.0,
+    market: str = "KRX",
 ) -> Dict[str, int]:
     """VCP 피벗 돌파(PASS + 가짜돌파 위험없음) 후보를 진입 준비(READY)로 승격한다.
 
@@ -333,6 +294,12 @@ def apply_vcp_promotion(
                 vc = ((vcp_map or {}).get(cd.get("ticker")) or {})
                 if not isinstance(vc, dict) or vc.get("stage") != "PASS":
                     continue
+                from .technique_prune import technique_allowed, technique_evidence, vcp_conditions
+                cd["vcp_validation"] = technique_evidence("vcp", market)
+                _allowed, _reason = technique_allowed("vcp", market, vcp_conditions(vc))
+                if not _allowed:
+                    cd["vcp_prune_reason"] = _reason
+                    continue
                 if vc.get("false_breakout_risk"):
                     continue
                 try:
@@ -344,7 +311,7 @@ def apply_vcp_promotion(
                 if not (math.isfinite(entry_f) and math.isfinite(stop_f)
                         and math.isfinite(price_f)):
                     continue
-                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= 0:
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= stop_f:
                     continue
                 cd["orig_status"] = cd.get("status")
                 cd["orig_entry_trigger"] = cd.get("entry_trigger")
@@ -407,6 +374,7 @@ class TechnicalSnapshot:
     median_atr_14:  float = 0.0
     atr_spiking:    bool  = False
     atr_collapsing: bool  = False
+    hybrid_signal: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1040,6 +1008,22 @@ def run_full_scan(
                     )
             passes_chase = anti_chase_res["passed"]
 
+        from .technique_prune import hybrid_conditions, technique_allowed, technique_evidence, context_conditions
+        _market = "KRX" if stock.currency == "KRW" else "US"
+        _hybrid_conditions = hybrid_conditions(snap.hybrid_signal or {
+            "ncs": ncs, "fws": fws, "regime": regime, "vol_regime": vol_regime,
+            "adx": snap.adx, "dist_to_high": distance_pct})
+        _hybrid_conditions.update(context_conditions(snap.closes, snap.highs, snap.lows, snap.volumes))
+        _prune_allowed, _prune_reason = technique_allowed("hybrid_breakout", _market, _hybrid_conditions)
+        filter_result["technique_validation"] = technique_evidence("hybrid_breakout", _market)
+        if not _prune_allowed:
+            passes_tech = False
+            filter_result["pruned"] = True
+            filter_result["prune_reason"] = _prune_reason
+            if status == "READY":
+                status = "WATCH"
+            a_note = _prune_reason
+
         # ── Stage 7: 최종 후보 구성 ─────────────────────────────────────────
         candidate = ScanCandidate(
             ticker        = ticker,
@@ -1225,6 +1209,7 @@ def build_snapshot_from_ohlcv(
             median_atr = old_atr
 
     return TechnicalSnapshot(
+        hybrid_signal = hs,
         ticker          = ticker,
         closes          = closes,
         highs           = highs,

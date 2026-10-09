@@ -27,7 +27,7 @@ try:
 except Exception:
     _HAS_SKLEARN = False
 
-from .ml_features import FEATURE_COLS, walk_forward_splits
+from .ml_features import FEATURE_COLS, walk_forward_splits, chronological_label_frame, purged_training_rows
 
 
 def _safe_auc(y_true, y_proba) -> float:
@@ -96,7 +96,7 @@ def time_based_split(
     Returns X_train, X_test, y_train, y_test, train_dates, test_dates
     Leakage-safe: sorted by date, no shuffle, future not in train.
     """
-    d = df.copy()
+    d = chronological_label_frame(df, date_col)
     try:
         d[date_col] = pd.to_datetime(d[date_col], utc=True).dt.tz_convert(None)
     except Exception:
@@ -114,10 +114,15 @@ def time_based_split(
     n = len(d_clean)
     if n < 20:
         raise ValueError(f"Not enough clean rows for split: {n}")
+    if not 0 < train_ratio < 1:
+        raise ValueError("train_ratio must be between 0 and 1")
     split_idx = int(n * train_ratio)
     split_idx = max(10, min(n - 10, split_idx))
-    train_df = d_clean.iloc[:split_idx].copy()
-    test_df = d_clean.iloc[split_idx:].copy()
+    test_start = d_clean.iloc[split_idx][date_col]
+    train_df = purged_training_rows(d_clean, test_start, date_col)
+    test_df = d_clean[d_clean[date_col] >= test_start].copy()
+    if train_df.empty or test_df.empty:
+        raise ValueError("Insufficient data for purged chronological split")
     X_train = train_df[cols].copy()
     X_test = test_df[cols].copy()
     y_train = train_df[label_col].astype(int).copy()
@@ -164,9 +169,10 @@ def walk_forward_evaluate(
             from sklearn.base import clone  # type: ignore
             fold_model = clone(model)
             fold_model.fit(X_train, y_train)
-        except Exception:
-            # if clone/fit fails, use existing model predictions on this test split
-            pass
+        except Exception as error:
+            # Never score a prefit model whose training may already contain test rows.
+            fold_results.append({"fold": fold_idx, "error": f"Fold training failed: {error}"})
+            continue
 
         try:
             if hasattr(fold_model, "predict_proba"):
@@ -199,7 +205,7 @@ def walk_forward_evaluate(
     aggregate = {}
     if all_y_true:
         aggregate = evaluate_predictions(np.array(all_y_true), np.array(all_y_proba), threshold=threshold)
-        aggregate["n_folds"] = len(fold_results)
+        aggregate["n_folds"] = sum("auc" in f for f in fold_results)
         aggregate["folds_auc_mean"] = float(np.nanmean([f.get("auc", np.nan) for f in fold_results])) if fold_results else float("nan")
         aggregate["folds_auc_std"] = float(np.nanstd([f.get("auc", np.nan) for f in fold_results])) if fold_results else float("nan")
 
