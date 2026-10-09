@@ -273,6 +273,11 @@ def correlate_and_narrow(
         ml_bias = _clamp((ml_up - 50) * 0.06, -3.0, 3.0)
         if ml_prediction and ml_prediction.get("fallback"):
             ml_bias *= 0.5  # 휴리스틱 폴백은 절반만 반영 (SYSTEMATIC BIAS CHECK)
+        # 확률 블렌드와 같은 근거(검증 AUC)로 정한 신뢰 비율 0~1 만큼만 투표에 반영한다. route 가 기록한 값이 없으면
+        # (오프라인 감사·단위 테스트) 예전과 같다. 검증이 '거의 무작위' 수준이면 trust 0 → 중립표.
+        _ml_trust = ml_prediction.get("trust") if isinstance(ml_prediction, dict) else None
+        if _ml_trust is not None:
+            ml_bias *= _clamp(_num(_ml_trust, 1.0), 0.0, 1.0)
         signals["ml"] = ml_bias
         # 신호 신뢰도 — confidence 는 '신호가 중립에서 얼마나 극단적인가'(50~88)이지 방향이 아니다.
         # 부호 없이 투표에 넣으면 SELL(하락) 신호의 높은 신뢰도가 항상 '상승' 표로 집계돼 하락 국면의

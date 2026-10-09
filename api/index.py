@@ -288,6 +288,60 @@ def _ml_validation_status() -> tuple[bool, str]:
     return False, "missing_holdout_validation"
 
 
+# ML 블렌드 가중의 근거 AUC 기준: "conservative"(기본) = 기록된 검증 AUC 중 최솟값, "holdout" = 예전처럼 test_auc.
+_ML_AUC_BASIS = os.getenv("STOCKORACLE_ML_AUC_BASIS", "conservative").strip().lower()
+
+
+def _ml_honest_auc(metadata: dict | None) -> tuple[float, str, dict]:
+    """ML 블렌드 가중의 근거 AUC — 선택 편향이 없는 검증 추정 중 가장 낮은 값을 쓴다.
+
+    학습 메타데이터에는 서로 다른 검증 AUC 가 함께 기록된다: ① 홀드아웃 ``test_auc``(0.569),
+    ② 선택된 후보의 워크포워드 평균(0.546), ③ 보정용 OOF(풀링) AUC(0.515). ①은 피처·파라미터 탐색 스크립트
+    (scripts/auc_search.py·auc_refine.py)가 후보마다 홀드아웃 AUC 를 계산해 고른 값이고 배포 게이트도 후보 중
+    최댓값을 쓰므로 낙관적이다(학습 코드도 OOF < 0.54 를 '거의 무작위'로 본다). 가장 낙관적인 값으로 가중을 정하면
+    검증되지 않은 신호가 확률과 상관 투표에 반영되므로 기록된 추정 중 최솟값을 쓴다.
+
+    Returns: (근거 AUC, 근거 이름 'holdout'|'walk_forward'|'oof'|'default', 추정값 dict)
+    """
+    meta = metadata or {}
+    estimates: dict[str, float] = {}
+
+    def _put(name: str, value) -> None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(number):
+            estimates[name] = number
+
+    _put("holdout", (meta.get("metrics") or {}).get("test_auc"))
+    selected = (meta.get("selected_parameters") or {}).get("name")
+    for report in meta.get("walk_forward_backtest") or []:
+        if isinstance(report, dict) and report.get("candidate") == selected:
+            _put("walk_forward", report.get("mean_auc"))
+    calibration = meta.get("calibration") or {}
+    _put("oof", (calibration.get("params") or {}).get("oof_auc", calibration.get("oof_auc")))
+    if not estimates:
+        return 0.55, "default", {}
+    if _ML_AUC_BASIS == "holdout" and "holdout" in estimates:
+        return estimates["holdout"], "holdout", estimates
+    basis = min(estimates, key=estimates.get)
+    return estimates[basis], basis, estimates
+
+
+def _ml_blend_weight(auc: float, approved: bool = True) -> float:
+    """검증 AUC → 확률 블렌드 가중. <0.52: 0%(신뢰 없음), 0.52~0.56: 10%, 0.56~0.60: 15%, 0.60~0.65: 20%, 그 이상 25%."""
+    if not approved or auc < 0.52:
+        return 0.0
+    if auc < 0.56:
+        return 0.10
+    if auc < 0.60:
+        return 0.15
+    if auc < 0.65:
+        return 0.20
+    return 0.25
+
+
 # ── 예측 변동성 헬퍼 (forecast_model) 강건 로더 ─────────────────────────────
 # build_prediction_outlook은 market_briefing/__init__을 거치지 않고 forecast_model.py를
 # 직접 읽어 들인다. 패키지 init의 무거운 의존성(sklearn 등) 하나가 깨져도 예측 탭 전체가
@@ -395,6 +449,17 @@ def _load_forecast_helpers() -> Dict[str, Any]:
     def _f_cdf(x: float) -> float:
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
+    # forecast_model.LONG_RUN_WEIGHT / VOL_ERROR_Q25·Q75 와 같은 값(환경변수 STOCKORACLE_VOL_LONG_RUN_WEIGHT, 0 이면 섞지 않음)
+    # import 시점이 아니라 매 호출마다 읽는다(되돌리기가 같은 프로세스에서도 즉시 먹게).
+    def _f_long_weight_now() -> float:
+        try:
+            return min(1.0, max(0.0, float(os.getenv("STOCKORACLE_VOL_LONG_RUN_WEIGHT", "0.5"))))
+        except ValueError:
+            return 0.5
+
+    def _f_err_now() -> tuple:
+        return (0.800, 1.200) if _f_long_weight_now() > 0 else (0.836, 1.268)
+
     def _f_blend(closes, last_price, atr, atr_observed=True) -> dict:
         vals = []
         for c in (closes or []):
@@ -403,12 +468,21 @@ def _load_forecast_helpers() -> Dict[str, Any]:
                 vals.append(v if math.isfinite(v) and v > 0 else None)
             except (TypeError, ValueError):
                 vals.append(None)
+        all_vals = vals
         vals = vals[-61:]
         rets = [math.log(b / a) for a, b in zip(vals[:-1], vals[1:]) if a is not None and b is not None]
         realized, n = None, len(rets)
         if n >= 15:
             m = sum(rets) / n
             realized = math.sqrt(max(sum((r - m) ** 2 for r in rets) / (n - 1), 0.0))
+        # 장기(약 1년) 실현 변동성 — forecast_model.LONG_RUN_WINDOW/MIN_OBS/WEIGHT 와 같은 값
+        long_run, n_long = None, 0
+        long_vals = all_vals[-252:]
+        long_rets = [math.log(b / a) for a, b in zip(long_vals[:-1], long_vals[1:]) if a is not None and b is not None]
+        n_long = len(long_rets)
+        if n_long >= 120:
+            lm = sum(long_rets) / n_long
+            long_run = math.sqrt(max(sum((r - lm) ** 2 for r in long_rets) / (n_long - 1), 0.0))
         atr_s = None
         try:
             a = float(atr)
@@ -426,8 +500,13 @@ def _load_forecast_helpers() -> Dict[str, Any]:
         else:
             return {"sigma": None, "basis": "변동성 산출 불가(폴백)", "observations": n,
                     "realized": None, "atr_based": None}
+        _w_now = _f_long_weight_now()
+        if long_run is not None and realized is not None and _w_now > 0:
+            sig = math.sqrt((1.0 - _w_now) * sig ** 2 + _w_now * long_run ** 2)
+            basis += f" + 최근 {n_long}일 장기 변동성 혼합(폴백)"
         return {"sigma": max(sig, 0.002), "basis": basis, "observations": n,
-                "realized": realized, "atr_based": atr_s}
+                "realized": realized, "atr_based": atr_s,
+                "long_run": long_run, "long_run_observations": n_long}
 
     def _f_touch(price, level, sigma_d, days):
         try:
@@ -457,8 +536,9 @@ def _load_forecast_helpers() -> Dict[str, Any]:
         mid = _f_touch(price, level, sigma_d, days)
         if mid is None:
             return None
-        low = _f_touch(price, level, sigma_d * 0.836, days)
-        high = _f_touch(price, level, sigma_d * 1.268, days)
+        _q25_now, _q75_now = _f_err_now()    # forecast_model.get_vol_error_quantiles()와 같은 값
+        low = _f_touch(price, level, sigma_d * _q25_now, days)
+        high = _f_touch(price, level, sigma_d * _q75_now, days)
         return {"low": min(mid, low if low is not None else mid), "mid": mid,
                 "high": max(mid, high if high is not None else mid)}
 
@@ -587,6 +667,7 @@ def ttl_cache(ttl: int):
             r = fn(*args, **kwargs)
             # 실패 결과는 짧게(15초)만 캐시하거나 캐시하지 않아 일시적 네트워크 장애를 빠르게 복구
             should_cache = True
+            _short_ttl = False
             try:
                 if fn.__name__ == "fetch_stock_data" and isinstance(r, tuple) and r[0] is None:
                     should_cache = False
@@ -600,10 +681,15 @@ def ttl_cache(ttl: int):
                 elif fn.__name__ in ("_index_regime_cached", "fetch_sentiment") and r is None:
                     # 지수 조회 실패가 NEUTRAL/None 으로 10~15분 고착되면 BEAR 상한·심리 지표가 조용히 꺼진다.
                     should_cache = False
+                elif isinstance(r, dict) and r.get("error") and not (r.get("items") or r.get("data")):
+                    # {"error": ..., "items": []} 형태의 실패 응답이 TTL(장기 추천은 4시간) 동안 고착되면
+                    # 일시적 장애·코드 결함이 고쳐진 뒤에도 빈 화면이 남는다. 15초만 보관해 폭주 호출만 막는다.
+                    _short_ttl = True
             except Exception:
                 pass
             if should_cache:
-                _CACHE[key] = (r, now)
+                # 만료 시각이 now + min(ttl, 15초) 가 되도록 저장 시각을 앞당긴다.
+                _CACHE[key] = (r, now - ttl + min(ttl, 15) if _short_ttl else now)
             # ── 만료 키 정리: 캐시 항목이 500개 초과 시 만료 키 우선 삭제,
             #    만료 키가 없으면 가장 오래된 키를 LRU 방식으로 제거해 메모리 누수 방지 ──
             if len(_CACHE) > 500:
@@ -7587,7 +7673,12 @@ def fetch_kr_longterm_reco():
                 continue
 
         candidates.sort(key=lambda x: x[1], reverse=True)
-        garp_candidates = [ticker for ticker, _, _, _ in candidates[:30]]
+        try:
+            _kr_garp_top = int(os.getenv("STOCKORACLE_KR_LONGTERM_GARP_TOP", "15"))
+        except ValueError:
+            _kr_garp_top = 15
+        _kr_garp_top = min(30, max(5, _kr_garp_top))
+        garp_candidates = [ticker for ticker, _, _, _ in candidates[:_kr_garp_top]]
         def _fetch_kr_garp(ticker):
             return build_peter_lynch_assessment(
                 fundamentals.get(ticker, {}).get("info") or {}, {}, "KRX",
@@ -7732,6 +7823,13 @@ def fetch_kr_longterm_reco():
     except Exception as e:
         return {"error": str(e), "items": []}
 
+# 미국 장기 추천에 덧붙일 소형·중형 후보군. 피터 린치 GARP 는 시가총액 $10B 미만만 통과하는데 _US_RECO_UNIVERSE 는
+# 대형주 위주라 통과 종목이 나오기 어렵다. 이 이름을 fetch_us_longterm_reco 가 참조하면서 정의가 없어 호출이 항상
+# NameError('error' 응답)로 끝났다(미국 장기 추천 전체가 빈 목록). 어떤 종목을 넣을지는 운영 판단이므로 비워 두며,
+# 비어 있으면 예전(상위 100종목)과 똑같이 동작한다. 종목을 넣으면 다운로드 시간이 늘어나므로 수십 종목 이내를 권장한다.
+_US_GARP_UNIVERSE: List[str] = []
+
+
 @ttl_cache(14400)  # 4시간 캐시
 def fetch_us_longterm_reco():
     """미국 장기 투자 추천 Top 10 (기술·수급·펀더멘털 통합 스코어링)"""
@@ -7770,7 +7868,15 @@ def fetch_us_longterm_reco():
             except Exception:
                 continue
         candidates.sort(key=lambda x: x[1], reverse=True)
-        garp_candidates = [ticker for ticker, _, _ in candidates[:30]]
+        # GARP 재무 조회는 Vercel 60초 제한의 주범(30종목×info+재무제표 ≈ 40초+)이라
+        # 기술 상위 15종목만 조회한다. GARP는 순위 보조(eligible 우선)라 커버리지 축소가
+        # 최종 Top10 구성을 바꾸지 않는다(30위 밖은 어차피 Top10 밖).
+        try:
+            _garp_top = int(os.getenv("STOCKORACLE_US_LONGTERM_GARP_TOP", "15"))
+        except ValueError:
+            _garp_top = 15
+        _garp_top = min(30, max(5, _garp_top))
+        garp_candidates = [ticker for ticker, _, _ in candidates[:_garp_top]]
         def _fetch_us_garp(ticker):
             try:
                 info = yf.Ticker(ticker).info
@@ -7780,7 +7886,7 @@ def fetch_us_longterm_reco():
             except Exception:
                 return build_peter_lynch_assessment({}, {}, "US")
         garp_by_ticker, garp_timeouts = _collect_completed_futures(
-            garp_candidates, _fetch_us_garp, max_workers=8, timeout=30
+            garp_candidates, _fetch_us_garp, max_workers=6, timeout=20
         )
         candidates.sort(
             key=lambda item: _longterm_garp_rank(garp_by_ticker.get(item[0]), item[1]),
@@ -7890,6 +7996,10 @@ def fetch_us_longterm_reco():
                 "universe_count": len(tickers), "technical_candidates": len(candidates),
                 "invalid_price_count": invalid_price_count, "garp_checked": len(garp_by_ticker),
                 "garp_timeouts": garp_timeouts,
+            },
+            "data_quality": {
+                "garp_top_n": _garp_top,
+                "note": "GARP는 기술 상위 N종목만 조회해 60초 제한 안에 응답한다. 타임아웃 종목은 기술 순위를 유지한다." if garp_timeouts else "전체 GARP 조회 완료",
             },
         }
     except Exception as e:
@@ -8799,9 +8909,12 @@ def _sync_ai_strategy_summary(ai_strategy: Dict | None, final_score: float, raw_
     return synced
 
 
-def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
+def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_progress: bool = False):
     """
     가중치 기반 종합 점수 산출 (시장별 동적 가중치 적용)
+
+    volume_in_progress: 마지막 막대가 장중 진행 중이라 거래량이 누적 중(최종값 이하)이면 True.
+    4단계 거래량 확인은 캔들 방향과 거래량이 같은 날의 것이어야 하므로 직전 확정 막대의 (시가·종가·거래량)으로 판단한다.
     """
     weights = get_market_weights(market)
     w_trend = weights["trend"]
@@ -8938,21 +9051,32 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y"):
     # ── 4. Volume — 거래량 급증 확인 ──
     gvs = 0.0; msgs = []
     max_gvs = w_volm / 2.0
-    if avg_vol > 0:
-        ratio = cur_vol / avg_vol
-        last_close = close
-        last_opn = last_opn if last_opn else last_close   # 데이터 없으면 종가로 대체
+    _vol_note = ""
+    # 4단계 전용 값(이후 단계가 쓰는 close·cur_vol 은 건드리지 않는다).
+    _s_vol, _s_avg, _s_close, _s_open = cur_vol, avg_vol, close, last_opn
+    if volume_in_progress and len(vols) >= 22 and len(closes) >= 2:
+        # 진행 중 막대: 직전 확정 막대의 거래량·시가·종가를 한 쌍으로 쓴다(평균도 같은 길이로 한 칸 앞).
+        _opens_arr = dd.get("Open", [])
+        _s_vol = float(vols[-2] or 0)
+        _s_avg = float(np.mean([x for x in vols[-21:-1] if x])) if any(vols[-21:-1]) else 0.0
+        _s_close = float(closes[-2])
+        _s_open = float(_opens_arr[-2]) if len(_opens_arr) >= 2 and _opens_arr[-2] is not None else 0.0
+        _vol_note = " · 직전 확정 봉 기준(오늘 거래량 집계 중)"
+    if _s_avg > 0:
+        ratio = _s_vol / _s_avg
+        last_close = _s_close
+        last_opn = _s_open if _s_open else last_close   # 데이터 없으면 종가로 대체
 
         if ratio > 2.0:
-            if last_close > last_opn: gvs += max_gvs; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인")
-            else:                     gvs -= max_gvs; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인")
+            if last_close > last_opn: gvs += max_gvs; msgs.append(f"거래량 {ratio:.1f}x 급증 + 양봉 → 강한 매수세 확인{_vol_note}")
+            else:                     gvs -= max_gvs; msgs.append(f"거래량 {ratio:.1f}x 급증 + 음봉 → 강한 매도세 확인{_vol_note}")
         elif ratio > 1.5:
-            if last_close > last_opn: gvs += max_gvs * 0.5; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위")
-            else:                     gvs -= max_gvs * 0.5; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력")
+            if last_close > last_opn: gvs += max_gvs * 0.5; msgs.append(f"거래량 {ratio:.1f}x 증가 + 상승 → 매수 우위{_vol_note}")
+            else:                     gvs -= max_gvs * 0.5; msgs.append(f"거래량 {ratio:.1f}x 증가 + 하락 → 매도 압력{_vol_note}")
         elif ratio < 0.5:
-            msgs.append(f"거래량 급감 ({ratio:.1f}x) → 신뢰도 낮음")
+            msgs.append(f"거래량 급감 ({ratio:.1f}x) → 신뢰도 낮음{_vol_note}")
         else:
-            msgs.append(f"거래량 평이 ({ratio:.1f}x)")
+            msgs.append(f"거래량 평이 ({ratio:.1f}x){_vol_note}")
     else:
         msgs.append("거래량 데이터 없음")
     gvs = max(-max_gvs, min(max_gvs, gvs))
@@ -11019,17 +11143,45 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                 level["probability_basis"] = reason
     return result
 
-def calc_pivot_points(dd: Dict) -> Dict:
-    """피봇 포인트 계산: 클래식, 피보나치, 카마리야, 우디스, 디마크"""
+def calc_pivot_points(dd: Dict, market: str = "KRX", last_bar_date: Any = None) -> Dict:
+    """피봇 포인트 계산: 클래식, 피보나치, 카마리야, 우디스, 디마크.
+
+    기준봉은 '직전 확정봉'이다. 장중 진행 막대가 마지막에 있으면 [-2](어제 확정),
+    마감 후·휴장처럼 마지막 막대가 이미 확정이면 [-1](직전 확정봉)을 쓴다.
+    예전에는 항상 [-2]라 마감 후·주말에 하루 묵은 기준으로 계산됐다.
+    ``last_bar_date``가 없으면 dd의 Date/date/dates 마지막 값으로 판정하고,
+    판정 불가 시 기존 동작([-2])을 유지한다(fail-safe).
+    """
     highs  = [float(x) for x in dd.get("High",  []) if x is not None]
     lows   = [float(x) for x in dd.get("Low",   []) if x is not None]
     closes = [float(x) for x in dd.get("Close", []) if x is not None]
     opens  = [float(x) for x in dd.get("Open",  []) if x is not None]
     if len(highs) < 2:
         return {}
-    # 전일 고/저/종
-    h = highs[-2]; l = lows[-2]; c = closes[-2]
-    o = opens[-2] if len(opens) >= 2 else c
+    # ── 기준봉 결정: 직전 확정봉 ──
+    ref_idx = -2  # 기존 기본값(장중 진행 막대 가정)
+    try:
+        dates = dd.get("Date") or dd.get("date") or dd.get("dates") or []
+        anchor = last_bar_date
+        if anchor is None and dates:
+            anchor = dates[-1]
+        if anchor is not None:
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            try:
+                from market_briefing.session_bars import last_bar_in_progress
+                if not last_bar_in_progress(market, anchor):
+                    ref_idx = -1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        h = highs[ref_idx]; l = lows[ref_idx]; c = closes[ref_idx]
+        o = opens[ref_idx] if len(opens) >= abs(ref_idx) else c
+    except IndexError:
+        h = highs[-2]; l = lows[-2]; c = closes[-2]
+        o = opens[-2] if len(opens) >= 2 else c
+        ref_idx = -2
     r = lambda v: round(v, 2)
     rng = h - l
 
@@ -17631,6 +17783,19 @@ def _us_regular_session_now(now: dt | None = None) -> bool:
     return 9 * 60 + 30 <= minutes < 16 * 60
 
 
+def _bar_in_progress(market: str, last_bar_date: str, now: dt | None = None) -> bool:
+    """일봉 마지막 막대가 오늘 정규장 중 진행 중인 막대(거래량 누적 중)인지.
+
+    진행 중 막대의 거래량은 최종값 이하라 20일 평균과 바로 비교하면 조회 시각만으로 '거래량 위축'이 된다.
+    판정 근거와 측정은 market_briefing/session_bars.py 와 docs/system_audit_20261009.md 참조.
+    """
+    try:
+        from market_briefing.session_bars import last_bar_in_progress
+        return bool(last_bar_in_progress(market, last_bar_date, now))
+    except Exception:
+        return False
+
+
 def route(path: str, params: Dict) -> Dict:
     # trailing slash는 do_GET에서 rstrip("/") 처리됨
     # path는 항상 /api/stock 형식 (슬래시 없음)
@@ -18096,7 +18261,12 @@ def route(path: str, params: Dict) -> Dict:
         # 정규장 현재가가 마지막 봉에 반영된 경우에는 그 가격을 포함해 점수·패턴을
         # 계산한다. 시간외 시세는 확정 일봉에 합치지 않으므로 지표는 마지막 확정 봉
         # 기준으로 유지하고 price_anchor가 두 기준 시점을 명시한다.
-        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(dd, market, period)
+        # 마지막 일봉이 오늘 정규장 중 진행 중인 막대면 거래량은 누적값(최종값 이하)이다. 거래량 비율을 20일 평균과
+        # 바로 비교하면 같은 종목이 조회 시각만으로 '거래량 위축'(하이브리드 NCS 평균 -7.5~-11점)이 되므로,
+        # 거래량 비율은 직전 확정 막대 기준으로 계산한다. 가격·지표는 지금까지와 같이 마지막 막대를 쓴다.
+        _volume_in_progress = _bar_in_progress(market, _last_bar_date)
+        score, steps, patterns, geo_patterns, ai_strategy = analyze_score(
+            dd, market, period, volume_in_progress=_volume_in_progress)
         raw_technical_score = score
         # BEAR·부채 상한(40/45)은 수급·NCS 가산이 모두 끝난 뒤 finalize_rule_score 가 마지막에 적용한다.
         if regime == "BEAR":
@@ -18204,7 +18374,7 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as e:
             print(f"[route] ATR extraction failed symbol={sym} err={e} -> fallback")
             atr_val = last * 0.02 if math.isfinite(last) and last > 0 else 0.02
-        pivot_points     = calc_pivot_points(dd)
+        pivot_points     = calc_pivot_points(dd, market=market)
         indicator_signals= calc_indicator_signals(dd, market=market)
         # 이벤트 위험: 실적 발표, FDA/임상, 소송/조사, 공시, 가이던스 하향을 매수 위험 점수에 반영
         _event_news = list(news or [])
@@ -18256,6 +18426,7 @@ def route(path: str, params: Dict) -> Dict:
                     lows        = _lows   if len(_lows)  == len(_closes) else None,
                     volumes     = _vols   if len(_vols)  == len(_closes) else None,
                     open_prices = _opens  if len(_opens) == len(_closes) else None,
+                    volume_in_progress = _volume_in_progress,
                 )
         except Exception as _e:
             # hybrid 실패 시 기존 점수 유지
@@ -18288,22 +18459,10 @@ def route(path: str, params: Dict) -> Dict:
                 ml_prediction["validation_status"] = _ml_validation_reason
                 ml_prob = float(ml_prediction.get("prob_up", 0.5))
                 ml_conf = float(ml_prediction.get("confidence", 0.5))
-                # Dynamic weight based on validation AUC (training_metadata.json)
-                # <0.52: 0% (no trust), 0.52-0.56: 10%, 0.56-0.60: 15%, >0.60: 20-25%
-                try:
-                    _auc = float((_ml_get_metadata() or {}).get("metrics", {}).get("test_auc") or 0.55)
-                except Exception:
-                    _auc = 0.55
-                if not _ml_approved or _auc < 0.52:
-                    _ml_weight = 0.0
-                elif _auc < 0.56:
-                    _ml_weight = 0.10
-                elif _auc < 0.60:
-                    _ml_weight = 0.15
-                elif _auc < 0.65:
-                    _ml_weight = 0.20
-                else:
-                    _ml_weight = 0.25
+                # 검증 AUC(training_metadata.json)로 가중을 정한다. 근거 AUC 는 선택 편향이 없는 추정 중 최솟값이다
+                # (홀드아웃 0.569 는 탐색에 쓰인 값이라 낙관적 — 워크포워드 0.546·OOF 0.515, _ml_honest_auc 참조).
+                _auc, _auc_basis, _auc_estimates = _ml_honest_auc(_ml_get_metadata())
+                _ml_weight = _ml_blend_weight(_auc, _ml_approved)
                 # High volatility penalty: reduce weight by 30%
                 try:
                     _atr_pct = float(ml_prediction.get("atr_pct", 2.0))
@@ -18311,12 +18470,19 @@ def route(path: str, params: Dict) -> Dict:
                         _ml_weight *= 0.7
                 except Exception:
                     pass
-                if _ml_weight > 0 and ml_conf >= 0.55 and 0.25 < ml_prob < 0.85:
+                _ml_blended = bool(_ml_weight > 0 and ml_conf >= 0.55 and 0.25 < ml_prob < 0.85)
+                if _ml_blended:
                     blended = prob_up * (1 - _ml_weight) + ml_prob * 100 * _ml_weight
                     prob_up = round(max(5.0, min(95.0, blended)), 1)
                     prob_down = round(100.0 - prob_up, 1)
-                    ml_prediction["blend_weight"] = _ml_weight
-                    ml_prediction["blend_auc"] = _auc
+                # 가중 0 이면 확률·상관 투표 어디에도 쓰이지 않았다는 뜻이다(예측값 자체는 참고용으로 남긴다).
+                ml_prediction["blend_weight"] = round(_ml_weight, 3)
+                ml_prediction["blended"] = _ml_blended
+                ml_prediction["blend_auc"] = round(_auc, 4)
+                ml_prediction["blend_auc_basis"] = _auc_basis
+                ml_prediction["auc_estimates"] = {k: round(v, 4) for k, v in _auc_estimates.items()}
+                # 상관 엔진의 ML 투표도 같은 신뢰 비율(가중 15% = 1.0)만큼만 반영한다.
+                ml_prediction["trust"] = round(min(1.0, _ml_weight / 0.15), 2) if _ml_weight > 0 else 0.0
         except Exception as _ml_e:
             _log_route_issue(sym, "ml_prediction", _ml_e)
             _component_status["ml_prediction"] = "failed"
@@ -18475,9 +18641,10 @@ def route(path: str, params: Dict) -> Dict:
             _closes_corr = dd.get("Close") or dd.get("close") or []
             _vol_ratio_corr = 1.0
             try:
-                if _vols_corr and len(_vols_corr) >= 21:
-                    _avg_v = float(np.mean([float(v) for v in _vols_corr[-21:-1] if v is not None]))
-                    _vol_ratio_corr = float(_vols_corr[-1]) / _avg_v if _avg_v else 1.0
+                # 진행 중 막대의 거래량은 누적 중이라 직전 확정 막대 기준으로 비교한다(session_bars).
+                from market_briefing.session_bars import completed_volume_ratio
+                _vr_corr, _ = completed_volume_ratio(_vols_corr, _volume_in_progress)
+                _vol_ratio_corr = float(_vr_corr) if _vr_corr is not None else 1.0
             except Exception:
                 _vol_ratio_corr = 1.0
             _rsi_corr = 50.0
@@ -18493,6 +18660,12 @@ def route(path: str, params: Dict) -> Dict:
             except Exception:
                 pass
             _candle_up_corr = bool(last >= prev) if prev else True
+            if _volume_in_progress and len(_closes_corr) >= 3:
+                # 거래량 비율이 직전 확정 막대 기준이므로 캔들 방향도 같은 막대(전전일 종가 대비)로 맞춘다.
+                try:
+                    _candle_up_corr = bool(float(_closes_corr[-2]) >= float(_closes_corr[-3]))
+                except (TypeError, ValueError):
+                    pass
             _corr = correlate_and_narrow(
                 symbol=sym, market=market, dd=dd, last_price=last, atr=atr_val,
                 score=score, prob_up_base=prob_up, prob_down_base=prob_down,
@@ -18713,6 +18886,9 @@ def route(path: str, params: Dict) -> Dict:
             if price_correction and abs(float(price_correction.get("delta_pct") or 0)) >= 3:
                 _dq_warnings.append(
                     f"실시간 보정으로 마지막 캔들 종가를 {price_correction['delta_pct']:+.1f}% 조정했습니다.")
+            if _volume_in_progress:
+                _dq_warnings.append(
+                    "장중 거래량은 아직 누적 중이라 거래량 비율은 직전 확정 봉 기준으로 계산했습니다 (가격·지표는 현재가 반영).")
             if market == "KRX":
                 _rt_used = bool(realtime_meta)
                 _dq_source = "야후 파이낸스 일봉" + (" + 네이버 실시간 현재가" if _rt_used else " (실시간 현재가 미확보)")
@@ -18733,6 +18909,7 @@ def route(path: str, params: Dict) -> Dict:
                 "as_of": _now_local.strftime("%Y-%m-%d %H:%M") + (" KST" if market == "KRX" else " ET"),
                 "last_bar_date": _last_bar,
                 "history_bars": _bars,
+                "volume_basis": "completed_bar" if _volume_in_progress else "live_bar",
                 "warnings": _dq_warnings,
                 "component_status": dict(_component_status),
                 "missing_sessions": _missing_sessions,
@@ -19141,6 +19318,9 @@ def route(path: str, params: Dict) -> Dict:
             return {"error": f"종목별 분석 조회 실패: {e}"}
 
     if path == "/api/kr/longterm":
+        # 화면의 🔄 새로고침이 보내는 refresh=1 을 처리한다(예전에는 무시돼 4시간 캐시가 그대로 반환됐다).
+        if str(params.get("refresh") or "") == "1":
+            _CACHE.pop("fetch_kr_longterm_reco|()|[]", None)
         return fetch_kr_longterm_reco()
 
     if path == "/api/kr/opening-surge/performance":
@@ -19152,9 +19332,13 @@ def route(path: str, params: Dict) -> Dict:
         return fetch_kr_opening_surge()
 
     if path == "/api/us/longterm":
+        if str(params.get("refresh") or "") == "1":
+            _CACHE.pop("fetch_us_longterm_reco|()|[]", None)
         return fetch_us_longterm_reco()
 
     if path == "/api/us/opening-surge":
+        if str(params.get("refresh") or "") == "1":
+            _CACHE.pop("fetch_us_opening_surge|()|[]", None)
         return fetch_us_opening_surge()
 
     # ── HybridTurtle 통합 엔드포인트 ─────────────────────────────────────────
@@ -19516,6 +19700,16 @@ def route(path: str, params: Dict) -> Dict:
 
             _ETF_SET = {"QQQ", "SPY", "SOXL", "TQQQ", "SQQQ", "DIA", "IWM"}
 
+            # 정규장 중 수집한 일봉의 마지막 막대는 오늘 진행 중인 막대(거래량 누적 중)다.
+            # 모든 종목의 거래량 비율이 같은 비율로 낮아져 NCS/FWS 절대 기준이 시각마다 흔들리므로,
+            # 거래량 비율은 직전 확정 막대 기준으로 계산한다(종목별 마지막 날짜를 모르므로 시장 단위 판정).
+            try:
+                from market_briefing.session_bars import market_session_in_progress
+                _scan_volume_in_progress = market_session_in_progress(
+                    market_p, is_trading_day=lambda _day: _is_scheduled_session(market_p, _day))
+            except Exception:
+                _scan_volume_in_progress = False
+
             # ── Phase B: 2단계 수집 (히스토리 벌크 → info 소수 워커) ──
             # 112연타 (history+info) 호출은 야후 401 Invalid Crumb를 유발하므로,
             # B1에서 OHLCV·스냅샷을 먼저 확정하고 B2에서 info만 6워커로 나눠 조회한다.
@@ -19534,6 +19728,7 @@ def route(path: str, params: Dict) -> Dict:
                         ticker=tkr, closes=closes, highs=highs,
                         lows=lows, volumes=volumes, opens=opens,
                         bench_closes=bench_closes,
+                        volume_in_progress=_scan_volume_in_progress,
                     )
                     change = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2) \
                              if len(closes) >= 2 and closes[-2] != 0 else 0.0
@@ -26687,9 +26882,13 @@ function renderFlowTab(d) {
   const watchN  = sigSum.watch || 0;
   const totalN  = sigSum.total || Math.max(1, buyN + sellN + watchN);
 
-  // ── 보조 신호 (뉴스·추세·RSI) ──
-  const upBonus = [newsSent==='positive', trendDir==='up', posZone==='low_zone'].filter(Boolean).length;
-  const dnBonus = [newsSent==='negative', trendDir==='down', posZone==='high_zone'].filter(Boolean).length;
+  // ── 보조 신호 ──
+  // 서버 점수(score)는 이미 EMA20/50·MACD·PSAR(추세), RSI·ADX(모멘텀), 볼린저·ATR, 거래량, 패턴을 반영한다.
+  // MA20 기울기·RSI 구역·지표 가중 점수(weighted_score, score 와 상관 0.78)를 여기서 다시 더하면 같은 근거를
+  // 두 번 세어 최종 판단이 과장된다(52종목 워크포워드: effScore 방향 AUC 0.471 ≤ 점수 단독 0.478, 정보 증가 없음).
+  // 점수에 없는 뉴스 감성만 보조 신호로 남기고 MA20·RSI 칸은 화면 표시용으로만 쓴다.
+  const upBonus = newsSent === 'positive' ? 1 : 0;
+  const dnBonus = newsSent === 'negative' ? 1 : 0;
 
   // ── 눌림목 분석 데이터 ──
   const pa = d.pullback_analysis;
@@ -26698,16 +26897,15 @@ function renderFlowTab(d) {
   const slTriggered= pa ? (pa.sl_triggered || 0) : 0;
 
   // ── 통합 효과 점수 계산 ──
-  // score(0-100) + wscore 보정(-25~+25) + 보조신호 보정(-10~+10)
-  const wNorm  = wscore / 4;                    // -25 ~ +25
-  const bNorm  = (upBonus - dnBonus) * 4;       // -12 ~ +12
+  // score(0-100) + 뉴스 감성 보정(±4) + 눌림목 단계 가점 + 구조 붕괴 감점. 지표 가중 점수는 더하지 않는다(신뢰도 표시에만 사용).
+  const bNorm  = (upBonus - dnBonus) * 4;       // -4 ~ +4
   // 눌림목 단계(4)이면서 체크리스트 품질이 높을 때 최대 +8점 부스트
   const pbBoost = (flowStage === 4 && pbQuality >= 50)
     ? Math.round((pbQuality - 50) / 6.25)       // 0 ~ +8
     : 0;
   // 구조 붕괴 조건이 트리거 됐을 때 페널티
   const slPenalty = slTriggered >= 2 ? -10 : slTriggered === 1 ? -4 : 0;
-  const effScore = Math.min(100, Math.max(0, score + wNorm + bNorm + pbBoost + slPenalty));
+  const effScore = Math.min(100, Math.max(0, score + bNorm + pbBoost + slPenalty));
 
   // ── 추천 결정 (effScore 1차 기준) ──
   let rec, recLbl, recCls, confLabel, rationale;
@@ -27860,7 +28058,7 @@ async function loadUsSurge(force) {
   if (cnt) { cnt.style.display = 'none'; }
   if (err) { err.style.display = 'none'; }
   try {
-    var r = await fetch('/api/us/opening-surge');
+    var r = await fetch('/api/us/opening-surge' + (force ? '?refresh=1' : ''));
     var d = await r.json();
     if (ldg) ldg.style.display = 'none';
     if (d.error && !(d.items && d.items.length)) {

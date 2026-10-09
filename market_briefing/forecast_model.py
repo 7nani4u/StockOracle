@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -55,10 +56,43 @@ def daily_log_volatility(closes: Iterable[Any], window: int = 60, min_obs: int =
     return math.sqrt(max(variance, 0.0)), len(returns)
 
 
+# 단기(60일 실현+ATR) 변동성 추정에 장기(약 1년) 실현 변동성을 같은 비율로 섞는다. 변동성은 평균으로 돌아가므로
+# 22거래일 앞을 볼 때는 최근 몇 주의 변동성만으로 정하는 것보다 장기 수준으로 절반쯤 끌어당기는 편이 낫다.
+# 52종목·16,684 시점(2022-10~2026-09)의 22거래일 선행 로그수익률에 대한 정규 음의 로그우도:
+#   장기 비중 0%: -0.5590 → 50%: -0.5763 (개선폭 -0.0173, (종목,월) 블록 부트스트랩 95% 구간 -0.0253~-0.0093).
+#   앞 기간(~2024-06)·뒤 기간, KRX·US 네 분할에서 모두 같은 방향이고 최적 비중은 40~70% 의 평평한 구간이다.
+#   P10~P90 포함률 79.2% → 81.5%, P05~P95 88.1% → 89.8%(명목 80/90%) — 꼬리가 얇던 문제도 함께 줄었다.
+#   절충: 하락 방향 매수 단계(1차·2차 구간)만 평가하는 도달 확률 Brier 는 0.1900 → 0.1914(2021-11~ 표본 0.1881 → 0.1886),
+#   평균 예측 터치율이 +5.2%p → +7.0%p 로 과대(상승 표본의 드리프트 때문 — 문서의 알려진 한계). 상·하 대칭 수준의
+#   터치 Brier 는 0.1646 → 0.1636 으로 오히려 좋아진다. 되돌리려면 STOCKORACLE_VOL_LONG_RUN_WEIGHT=0.
+LONG_RUN_WINDOW = 251          # 일간 로그수익률 251개 = 약 1년
+LONG_RUN_MIN_OBS = 120         # 이보다 이력이 짧은 신규 종목은 기존 단기 추정만 쓴다
+
+
+def get_long_run_weight() -> float:
+    """환경변수 STOCKORACLE_VOL_LONG_RUN_WEIGHT를 매 호출마다 읽는다.
+
+    모듈 import 시점에 한 번 읽으면 테스트·운영에서 env를 바꿔도 같은 프로세스에서는
+    구 가중·구 오차배율이 그대로 남아 되돌리기가 재시작 전까지 먹지 않는다.
+    """
+    try:
+        return min(1.0, max(0.0, float(os.getenv("STOCKORACLE_VOL_LONG_RUN_WEIGHT", "0.5"))))
+    except ValueError:
+        return 0.5
+
+
+try:
+    LONG_RUN_WEIGHT = min(1.0, max(0.0, float(os.getenv("STOCKORACLE_VOL_LONG_RUN_WEIGHT", "0.5"))))
+except ValueError:
+    LONG_RUN_WEIGHT = 0.5
+
+
 def blended_daily_sigma(closes: Iterable[Any], last_price: float, atr: float | None,
                         atr_observed: bool = True) -> dict:
-    """실현 변동성과 ATR 기반 추정을 RMS 결합한 일간 σ(비율)."""
+    """실현 변동성과 ATR 기반 추정을 RMS 결합한 일간 σ(비율). 이력이 충분하면 장기 변동성을 절반 섞는다."""
+    closes = list(closes) if closes is not None else []
     realized, n_obs = daily_log_volatility(closes)
+    long_run, n_long = daily_log_volatility(closes, window=LONG_RUN_WINDOW, min_obs=LONG_RUN_MIN_OBS)
     atr_sigma = None
     atr_value = _finite(atr)
     if atr_value and atr_value > 0 and last_price > 0:
@@ -74,11 +108,16 @@ def blended_daily_sigma(closes: Iterable[Any], last_price: float, atr: float | N
         basis = "ATR 기반 추정(수익률 표본 부족)" if atr_observed else "대체 ATR 기반 추정(표본 부족)"
     else:
         return {"sigma": None, "basis": "변동성 산출 불가", "observations": n_obs, "realized": None, "atr_based": None}
+    long_run_weight = get_long_run_weight()
+    if long_run is not None and realized is not None and long_run_weight > 0:
+        sigma = math.sqrt((1.0 - long_run_weight) * sigma ** 2 + long_run_weight * long_run ** 2)
+        basis += f" + 최근 {n_long}일 장기 변동성 혼합"
     # 호가 단위·거래정지 등으로 0 에 가까운 σ 가 나오면 범위가 붕괴하므로 하한을 둔다.
     sigma = max(sigma, 0.002)
     return {
         "sigma": sigma, "basis": basis, "observations": n_obs,
         "realized": realized, "atr_based": atr_sigma,
+        "long_run": long_run, "long_run_observations": n_long,
     }
 
 
@@ -108,11 +147,17 @@ def touch_day_window(price: float, level: float, sigma_daily: float, horizon_day
     }
 
 
-# 52종목(KRX 26·US 26)·2022-10~2026-09·6,211 시점에서 '이후 30거래일 실현 일간 변동성 ÷ 예측 σ' 의 분포:
-# 25백분위 0.836, 중앙값 1.02(편향 없음), 75백분위 1.268. 변동성 추정이 빗나갈 때 도달 확률이 얼마나
-# 흔들리는지를 low~high 범위로 옮길 때 쓰는 배율이다(scripts/audit_prediction_layers.py 참조).
-VOL_ERROR_Q25 = 0.836
-VOL_ERROR_Q75 = 1.268
+# 52종목(KRX 26·US 26)·2022-10~2026-09·8,316 시점에서 '이후 30거래일 실현 일간 변동성 ÷ 예측 σ' 의 분포
+# (장기 변동성을 섞은 현행 σ): 25백분위 0.800, 중앙값 0.971, 75백분위 1.200 (log 오차 표준편차 0.313 — 섞기 전 0.322,
+# 25/75백분위 0.838/1.267). 변동성 추정이 빗나갈 때 도달 확률이 얼마나 흔들리는지를 low~high 범위로 옮길 때 쓰는
+# 배율이다(재현: scripts/audit_entry_bands.py 의 변동성 오차 분포).
+def get_vol_error_quantiles() -> tuple[float, float]:
+    """현재 LONG_RUN 가중에 맞는 오차 분위 배율. import 시점 상수가 아니라 매번 계산한다."""
+    return (0.800, 1.200) if get_long_run_weight() > 0 else (0.836, 1.268)  # 0 이면 섞기 전 σ 의 값
+
+
+VOL_ERROR_Q25, VOL_ERROR_Q75 = (0.800, 1.200) if LONG_RUN_WEIGHT > 0 else (0.836, 1.268)  # 0 이면 섞기 전 σ 의 값
+# 하위 호환용 스냅샷(테스트·외부 참조). 실제 계산은 get_vol_error_quantiles()를 쓸 것.
 
 
 def touch_probability_range(price: float, level: float, sigma_daily: float, days: int) -> dict | None:
@@ -120,8 +165,9 @@ def touch_probability_range(price: float, level: float, sigma_daily: float, days
     mid = touch_probability(price, level, sigma_daily, days)
     if mid is None:
         return None
-    low = touch_probability(price, level, sigma_daily * VOL_ERROR_Q25, days)
-    high = touch_probability(price, level, sigma_daily * VOL_ERROR_Q75, days)
+    _q25, _q75 = get_vol_error_quantiles()
+    low = touch_probability(price, level, sigma_daily * _q25, days)
+    high = touch_probability(price, level, sigma_daily * _q75, days)
     return {
         "low": min(mid, low if low is not None else mid),
         "mid": mid,

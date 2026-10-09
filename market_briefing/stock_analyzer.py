@@ -384,10 +384,13 @@ def enrich_with_hybrid(
     bench_ma200:  float | None = None,
     vix:          float | None = None,
     earnings_days: int | None = None,
+    volume_in_progress: bool = False,
 ) -> dict:
     """외부 호출용 — OHLCV 데이터에서 하이브리드 점수 직접 계산.
 
     api/index.py 에서 fetch_stock_data()로 가져온 일봉 데이터로 호출 가능.
+    ``volume_in_progress`` 는 마지막 일봉이 장중 진행 중인 막대(거래량 누적 중)일 때 True —
+    거래량 항목을 직전 확정 막대 기준으로 계산한다(market_briefing.session_bars).
 
     Returns:
         compute_hybrid_score() 반환 dict 또는 {"error": str}
@@ -411,6 +414,7 @@ def enrich_with_hybrid(
             bench_ma200   = bench_ma200,
             vix           = vix,
             earnings_days = earnings_days,
+            volume_in_progress = volume_in_progress,
         )
     except Exception as e:
         return {"error": str(e)}

@@ -37,11 +37,20 @@ from .dual_score_v2 import (
     VOL_LOW, VOL_NORMAL, VOL_HIGH,
 )
 from .quality_filter import QualityFilterResult, score_quality
+from .session_bars import completed_volume_ratio
 from .hybrid_signals import (
     compute_hybrid_score, compute_regime, detect_vol_regime,
     adaptive_atr_buffer, anti_chase_guard,
     REGIME_BULLISH as HT_BULLISH, REGIME_BEARISH as HT_BEARISH,
 )
+try:
+    from .hybrid_signals import _prior_twenty_day_high as _prior_high20
+except Exception:  # pragma: no cover - 단독 로드 시 폴백
+    def _prior_high20(highs, lookback: int = 20):  # type: ignore
+        if not highs or len(highs) < 2:
+            return None
+        window = list(highs)[max(0, len(highs) - 1 - lookback):len(highs) - 1]
+        return float(max(window)) if window else None
 
 logger = logging.getLogger(__name__)
 
@@ -611,14 +620,14 @@ def _calc_efficiency(closes: List[float], period: int = 20) -> float:
     return min(net_move / total_path * 100, 100.0)
 
 
-def _calc_vol_ratio(volumes: List[float], period: int = 21) -> float:
-    """현재 거래량 / 20일 평균 거래량."""
-    if len(volumes) < period:
-        return 1.0
-    avg = float(np.mean(volumes[-period:-1]))
-    if avg <= 0:
-        return 1.0
-    return round(volumes[-1] / avg, 3)
+def _calc_vol_ratio(volumes: List[float], period: int = 21, in_progress: bool = False) -> float:
+    """현재 거래량 / 20일 평균 거래량.
+
+    in_progress=True(마지막 막대가 장중 진행 중)이면 거래량이 누적 중(최종값 이하)이라
+    직전 확정 막대의 거래량 비율을 쓴다 — 조회 시각만으로 거래량 위험이 커지는 것을 막는다.
+    """
+    ratio, _basis = completed_volume_ratio(volumes, in_progress, lookback=period - 1)
+    return 1.0 if ratio is None else round(ratio, 3)
 
 
 def _build_snapshot(
@@ -909,6 +918,7 @@ def build_snapshot_from_ohlcv(
     opens:        Optional[List[float]] = None,
     bench_closes: Optional[List[float]] = None,
     weekly_adx:   float = 0.0,
+    volume_in_progress: bool = False,
 ) -> TechnicalSnapshot:
     """OHLCV 데이터에서 TechnicalSnapshot 자동 계산.
 
@@ -922,6 +932,8 @@ def build_snapshot_from_ohlcv(
         opens:        시가 (BIS 계산용, 선택)
         bench_closes: 벤치마크 종가 (RS 계산용, 선택)
         weekly_adx:   주간 ADX (외부에서 주입, 없으면 0)
+        volume_in_progress: 마지막 막대가 장중 진행 중(거래량 누적 중)이면 True —
+                      거래량 비율·BIS 의 거래량 항목을 직전 확정 막대 기준으로 계산한다.
 
     Returns:
         TechnicalSnapshot
@@ -940,6 +952,7 @@ def build_snapshot_from_ohlcv(
             volumes       = volumes,
             open_prices   = opens,
             bench_closes  = bench_closes,
+            volume_in_progress = volume_in_progress,
         )
     except Exception as e:
         logger.error("[Snapshot] %s: hybrid_score 계산 실패: %s", ticker, e)
@@ -951,7 +964,12 @@ def build_snapshot_from_ohlcv(
     adx     = hs.get("adx")     or 0.0
     plus_di = hs.get("plus_di") or 0.0
     minus_di= hs.get("minus_di")or 0.0
-    high_20d= hs.get("twenty_day_high") or (max(highs[-20:]) if n >= 20 else current_price)
+    # 직전 20봉(당일 제외) 기준 — hybrid와 동일. 당일 포함 시 추격 가드가 죽는다.
+    try:
+        _ph = _prior_high20([float(h) for h in highs]) if n >= 2 else None
+    except Exception:
+        _ph = None
+    high_20d = hs.get("twenty_day_high") or (_ph if _ph is not None else (max(highs[:-1]) if n >= 2 else current_price))
 
     # MA200
     ma200 = _calc_ma(closes, 200)
@@ -962,8 +980,8 @@ def build_snapshot_from_ohlcv(
     # 추세 효율성
     efficiency = _calc_efficiency(closes)
 
-    # 거래량 비율
-    vol_ratio = _calc_vol_ratio(volumes)
+    # 거래량 비율 (진행 중 막대면 직전 확정 막대 기준)
+    vol_ratio = _calc_vol_ratio(volumes, in_progress=volume_in_progress)
 
     # RS vs 벤치마크
     rs = 0.0
@@ -977,14 +995,15 @@ def build_snapshot_from_ohlcv(
 
     # BIS (최신 캔들)
     bis = 0.0
-    if opens and len(opens) >= 1 and len(volumes) >= 11:
-        avg_vol_10 = float(np.mean(volumes[-11:-1])) if len(volumes) >= 11 else 0
+    bis_vol_idx = -2 if (volume_in_progress and len(volumes) >= 12) else -1
+    if opens and len(opens) >= 1 and len(volumes) >= 10 - bis_vol_idx:
+        avg_vol_10 = float(np.mean(volumes[bis_vol_idx - 10:bis_vol_idx]))
         bis = float(compute_bis_from_candle(
             open_p   = opens[-1],
             high_p   = highs[-1],
             low_p    = lows[-1],
             close_p  = closes[-1],
-            volume   = volumes[-1],
+            volume   = volumes[bis_vol_idx],
             avg_vol_10d = avg_vol_10,
         ))
 

@@ -160,6 +160,28 @@ try:
 except Exception:
     _ML_EVALUATE_AVAILABLE = False
 
+# 뉴스 정규화 단일 원천: forecast_model.normalize_news_items(범용 시간·정렬·중복 제거)와
+# news_evidence.normalize_news_evidence(표시 feed vs 진단 evidence 분리)는 목적이 다르다.
+# 둘을 혼동해 중복 구현이 늘지 않게 여기서 함께 노출한다.
+try:
+    from .news_evidence import normalize_news_evidence
+    _NEWS_EVIDENCE_AVAILABLE = True
+except Exception:
+    _NEWS_EVIDENCE_AVAILABLE = False
+    normalize_news_evidence = None
+try:
+    from .forecast_model import (
+        blended_daily_sigma as forecast_blended_sigma,
+        build_forecast_summary as forecast_summary,
+        touch_probability as forecast_touch_probability,
+        touch_probability_range as forecast_touch_range,
+        get_long_run_weight as forecast_long_run_weight,
+        get_vol_error_quantiles as forecast_vol_error_quantiles,
+    )
+    _FORECAST_AVAILABLE = True
+except Exception:
+    _FORECAST_AVAILABLE = False
+
 __all__ = [
     # 기존
     "build_core_summary",
@@ -201,6 +223,9 @@ __all__ = [
     "ml_predict_direction", "ml_predict_from_ohlcv", "ml_load_model", "ml_is_available",
     "ml_feature_columns", "ml_model_metadata",
     "ml_evaluate_predictions", "ml_time_based_split", "ml_walk_forward_evaluate", "ml_check_leakage",
+    "normalize_news_evidence",
+    "forecast_blended_sigma", "forecast_summary", "forecast_touch_probability",
+    "forecast_touch_range", "forecast_long_run_weight", "forecast_vol_error_quantiles",
     # 가용성 플래그
     "_PORTFOLIO_AVAILABLE", "_IMMUNE_AVAILABLE",
     "_CROSS_REF_AVAILABLE", "_DASHBOARD_AVAILABLE", "_CONFIDENCE_ENGINE_AVAILABLE",

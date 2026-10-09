@@ -1,5 +1,5 @@
 {
-  "contract_version": "2026-10-09",
+  "contract_version": "2026-10-09.2",
   "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
   "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
   "nullable_fields": [
@@ -14,6 +14,7 @@
     "status": "정상 | 데이터 부족 | 오래된 데이터 | 일부 데이터 수집 실패",
     "last_bar_date": "YYYY-MM-DD or unavailable",
     "history_bars": "integer",
+    "volume_basis": "live_bar | completed_bar; completed_bar while the last daily bar is still forming during the regular session (volume ratios then use the last confirmed bar)",
     "source": "string",
     "warnings": ["string"],
     "component_status": "object"
@@ -78,8 +79,8 @@
         "steps": [{
           "price_range": ["number_low", "number_high"],
           "reach_probability_pct": "number; chance the low touches the step price within 30 sessions, zero-drift volatility model",
-          "probability_low_pct": "number; same model with sigma x0.836 (25th percentile of forward/predicted volatility)",
-          "probability_high_pct": "number; same model with sigma x1.268 (75th percentile)",
+          "probability_low_pct": "number; same model with sigma x0.800 (25th percentile of forward/predicted volatility; x0.836 when STOCKORACLE_VOL_LONG_RUN_WEIGHT=0)",
+          "probability_high_pct": "number; same model with sigma x1.200 (75th percentile; x1.268 when STOCKORACLE_VOL_LONG_RUN_WEIGHT=0)",
           "probability_source": "touch_model",
           "probability_note": "string",
           "days_min": "number; 25th percentile of the first-touch day given a touch within 30 sessions (1..30)",
