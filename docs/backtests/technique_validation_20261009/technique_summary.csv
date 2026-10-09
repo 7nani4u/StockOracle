@@ -1,0 +1,99 @@
+﻿technique,market,status,validated,train_trades,validation_trades,final_trades,final_win_rate_pct,final_net_expectancy_pct,final_profit_factor,exclusions,reason
+hybrid_breakout,KRX,INSUFFICIENT,False,138,7,14,28.57142857142857,-2.536097715487955,0.5099177946662123,[],Each baseline and retained split requires at least min_trades completed events.
+hybrid_breakout,US,DROP,True,87,29,29,27.586206896551722,-2.294178191922595,0.46086255509672114,[],Baseline net expectancy is negative in all three adequately supported splits; no pruning passes final validation.
+pattern_breakout,KRX,INSUFFICIENT,False,90,10,24,45.83333333333333,-0.43921730520983343,0.9163264893467646,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_breakout,US,INSUFFICIENT,False,90,16,19,57.89473684210527,3.1313500379972705,2.6589857519437925,[],Each baseline and retained split requires at least min_trades completed events.
+dynamic_rsi,KRX,INSUFFICIENT,False,6,4,2,100.0,16.389534167998683,,[],Each baseline and retained split requires at least min_trades completed events.
+dynamic_rsi,US,INSUFFICIENT,False,18,1,4,75.0,6.42316062537507,5.956502672808382,[],Each baseline and retained split requires at least min_trades completed events.
+leader_reversal,KRX,INSUFFICIENT,False,1,0,4,75.0,6.025913422330461,3.9370142432873068,[],Each baseline and retained split requires at least min_trades completed events.
+leader_reversal,US,INSUFFICIENT,False,4,5,4,50.0,-2.7986606538037146,0.6253024676448824,[],Each baseline and retained split requires at least min_trades completed events.
+momentum_persistence,KRX,INSUFFICIENT,False,5,3,5,80.0,8.476815037824657,4.656422805243976,[],Each baseline and retained split requires at least min_trades completed events.
+momentum_persistence,US,INSUFFICIENT,False,5,2,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+vcp,KRX,INSUFFICIENT,False,13,2,4,50.0,0.8462603652699798,1.378937742573652,[],Each baseline and retained split requires at least min_trades completed events.
+vcp,US,INSUFFICIENT,False,7,3,3,33.33333333333333,-3.1619891738460435,0.29310105412176585,[],Each baseline and retained split requires at least min_trades completed events.
+arty_smma_fractal,KRX,INSUFFICIENT,False,30,6,5,20.0,-0.38194061428963255,0.9000915755203049,[],Each baseline and retained split requires at least min_trades completed events.
+arty_smma_fractal,US,INSUFFICIENT,False,14,8,8,12.5,-2.078467152039144,0.39317590074281583,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_inverse_head_shoulders,KRX,INSUFFICIENT,False,9,0,4,50.0,0.7589470883831752,1.1603924677703847,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_inverse_head_shoulders,US,INSUFFICIENT,False,9,2,1,100.0,10.066681600629124,,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_double_bottom,KRX,INSUFFICIENT,False,39,4,2,0.0,-10.312692665578716,0.0,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_double_bottom,US,INSUFFICIENT,False,27,5,6,66.66666666666666,3.800584711830258,3.8270273447165897,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_triple_bottom,KRX,INSUFFICIENT,False,18,3,3,66.66666666666666,5.251056609273209,7.476515047828642,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_triple_bottom,US,INSUFFICIENT,False,7,1,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_symmetrical_triangle,KRX,INSUFFICIENT,False,18,2,8,50.0,2.1517888960935294,1.5197535217383245,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_symmetrical_triangle,US,INSUFFICIENT,False,9,4,11,36.36363636363637,-0.38967837703131847,0.8711344600571809,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_ascending_triangle,KRX,INSUFFICIENT,False,8,0,1,0.0,-3.4511113048025677,0.0,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_ascending_triangle,US,INSUFFICIENT,False,4,4,1,100.0,10.541837251878816,,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_falling_wedge,KRX,INSUFFICIENT,False,20,2,12,50.0,-0.039272523167750595,0.993740884719379,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_falling_wedge,US,INSUFFICIENT,False,38,2,8,87.5,6.2056658844592665,8.401584318214574,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_bullish_consolidation,KRX,INSUFFICIENT,False,18,2,1,100.0,1.8596190115792726,,[],Each baseline and retained split requires at least min_trades completed events.
+pattern_bullish_consolidation,US,INSUFFICIENT,False,17,4,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+candle_hammer,KRX,INSUFFICIENT,False,40,11,17,17.647058823529413,-1.8358065298291668,0.26919929600208997,[],Each baseline and retained split requires at least min_trades completed events.
+candle_hammer,US,INSUFFICIENT,False,44,11,16,25.0,0.8176316931660793,1.3477780864092024,[],Each baseline and retained split requires at least min_trades completed events.
+candle_marubozu,KRX,INSUFFICIENT,False,60,13,14,35.714285714285715,-1.7720886906047548,0.668505802086236,[],Each baseline and retained split requires at least min_trades completed events.
+candle_marubozu,US,INSUFFICIENT,False,43,15,11,45.45454545454545,0.6278398060098023,1.219249680314878,[],Each baseline and retained split requires at least min_trades completed events.
+candle_bullish_engulfing,KRX,INCONCLUSIVE,False,88,25,41,41.46341463414634,1.8032433137174737,1.6127505621773481,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+candle_bullish_engulfing,US,INCONCLUSIVE,False,111,36,28,39.285714285714285,0.5922019205211069,1.2085748936266423,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+candle_bullish_harami,KRX,INCONCLUSIVE,False,95,44,29,10.344827586206897,-1.9548584650320462,0.37497172403859047,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+candle_bullish_harami,US,DROP,True,110,32,38,28.947368421052634,-0.4197055749685409,0.8518545230007994,[],Baseline net expectancy is negative in all three adequately supported splits; no pruning passes final validation.
+candle_harami_cross,KRX,INSUFFICIENT,False,43,24,16,12.5,-0.7751043146189135,0.6925326447809431,[],Each baseline and retained split requires at least min_trades completed events.
+candle_harami_cross,US,INSUFFICIENT,False,63,9,13,46.15384615384615,2.041638889191424,2.1168676052529705,[],Each baseline and retained split requires at least min_trades completed events.
+candle_piercing_line,KRX,INSUFFICIENT,False,12,2,2,50.0,8.029551102472483,11.292530460841204,[],Each baseline and retained split requires at least min_trades completed events.
+candle_piercing_line,US,INSUFFICIENT,False,9,4,3,0.0,-6.004791788316669,0.0,[],Each baseline and retained split requires at least min_trades completed events.
+candle_morning_star,KRX,INSUFFICIENT,False,71,25,18,66.66666666666666,5.930757527239036,5.126539549215981,[],Each baseline and retained split requires at least min_trades completed events.
+candle_morning_star,US,INSUFFICIENT,False,83,24,15,46.666666666666664,1.754620428237496,1.787080377895034,[],Each baseline and retained split requires at least min_trades completed events.
+candle_three_white_soldiers,KRX,INSUFFICIENT,False,16,1,6,16.666666666666664,-7.495108808093893,0.08120598424281383,[],Each baseline and retained split requires at least min_trades completed events.
+candle_three_white_soldiers,US,INSUFFICIENT,False,34,13,8,25.0,-0.7422797176590861,0.6692359885077491,[],Each baseline and retained split requires at least min_trades completed events.
+candle_three_inside_up,KRX,INSUFFICIENT,False,37,16,12,25.0,-0.15078954137470318,0.947303717673933,[],Each baseline and retained split requires at least min_trades completed events.
+candle_three_inside_up,US,INSUFFICIENT,False,40,10,7,71.42857142857143,3.7161446136034066,2.855273314151039,[],Each baseline and retained split requires at least min_trades completed events.
+candle_three_outside_up,KRX,INSUFFICIENT,False,34,9,13,69.23076923076923,3.3464193956665063,3.5051636720107955,[],Each baseline and retained split requires at least min_trades completed events.
+candle_three_outside_up,US,INSUFFICIENT,False,55,17,14,50.0,2.227079290166579,1.774950130427203,[],Each baseline and retained split requires at least min_trades completed events.
+candle_rising_three_methods,KRX,INSUFFICIENT,False,0,0,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+candle_rising_three_methods,US,INSUFFICIENT,False,0,0,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+candle_abandoned_baby_bull,KRX,INSUFFICIENT,False,0,0,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+candle_abandoned_baby_bull,US,INSUFFICIENT,False,0,0,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+candle_hikkake_bull,KRX,INSUFFICIENT,False,17,4,7,42.857142857142854,2.187716388886603,1.7003209964387302,[],Each baseline and retained split requires at least min_trades completed events.
+candle_hikkake_bull,US,INSUFFICIENT,False,12,8,5,60.0,1.5230700547895926,1.5484171747775417,[],Each baseline and retained split requires at least min_trades completed events.
+candle_mat_hold,KRX,INSUFFICIENT,False,1,0,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+candle_mat_hold,US,INSUFFICIENT,False,0,1,0,,,,[],Each baseline and retained split requires at least min_trades completed events.
+indicator_rsi,KRX,KEEP,True,33,25,27,33.33333333333333,1.5793428289800922,1.347383460825612,[],Positive net expectancy on each split; frozen final exclusions do not worsen expectancy or loss rate.
+indicator_rsi,US,INSUFFICIENT,False,84,11,16,62.5,4.121845748165249,3.4192350419445825,[],Each baseline and retained split requires at least min_trades completed events.
+indicator_macd,KRX,INCONCLUSIVE,False,132,21,30,23.333333333333332,-1.903162976476578,0.5580287546877991,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_macd,US,DROP,True,113,41,37,24.324324324324326,-1.4007864027147205,0.5857745572303118,[],Baseline net expectancy is negative in all three adequately supported splits; no pruning passes final validation.
+indicator_ma,KRX,DROP,True,172,37,34,29.411764705882355,-0.3586075668599558,0.8940419842254755,[],Baseline net expectancy is negative in all three adequately supported splits; no pruning passes final validation.
+indicator_ma,US,DROP,True,129,54,51,29.411764705882355,-0.7545928189348999,0.747024648921085,[],Baseline net expectancy is negative in all three adequately supported splits; no pruning passes final validation.
+indicator_bb,KRX,INCONCLUSIVE,False,104,53,44,36.36363636363637,-0.18889139688637985,0.9502222377780549,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_bb,US,INCONCLUSIVE,False,164,38,47,44.680851063829785,1.5030095824842917,1.5559506705546502,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_adx,KRX,INSUFFICIENT,False,76,10,10,20.0,-0.9299886247955167,0.7074920464232708,[],Each baseline and retained split requires at least min_trades completed events.
+indicator_adx,US,INSUFFICIENT,False,55,16,10,20.0,-1.1424425514718315,0.6487812373156426,[],Each baseline and retained split requires at least min_trades completed events.
+indicator_obv,KRX,INCONCLUSIVE,False,193,68,56,37.5,1.5242942026908015,1.5243855665950667,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_obv,US,INCONCLUSIVE,False,235,68,45,40.0,1.2120764284609822,1.4537527733123727,"[{""condition"": ""trend_context"", ""value"": ""UP""}]","Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_stoch14,KRX,INCONCLUSIVE,False,267,75,73,36.986301369863014,0.8478168999197591,1.2471712710553204,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_stoch14,US,INCONCLUSIVE,False,279,85,53,43.39622641509434,0.5871590231680636,1.2117958800462953,"[{""condition"": ""volume_context"", ""value"": ""<0.8x""}]","Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_aroon,KRX,INSUFFICIENT,False,105,14,29,41.37931034482759,0.890948095919445,1.2958028235512589,[],Each baseline and retained split requires at least min_trades completed events.
+indicator_aroon,US,INCONCLUSIVE,False,103,33,29,41.37931034482759,0.18411863857432323,1.0591884816231583,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_buy_pressure,KRX,INCONCLUSIVE,False,164,48,21,19.047619047619047,-0.8445905038742685,0.7735786704358013,"[{""condition"": ""trend_context"", ""value"": ""MIXED""}]","Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_buy_pressure,US,INCONCLUSIVE,False,215,54,37,48.64864864864865,2.369944174965692,2.0377896656195094,"[{""condition"": ""trend_context"", ""value"": ""UP""}]","Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_psar,KRX,INCONCLUSIVE,False,144,53,46,28.26086956521739,0.7929798864280118,1.240035985220636,[],"Adequate event counts, but positive performance or frozen final validation is not established."
+indicator_psar,US,PRUNED_KEEP,True,191,50,26,42.30769230769231,3.619765818322866,2.805824530017532,"[{""condition"": ""volatility_context"", ""value"": ""2-5%""}]",Positive net expectancy on each split; frozen final exclusions do not worsen expectancy or loss rate.
+ml_direction,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Historical point-in-time trained models required; current model replay leaks training history.
+ml_direction,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Historical point-in-time trained models required; current model replay leaks training history.
+garp,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Point-in-time financial statements and publication dates required.
+garp,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Point-in-time financial statements and publication dates required.
+news,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Timestamped historical news and evidence snapshots required.
+news,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Timestamped historical news and evidence snapshots required.
+three_signal_matrix,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Timestamped historical news and price-position snapshots required.
+three_signal_matrix,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Timestamped historical news and price-position snapshots required.
+forecast,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Historical model versions and training cutoffs required.
+forecast,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Historical model versions and training cutoffs required.
+sector_flow,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Historical constituent and institutional flow snapshots required.
+sector_flow,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Historical constituent and institutional flow snapshots required.
+investment_charm,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],"Point-in-time fundamentals, peers and weights required."
+investment_charm,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],"Point-in-time fundamentals, peers and weights required."
+portfolio_allocation,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Portfolio construction is not a standalone entry technique.
+portfolio_allocation,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Portfolio construction is not a standalone entry technique.
+support_resistance_fibonacci,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Price zones alone specify no independent executable entry rule.
+support_resistance_fibonacci,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Price zones alone specify no independent executable entry rule.
+atr,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Volatility measure; no directional entry rule.
+atr,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Volatility measure; no directional entry rule.
+bearish_patterns,KRX,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Sell warnings are not executable long entries; shorting requires borrow data.
+bearish_patterns,US,NOT_BACKTESTABLE_WITH_OHLCV,False,0,0,0,,,,[],Sell warnings are not executable long entries; shorting requires borrow data.

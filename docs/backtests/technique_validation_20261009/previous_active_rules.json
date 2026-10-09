@@ -1,0 +1,382 @@
+{
+  "version": 1,
+  "generated_at": "2026-10-01T15:50:35.353210+00:00",
+  "rules": {
+    "hybrid_breakout": {
+      "KRX": {
+        "status": "KEEP",
+        "exclusions": [],
+        "baseline": {
+          "trades": 98,
+          "wins": 40,
+          "winrate": 40.82,
+          "avg_return_pct": 0.508,
+          "total_return_pct": 49.78,
+          "expectancy_pct": 0.508,
+          "loss_rate": 59.18,
+          "profit_factor": 1.172
+        },
+        "pruned": {
+          "trades": 98,
+          "wins": 40,
+          "winrate": 40.82,
+          "avg_return_pct": 0.508,
+          "total_return_pct": 49.78,
+          "expectancy_pct": 0.508,
+          "loss_rate": 59.18,
+          "profit_factor": 1.172
+        },
+        "steps": []
+      },
+      "US": {
+        "status": "PRUNED_KEEP",
+        "exclusions": [
+          {
+            "condition": "adx_bucket",
+            "value": ">=30"
+          }
+        ],
+        "baseline": {
+          "trades": 445,
+          "wins": 140,
+          "winrate": 31.46,
+          "avg_return_pct": -0.089,
+          "total_return_pct": -39.6,
+          "expectancy_pct": -0.089,
+          "loss_rate": 68.54,
+          "profit_factor": 0.962
+        },
+        "pruned": {
+          "trades": 166,
+          "wins": 65,
+          "winrate": 39.16,
+          "avg_return_pct": 0.347,
+          "total_return_pct": 57.63,
+          "expectancy_pct": 0.347,
+          "loss_rate": 60.84,
+          "profit_factor": 1.143
+        },
+        "steps": [
+          {
+            "removed": {
+              "condition": "adx_bucket",
+              "value": ">=30"
+            },
+            "support": {
+              "losses": 204,
+              "total": 279,
+              "loss_rate": 73.12
+            },
+            "after": {
+              "trades": 166,
+              "wins": 65,
+              "winrate": 39.16,
+              "avg_return_pct": 0.347,
+              "total_return_pct": 57.63,
+              "expectancy_pct": 0.347,
+              "loss_rate": 60.84,
+              "profit_factor": 1.143
+            }
+          }
+        ]
+      }
+    },
+    "pattern_breakout": {
+      "KRX": {
+        "status": "DROP",
+        "exclusions": [
+          {
+            "condition": "cap_tier",
+            "value": "LARGE"
+          }
+        ],
+        "baseline": {
+          "trades": 156,
+          "wins": 69,
+          "winrate": 44.23,
+          "avg_return_pct": -3.24,
+          "total_return_pct": -505.45,
+          "expectancy_pct": -3.24,
+          "loss_rate": 55.77,
+          "profit_factor": 0.572
+        },
+        "pruned": {
+          "trades": 82,
+          "wins": 43,
+          "winrate": 52.44,
+          "avg_return_pct": -0.587,
+          "total_return_pct": -48.13,
+          "expectancy_pct": -0.587,
+          "loss_rate": 47.56,
+          "profit_factor": 0.899
+        },
+        "steps": [
+          {
+            "removed": {
+              "condition": "cap_tier",
+              "value": "LARGE"
+            },
+            "support": {
+              "losses": 48,
+              "total": 74,
+              "loss_rate": 64.86
+            },
+            "after": {
+              "trades": 82,
+              "wins": 43,
+              "winrate": 52.44,
+              "avg_return_pct": -0.587,
+              "total_return_pct": -48.13,
+              "expectancy_pct": -0.587,
+              "loss_rate": 47.56,
+              "profit_factor": 0.899
+            }
+          }
+        ]
+      },
+      "US": {
+        "status": "PRUNED_KEEP",
+        "exclusions": [
+          {
+            "condition": "completion_bucket",
+            "value": "70-85"
+          },
+          {
+            "condition": "cap_tier",
+            "value": "LARGE"
+          }
+        ],
+        "baseline": {
+          "trades": 159,
+          "wins": 91,
+          "winrate": 57.23,
+          "avg_return_pct": 0.497,
+          "total_return_pct": 78.97,
+          "expectancy_pct": 0.497,
+          "loss_rate": 42.77,
+          "profit_factor": 1.14
+        },
+        "pruned": {
+          "trades": 31,
+          "wins": 22,
+          "winrate": 70.97,
+          "avg_return_pct": 5.181,
+          "total_return_pct": 160.62,
+          "expectancy_pct": 5.181,
+          "loss_rate": 29.03,
+          "profit_factor": 3.42
+        },
+        "steps": [
+          {
+            "removed": {
+              "condition": "completion_bucket",
+              "value": "70-85"
+            },
+            "support": {
+              "losses": 54,
+              "total": 123,
+              "loss_rate": 43.9
+            },
+            "after": {
+              "trades": 36,
+              "wins": 22,
+              "winrate": 61.11,
+              "avg_return_pct": 4.016,
+              "total_return_pct": 144.56,
+              "expectancy_pct": 4.016,
+              "loss_rate": 38.89,
+              "profit_factor": 2.754
+            }
+          },
+          {
+            "removed": {
+              "condition": "cap_tier",
+              "value": "LARGE"
+            },
+            "support": {
+              "losses": 5,
+              "total": 5,
+              "loss_rate": 100.0
+            },
+            "after": {
+              "trades": 31,
+              "wins": 22,
+              "winrate": 70.97,
+              "avg_return_pct": 5.181,
+              "total_return_pct": 160.62,
+              "expectancy_pct": 5.181,
+              "loss_rate": 29.03,
+              "profit_factor": 3.42
+            }
+          }
+        ]
+      }
+    },
+    "dynamic_rsi": {
+      "KRX": {
+        "status": "INSUFFICIENT",
+        "exclusions": [],
+        "baseline": {
+          "trades": 11,
+          "wins": 5,
+          "winrate": 45.45,
+          "avg_return_pct": -2.33,
+          "total_return_pct": -25.63,
+          "expectancy_pct": -2.33,
+          "loss_rate": 54.55,
+          "profit_factor": 0.618
+        },
+        "pruned": {
+          "trades": 11,
+          "wins": 5,
+          "winrate": 45.45,
+          "avg_return_pct": -2.33,
+          "total_return_pct": -25.63,
+          "expectancy_pct": -2.33,
+          "loss_rate": 54.55,
+          "profit_factor": 0.618
+        },
+        "steps": []
+      },
+      "US": {
+        "status": "INSUFFICIENT",
+        "exclusions": [],
+        "baseline": {
+          "trades": 15,
+          "wins": 8,
+          "winrate": 53.33,
+          "avg_return_pct": 1.329,
+          "total_return_pct": 19.93,
+          "expectancy_pct": 1.329,
+          "loss_rate": 46.67,
+          "profit_factor": 1.313
+        },
+        "pruned": {
+          "trades": 15,
+          "wins": 8,
+          "winrate": 53.33,
+          "avg_return_pct": 1.329,
+          "total_return_pct": 19.93,
+          "expectancy_pct": 1.329,
+          "loss_rate": 46.67,
+          "profit_factor": 1.313
+        },
+        "steps": []
+      }
+    },
+    "leader_reversal": {
+      "KRX": {
+        "status": "INSUFFICIENT",
+        "exclusions": [],
+        "baseline": {
+          "trades": 4,
+          "wins": 0,
+          "winrate": 0.0,
+          "avg_return_pct": -4.347,
+          "total_return_pct": -17.39,
+          "expectancy_pct": -4.347,
+          "loss_rate": 100.0,
+          "profit_factor": 0.0
+        },
+        "pruned": {
+          "trades": 4,
+          "wins": 0,
+          "winrate": 0.0,
+          "avg_return_pct": -4.347,
+          "total_return_pct": -17.39,
+          "expectancy_pct": -4.347,
+          "loss_rate": 100.0,
+          "profit_factor": 0.0
+        },
+        "steps": []
+      },
+      "US": {
+        "status": "INSUFFICIENT",
+        "exclusions": [],
+        "baseline": {
+          "trades": 5,
+          "wins": 1,
+          "winrate": 20.0,
+          "avg_return_pct": -4.111,
+          "total_return_pct": -20.56,
+          "expectancy_pct": -4.111,
+          "loss_rate": 80.0,
+          "profit_factor": 0.361
+        },
+        "pruned": {
+          "trades": 5,
+          "wins": 1,
+          "winrate": 20.0,
+          "avg_return_pct": -4.111,
+          "total_return_pct": -20.56,
+          "expectancy_pct": -4.111,
+          "loss_rate": 80.0,
+          "profit_factor": 0.361
+        },
+        "steps": []
+      }
+    },
+    "ml_direction": {
+      "KRX": {
+        "status": "INSUFFICIENT",
+        "exclusions": [],
+        "baseline": {
+          "trades": 17,
+          "wins": 9,
+          "winrate": 52.94,
+          "avg_return_pct": 2.677,
+          "total_return_pct": 45.51,
+          "expectancy_pct": 2.677,
+          "loss_rate": 47.06,
+          "profit_factor": 1.464
+        },
+        "pruned": {
+          "trades": 17,
+          "wins": 9,
+          "winrate": 52.94,
+          "avg_return_pct": 2.677,
+          "total_return_pct": 45.51,
+          "expectancy_pct": 2.677,
+          "loss_rate": 47.06,
+          "profit_factor": 1.464
+        },
+        "steps": []
+      },
+      "US": {
+        "status": "KEEP",
+        "exclusions": [],
+        "baseline": {
+          "trades": 24,
+          "wins": 11,
+          "winrate": 45.83,
+          "avg_return_pct": 0.283,
+          "total_return_pct": 6.79,
+          "expectancy_pct": 0.283,
+          "loss_rate": 54.17,
+          "profit_factor": 1.072
+        },
+        "pruned": {
+          "trades": 24,
+          "wins": 11,
+          "winrate": 45.83,
+          "avg_return_pct": 0.283,
+          "total_return_pct": 6.79,
+          "expectancy_pct": 0.283,
+          "loss_rate": 54.17,
+          "profit_factor": 1.072
+        },
+        "steps": []
+      }
+    }
+  },
+  "params": {
+    "min_trades": 20,
+    "max_iters": 10,
+    "max_hold": 20,
+    "tp_atr": 2.0,
+    "costs": {
+      "KRX": 0.2,
+      "US": 0.1
+    }
+  }
+}
