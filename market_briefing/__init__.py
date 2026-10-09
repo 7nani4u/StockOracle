@@ -69,6 +69,7 @@ try:
         SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
         is_scan_price_eligible, apply_leader_promotion,
         apply_momentum_promotion, momentum_conditions,
+        apply_vcp_promotion, vcp_conditions,
     )
     _SCAN_AVAILABLE = True
 except Exception:
@@ -85,6 +86,8 @@ except Exception:
     apply_leader_promotion = None
     apply_momentum_promotion = None
     momentum_conditions = None
+    apply_vcp_promotion = None
+    vcp_conditions = None
 
 # ── 신규 통합 모듈 (graceful fallback) ────────────────────────────────────────
 
@@ -186,6 +189,12 @@ except Exception:
     detect_momentum_persistence = None
     find_momentum_surges = None
 try:
+    from .vcp import detect_vcp as detect_vcp
+    _VCP_AVAILABLE = True
+except Exception:
+    _VCP_AVAILABLE = False
+    detect_vcp = None
+try:
     from .forecast_model import (
         blended_daily_sigma as forecast_blended_sigma,
         build_forecast_summary as forecast_summary,
@@ -222,6 +231,7 @@ __all__ = [
     "SCAN_US_MAX_PRICE", "SCAN_COLLECT_CAP_US_FULL", "SCAN_COLLECT_CAP_US_LITE",
     "is_scan_price_eligible", "apply_leader_promotion",
     "apply_momentum_promotion", "momentum_conditions",
+    "apply_vcp_promotion", "vcp_conditions",
     # portfolio_manager
     "PortfolioPosition", "PortfolioState", "PortfolioManager", "TradeRiskAssessment",
     # market_immune
@@ -243,6 +253,7 @@ __all__ = [
     "normalize_news_evidence",
     "detect_momentum_persistence", "find_momentum_surges",
     "MOMENTUM_SURGE_MIN_PCT", "MOMENTUM_HOLD_DAYS", "MOMENTUM_RETAIN_FRAC",
+    "detect_vcp",
     "forecast_blended_sigma", "forecast_summary", "forecast_touch_probability",
     "forecast_touch_range", "forecast_long_run_weight", "forecast_vol_error_quantiles",
     # 가용성 플래그

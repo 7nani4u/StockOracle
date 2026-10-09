@@ -210,6 +210,7 @@ Vercel 서버리스 및 로컬 환경에서 발생하는 `yfinance` 고질적 �
 | `STOCKORACLE_KR_LONGTERM_GARP_TOP` | `15` | 국내 장기추천 GARP 재무조회 상위 N종목(5~30). US와 동일 이유 |
 | `STOCKORACLE_CHASE_PENALTY` | 꺼짐 | `1`이면 하이브리드 FWS 추격 15/25점을 반영. 기본은 표시만 고치고 점수는 그대로(추격-수익 무관련 근거). |
 | `STOCKORACLE_MOMENTUM_SCAN` | 켜짐 | `0`이면 7단계 스캔 모멘텀 지속 신호·승격을 끔. 기본 켜짐(점수 미반영, PASS만 READY 승격). |
+| `STOCKORACLE_VCP_SCAN` | 켜짐 | `0`이면 7단계 스캔 VCP 신호·승격을 끔. 기본 켜짐(점수 미반영, 위험없는 PASS만 READY 승격). |
 
 ---
 

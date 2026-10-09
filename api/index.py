@@ -16589,7 +16589,7 @@ def build_prediction_outlook(
     def _timing_text(days: list[int], within: bool, touch: float | None) -> str:
         text = f"{days[0]}~{days[1]}거래일 · {horizon_label} 범위"
         if touch is not None:
-            text += f" · 변동성상 터치 가능성 {touch * 100:.0f}%(방향 무관)"
+            text += f" · 변동성상 터치 가능성 {touch * 100:.0f}%"
             if touch < 0.2:
                 text += " · 기간 내 도달 어려움"
             elif touch < 0.45 or not within:
@@ -19366,7 +19366,7 @@ def route(path: str, params: Dict) -> Dict:
                 StockUniverse, run_full_scan, build_snapshot_from_ohlcv,
                 SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
                 is_scan_price_eligible, apply_leader_promotion,
-                apply_momentum_promotion,
+                apply_momentum_promotion, apply_vcp_promotion,
             )
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
@@ -19391,6 +19391,16 @@ def route(path: str, params: Dict) -> Dict:
                 def detect_momentum_persistence(closes=None, highs=None, lows=None, volumes=None, **kwargs):
                     return {"available": False, "stage": "NONE", "stage_label": "신호 모듈 없음",
                             "reason": "momentum_persistence 모듈을 불러오지 못했습니다."}
+            try:
+                from market_briefing.vcp import detect_vcp
+                _VCP_AVAILABLE = True
+            except Exception as _vcp_e:
+                _VCP_AVAILABLE = False
+                print(f"[scan] vcp import failed ({type(_vcp_e).__name__}: {_vcp_e}) — signal disabled")
+
+                def detect_vcp(closes=None, highs=None, lows=None, volumes=None, market_regime="UNKNOWN", **kwargs):
+                    return {"available": False, "stage": "NONE", "stage_label": "신호 모듈 없음",
+                            "reason": "vcp 모듈을 불러오지 못했습니다."}
 
             market_p = params.get("market", "KRX").upper()
             equity   = float(params.get("equity", 100_000_000))
@@ -19957,6 +19967,45 @@ def route(path: str, params: Dict) -> Dict:
                 except Exception as _mp_e:
                     print(f"[scan] momentum prune gate failed ({type(_mp_e).__name__}) — allow all")
 
+            # ── VCP 수축 신호 (KRX/US 공통 보조 지표, 점수 미반영) ──
+            # 피벗 돌파 PASS 중 가짜돌파 위험없음만 승격 후보. 연구용이라 env로 끌 수 있다.
+            _vcp_on = str(params.get("vcp", os.getenv("STOCKORACLE_VCP_SCAN", "1"))).strip().lower() not in {"0", "false", "no", "off"}
+            vcp_map: dict = {}
+            if _vcp_on:
+                for _vt, _vsnap in snap_map.items():
+                    try:
+                        vcp_map[_vt] = detect_vcp(
+                            closes=list(_vsnap.closes or []),
+                            highs=list(_vsnap.highs or []),
+                            lows=list(_vsnap.lows or []),
+                            volumes=list(_vsnap.volumes or []),
+                            market_regime=regime,
+                        )
+                    except Exception as _ve:
+                        vcp_map[_vt] = {"available": False, "stage": "NONE",
+                                        "stage_label": "계산 실패", "reason": str(_ve)[:120]}
+
+            # ── 손실조건 제거 게이트 (VCP): 규칙 없으면 전량 허용(fail-open) ──
+            _vcp_pruned = 0
+            if _vcp_on and vcp_map:
+                try:
+                    from market_briefing.scan_engine import vcp_conditions as _vcp_conds
+                    from market_briefing.technique_prune import technique_allowed as _tech_allowed_vcp
+                    for _vt, _vc in list(vcp_map.items()):
+                        if not isinstance(_vc, dict) or _vc.get("stage") != "PASS":
+                            continue
+                        _ok, _why = _tech_allowed_vcp(
+                            "vcp", market_p, _vcp_conds(_vc))
+                        if not _ok:
+                            _vc = dict(_vc)
+                            _vc["stage"] = "NONE"
+                            _vc["stage_label"] = "제외(손실조건)"
+                            _vc["pruned_reason"] = _why
+                            vcp_map[_vt] = _vc
+                            _vcp_pruned += 1
+                except Exception as _vp_e:
+                    print(f"[scan] vcp prune gate failed ({type(_vp_e).__name__}) — allow all")
+
             result = run_full_scan(
                 universe           = [u for u in universe if u.ticker in snap_map],
                 snap_map           = snap_map,
@@ -19985,6 +20034,9 @@ def route(path: str, params: Dict) -> Dict:
                 d["momentum_persistence"] = (momentum_map.get(c.ticker)
                     if _momentum_on else
                     {"available": False, "stage": "NONE", "stage_label": "신호 꺼짐"})
+                d["vcp"] = (vcp_map.get(c.ticker)
+                    if _vcp_on else
+                    {"available": False, "stage": "NONE", "stage_label": "신호 꺼짐"})
                 cands.append(d)
 
             # ── 리더 반전 BREAKOUT 승격 (미국 전용): 상태를 진입 준비로 ──
@@ -20007,6 +20059,16 @@ def route(path: str, params: Dict) -> Dict:
                         cands, momentum_map, equity, risk_pct).get("promoted", 0))
                 except Exception as _mm_e:
                     print(f"[scan] momentum promotion failed ({type(_mm_e).__name__}: {_mm_e})")
+
+            # ── VCP 피벗 돌파 승격 (KRX/US 공통): 상태를 진입 준비로 ──
+            # 리더·모멘텀 승격 행은 덮지 않는다. 가짜돌파 위험 종목은 승격 없이 표시만. 점수는 그대로 둔다.
+            _vcp_promoted = 0
+            if _vcp_on and vcp_map:
+                try:
+                    _vcp_promoted = int(apply_vcp_promotion(
+                        cands, vcp_map, equity, risk_pct).get("promoted", 0))
+                except Exception as _mv_e:
+                    print(f"[scan] vcp promotion failed ({type(_mv_e).__name__}: {_mv_e})")
 
             # 승격 반영 후 상태 집계 (요약 카드와 선정 목록 일치용)
             _post_ready = sum(1 for cd in cands
@@ -20090,7 +20152,8 @@ def route(path: str, params: Dict) -> Dict:
                 "filter_desc":     "진입 가능권 우선 + 품질 등급 단계 보강(정확히 15개) + 시총·섹터 분산(MMR)"
                                    + (" + 미국 $70 이하" if market_p == "US" else "")
                                    + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else "")
-                                   + (" + 모멘텀 지속 진입준비 승격" if _momentum_on and _momentum_promoted else ""),
+                                   + (" + 모멘텀 지속 진입준비 승격" if _momentum_on and _momentum_promoted else "")
+                                   + (" + VCP 돌파 진입준비 승격" if _vcp_on and _vcp_promoted else ""),
                 "coverage":        {
                     "universe": len(raw_list),
                     "collected": len(snap_map),
@@ -20107,6 +20170,8 @@ def route(path: str, params: Dict) -> Dict:
                 "leader_pruned_count": _leader_pruned if market_p == "US" else 0,
                 "momentum_promoted_count": _momentum_promoted if _momentum_on else 0,
                 "momentum_pruned_count": _momentum_pruned if _momentum_on else 0,
+                "vcp_promoted_count": _vcp_promoted if _vcp_on else 0,
+                "vcp_pruned_count": _vcp_pruned if _vcp_on else 0,
                 "price_cap":       ({
                     "market": "US", "max_price": SCAN_US_MAX_PRICE,
                     "filtered_out": len(_price_capped_out),
@@ -20124,6 +20189,11 @@ def route(path: str, params: Dict) -> Dict:
                                if (cd.get("momentum_persistence") or {}).get("stage") == stage)
                     for stage in ("PASS", "WAIT", "SURGE", "FAIL", "NONE")
                 } if _momentum_on else None),
+                "vcp_counts": ({
+                    stage: sum(1 for cd in selected
+                               if (cd.get("vcp") or {}).get("stage") == stage)
+                    for stage in ("PASS", "CONTRACTING", "NONE")
+                } if _vcp_on else None),
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
@@ -21946,16 +22016,14 @@ input::placeholder{color:#484f58}
             <th>종목</th>
             <th style="text-align:center">상태</th>
             <th style="text-align:right">현재가</th>
-            <th style="text-align:right">등락률</th>
-            <th>카테고리</th>
-            <th style="text-align:center">신호</th>
             <th style="text-align:right">진입 트리거</th>
             <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 신뢰도</th>
             <th style="text-align:center">치명적 약점</th>
             <th style="text-align:center">순복합 점수</th>
-            <th style="text-align:center">퀀트 모멘텀 점수</th>
+            <th>카테고리</th>
             <th style="text-align:center" title="상대강도 리더 중 하락을 먼저 멈춘 종목의 반전 신호 — 🔥 돌파(4조건 충족) · 👀 대기(돌파 직전) · 🧱 바닥(조정 중) · —(해당 없음). 점수 미반영 보조 지표">리더 반전</th>
             <th style="text-align:center" title="하루 +20% 급등 후 3일 절반수성 신호 — ⚡ 통과(3일 수성) · 👀 관찰(1-2일차) · 🚀 급등당일 · ✖ 이탈 · —(해당 없음). 점수 미반영 보조 지표">모멘텀 지속</th>
+            <th style="text-align:center" title="변동성 수축 패턴 — 📐 돌파(피벗 종가 돌파) · 🌀 수축중(피벗 대기) · —(해당 없음). 약세장·거래량 미동반 등 가짜돌파 위험은 승격에서 제외. 점수 미반영 보조 지표">VCP 수축</th>
           </tr></thead>
           <tbody id="scan-tbody"></tbody>
         </table>
@@ -24965,7 +25033,7 @@ function renderPredictionSections(d, isKrx) {
     // 시간축: expected_days를 명확히 라벨링
     const days = sc.expected_days || [];
     const touchText = _isFiniteNumber(sc.touch_probability)
-      ? ` · 변동성상 터치 가능성 ${Number(sc.touch_probability).toFixed(0)}%(방향 무관)` : '';
+      ? ` · 변동성상 터치 가능성 ${Number(sc.touch_probability).toFixed(0)}%` : '';
     const daysText = days.length===2 ? `${isObservation ? '관찰용 ' : ''}${days[0]}~${days[1]}거래일 내${touchText}` : '';
     const response = sc.key === 'upside'
       ? '대응: 저항 종가 돌파 + 거래량 1.2배 확인 시 분할 접근, 그 전 추격 보류.'
@@ -28725,7 +28793,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
     return;
   }
 
@@ -28752,26 +28820,8 @@ function renderScanResult(d, market) {
     var ncsColor = c.ncs >= 70 ? '#3fb950' : c.ncs >= 50 ? '#58a6ff' : c.ncs >= 35 ? '#d29922' : '#f85149';
     var fwsColor = c.fws <= 30 ? '#3fb950' : c.fws <= 50 ? '#d29922' : c.fws <= 65 ? '#f97316' : '#f85149';
     var bqsColor = c.bqs >= 65 ? '#3fb950' : c.bqs >= 45 ? '#58a6ff' : '#8b949e';
-    var tier     = c.quality_tier || 'unknown';
-    var qmjColor = tier === 'high' ? '#3fb950' : tier === 'medium' ? '#58a6ff' : '#484f58';
-    var qmjLabel = _tierKo[tier] || '—';
-    // 퀀트 모멘텀 점수 (0~100) — 백엔드 제공값 우선, 없으면 티어로 폴백
-    var qmScore  = c.quant_momentum_score != null ? Number(c.quant_momentum_score)
-                 : (tier === 'high' ? 100 : tier === 'medium' ? 70 : tier === 'low' ? 20 : tier === 'junk' ? 0 : 50);
-    var qmColor  = qmScore >= 70 ? '#3fb950' : qmScore >= 50 ? '#58a6ff' : qmScore >= 30 ? '#d29922' : '#f85149';
-
-    var chg    = c.change_pct != null ? c.change_pct : 0;
-    var chgUp  = chg >= 0;
-    var chgClr = isKrx ? (chgUp ? '#f85149' : '#388bfd') : (chgUp ? '#3fb950' : '#f85149');
-    var chgTxt = (chgUp ? '▲' : '▼') + ' ' + Math.abs(chg).toFixed(2) + '%';
 
     var cat = _toKoSector(c.category || c.sector || '');
-
-    var sig = c.analyst_signal || '중립';
-    var sigCls = sig.includes('적극') ? 'sig-buy-strong'
-               : sig === '매수'        ? 'sig-buy'
-               : sig === '중립' || sig === '보유' ? 'sig-neu'
-               : 'sig-sell';
 
     // 종목명 우선 — 이름 크게, 코드 작게 (KRX는 시장 접미사 제거)
     var displayName = c.name && c.name !== c.ticker ? c.name : fmtSymbol(c.ticker, isKrx);
@@ -28784,11 +28834,14 @@ function renderScanResult(d, market) {
     var capBadge = '<span style="font-size:9px;font-weight:700;color:' + capClr +
                    ';border:1px solid ' + capClr + '55;border-radius:3px;padding:0 4px;margin-left:5px">' + capKo + '</span>';
 
-    // 리더 돌파 승격 표시 — 리더 반전으로 진입 준비가 된 행은 상태 배지 옆에 🔥 표식
+    // 승격 표시 — 보조 신호로 진입 준비가 된 행은 상태 배지 옆에 표식
+    // (리더 🔥 → 모멘텀 ⚡ → VCP 📐 순으로 먼저 승격된 것만 표시, 점수 미반영)
     var promotedMark = (c.status_source === 'leader_reversal' && c.status === 'READY')
       ? '<div title="리더 반전 돌파로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#3fb950;margin-top:2px;white-space:nowrap">🔥 리더 돌파</div>'
       : (c.status_source === 'momentum_persistence' && c.status === 'READY')
       ? '<div title="모멘텀 지속 통과로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#58a6ff;margin-top:2px;white-space:nowrap">⚡ 모멘텀 통과</div>'
+      : (c.status_source === 'vcp' && c.status === 'READY')
+      ? '<div title="VCP 피벗 돌파로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#d29922;margin-top:2px;white-space:nowrap">📐 VCP 돌파</div>'
       : '';
     // 리더주 반전 신호 셀: 계산용 세부 수치·진입/손절가는 API에만 유지하고
     // 스캔 표에는 단계 배지만 노출한다.
@@ -28825,23 +28878,41 @@ function renderScanResult(d, market) {
       return '<span style="font-size:11px;color:#484f58">—</span>';
     })();
 
+    // VCP 수축 신호 셀: 점수 미반영 보조 지표, 단계 배지만 노출한다.
+    // 가짜돌파 위험 종목은 통과라도 승격 없이 주의 배지로만 표시한다.
+    var vc = c.vcp || {};
+    var vcStage = vc.stage || 'NONE';
+    var vcRisky = !!vc.false_breakout_risk;
+    var vcCell = (function() {
+      var tip = 'VCP 수축 보조 신호 · 점수 미반영';
+      if (vcStage === 'PASS') {
+        return vcRisky
+          ? '<span title="' + tip + ' · 가짜돌파 위험(' + ((vc.risk_reasons || []).join(', ') || '주의') + ') — 승격 제외" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">📐 통과·주의</span>'
+          : '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 8px;white-space:nowrap">📐 돌파</span>';
+      }
+      if (vcStage === 'CONTRACTING') {
+        return '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#58a6ff;border:1px solid #58a6ff55;border-radius:999px;padding:2px 8px;white-space:nowrap">🌀 수축중</span>';
+      }
+      return '<span style="font-size:11px;color:#484f58">—</span>';
+    })();
+
+    // 열 순서: 식별(종목) → 액션(상태·현재가·진입 트리거) → 근거(신뢰·약점·순복합)
+    // → 맥락(카테고리) → 보조신호(리더·모멘텀·VCP). 등락률·외부신호·퀀트점수는
+    // 판단 중복이라 표에서 제외한다(API 응답에는 그대로 유지).
     return '<tr onclick="openStockDetail(\'' + c.ticker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
       '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
            (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
       '<td style="text-align:center">' + statusBadge(c.status) + promotedMark + '</td>' +
       '<td style="text-align:right;font-size:13px;font-weight:600">' + fmtP(c.price) + '</td>' +
-      '<td style="text-align:right;font-weight:700;color:' + chgClr + '">' + chgTxt + '</td>' +
-      '<td><span class="cat-badge">' + cat + '</span></td>' +
-      '<td style="text-align:center"><span class="signal-badge ' + sigCls + '">' + sig + '</span></td>' +
       '<td style="text-align:right;font-size:12px;color:#58a6ff">' + fmtP(c.entry_trigger) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.fws, fwsColor) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
-      '<td style="min-width:60px">' + scoreBar(qmScore, qmColor) +
-           '<div style="font-size:9px;color:' + qmjColor + ';text-align:center;margin-top:2px">품질 ' + qmjLabel + '</div></td>' +
+      '<td><span class="cat-badge">' + cat + '</span></td>' +
       '<td style="text-align:center;min-width:110px">' + lrCell + '</td>' +
       '<td style="text-align:center;min-width:110px">' + moCell + '</td>' +
+      '<td style="text-align:center;min-width:110px">' + vcCell + '</td>' +
     '</tr>';
   }).join('');
 
