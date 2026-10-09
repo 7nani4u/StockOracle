@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import math
 from pathlib import Path
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from market_briefing import forecast_model as fm
@@ -167,3 +168,121 @@ def test_relevance_uses_word_boundaries_for_short_tickers():
     assert fm.is_relevant_title("Ford (F) shares rise", [], ["F"]) is False  # 1글자 티커는 사용 안 함
     assert fm.is_relevant_title("AAPL stock slides", [], ["AAPL"]) is True
     assert fm.is_relevant_title("SNAPPY results", [], ["SNAP"]) is False
+
+
+# ── 장기 변동성 혼합 (2026-10-09) ───────────────────────────────────────────────
+
+def _vol_regime_closes(n_calm=190, n_hot=62, calm=0.005, hot=0.03, seed=3):
+    import random
+    rnd = random.Random(seed)
+    price, closes = 100.0, []
+    for i in range(n_calm + n_hot):
+        sigma = calm if i < n_calm else hot
+        price *= math.exp(rnd.gauss(0, sigma))
+        closes.append(price)
+    return closes
+
+
+def test_long_run_volatility_is_mixed_in_half_when_history_is_long_enough():
+    closes = _vol_regime_closes()
+    result = fm.blended_daily_sigma(closes, closes[-1], atr=None)
+    short, _ = fm.daily_log_volatility(closes)                           # 최근 60일: 급등한 변동성
+    long_run, n_long = fm.daily_log_volatility(closes, window=fm.LONG_RUN_WINDOW, min_obs=fm.LONG_RUN_MIN_OBS)
+    assert n_long >= fm.LONG_RUN_MIN_OBS and long_run < short
+    expected = math.sqrt((1 - fm.LONG_RUN_WEIGHT) * short ** 2 + fm.LONG_RUN_WEIGHT * long_run ** 2)
+    assert result["sigma"] == pytest.approx(expected)
+    assert long_run < result["sigma"] < short                            # 단기 쏠림을 장기 수준으로 끌어당긴다
+    assert "장기 변동성 혼합" in result["basis"] and result["long_run_observations"] == n_long
+
+
+def test_short_history_keeps_the_short_window_estimate_only():
+    closes = _vol_regime_closes(n_calm=60, n_hot=40)                     # 99개 수익률 < 120
+    result = fm.blended_daily_sigma(closes, closes[-1], atr=None)
+    short, _ = fm.daily_log_volatility(closes)
+    assert result["sigma"] == pytest.approx(short)
+    assert result["long_run"] is None and "장기" not in result["basis"]
+
+
+def test_long_run_mix_applies_on_top_of_the_atr_blend():
+    closes = _vol_regime_closes()
+    atr = closes[-1] * 0.04
+    with_atr = fm.blended_daily_sigma(closes, closes[-1], atr=atr)
+    realized, _ = fm.daily_log_volatility(closes)
+    atr_sigma = atr / closes[-1] / fm.ATR_TO_SIGMA
+    short = math.sqrt(0.5 * realized ** 2 + 0.5 * atr_sigma ** 2)
+    assert with_atr["sigma"] == pytest.approx(math.sqrt(0.5 * short ** 2 + 0.5 * with_atr["long_run"] ** 2))
+    # ATR 를 관측하지 못한 경우(대체 ATR)에는 실현 변동성만 쓰는 기존 규칙 위에 같은 혼합을 적용한다.
+    unobserved = fm.blended_daily_sigma(closes, closes[-1], atr=atr, atr_observed=False)
+    assert unobserved["sigma"] == pytest.approx(math.sqrt(0.5 * realized ** 2 + 0.5 * with_atr["long_run"] ** 2))
+
+
+def test_volatility_error_quantiles_describe_the_current_estimator():
+    assert 0.7 < fm.VOL_ERROR_Q25 < 1.0 < fm.VOL_ERROR_Q75 < 1.4
+    low = fm.touch_probability_range(100.0, 110.0, 0.02, 22)
+    assert low["low"] < low["mid"] < low["high"]
+
+
+def _stdlib_fallback_helpers(monkeypatch):
+    import importlib.util
+    from api import index as ix
+    monkeypatch.setattr(ix, "_FORECAST_HELPERS", {})
+    monkeypatch.setitem(sys.modules, "market_briefing.forecast_model", None)   # 패키지 import 실패
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *a, **k: None)  # 파일 직접 로드 실패
+    helpers = ix._load_forecast_helpers()
+    assert helpers["basis"] == "stdlib fallback"
+    return helpers
+
+
+def test_server_stdlib_fallback_matches_forecast_model(monkeypatch):
+    """서버 내부 폴백 복제본이 패키지 구현과 어긋나면 import 실패 시에만 숫자가 달라진다 — 그 드리프트를 막는다."""
+    import random
+    rnd = random.Random(9)
+    cases = []
+    for n in (30, 80, 130, 252, 300):
+        price, closes = 100.0, []
+        for _ in range(n):
+            price *= math.exp(rnd.gauss(0.0003, 0.018))
+            closes.append(price)
+        cases.append(closes)
+    gapped = list(cases[3])
+    gapped[100] = None
+    gapped[180] = float("nan")
+    cases.append(gapped)
+
+    expected = [(fm.blended_daily_sigma(c, c[-1], c[-1] * 0.03, True), fm.blended_daily_sigma(c, c[-1], None, False))
+                for c in cases]
+    fallback = _stdlib_fallback_helpers(monkeypatch)
+    for closes, (with_atr, without_atr) in zip(cases, expected):
+        got = fallback["blended_daily_sigma"](closes, closes[-1], closes[-1] * 0.03, True)
+        assert got["sigma"] == pytest.approx(with_atr["sigma"], rel=1e-9)
+        assert got["long_run_observations"] == with_atr["long_run_observations"]
+        got_plain = fallback["blended_daily_sigma"](closes, closes[-1], None, False)
+        assert got_plain["sigma"] == pytest.approx(without_atr["sigma"], rel=1e-9)
+    package_range = fm.touch_probability_range(100.0, 112.0, 0.02, 22)
+    fallback_range = fallback["touch_probability_range"](100.0, 112.0, 0.02, 22)
+    for key in ("low", "mid", "high"):
+        assert fallback_range[key] == pytest.approx(package_range[key], rel=1e-12)
+
+
+def test_long_run_weight_can_be_switched_off_from_the_environment(monkeypatch):
+    """STOCKORACLE_VOL_LONG_RUN_WEIGHT=0 이면 예전 σ(단기 60일+ATR)와 예전 오차 분위 배율로 돌아간다."""
+    import importlib
+    closes = _vol_regime_closes()
+    atr = closes[-1] * 0.03
+    try:
+        monkeypatch.setenv("STOCKORACLE_VOL_LONG_RUN_WEIGHT", "0")
+        legacy = importlib.reload(fm)
+        off = legacy.blended_daily_sigma(closes, closes[-1], atr=atr)
+        realized, _ = legacy.daily_log_volatility(closes)
+        atr_sigma = atr / closes[-1] / legacy.ATR_TO_SIGMA
+        assert off["sigma"] == pytest.approx(math.sqrt(0.5 * realized ** 2 + 0.5 * atr_sigma ** 2))
+        assert "장기 변동성" not in off["basis"]
+        assert (legacy.VOL_ERROR_Q25, legacy.VOL_ERROR_Q75) == (0.836, 1.268)
+        monkeypatch.setenv("STOCKORACLE_VOL_LONG_RUN_WEIGHT", "not-a-number")
+        assert importlib.reload(fm).LONG_RUN_WEIGHT == 0.5          # 잘못된 값은 기본값
+        monkeypatch.setenv("STOCKORACLE_VOL_LONG_RUN_WEIGHT", "7")
+        assert importlib.reload(fm).LONG_RUN_WEIGHT == 1.0          # 범위 밖은 0~1 로 자른다
+    finally:
+        monkeypatch.delenv("STOCKORACLE_VOL_LONG_RUN_WEIGHT", raising=False)
+        importlib.reload(fm)
+    assert fm.LONG_RUN_WEIGHT == 0.5 and (fm.VOL_ERROR_Q25, fm.VOL_ERROR_Q75) == (0.800, 1.200)

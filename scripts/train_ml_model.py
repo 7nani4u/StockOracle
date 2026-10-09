@@ -764,10 +764,23 @@ def main():
     print("\n" + classification_report(y_test_direction.values, y_test_pred, target_names=["DOWN", "UP"], zero_division=0))
     cm = confusion_matrix(y_test_direction.values, y_test_pred)
     print(f"  Confusion Matrix:\n{cm}")
-    walk_forward_auc = max(
-        (report.get("mean_auc", float("nan")) for report in backtest_reports),
-        default=float("nan"),
-    )
+    # 검증은 선택된 파라미터의 워크포워드 평균으로만 판정한다. 후보 6개 중 최댓값으로
+    # 판정하면 선택 편향(우승자 저주)으로 낙관적 게이트가 된다. 선택 기준은
+    # _select_lgbm_params()의 mean-0.1*std이며 검증도 같은 후보의 mean을 본다.
+    _selected_name = (selected_params or {}).get("name") if isinstance(selected_params, dict) else None
+    walk_forward_auc = float("nan")
+    for report in backtest_reports or []:
+        if isinstance(report, dict) and report.get("candidate") == _selected_name:
+            try:
+                walk_forward_auc = float(report.get("mean_auc", float("nan")))
+            except (TypeError, ValueError):
+                walk_forward_auc = float("nan")
+            break
+    if not np.isfinite(walk_forward_auc):
+        walk_forward_auc = max(
+            (report.get("mean_auc", float("nan")) for report in backtest_reports),
+            default=float("nan"),
+        ) if backtest_reports else float("nan")
     validation_passed = bool(
         test_auc >= 0.54
         and test_bacc >= 0.52
