@@ -113,6 +113,7 @@ const sandbox = {
   _escPrediction(v) { return String(v == null ? '' : v); },
   _predictionTone() { return '#8b949e'; },
   fmt(v) { return v == null ? '—' : String(v); },
+  fmtRange(lo, hi) { return (lo == null || hi == null) ? '—' : String(lo) + '~' + String(hi); },
 };
 vm.createContext(sandbox);
 vm.runInContext(SOURCE, sandbox);
@@ -195,6 +196,7 @@ const sandbox = {
   _escPrediction(v) { return String(v == null ? '' : v); },
   _predictionTone() { return '#3fb950'; },
   fmt(v) { return '$' + Number(v).toFixed(2); },
+  fmtRange(lo, hi) { return '$' + Number(lo).toFixed(2) + '~$' + Number(hi).toFixed(2); },
 };
 vm.createContext(sandbox);
 vm.runInContext(SOURCE, sandbox);

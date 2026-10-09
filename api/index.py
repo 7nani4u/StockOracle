@@ -6691,6 +6691,22 @@ def _round_market_price(price: float, market: str = "KRX", mode: str = "nearest"
     return round(max(tick, rounded), 4 if tick < 0.01 else 2)
 
 
+def _as_int_day_window(lo: float, avg: float, hi: float) -> tuple[int, int, int]:
+    """거래일 표시용 정수 창(min, avg, max)으로 변환한다.
+
+    25.3일 같은 소수점 거래일은 주문 판단에 쓸 수 없으므로 floor/반올림/ceil 후
+    min < avg < max 순서를 보장한다(화면·계약·감사가 순서 단조성을 가정한다).
+    """
+    try:
+        lo_f, avg_f, hi_f = float(lo), float(avg), float(hi)
+    except (TypeError, ValueError):
+        return 1, 2, 3
+    lo_i = max(1, int(math.floor(lo_f)))
+    hi_i = max(lo_i + 2, int(math.ceil(hi_f)))
+    avg_i = min(max(int(round(avg_f)), lo_i + 1), hi_i - 1)
+    return lo_i, avg_i, hi_i
+
+
 def _kr_surge_session(now: Optional[dt] = None) -> Dict[str, str]:
     """KRX 공식 거래시간을 기준으로 현재 국내 세션을 반환한다."""
     try:
@@ -10751,14 +10767,15 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             previous_prob = prob
 
             # 기간은 거래일 기준 중앙 추정치와 변동성·이벤트 위험을 반영한 범위로 제공한다.
+            # 화면에는 정수 거래일만 내보낸다(25.3일 같은 소수는 주문 판단 불가).
             days = _base_days * max(0.35, (max(dist_atr, 0.1) / 0.8) ** 1.05) * speed_factor
             uncertainty = 0.24
             uncertainty += 0.12 if vol_trend == "expanding" else 0.0
             uncertainty += min(0.12, event_points / 200.0)
             uncertainty += min(0.10, max(0.0, dist_atr - 2.0) * 0.015)
-            days_min = round(max(1.0, days * (1.0 - uncertainty)), 1)
-            days_max = round(max(days_min + 1.0, days * (1.0 + uncertainty)), 1)
-            days = round(days, 1)
+            _days_min_f = max(1.0, days * (1.0 - uncertainty))
+            _days_max_f = max(_days_min_f + 1.0, days * (1.0 + uncertainty))
+            days_min, days, days_max = _as_int_day_window(_days_min_f, days, _days_max_f)
 
             prob_margin = 4.0
             prob_margin += 3.0 if vol_trend == "expanding" else 0.0
@@ -11129,14 +11146,16 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                 raw_prob = float(level.get("prob_pct") or 50.0)
                 observed_prob = round(_clip(50.0 + (raw_prob - 50.0) * 0.35, 5.0, 95.0), 1)
                 raw_days = float(level.get("avg_days") or 1.0)
-                observed_days_min = round(max(1.0, raw_days * 0.55), 1)
-                observed_days_max = round(max(observed_days_min + 1.0, raw_days * 1.65), 1)
+                _o_min_f = max(1.0, raw_days * 0.55)
+                _o_max_f = max(_o_min_f + 1.0, raw_days * 1.65)
+                observed_days_min, observed_avg, observed_days_max = _as_int_day_window(
+                    _o_min_f, raw_days, _o_max_f)
                 level["prob_pct"] = observed_prob
                 level["prob_low_pct"] = round(max(5.0, observed_prob - 15.0), 1)
                 level["prob_high_pct"] = round(min(95.0, observed_prob + 15.0), 1)
                 level["days_min"] = observed_days_min
                 level["days_max"] = observed_days_max
-                level["avg_days"] = round(raw_days, 1)
+                level["avg_days"] = observed_avg
                 level["provisional"] = True
                 level["probability_label"] = f"관찰용 추정 · 일봉 {observed_bars}개"
                 level["period_label"] = "관찰용 기간 추정"
@@ -20586,10 +20605,10 @@ input::placeholder{color:#484f58}
 .risk-desc{font-size:11px;color:#8b949e;margin-bottom:12px}
 .risk-row{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
 .risk-lbl{color:#8b949e}
-.risk-tgt{color:#f85149;font-weight:700}
+.risk-tgt{color:#f85149;font-weight:700;white-space:nowrap}
 .risk-stp{color:#388bfd;font-weight:700}
 .risk-ratio{text-align:right;font-size:11px;color:#484f58;margin-top:8px;border-top:1px solid #30363d;padding-top:8px}
-.risk-tp-level{display:grid;grid-template-columns:30px minmax(72px,1.1fr) minmax(48px,.7fr) minmax(88px,1fr) minmax(78px,.9fr);gap:5px;align-items:center}
+.risk-tp-level{display:grid;grid-template-columns:30px minmax(106px,1.35fr) minmax(46px,.65fr) minmax(84px,.95fr) minmax(64px,.8fr);gap:5px;align-items:center}
 .risk-tp-head{background:transparent;border-bottom:1px solid #30363d;padding:3px 7px 5px;margin-bottom:4px;color:#6e7681}
 .risk-tp-head span{font-size:9px;font-weight:600;line-height:1.25;white-space:nowrap}
 .risk-tp-head span:last-child{text-align:right}
@@ -20677,12 +20696,12 @@ input::placeholder{color:#484f58}
 .buy-band-title{font-size:12px;font-weight:700;display:flex;align-items:center;min-width:0}
 .buy-band-badges{display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .buy-stage-table{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
-.buy-stage-row{display:grid;grid-template-columns:36px minmax(108px,1.35fr) 54px minmax(90px,1.2fr) 46px;gap:3px;align-items:center;min-width:0;padding:5px 4px;background:#101820;border:1px solid #1f2b36;border-radius:5px}
+.buy-stage-row{display:grid;grid-template-columns:36px minmax(132px,1.55fr) 50px minmax(86px,1fr) 44px;gap:3px;align-items:center;min-width:0;padding:5px 4px;background:#101820;border:1px solid #1f2b36;border-radius:5px}
 .buy-stage-row>span{min-width:0}
 .buy-stage-header{background:transparent;border:0;border-bottom:1px solid #21262d;border-radius:0;padding:0 6px 4px;color:#6e7681;font-size:8px;line-height:1.2;text-align:right}
 .buy-stage-header span:first-child{text-align:left}
 .buy-stage-name{font-size:9px;font-weight:800;white-space:nowrap}
-.buy-stage-price{font-size:10px;font-weight:900;color:#e6edf3;white-space:normal;text-align:right;line-height:1.25}
+.buy-stage-price{font-size:10px;font-weight:900;color:#e6edf3;white-space:nowrap;text-align:right;line-height:1.25}
 .buy-stage-drop{font-size:9px;font-weight:700;color:#f85149;white-space:nowrap;text-align:right}
 .buy-stage-prob{font-size:9px;font-weight:700;white-space:nowrap;text-align:right}
 .buy-stage-days{font-size:9px;color:#8b949e;white-space:nowrap;text-align:right}
@@ -20692,7 +20711,7 @@ input::placeholder{color:#484f58}
 .buy-band-detail.positive{color:#3fb950}.buy-band-detail.warning{color:#d29922}.buy-band-detail.negative{color:#f97316}
 @media(max-width:480px){
   .buy-band-card{padding:9px 8px}
-  .buy-stage-row{grid-template-columns:28px minmax(82px,1.3fr) 42px minmax(68px,1fr) 38px;gap:2px;padding:5px 1px}
+  .buy-stage-row{grid-template-columns:28px minmax(96px,1.4fr) 40px minmax(64px,1fr) 36px;gap:2px;padding:5px 1px}
   .buy-stage-header{padding:0 2px 4px;font-size:7px}
   .buy-stage-name,.buy-stage-drop,.buy-stage-prob,.buy-stage-days{font-size:8px}
   .buy-stage-price{font-size:9px}
@@ -23047,6 +23066,12 @@ function fmtSymbol(sym, isKrx) {
 }
 // 하위호환 — 기존 fmt() 호출부는 모두 fmtPrice로 위임
 function fmt(v, isKrx) { return fmtPrice(v, isKrx); }
+// 가격 범위 한 줄 표기 — 통화 단위를 한 번만 찍어 좁은 표 셀에서 줄바꿈을 막는다.
+// KRX "46,200~47,000원" · US "$1.20~$1.35". 모두 유효 호가로 반올림된 값만 넘긴다.
+function fmtRange(lo, hi, isKrx) {
+  if (!_isFiniteNumber(lo) || !_isFiniteNumber(hi)) return '-';
+  return isKrx ? _fmtKrNum(lo) + '~' + _fmtKrNum(hi) + '원' : '$' + _fmtUsNum(lo) + '~$' + _fmtUsNum(hi);
+}
 
 // ── 🧭 신호 신뢰도 종합 카드 (confidence_engine 결과) ──────────────────────
 function renderSignalConfidence(d) {
@@ -24905,14 +24930,14 @@ function renderPredictionSections(d, isKrx) {
         <div class="prediction-status-grid" style="margin-top:8px">
           <div class="prediction-status-card"><div class="prediction-status-label">예상 방향</div><div class="prediction-status-value" style="color:${fcColor}">${_escPrediction(fc.direction || '—')}</div><div class="prediction-status-detail">상승 ${probabilityText(fcProb.up)} · 횡보 ${probabilityText(fcProb.sideways)} · 하락 ${probabilityText(fcProb.down)}</div></div>
           <div class="prediction-status-card"><div class="prediction-status-label">기준 예상가</div><div class="prediction-status-value" style="color:${fcColor}">${fmt(fc.base_price, isKrx)}</div><div class="prediction-status-detail">현재가 대비 ${fcPct(fc.expected_return_pct)}</div></div>
-          <div class="prediction-status-card"><div class="prediction-status-label">예상 범위 (P10~P90)</div><div class="prediction-status-value" style="font-size:12px">${fmt(fcRange[0], isKrx)} ~ ${fmt(fcRange[1], isKrx)}</div><div class="prediction-status-detail">${fcPct(fcRangeRet[0])} ~ ${fcPct(fcRangeRet[1])}</div></div>
+          <div class="prediction-status-card"><div class="prediction-status-label">예상 범위 (P10~P90)</div><div class="prediction-status-value" style="font-size:12px;white-space:nowrap">${fmtRange(fcRange[0], fcRange[1], isKrx)}</div><div class="prediction-status-detail">${fcPct(fcRangeRet[0])} ~ ${fcPct(fcRangeRet[1])}</div></div>
           <div class="prediction-status-card"><div class="prediction-status-label">불확실성</div><div class="prediction-status-value">${_escPrediction(fc.uncertainty || '—')}</div><div class="prediction-status-detail">기간 변동성 1σ ±${sigmaText}</div></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px;font-size:11px;line-height:1.55">
           <div style="color:#3fb950"><div style="font-size:10px;color:#8b949e;margin-bottom:2px">주요 상승 요인</div>${fcDrivers}</div>
           <div style="color:#f85149"><div style="font-size:10px;color:#8b949e;margin-bottom:2px">주요 하락 위험</div>${fcRisks}</div>
         </div>
-        ${fc.upside_range_capped && Array.isArray(fc.original_target_range) ? `<div style="font-size:10px;color:#d29922;margin-top:6px">원 목표가 ${fmt(fc.original_target_range[0], isKrx)} ~ ${fmt(fc.original_target_range[1], isKrx)}는 ${_escPrediction(fc.horizon_label || '')} 변동성 범위 밖이라 상승 시나리오 범위를 제한했습니다.</div>` : ''}
+        ${fc.upside_range_capped && Array.isArray(fc.original_target_range) ? `<div style="font-size:10px;color:#d29922;margin-top:6px">원 목표가 ${fmtRange(fc.original_target_range[0], fc.original_target_range[1], isKrx)}는 ${_escPrediction(fc.horizon_label || '')} 변동성 범위 밖이라 상승 시나리오 범위를 제한했습니다.</div>` : ''}
         <div style="font-size:10px;color:#6e7681;margin-top:6px">${_escPrediction(fc.note || '')} · ${_escPrediction(fc.volatility_basis || '')}${fc.target_date_basis ? ' · ' + _escPrediction(fc.target_date_basis) : ''}</div>
       </div>`;
     }
@@ -24929,7 +24954,7 @@ function renderPredictionSections(d, isKrx) {
   const scenariosHtml = scenarios.map(sc => {
     const color = _predictionTone(sc.tone);
     const range = sc.price_range || [];
-    const rangeText = range.length === 2 ? `${fmt(range[0], isKrx)} ~ ${fmt(range[1], isKrx)}` : '가격 범위 확인 필요';
+    const rangeText = range.length === 2 ? fmtRange(range[0], range[1], isKrx) : '가격 범위 확인 필요';
     // 조건은 2개만, 시간축은 별도 라벨로 분리
     const conditions = (sc.conditions || []).slice(0, 2).map(x => `<div class="prediction-condition"><span style="color:${color}">•</span><span>${_escPrediction(x)}</span></div>`).join('');
     const priceChecks = (sc.checks || []).filter(x => /가격|지지|저항|상단|하단|주의|손실|손절|거래량/.test(String(x.label || ''))).slice(0, 2);
@@ -25300,7 +25325,7 @@ function renderForecast(d, isKrx) {
         const priTag   = isPriority ? `<span style="font-size:9px;background:${bc}33;color:${bc};border:1px solid ${bc};border-radius:3px;padding:1px 5px;margin-left:4px">우선 확인</span>` : '';
         const steps = Array.isArray(b.steps) ? b.steps : [];
         const bandRangeText = Array.isArray(b.range) && b.range.length === 2
-          ? `${fmt(b.range[0], isKrx)} ~ ${fmt(b.range[1], isKrx)}` : '분석 데이터 부족';
+          ? fmtRange(b.range[0], b.range[1], isKrx) : '분석 데이터 부족';
         const stepRows = steps.map(s => {
           const hasProbability = s.probability_low_pct != null && s.probability_high_pct != null;
           const probabilityMid = s.reach_probability_pct != null ? Number(s.reach_probability_pct) : null;
@@ -25315,7 +25340,7 @@ function renderForecast(d, isKrx) {
             : (s.period_label || '기간 산정 불가');
           const priceRange = Array.isArray(s.price_range) && s.price_range.length === 2
             ? s.price_range : [s.price, s.price];
-          const priceText = `${fmt(priceRange[0], isKrx)} ~ ${fmt(priceRange[1], isKrx)}`;
+          const priceText = fmtRange(priceRange[0], priceRange[1], isKrx);
           const declineRange = Array.isArray(s.decline_pct_range) && s.decline_pct_range.length === 2
             ? s.decline_pct_range.map(Number) : [Number(s.decline_pct), Number(s.decline_pct)];
           const declineText = declineRange.every(Number.isFinite)
@@ -25388,7 +25413,7 @@ function renderForecast(d, isKrx) {
           </div>
           <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin:-2px 0 7px;padding:5px 7px;border:1px solid ${bc}44;border-radius:5px;background:${bc}0d">
             <span style="font-size:9px;color:#8b949e">${isProvisional ? '밴드 전체 관찰 가격' : '밴드 전체 매수 가격'}</span>
-            <span style="font-size:10px;font-weight:800;color:${bc};text-align:right">${bandRangeText}</span>
+            <span style="font-size:10px;font-weight:800;color:${bc};text-align:right;white-space:nowrap">${bandRangeText}</span>
           </div>
           ${stageTable}
           ${detailHtml}
@@ -25510,7 +25535,7 @@ function renderForecast(d, isKrx) {
     const outlook = d.prediction_outlook || {};
     const warningZone = (outlook.levels || {}).warning_zone || [];
     const warningZoneHtml = warningZone.length === 2
-      ? `<div style="margin-top:8px"><div style="font-size:10px;color:#8b949e">주의 구간</div><div style="font-size:12px;font-weight:700;color:#d29922">${fmt(warningZone[0], isKrx)} ~ ${fmt(warningZone[1], isKrx)}</div><div style="font-size:10px;color:#8b949e;margin-top:2px">지지 회복 전 신규 진입 비중 축소</div></div>` : '';
+      ? `<div style="margin-top:8px"><div style="font-size:10px;color:#8b949e">주의 구간</div><div style="font-size:12px;font-weight:700;color:#d29922;white-space:nowrap">${fmtRange(warningZone[0], warningZone[1], isKrx)}</div><div style="font-size:10px;color:#8b949e;margin-top:2px">지지 회복 전 신규 진입 비중 축소</div></div>` : '';
     const riskTriggerHtml = (outlook.risk_triggers || []).slice(0, 5)
       .map(x => `<div style="display:flex;gap:5px;align-items:flex-start;margin-bottom:2px"><span style="color:#f85149">•</span><span>${x}</span></div>`).join('');
     const commonStopHtml = (_stopVal == null) ? '' : `
@@ -25602,7 +25627,7 @@ function renderForecast(d, isKrx) {
           ${entryStatusHtml}
           <div class="risk-row" style="margin-bottom:4px">
             <span class="risk-lbl">🎯 전체 목표 청산 범위</span>
-            <span class="risk-tgt" style="font-size:12px">${fmt(scenarioTargetRange[0], isKrx)} ~ ${fmt(scenarioTargetRange[1], isKrx)}</span>
+            <span class="risk-tgt" style="font-size:12px">${fmtRange(scenarioTargetRange[0], scenarioTargetRange[1], isKrx)}</span>
           </div>
           ${(sc.target_basis && sc.target_basis.length) ? `
           <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:6px">
@@ -25647,13 +25672,13 @@ function renderForecast(d, isKrx) {
                 ? `${isProvisionalLevel ? '관찰용 ' : ''}${lv.days_min}~${lv.days_max}일` : _isFiniteNumber(lv.avg_days) ? `${isProvisionalLevel ? '관찰용 ' : '약 '}${lv.avg_days}일` : '기간 산정 보류';
               const levelRange = Array.isArray(lv.price_range) && lv.price_range.length === 2
                 ? lv.price_range : [lv.price, lv.price];
-              const levelPriceText = `${fmt(levelRange[0], isKrx)} ~ ${fmt(levelRange[1], isKrx)}`;
+              const levelPriceText = fmtRange(levelRange[0], levelRange[1], isKrx);
               const levelBackground = lv.highlight_primary_exit
                 ? 'background:linear-gradient(90deg,#162a46,#111b2c);box-shadow:inset 3px 0 #58a6ff,0 0 0 1px #388bfd55;'
                 : 'background:#0d1117;';
               return `<div class="risk-tp-level" role="row" style="${levelBackground}border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
-                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600" title="${_escPrediction([lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '', lv.probability_basis || '', lv.price_range_basis || ''].filter(Boolean).join(' · '))}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
+                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600;white-space:nowrap" title="${_escPrediction([lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '', lv.probability_basis || '', lv.price_range_basis || ''].filter(Boolean).join(' · '))}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
                 <span role="cell" style="font-size:10px;color:#3fb950">${_isFiniteNumber(lv.return_pct) ? '+' + lv.return_pct + '%' : '산정 보류'}</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}${isProvisionalLevel && hasProbability ? '<small style="display:block;color:#d29922">관찰용 추정</small>' : ''}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
