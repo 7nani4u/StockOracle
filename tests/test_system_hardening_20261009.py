@@ -1,10 +1,9 @@
-"""2026-10-09 고도화 회귀 테스트 — TREE_OF_THOUGHTS ROOTCAUSE 5건.
+"""2026-10-09 고도화 회귀 테스트 — 구조 분석 3항목 + 기존 고도화 유지.
 
-- prior 20일 고점(당일 제외)으로 추격 가드가 살아나는지
-- 피벗이 직전 확정봉 기준으로 바뀌는지
-- 변동성 장기 가중이 env 변경에 즉시 반응하는지(reload 없이)
-- US 장기 GARP 조회 축소(15) 및 data_quality 노출
-- 학습 검증 게이트가 선택 후보 기준으로 동작하는지(코드 정적 확인)
+- 추격 가드: 직전20봉 기준으로 표시는 살아나되 점수 반영은 기본 꺼짐
+  (ext dead + 스캔 플래그 무관련 → 근거 없이 FWS에 넣지 않음)
+- 피벗 [-2]·나머지 16곳 거래량: 영향 작아 그대로 둠(고정 행위 고정)
+- 변동성 장기 가중 env 즉시반영·GARP 15·게이트 선택후보는 유지
 """
 import math
 import os
@@ -28,8 +27,9 @@ def test_prior_high_excludes_current_bar():
 
 
 def test_breakout_now_triggers_chasing_guard():
-    # 직전 20봉 고점 100, 오늘 종가/고가 106 돌파 → ext_atr>0.8로 chasing True여야 한다.
-    # 예전 당일포함 기준이면 high=106, entry=106+buffer라 chasing이 절대 안 걸렸다.
+    # 직전 20봉 고점 기준이면 돌파일에 ext_atr>0.8로 표시가 살아난다.
+    # 예전 당일포함 기준이면 high=돌파고가, entry=그 위라 chasing이 절대 안 걸렸다(최대 -0.097).
+    # 단 점수 반영은 기본 꺼짐(_chase_penalty_enabled=False → FWS 추격 0점 유지).
     base = [95.0 + i * 0.2 for i in range(30)]
     highs = [c * 1.005 for c in base]
     lows = [c * 0.995 for c in base]
@@ -43,6 +43,27 @@ def test_breakout_now_triggers_chasing_guard():
     assert result["dist_to_high"] == 0.0  # 돌파이므로 거리 0
     assert result["anti_chase"]["chasing"] is True
     assert result["anti_chase"]["ext_atr"] > 0.8
+    assert result["chase_penalty_enabled"] is False
+    assert result["ext_atr_for_score"] == 0.0
+
+
+def test_chase_penalty_is_gated_by_env(monkeypatch):
+    # STOCKORACLE_CHASE_PENALTY=1일 때만 FWS 추격 15/25점이 반영된다.
+    monkeypatch.setenv("STOCKORACLE_CHASE_PENALTY", "1")
+    base = [95.0 + i * 0.2 for i in range(30)]
+    highs = [c * 1.005 for c in base]
+    lows = [c * 0.995 for c in base]
+    vols = [100000.0] * 30
+    closes = base[:-1] + [106.0]
+    highs = highs[:-1] + [106.5]
+    lows = lows[:-1] + [105.0]
+    result = compute_hybrid_score(closes, highs, lows, vols)
+    assert result["chase_penalty_enabled"] is True
+    assert result["ext_atr_for_score"] > 0.8
+    assert result["fws"] >= 15.0  # 추격 패널티 반영
+    monkeypatch.setenv("STOCKORACLE_CHASE_PENALTY", "0")
+    result2 = compute_hybrid_score(closes, highs, lows, vols)
+    assert result2["ext_atr_for_score"] == 0.0
 
 
 def test_non_breakout_keeps_chasing_off():
@@ -54,22 +75,22 @@ def test_non_breakout_keeps_chasing_off():
     assert result["anti_chase"]["chasing"] is False
 
 
-def test_pivot_uses_confirmed_bar():
+def test_pivot_stays_fixed_at_minus_two():
+    # 피벗 [-2] 고정: 마감 후 하루 묵지만 영향 작아 그대로 둔다.
     from api import index
     dd = {
         "High": [10.0, 11.0, 12.0, 13.0],
         "Low": [9.0, 10.0, 11.0, 12.0],
         "Close": [9.5, 10.5, 11.5, 12.5],
         "Open": [9.2, 10.2, 11.2, 12.2],
-        # 과거 날짜 → 마지막 막대 확정 → [-1] 기준 (13,12,12.5 → Pivot 12.5)
         "Date": ["2026-10-01", "2026-10-02", "2026-10-06", "2026-10-07"],
     }
     piv = index.calc_pivot_points(dd, market="KRX")
-    assert piv["classic"]["Pivot"] == 12.5
-    # 날짜 없이 호출해도 기존처럼 동작(예외 없이)
+    # [-2] 기준 (12,11,11.5 → Pivot 11.5). [-1]이면 12.5가 된다.
+    assert piv["classic"]["Pivot"] == 11.5
     dd2 = {k: v for k, v in dd.items() if k != "Date"}
     piv2 = index.calc_pivot_points(dd2, market="KRX")
-    assert "classic" in piv2
+    assert piv2["classic"]["Pivot"] == 11.5
 
 
 def test_long_run_weight_reacts_without_reload(monkeypatch):
