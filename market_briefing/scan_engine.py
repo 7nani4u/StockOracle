@@ -167,6 +167,104 @@ def apply_leader_promotion(
     return {"promoted": promoted}
 
 
+def momentum_conditions(info: Dict[str, Any] | None) -> Dict[str, str]:
+    """모멘텀 지속 prune 게이트용 조건 키 (향후 규칙 대비, 현재는 허용-only).
+
+    규칙 파일에 momentum_persistence 항목이 없으면 technique_allowed()가
+    fail-open으로 전량 허용한다. surge_pct 20-25/25-40/40%+ 버킷만 기록한다.
+    """
+    try:
+        from .technique_prune import bucket as _bucket
+    except Exception:  # pragma: no cover - 단독 로드 시 폴백
+        def _bucket(value: Any, edges: List[float], labels: List[str], unknown: str = "na") -> str:  # type: ignore
+            try:
+                vv = float(value)
+            except (TypeError, ValueError):
+                return unknown
+            import math as _m
+            if not _m.isfinite(vv):
+                return unknown
+            for _e, _lb in zip(edges, labels):
+                if vv < _e:
+                    return _lb
+            return labels[-1]
+    info = info or {}
+    return {
+        "surge_bucket": _bucket(info.get("surge_pct"), [25.0, 40.0],
+                                ["20-25%", "25-40%", ">=40%"]),
+        "stage": str(info.get("stage") or "na"),
+    }
+
+
+def apply_momentum_promotion(
+    cands: List[Dict],
+    momentum_map: Dict[str, Dict] | None,
+    equity: float = 10_000_000.0,
+    risk_pct: float = 1.0,
+) -> Dict[str, int]:
+    """모멘텀 지속 PASS 후보를 진입 준비(READY)로 승격한다.
+
+    리더 승격과 같은 규칙이다: 스캔 자체 돌파 체계와 모멘텀 체계는 진입가·손절가가
+    다르므로 승격 시 모멘텀 기준으로 교체하고 원래 값은 orig_* 로 보존한다.
+    점수(BQS/FWS/NCS)는 손대지 않는다. 연구용 신호라 prune 게이트는 호출측(api)이
+    technique_allowed()로 먼저 거른다. 이미 리더로 승격된 행은 덮지 않는다.
+
+    규칙:
+      - momentum stage == PASS 일 때만 승격
+      - EARNINGS_BLOCK(실적 대기)은 하드 게이트라 승격 제외
+      - 진입가·손절가가 유한 양수이고 손절 < 진입일 때만 승격
+    절대 raise하지 않는다.
+    """
+    promoted = 0
+    try:
+        for cd in cands or []:
+            try:
+                if not isinstance(cd, dict):
+                    continue
+                if cd.get("status") == "EARNINGS_BLOCK":
+                    continue
+                if cd.get("status_source") == "leader_reversal":
+                    continue  # 리더 승격 우선, 덮어쓰지 않음
+                mo = ((momentum_map or {}).get(cd.get("ticker")) or {})
+                if not isinstance(mo, dict) or mo.get("stage") != "PASS":
+                    continue
+                try:
+                    entry_f = float(mo.get("entry_trigger"))
+                    stop_f = float(mo.get("stop_price"))
+                    price_f = float(cd.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(entry_f) and math.isfinite(stop_f)
+                        and math.isfinite(price_f)):
+                    continue
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= 0:
+                    continue
+                cd["orig_status"] = cd.get("status")
+                cd["orig_entry_trigger"] = cd.get("entry_trigger")
+                cd["orig_stop_price"] = cd.get("stop_price")
+                cd["status"] = "READY"
+                cd["status_source"] = "momentum_persistence"
+                cd["entry_trigger"] = round(entry_f, 4)
+                cd["stop_price"] = round(stop_f, 4)
+                cd["distance_pct"] = round((entry_f - price_f) / price_f * 100, 2)
+                try:
+                    sizing = calculate_position_size(
+                        equity, entry_f, stop_f,
+                        cd.get("sleeve") or "CORE", risk_pct)
+                    cd["shares"] = sizing.get("shares")
+                    cd["risk_amount"] = sizing.get("risk_amount")
+                    cd["risk_pct"] = sizing.get("risk_pct")
+                    cd["total_cost"] = sizing.get("total_cost")
+                except Exception:
+                    pass
+                promoted += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"promoted": promoted}
+
+
 # ── 데이터 구조 ───────────────────────────────────────────────────────────────
 
 @dataclass

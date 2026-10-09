@@ -68,6 +68,7 @@ try:
         calculate_position_size,
         SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
         is_scan_price_eligible, apply_leader_promotion,
+        apply_momentum_promotion, momentum_conditions,
     )
     _SCAN_AVAILABLE = True
 except Exception:
@@ -82,6 +83,8 @@ except Exception:
     SCAN_COLLECT_CAP_US_LITE = 48
     is_scan_price_eligible = None
     apply_leader_promotion = None
+    apply_momentum_promotion = None
+    momentum_conditions = None
 
 # ── 신규 통합 모듈 (graceful fallback) ────────────────────────────────────────
 
@@ -170,6 +173,19 @@ except Exception:
     _NEWS_EVIDENCE_AVAILABLE = False
     normalize_news_evidence = None
 try:
+    from .momentum_persistence import (
+        detect_momentum_persistence as detect_momentum_persistence,
+        find_surges as find_momentum_surges,
+        SURGE_MIN_PCT as MOMENTUM_SURGE_MIN_PCT,
+        HOLD_DAYS as MOMENTUM_HOLD_DAYS,
+        RETAIN_FRAC as MOMENTUM_RETAIN_FRAC,
+    )
+    _MOMENTUM_AVAILABLE = True
+except Exception:
+    _MOMENTUM_AVAILABLE = False
+    detect_momentum_persistence = None
+    find_momentum_surges = None
+try:
     from .forecast_model import (
         blended_daily_sigma as forecast_blended_sigma,
         build_forecast_summary as forecast_summary,
@@ -205,6 +221,7 @@ __all__ = [
     "calculate_position_size",
     "SCAN_US_MAX_PRICE", "SCAN_COLLECT_CAP_US_FULL", "SCAN_COLLECT_CAP_US_LITE",
     "is_scan_price_eligible", "apply_leader_promotion",
+    "apply_momentum_promotion", "momentum_conditions",
     # portfolio_manager
     "PortfolioPosition", "PortfolioState", "PortfolioManager", "TradeRiskAssessment",
     # market_immune
@@ -224,6 +241,8 @@ __all__ = [
     "ml_feature_columns", "ml_model_metadata",
     "ml_evaluate_predictions", "ml_time_based_split", "ml_walk_forward_evaluate", "ml_check_leakage",
     "normalize_news_evidence",
+    "detect_momentum_persistence", "find_momentum_surges",
+    "MOMENTUM_SURGE_MIN_PCT", "MOMENTUM_HOLD_DAYS", "MOMENTUM_RETAIN_FRAC",
     "forecast_blended_sigma", "forecast_summary", "forecast_touch_probability",
     "forecast_touch_range", "forecast_long_run_weight", "forecast_vol_error_quantiles",
     # 가용성 플래그

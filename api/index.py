@@ -19347,6 +19347,7 @@ def route(path: str, params: Dict) -> Dict:
                 StockUniverse, run_full_scan, build_snapshot_from_ohlcv,
                 SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
                 is_scan_price_eligible, apply_leader_promotion,
+                apply_momentum_promotion,
             )
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
@@ -19361,6 +19362,16 @@ def route(path: str, params: Dict) -> Dict:
                 def detect_leader_reversal(closes=None, highs=None, lows=None, bench_closes=None):
                     return {"available": False, "stage": "NONE", "stage_label": "신호 모듈 없음",
                             "reason": "leader_reversal 모듈을 불러오지 못했습니다."}
+            try:
+                from market_briefing.momentum_persistence import detect_momentum_persistence
+                _MOMENTUM_AVAILABLE = True
+            except Exception as _momentum_e:
+                _MOMENTUM_AVAILABLE = False
+                print(f"[scan] momentum_persistence import failed ({type(_momentum_e).__name__}: {_momentum_e}) — signal disabled")
+
+                def detect_momentum_persistence(closes=None, highs=None, lows=None, volumes=None, **kwargs):
+                    return {"available": False, "stage": "NONE", "stage_label": "신호 모듈 없음",
+                            "reason": "momentum_persistence 모듈을 불러오지 못했습니다."}
 
             market_p = params.get("market", "KRX").upper()
             equity   = float(params.get("equity", 100_000_000))
@@ -19889,6 +19900,44 @@ def route(path: str, params: Dict) -> Dict:
                 except Exception as _lp_e:
                     print(f"[scan] leader prune gate failed ({type(_lp_e).__name__}) — allow all")
 
+            # ── 모멘텀 지속 신호 (KRX/US 공통 보조 지표, 점수 미반영) ──
+            # +20% 급등 후 3일 절반수성 PASS만 승격 후보. 연구용이라 env로 끌 수 있다.
+            _momentum_on = str(params.get("momentum", os.getenv("STOCKORACLE_MOMENTUM_SCAN", "1"))).strip().lower() not in {"0", "false", "no", "off"}
+            momentum_map: dict = {}
+            if _momentum_on:
+                for _mt, _msnap in snap_map.items():
+                    try:
+                        momentum_map[_mt] = detect_momentum_persistence(
+                            closes=list(_msnap.closes or []),
+                            highs=list(_msnap.highs or []),
+                            lows=list(_msnap.lows or []),
+                            volumes=list(_msnap.volumes or []),
+                        )
+                    except Exception as _me:
+                        momentum_map[_mt] = {"available": False, "stage": "NONE",
+                                             "stage_label": "계산 실패", "reason": str(_me)[:120]}
+
+            # ── 손실조건 제거 게이트 (모멘텀): 규칙 없으면 전량 허용(fail-open) ──
+            _momentum_pruned = 0
+            if _momentum_on and momentum_map:
+                try:
+                    from market_briefing.scan_engine import momentum_conditions as _momentum_conds
+                    from market_briefing.technique_prune import technique_allowed as _tech_allowed
+                    for _mt, _mo in list(momentum_map.items()):
+                        if not isinstance(_mo, dict) or _mo.get("stage") != "PASS":
+                            continue
+                        _ok, _why = _tech_allowed(
+                            "momentum_persistence", market_p, _momentum_conds(_mo))
+                        if not _ok:
+                            _mo = dict(_mo)
+                            _mo["stage"] = "NONE"
+                            _mo["stage_label"] = "제외(손실조건)"
+                            _mo["pruned_reason"] = _why
+                            momentum_map[_mt] = _mo
+                            _momentum_pruned += 1
+                except Exception as _mp_e:
+                    print(f"[scan] momentum prune gate failed ({type(_mp_e).__name__}) — allow all")
+
             result = run_full_scan(
                 universe           = [u for u in universe if u.ticker in snap_map],
                 snap_map           = snap_map,
@@ -19914,6 +19963,9 @@ def route(path: str, params: Dict) -> Dict:
                     c.ticker,
                     {"available": False, "stage": "NONE", "stage_label": "해당 없음"},
                 )
+                d["momentum_persistence"] = (momentum_map.get(c.ticker)
+                    if _momentum_on else
+                    {"available": False, "stage": "NONE", "stage_label": "신호 꺼짐"})
                 cands.append(d)
 
             # ── 리더 반전 BREAKOUT 승격 (미국 전용): 상태를 진입 준비로 ──
@@ -19926,6 +19978,16 @@ def route(path: str, params: Dict) -> Dict:
                         cands, leader_map, equity, risk_pct).get("promoted", 0))
                 except Exception as _pm_e:
                     print(f"[scan] leader promotion failed ({type(_pm_e).__name__}: {_pm_e})")
+
+            # ── 모멘텀 지속 PASS 승격 (KRX/US 공통): 상태를 진입 준비로 ──
+            # 리더 승격 행은 덮지 않는다. 점수는 그대로 둔다.
+            _momentum_promoted = 0
+            if _momentum_on and momentum_map:
+                try:
+                    _momentum_promoted = int(apply_momentum_promotion(
+                        cands, momentum_map, equity, risk_pct).get("promoted", 0))
+                except Exception as _mm_e:
+                    print(f"[scan] momentum promotion failed ({type(_mm_e).__name__}: {_mm_e})")
 
             # 승격 반영 후 상태 집계 (요약 카드와 선정 목록 일치용)
             _post_ready = sum(1 for cd in cands
@@ -20008,7 +20070,8 @@ def route(path: str, params: Dict) -> Dict:
                 "sector_distribution": _sector_dist,
                 "filter_desc":     "진입 가능권 우선 + 품질 등급 단계 보강(정확히 15개) + 시총·섹터 분산(MMR)"
                                    + (" + 미국 $70 이하" if market_p == "US" else "")
-                                   + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else ""),
+                                   + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else "")
+                                   + (" + 모멘텀 지속 진입준비 승격" if _momentum_on and _momentum_promoted else ""),
                 "coverage":        {
                     "universe": len(raw_list),
                     "collected": len(snap_map),
@@ -20023,6 +20086,8 @@ def route(path: str, params: Dict) -> Dict:
                 },
                 "promoted_count":  _promoted,
                 "leader_pruned_count": _leader_pruned if market_p == "US" else 0,
+                "momentum_promoted_count": _momentum_promoted if _momentum_on else 0,
+                "momentum_pruned_count": _momentum_pruned if _momentum_on else 0,
                 "price_cap":       ({
                     "market": "US", "max_price": SCAN_US_MAX_PRICE,
                     "filtered_out": len(_price_capped_out),
@@ -20035,6 +20100,11 @@ def route(path: str, params: Dict) -> Dict:
                                if (cd.get("leader_reversal") or {}).get("stage") == stage)
                     for stage in ("BREAKOUT", "WAIT_BREAKOUT", "BASE_BUILDING", "NONE")
                 } if market_p == "US" else None),
+                "momentum_persistence_counts": ({
+                    stage: sum(1 for cd in selected
+                               if (cd.get("momentum_persistence") or {}).get("stage") == stage)
+                    for stage in ("PASS", "WAIT", "SURGE", "FAIL", "NONE")
+                } if _momentum_on else None),
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
