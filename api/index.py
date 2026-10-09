@@ -21936,6 +21936,7 @@ input::placeholder{color:#484f58}
             <th style="text-align:center">순복합 점수</th>
             <th style="text-align:center">퀀트 모멘텀 점수</th>
             <th style="text-align:center" title="상대강도 리더 중 하락을 먼저 멈춘 종목의 반전 신호 — 🔥 돌파(4조건 충족) · 👀 대기(돌파 직전) · 🧱 바닥(조정 중) · —(해당 없음). 점수 미반영 보조 지표">리더 반전</th>
+            <th style="text-align:center" title="하루 +20% 급등 후 3일 절반수성 신호 — ⚡ 통과(3일 수성) · 👀 관찰(1-2일차) · 🚀 급등당일 · ✖ 이탈 · —(해당 없음). 점수 미반영 보조 지표">모멘텀 지속</th>
           </tr></thead>
           <tbody id="scan-tbody"></tbody>
         </table>
@@ -28761,6 +28762,8 @@ function renderScanResult(d, market) {
     // 리더 돌파 승격 표시 — 리더 반전으로 진입 준비가 된 행은 상태 배지 옆에 🔥 표식
     var promotedMark = (c.status_source === 'leader_reversal' && c.status === 'READY')
       ? '<div title="리더 반전 돌파로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#3fb950;margin-top:2px;white-space:nowrap">🔥 리더 돌파</div>'
+      : (c.status_source === 'momentum_persistence' && c.status === 'READY')
+      ? '<div title="모멘텀 지속 통과로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#58a6ff;margin-top:2px;white-space:nowrap">⚡ 모멘텀 통과</div>'
       : '';
     // 리더주 반전 신호 셀: 계산용 세부 수치·진입/손절가는 API에만 유지하고
     // 스캔 표에는 단계 배지만 노출한다.
@@ -28774,6 +28777,24 @@ function renderScanResult(d, market) {
           : lrStage === 'WAIT_BREAKOUT'
           ? '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 대기</span>'
           : '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🧱 바닥</span>';
+        return badge;
+      }
+      return '<span style="font-size:11px;color:#484f58">—</span>';
+    })();
+
+    // 모멘텀 지속 신호 셀: 점수 미반영 보조 지표, 단계 배지만 노출한다.
+    var mo = c.momentum_persistence || {};
+    var moStage = mo.stage || 'NONE';
+    var moCell = (function() {
+      var tip = '모멘텀 지속 보조 신호 · 점수 미반영';
+      if (moStage === 'PASS' || moStage === 'WAIT' || moStage === 'SURGE' || moStage === 'FAIL') {
+        var badge = moStage === 'PASS'
+          ? '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#58a6ff;border:1px solid #58a6ff55;border-radius:999px;padding:2px 8px;white-space:nowrap">⚡ 통과</span>'
+          : moStage === 'WAIT'
+          ? '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 관찰</span>'
+          : moStage === 'SURGE'
+          ? '<span title="' + tip + '" style="font-size:11px;color:#e6edf3;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🚀 급등</span>'
+          : '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">✖ 이탈</span>';
         return badge;
       }
       return '<span style="font-size:11px;color:#484f58">—</span>';
@@ -28795,6 +28816,7 @@ function renderScanResult(d, market) {
       '<td style="min-width:60px">' + scoreBar(qmScore, qmColor) +
            '<div style="font-size:9px;color:' + qmjColor + ';text-align:center;margin-top:2px">품질 ' + qmjLabel + '</div></td>' +
       '<td style="text-align:center;min-width:110px">' + lrCell + '</td>' +
+      '<td style="text-align:center;min-width:110px">' + moCell + '</td>' +
     '</tr>';
   }).join('');
 
