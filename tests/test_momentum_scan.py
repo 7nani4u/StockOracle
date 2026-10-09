@@ -78,3 +78,12 @@ def test_prune_gate_allows_momentum_without_rules():
     assert ok is True
     conds = momentum_conditions(_pass_mo())
     assert conds["surge_bucket"] == "25-40%"
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def raw_promotion_policy(monkeypatch):
+    """These tests exercise raw promotion mechanics, independently of trained artifacts."""
+    from market_briefing import technique_prune
+    monkeypatch.setattr(technique_prune, "load_rules", lambda *args, **kwargs: {})

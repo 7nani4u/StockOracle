@@ -177,17 +177,22 @@ def _collect_training_data(tickers: List[str], period: str = "5y", synthetic_fal
             if synthetic_fallback:
                 print(f"  [synthetic] {t} - using synthetic OHLCV (download failed/short)")
                 df = _synthetic_ohlcv(t, days=500)
+                df["is_synthetic"] = True
             else:
                 print(f"  [skip] {t} - no data")
                 continue
         else:
             print(f"  [ok] {t} - {len(df)} rows ({df['date'].min().date()} - {df['date'].max().date()})")
+        if "is_synthetic" not in df:
+            df["is_synthetic"] = False
         frames.append(df)
     if not frames:
         # absolute fallback: generate synthetic for default tickers
         print("  [fallback] Generating synthetic dataset for all tickers")
         for t in tickers[:10]:
-            frames.append(_synthetic_ohlcv(t, days=500, seed=42))
+            synthetic = _synthetic_ohlcv(t, days=500, seed=42)
+            synthetic["is_synthetic"] = True
+            frames.append(synthetic)
     combined = pd.concat(frames, ignore_index=True)
     combined["date"] = pd.to_datetime(combined["date"])
     combined = combined.sort_values(["ticker", "date"]).reset_index(drop=True)
@@ -205,9 +210,12 @@ def _fetch_index_df(start: str, end: str) -> Optional[pd.DataFrame]:
         end_dt = pd.to_datetime(end) + pd.Timedelta(days=1)
         dfs = {}
         for sym, key in [
-            ("069500.KS", "KRX_NIFTY_return"), ("^KQ11", "KRX_BANKNIFTY_return"),
+            ("^KS11", "KRX_NIFTY_return"), ("069500.KS", "KRX_NIFTY_return"),
+            ("^KQ11", "KRX_BANKNIFTY_return"),
             ("SPY", "US_NIFTY_return"), ("QQQ", "US_BANKNIFTY_return"),
         ]:
+            if key in dfs:
+                continue
             try:
                 raw = yf.download(sym, start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d"), auto_adjust=True, progress=False)
                 if raw is None or raw.empty:
@@ -215,6 +223,9 @@ def _fetch_index_df(start: str, end: str) -> Optional[pd.DataFrame]:
                 close = raw["Close"] if "Close" in raw.columns else raw.iloc[:, 0]
                 if isinstance(close, pd.DataFrame):
                     close = close.iloc[:, 0]
+                close = pd.to_numeric(close, errors="coerce").dropna()
+                if len(close) < 21:
+                    continue
                 close.index = pd.to_datetime(close.index).tz_localize(None)
                 ret = close.pct_change() * 100
                 dfs[key] = ret
@@ -233,19 +244,14 @@ def _fetch_index_df(start: str, end: str) -> Optional[pd.DataFrame]:
             pass
         if not dfs:
             return None
+        for prefix in ("KRX", "US"):
+            source = f"{prefix}_NIFTY_return"
+            if source in dfs:
+                dfs[f"{prefix}_NIFTY_cum20"] = dfs[source].dropna().rolling(20).sum()
         idx = pd.DataFrame(dfs)
         idx.index.name = "date"
         idx = idx.reset_index()
         idx["date"] = pd.to_datetime(idx["date"])
-        for prefix in ("KRX", "US"):
-            source = f"{prefix}_NIFTY_return"
-            if source in idx.columns:
-                s = idx.set_index("date")[source]
-                cum = s.rolling(20).sum()
-                cum.index = pd.to_datetime(cum.index).tz_localize(None)
-                cum_df = cum.rename(f"{prefix}_NIFTY_cum20").reset_index()
-                cum_df.columns = ["date", f"{prefix}_NIFTY_cum20"]
-                idx = idx.merge(cum_df, on="date", how="left")
         return idx
     except Exception:
         return None
@@ -260,6 +266,7 @@ def _build_features_from_raw(raw_df: pd.DataFrame, index_df: Optional[pd.DataFra
             continue
         try:
             feat = engineer_ticker_features(sub, market="KRX" if ticker.endswith((".KS", ".KQ")) else "US", index_df=index_df)
+            feat["label_end_date"] = pd.to_datetime(feat["date"]).shift(-FORWARD_DAYS)
             # keep only rows with label
             # engineer_ticker_features already computes label but may have NaN dead-zone rows inside
             # drop NaN label before combining (StockFlow behaviour)
@@ -278,28 +285,48 @@ def _build_features_from_raw(raw_df: pd.DataFrame, index_df: Optional[pd.DataFra
     return df_feat
 
 
+def _with_label_end_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Carry actual label availability; infer conservatively for legacy datasets."""
+    data = df.copy()
+    data["date"] = pd.to_datetime(data["date"])
+    data = data.sort_values("date").reset_index(drop=True)
+    if "label_end_date" in data:
+        data["label_end_date"] = pd.to_datetime(data["label_end_date"])
+    elif "ticker" in data:
+        data["label_end_date"] = data.groupby("ticker", sort=False)["date"].shift(-FORWARD_DAYS)
+    else:
+        data["label_end_date"] = data["date"].shift(-FORWARD_DAYS)
+    return data
+
+
+def _prior_training_rows(data: pd.DataFrame, test_start) -> pd.DataFrame:
+    return data[(data["date"] < test_start) & (data["label_end_date"] < test_start)].copy()
+
+
+def _assert_publishable(validation_passed: bool, synthetic_present: bool,
+                        provenance_known: bool, allow_unvalidated: bool = False) -> None:
+    if not allow_unvalidated and (not validation_passed or synthetic_present or not provenance_known):
+        raise RuntimeError("Model publication rejected: failed validation, synthetic data, or unknown data provenance. "
+                           "Use --allow-unvalidated only for explicit experimental artifacts.")
+
+
 def _time_split(df: pd.DataFrame, train_ratio: float = 0.8):
-    df = df.copy()
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    # drop inf/nan
-    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"])
-    n = len(df)
-    split_idx = int(n * train_ratio)
-    # chronological date threshold
-    split_date = df.loc[split_idx, "date"] if split_idx < n else df["date"].max()
-    # Use date threshold (StockFlow uses date threshold)
-    train_df = df[df["date"] <= split_date - pd.offsets.BDay(FORWARD_DAYS)].copy()
-    test_df = df[df["date"] > split_date].copy()
-    # fallback if imbalanced due to many same-date rows
-    if len(train_df) < int(n * 0.5) or len(test_df) < 20:
-        train_df = df.iloc[:split_idx].copy()
-        test_df = df.iloc[split_idx:].copy()
-    X_train = train_df[FEATURE_COLS].copy()
-    y_train = train_df["label"].astype(int).copy()
-    X_test = test_df[FEATURE_COLS].copy()
-    y_test = test_df["label"].astype(int).copy()
+    if not 0 < train_ratio < 1:
+        raise ValueError("train_ratio must be between 0 and 1")
+    df = _with_label_end_dates(df)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"]).reset_index(drop=True)
+    if len(df) < 2:
+        raise ValueError("Insufficient clean rows for chronological split")
+    split_idx = min(len(df) - 1, int(len(df) * train_ratio))
+    split_date = df.iloc[split_idx]["date"]
+    train_df = _prior_training_rows(df, split_date)
+    test_df = df[df["date"] >= split_date].copy()
+    if train_df.empty or test_df.empty:
+        raise ValueError("Insufficient data for a purged chronological split")
+    X_train, X_test = train_df[FEATURE_COLS].copy(), test_df[FEATURE_COLS].copy()
+    y_train, y_test = train_df["label"].astype(int).copy(), test_df["label"].astype(int).copy()
     return X_train, X_test, y_train, y_test, train_df, test_df, split_date
+
 
 
 LGBM_CANDIDATES = [
@@ -395,7 +422,7 @@ def _walk_forward_backtest(df: pd.DataFrame, params: Dict[str, Any], n_folds: in
     """Evaluate one candidate with chronological folds and a label-horizon embargo."""
     from sklearn.metrics import brier_score_loss, roc_auc_score
 
-    data = df.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"]).copy()
+    data = _with_label_end_dates(df).replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"]).copy()
     data["date"] = pd.to_datetime(data["date"])
     data = data.sort_values("date")
     dates = pd.Index(data["date"].drop_duplicates().sort_values())
@@ -411,8 +438,7 @@ def _walk_forward_backtest(df: pd.DataFrame, params: Dict[str, Any], n_folds: in
         if end_idx - start_idx < 10:
             continue
         test_start, test_end = dates[start_idx], dates[end_idx - 1]
-        embargo_end = test_start - pd.offsets.BDay(FORWARD_DAYS)
-        train = data[data["date"] <= embargo_end]
+        train = _prior_training_rows(data, test_start)
         test = data[(data["date"] >= test_start) & (data["date"] <= test_end)]
         direction_test = test[test["label"] != 2]
         if len(train) < 100 or len(direction_test) < 20 or train["label"].nunique() < 2 or direction_test["label"].nunique() < 2:
@@ -455,7 +481,7 @@ def _select_lgbm_params(train_df: pd.DataFrame) -> Tuple[Dict[str, Any], List[Di
 
 def _oof_calibration_predictions(df: pd.DataFrame, params: Dict[str, Any], n_folds: int = 3) -> Tuple[np.ndarray, np.ndarray]:
     """Return embargoed out-of-fold probabilities for calibration without test leakage."""
-    data = df.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"]).copy()
+    data = _with_label_end_dates(df).replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLS + ["label"]).copy()
     data["date"] = pd.to_datetime(data["date"])
     data = data.sort_values("date")
     dates = pd.Index(data["date"].drop_duplicates().sort_values())
@@ -469,7 +495,7 @@ def _oof_calibration_predictions(df: pd.DataFrame, params: Dict[str, Any], n_fol
         if end_idx - start_idx < 10:
             continue
         test_start, test_end = dates[start_idx], dates[end_idx - 1]
-        train = data[data["date"] <= test_start - pd.offsets.BDay(FORWARD_DAYS)]
+        train = _prior_training_rows(data, test_start)
         test = data[(data["date"] >= test_start) & (data["date"] <= test_end)]
         direction_test = test[test["label"] != 2]
         if len(train) < 100 or len(direction_test) < 20 or train["label"].nunique() < 2:
@@ -562,6 +588,7 @@ def main():
     parser.add_argument("--output-dir", type=str, default=str(MODELS_DIR), help="Model output directory")
     parser.add_argument("--train-ratio", type=float, default=0.8, help="Time-based train ratio")
     parser.add_argument("--skip-tuning", action="store_true", help="Use the legacy LightGBM parameters without walk-forward selection")
+    parser.add_argument("--allow-unvalidated", action="store_true", help="Explicitly save experimental models with failed validation or synthetic/unknown provenance")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -607,6 +634,7 @@ def main():
             for t in tickers:
                 raws.append(_synthetic_ohlcv(t, days=600, seed=0))
             raw_df = pd.concat(raws, ignore_index=True)
+            raw_df["is_synthetic"] = True
         else:
             # Hybrid: real data + synthetic fallback for failed tickers (reduces survivorship bias)
             raw_df = _collect_training_data(tickers, period=args.period, synthetic_fallback=True)
@@ -616,6 +644,8 @@ def main():
                 synth_extra = []
                 for t in tickers[:max(1, len(tickers)//5)]:
                     synth_extra.append(_synthetic_ohlcv(t+"_SYN", days=600, seed=99))
+                for synthetic in synth_extra:
+                    synthetic["is_synthetic"] = True
                 raw_df = pd.concat([raw_df] + synth_extra, ignore_index=True)
 
         print(f"  Combined raw: {len(raw_df):,} rows | {raw_df['ticker'].nunique()} tickers")
@@ -723,7 +753,7 @@ def main():
     y_test_proba = _predict_proba(model, X_test)
     if len(calibration_y) >= 30 and len(np.unique(calibration_y)) == 2 and model_type == "LightGBM":
         calib = _calibrate_platt(calibration_proba, calibration_y)
-        calibration_source = "expanding walk-forward out-of-fold predictions (14-business-day embargo)"
+        calibration_source = "expanding walk-forward out-of-fold predictions (actual label-end-date purge)"
     else:
         # Never fit probability calibration on the final test set.
         calib = {"a": -1.0, "b": 0.0, "identity": True}
@@ -829,6 +859,10 @@ def main():
             print(f"  Permutation also failed: {e2}")
             feat_imp = [{"feature": c, "importance": 0, "source": "failed"} for c in FEATURE_COLS]
 
+    provenance_known = "is_synthetic" in df_feat and df_feat["is_synthetic"].notna().all()
+    synthetic_present = bool(df_feat["is_synthetic"].eq(True).any()) if provenance_known else False
+    _assert_publishable(validation_passed, synthetic_present, bool(provenance_known), args.allow_unvalidated)
+
     # ── Save artifacts ────────────────────────────────────────────────────
     print("\n[Step 9] Saving artifacts...")
     import joblib as jb
@@ -851,6 +885,8 @@ def main():
     # metadata
     metadata = {
         "model_type": model_type,
+        "data_provenance": {"known": bool(provenance_known), "synthetic_present": synthetic_present},
+        "experimental_override": args.allow_unvalidated,
         "label_mode": "three_class_directional_with_neutral",
         "trained_at": datetime.now().isoformat(),
         "train_rows": int(len(X_train)),
@@ -882,7 +918,7 @@ def main():
         "feature_importance": sorted(feat_imp, key=lambda x: x["importance"], reverse=True),
         "leakage_safeguards": [
             "time-based split (no shuffle)",
-            f"{FORWARD_DAYS}-business-day embargo in walk-forward calibration folds",
+            "actual label-end-date purge in holdout and walk-forward calibration folds",
             "volatility_ratio per-row (fixed)",
             "label via shift(-14) with 3% dead-zone",
             "three-class target: DOWN / UP / NEUTRAL within the dead-zone",

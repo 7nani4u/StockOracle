@@ -6,8 +6,8 @@
   3) 손실이 가장 자주 발생한 조건을 찾아낸다.
   4) 그 조건부터 하나씩 제외하고 손절율이 개선될 때만 유지한다.
 
-대상 기법(전부 OHLCV 배열 기반, 기존 모듈 재사용):
-  hybrid_breakout / pattern_breakout / dynamic_rsi / leader_reversal / ml_direction
+실행 경로는 scripts/optimize_techniques.py의 v2 공통 검증 엔진이다.
+기존 단위 테스트용 헬퍼는 유지하되 운영 규칙을 직접 저장하지 않는다.
 
 데이터: 최근 1년 일봉(국내 KRX + 미국 US 각각). yfinance 결과를
 ``datasets/prune_cache/`` 에 CSV로 캐시해 재실행을 오프라인(--offline) 으로
@@ -233,7 +233,7 @@ def gen_hybrid_breakout(ticker: str, market: str, ohl: Dict[str, List[float]],
             hs = compute_hybrid_score(
                 closes[:t + 1], highs[:t + 1], lows[:t + 1], volumes[:t + 1],
                 open_prices=opens[:t + 1],
-                bench_closes=bench[max(0, len(bench) - (t + 1)):],
+                bench_closes=bench[:t + 1],
             )
         except Exception:
             continue
@@ -363,7 +363,7 @@ def gen_leader_reversal(ticker: str, market: str, ohl: Dict[str, List[float]],
         try:
             r = detect_leader_reversal(
                 closes[:t + 1], highs[:t + 1], lows[:t + 1],
-                bench_closes=bench[max(0, len(bench) - (t + 1)):],
+                bench_closes=bench[:t + 1],
             )
         except Exception:
             continue
@@ -669,119 +669,24 @@ def _resolve_tickers(args: argparse.Namespace) -> Dict[str, List[str]]:
 
 
 def run(args: argparse.Namespace) -> Dict[str, Any]:
-    tickers_by_market = _resolve_tickers(args)
-    min_trades = args.min_trades
-    report: Dict[str, Any] = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "markets": {}, "rules": {},
-        "params": {"min_trades": min_trades, "max_iters": args.max_iters,
-                   "max_hold": MAX_HOLD_BARS, "tp_atr": TP_ATR_MULT,
-                   "costs": COST_PCT},
-    }
-    all_trades: List[Dict[str, Any]] = []
-    for market, tickers in tickers_by_market.items():
-        ohl_by_ticker: Dict[str, Dict[str, List[float]]] = {}
-        bench: List[float] = []
-        for tk in tickers:
-            ohl = fetch_ohlcv(tk, args.offline)
-            if ohl is None:
-                print(f"[prune] {tk}: 데이터 없음 — 제외", flush=True)
-                continue
-            ohl_by_ticker[tk] = ohl
-        b = fetch_ohlcv(BENCH[market], args.offline)
-        if b is not None:
-            bench = b["closes"]
-        print(f"[prune] {market}: {len(ohl_by_ticker)}종목 확보", flush=True)
-        market_node: Dict[str, Any] = {}
-        for tech in TECHNIQUES:
-            if args.technique and tech != args.technique:
-                continue
-            gen = GENERATORS[tech]
-            signals: List[Signal] = []
-            t0 = time.time()
-            for tk, ohl in ohl_by_ticker.items():
-                try:
-                    if tech in ("hybrid_breakout", "leader_reversal"):
-                        fresh = gen(tk, market, ohl, bench)
-                    else:
-                        fresh = gen(tk, market, ohl)
-                    tier = tier_of_ticker(tk, market)
-                    for s in fresh:
-                        s["conditions"]["cap_tier"] = tier
-                    signals.extend(fresh)
-                except Exception as e:
-                    print(f"[prune] {tech}/{tk} 신호 실패 ({type(e).__name__})",
-                          flush=True)
-            print(f"[prune] {market}/{tech}: 신호 {len(signals)}개 "
-                  f"({time.time() - t0:.1f}s)", flush=True)
-            res = prune_technique(signals, ohl_by_ticker, COST_PCT[market],
-                                  min_trades=min_trades,
-                                  max_iters=args.max_iters)
-            market_node[tech] = {k: v for k, v in res.items()
-                                 if k != "kept_trades"}
-            all_trades.extend(res.get("kept_trades") or [])
-            print(f"[prune] {market}/{tech}: {res['verdict']} "
-                  f"기준 {res['baseline']['trades']}건 손절율 "
-                  f"{res['baseline']['loss_rate']}% → 제거 후 "
-                  f"{res['pruned']['loss_rate']}% "
-                  f"(제외 {len(res['exclusions'])}조건)", flush=True)
-            report["rules"].setdefault(tech, {})[market] = {
-                "status": res["verdict"],
-                "exclusions": res["exclusions"],
-                "baseline": res["baseline"],
-                "pruned": res["pruned"],
-                "steps": res["steps"],
-            }
-        report["markets"][market] = market_node
-    # ── 산출물 저장 ──
-    os.makedirs(os.path.dirname(RULES_OUT), exist_ok=True)
-    with open(RULES_OUT, "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "generated_at": report["generated_at"],
-                   "rules": report["rules"], "params": report["params"]},
-                  f, ensure_ascii=False, indent=2)
-    if all_trades:
-        os.makedirs(os.path.dirname(TRADES_OUT), exist_ok=True)
-        with open(TRADES_OUT, "w", encoding="utf-8", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["ticker", "market", "technique", "signal_index",
-                        "entry_index", "entry_price", "stop_price",
-                        "target_price", "exit_index", "exit_price",
-                        "exit_reason", "return_pct", "win", "conditions"])
-            for t in all_trades:
-                w.writerow([t["ticker"], t["market"], t["technique"],
-                            t["signal_index"], t["entry_index"],
-                            t["entry_price"], t["stop_price"],
-                            t["target_price"], t["exit_index"],
-                            t["exit_price"], t["exit_reason"],
-                            t["return_pct"], int(t["win"]),
-                            json.dumps(t["conditions"], ensure_ascii=False)])
-    print(f"[prune] 규칙 저장: {RULES_OUT}", flush=True)
-    print(f"[prune] 매매 기록: {TRADES_OUT} ({len(all_trades)}건)", flush=True)
-    return report
+    """Compatibility entry point; all production research now uses the v2 engine."""
+    from scripts.optimize_techniques import run as unified_run
+    tickers = _resolve_tickers(args) if hasattr(args, "tiers") else {}
+    selected = [ticker for names in tickers.values() for ticker in names]
+    from argparse import Namespace
+    normalized = Namespace(as_of=getattr(args, "as_of", ""),
+        tickers=",".join(selected) if selected else getattr(args, "tickers", ""),
+        market=getattr(args, "market", "ALL"), min_trades=getattr(args, "min_trades", 20),
+        workers=getattr(args, "workers", 4), offline=getattr(args, "offline", False),
+        publish=getattr(args, "publish", False), slippage_pct=getattr(args, "slippage_pct", .1),
+        krx_cost_pct=getattr(args, "krx_cost_pct", .2), us_cost_pct=getattr(args, "us_cost_pct", .1),
+        cache_dir=getattr(args, "cache_dir", None), out_dir=getattr(args, "out_dir", None))
+    return unified_run(normalized)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="기법별 손실조건 제거 검증")
-    ap.add_argument("--tickers", default="",
-                    help="쉼표 구분 티커 (KRX는 .KS/.KQ 접미사)")
-    ap.add_argument("--market", default="ALL", choices=["ALL", "KRX", "US"])
-    ap.add_argument("--limit", type=int, default=0,
-                    help="티어별 종목 수 상한 (0=티어 전체)")
-    ap.add_argument("--tiers", default="LARGE,MID,SMALL",
-                    help="검증 티어 선택 (예: LARGE,MID)")
-    ap.add_argument("--technique", default="",
-                    choices=[""] + list(TECHNIQUES))
-    ap.add_argument("--min-trades", type=int, default=MIN_TRADES)
-    ap.add_argument("--max-iters", type=int, default=MAX_ITERS)
-    ap.add_argument("--offline", action="store_true",
-                    help="캐시된 CSV만 사용 (네트워크 차단)")
-    args = ap.parse_args(argv)
-    try:
-        run(args)
-        return 0
-    except Exception as e:
-        print(f"[prune] 실패: {e}", flush=True)
-        return 1
+    from scripts.optimize_techniques import main as unified_main
+    return unified_main(argv)
 
 
 if __name__ == "__main__":

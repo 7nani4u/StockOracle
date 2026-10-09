@@ -229,7 +229,7 @@ def test_load_rules_cache_and_ttl(tmp_path, monkeypatch):
     first = technique_prune.load_rules()
     assert first == {"rules": {}, "v": 1}
     path.write_text(json.dumps({"rules": {}, "v": 2}), encoding="utf-8")
-    assert technique_prune.load_rules()["v"] == 1  # TTL 내 캐시 유지
+    assert technique_prune.load_rules()["v"] == 2  # artifact activation invalidates TTL immediately
     assert technique_prune.load_rules(ttl=0)["v"] == 2  # TTL 만료 시 재독
 
 

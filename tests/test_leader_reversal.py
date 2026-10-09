@@ -204,3 +204,12 @@ def test_promotion_never_raises():
     assert out == {"promoted": 0}
     out = apply_leader_promotion([None, "x", {}], {})
     assert out == {"promoted": 0}
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def raw_promotion_policy(monkeypatch):
+    """These tests exercise raw promotion mechanics, independently of trained artifacts."""
+    from market_briefing import technique_prune
+    monkeypatch.setattr(technique_prune, "load_rules", lambda *args, **kwargs: {})

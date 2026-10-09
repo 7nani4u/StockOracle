@@ -86,7 +86,7 @@ def test_old_surge_expires():
 def test_volume_filter_rejects_thin_surge():
     closes = _pass_series()
     highs, lows, _ = _ohlc(closes)
-    vols = [1_000_000] * 10 + [500_000] + [1_000_000] * 3  # 급등일 거래량 급감
+    vols = [1_000_000] * 13 + [500_000] + [1_000_000] * 3  # 급등일 거래량 급감
     r = detect_momentum_persistence(closes, highs, lows, vols, require_volume_ratio=2.0)
     assert r["stage"] == "NONE"
     assert r["reason"] == "거래량 동반 부족"

@@ -166,3 +166,10 @@ console.log(JSON.stringify({table: elements['scan-tbody'].innerHTML}));
     assert "VCP 돌파" in table
     assert "통과" in table and "주의" in table
     assert "수축중" in table
+
+
+@pytest.fixture(autouse=True)
+def raw_promotion_policy(monkeypatch):
+    """These tests exercise raw promotion mechanics, independently of trained artifacts."""
+    from market_briefing import technique_prune
+    monkeypatch.setattr(technique_prune, "load_rules", lambda *args, **kwargs: {})
