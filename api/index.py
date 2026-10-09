@@ -11146,11 +11146,9 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
 def calc_pivot_points(dd: Dict, market: str = "KRX", last_bar_date: Any = None) -> Dict:
     """피봇 포인트 계산: 클래식, 피보나치, 카마리야, 우디스, 디마크.
 
-    기준봉은 '직전 확정봉'이다. 장중 진행 막대가 마지막에 있으면 [-2](어제 확정),
-    마감 후·휴장처럼 마지막 막대가 이미 확정이면 [-1](직전 확정봉)을 쓴다.
-    예전에는 항상 [-2]라 마감 후·주말에 하루 묵은 기준으로 계산됐다.
-    ``last_bar_date``가 없으면 dd의 Date/date/dates 마지막 값으로 판정하고,
-    판정 불가 시 기존 동작([-2])을 유지한다(fail-safe).
+    기준봉은 항상 [-2](전일) 고정이다. 마감 후·주말에 마지막 막대가 이미 확정이면
+    하루 묵은 기준이 되지만 영향이 작아(예측 시나리오 S/R 레벨만) 그대로 둔다.
+    ``market``·``last_bar_date`` 인자는 하위호환용으로만 받고 사용하지 않는다.
     """
     highs  = [float(x) for x in dd.get("High",  []) if x is not None]
     lows   = [float(x) for x in dd.get("Low",   []) if x is not None]
@@ -11158,23 +11156,8 @@ def calc_pivot_points(dd: Dict, market: str = "KRX", last_bar_date: Any = None) 
     opens  = [float(x) for x in dd.get("Open",  []) if x is not None]
     if len(highs) < 2:
         return {}
-    # ── 기준봉 결정: 직전 확정봉 ──
-    ref_idx = -2  # 기존 기본값(장중 진행 막대 가정)
-    try:
-        dates = dd.get("Date") or dd.get("date") or dd.get("dates") or []
-        anchor = last_bar_date
-        if anchor is None and dates:
-            anchor = dates[-1]
-        if anchor is not None:
-            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            try:
-                from market_briefing.session_bars import last_bar_in_progress
-                if not last_bar_in_progress(market, anchor):
-                    ref_idx = -1
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # ── 기준봉 고정: 전일 ──
+    ref_idx = -2
     try:
         h = highs[ref_idx]; l = lows[ref_idx]; c = closes[ref_idx]
         o = opens[ref_idx] if len(opens) >= abs(ref_idx) else c

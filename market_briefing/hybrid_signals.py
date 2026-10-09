@@ -37,6 +37,20 @@ try:  # 장중 진행 중 막대의 거래량 처리 (docs/system_audit_20261009
 except Exception:  # pragma: no cover - 패키지 밖에서 단독 로드될 때만
     _completed_volume_ratio = None
 
+import os as _os
+
+
+def _chase_penalty_enabled() -> bool:
+    """FWS 추격 패널티를 점수에 반영할지. 기본 꺼짐.
+
+    구조 결함: ``highs[-20:]`` 당일포함 기준이면 entry가 항상 현재가 위에 고정돼
+    ext_atr 최대 -0.097·chasing 0회로 가드가 죽는다. 직전20봉(당일제외)으로 고치면
+    표시는 살아나지만, 스캔식 추격 플래그는 이후 수익률과 무관했고(57.4% vs 56.5%)
+    ext 패널티(15/25점)의 예측력도 검증되지 않아 점수에 새로 넣을 근거가 없다.
+    그래서 표시는 직전고정 기준으로 정직하게, 점수 반영은 env로만 켠다.
+    """
+    return _os.getenv("STOCKORACLE_CHASE_PENALTY", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 
 REGIME_BULLISH  = "BULLISH"
@@ -824,9 +838,14 @@ def compute_hybrid_score(
         hurst        = hurst,
         bis_score    = bis_score,
     )
+    # 추격 표시는 직전고점 기준으로 정직하게 계산하되, 점수 반영은 검증 전까지 끈다.
+    # _chase_penalty_enabled()=False면 ext를 0으로 넣어 FWS 추격 0점(기존 dead 상태와
+    # 동일한 점수). True면 원래 설계(0.4→15점·0.8→25점)대로 반영한다.
+    _chase_on = _chase_penalty_enabled()
+    _ext_for_fws = float(anti_chase.get("ext_atr") or 0.0) if _chase_on else 0.0
     fws = compute_fws(
         vol_ratio      = vol_ratio or 1.0,
-        ext_atr        = anti_chase["ext_atr"],
+        ext_atr        = _ext_for_fws,
         adx            = adx_val,
         atr_spiking    = atr_spiking,
         atr_collapsing = atr_collapsing,
@@ -862,5 +881,7 @@ def compute_hybrid_score(
         "stop_price":     entry_info["stop_price"] if entry_info else None,
         "buffer_pct":     entry_info["buffer_pct"] if entry_info else None,
         "anti_chase":     anti_chase,
+        "chase_penalty_enabled": bool(_chase_on),
+        "ext_atr_for_score": round(float(_ext_for_fws), 3),
         "regime_detail":  regime_data,
     }

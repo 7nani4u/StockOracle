@@ -208,6 +208,7 @@ Vercel 서버리스 및 로컬 환경에서 발생하는 `yfinance` 고질적 �
 | `STOCKORACLE_LEARNING_REMOTE_READ` / `_SYNC_ON_REQUEST` | 꺼짐 | 학습 로그를 GitHub 에서 읽기 / 요청마다 커밋(토큰 `STOCKORACLE_LEARNING_GITHUB_TOKEN` 필요) |
 | `STOCKORACLE_US_LONGTERM_GARP_TOP` | `15` | 미국 장기추천 GARP 재무조회 상위 N종목(5~30). 60초 제한 안에 응답하기 위해 기술 상위만 조회 |
 | `STOCKORACLE_KR_LONGTERM_GARP_TOP` | `15` | 국내 장기추천 GARP 재무조회 상위 N종목(5~30). US와 동일 이유 |
+| `STOCKORACLE_CHASE_PENALTY` | 꺼짐 | `1`이면 하이브리드 FWS 추격 15/25점을 반영. 기본은 표시만 고치고 점수는 그대로(추격-수익 무관련 근거). |
 
 ---
 
