@@ -25651,8 +25651,8 @@ function renderForecast(d, isKrx) {
           </div>
           ${stepRows || '<div class="buy-stage-unavailable">분석 데이터 부족</div>'}
         </div>`;
-        const boxBandHtml = Array.isArray(b.box_entry_range) && b.box_entry_range.length === 2
-          ? `<div class="buy-band-detail" style="color:#58a6ff">• ${_escPrediction(b.box_entry_label || '박스 진입')}: ${fmtRange(b.box_entry_range[0], b.box_entry_range[1], isKrx)} · ${(b.steps || []).some(step => step.box_entry_overlap) ? '겹치는 단계에 함께 표시' : '현재 밴드 1~5단계와 겹치지 않음'}<br>${_escPrediction(b.box_entry_note || '')}</div>` : '';
+        const boxBandHtml = Array.isArray(b.box_entry_range) && b.box_entry_range.length === 2 && (b.steps || []).some(step => Array.isArray(step.box_entry_overlap) && step.box_entry_overlap.length === 2)
+          ? `<div class="buy-band-detail" style="color:#58a6ff">• ${_escPrediction(b.box_entry_label || '박스 진입')}: ${fmtRange(b.box_entry_range[0], b.box_entry_range[1], isKrx)} · ${_escPrediction((b.box_entry_steps || (b.steps || []).filter(step => step.box_entry_overlap).map(step => step.label)).join(' · '))}에 포함<br>${_escPrediction(b.box_entry_note || '')}</div>` : '';
         const rangeOrderDetail = `<div class="buy-band-detail">• ${_escPrediction(b.range_order_basis || '밴드별 기술 지지와 변동성에 따라 서로 다른 가격 범위를 산정')}</div>`;
         // 가격 근거 등급: 구조(서로 다른 근거 2종 이상 겹침) / 단일 지표 / 변동성 기반. 표시를 보류하지 않고
         // 사용자가 신뢰 수준을 판단하도록 등급·가장 가까운 근거·단계별 도달 확률 범위를 함께 보여준다.

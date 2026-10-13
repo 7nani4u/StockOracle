@@ -121,6 +121,13 @@ def apply_box_prediction(response, dd, *, in_progress=False):
                     step["box_entry_overlap"] = overlap
                     step["box_entry_label"] = band["box_entry_label"] if overlap else None
                     step["box_entry_note"] = plan["reason"] if overlap else None
+                matched_steps = [step.get("label") for step in band.get("steps") or [] if step.get("box_entry_overlap")]
+                band["box_entry_steps"] = matched_steps
+                band["box_entry_matches"] = bool(matched_steps)
+                if not matched_steps:
+                    band["box_entry_range"] = None
+                    band["box_entry_note"] = None
+                    band["box_entry_label"] = None
                 if plan.get("price_source") == "legacy_estimate":
                     band["entry_eligible"] = False
                     band["price_source"] = "legacy_estimate"
