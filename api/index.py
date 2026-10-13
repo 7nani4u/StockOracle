@@ -25299,7 +25299,7 @@ function renderForecast(d, isKrx) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
       if (entryTitleEl) entryTitleEl.textContent = '🎯 진입 전략: 데이터 확인 필요';
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
-    } else if (d.box_range && !d.box_range.legacy_buy_display) {
+    } else if (d.box_range && !d.box_range.legacy_buy_display && !bp.box_stage_display) {
       const box = d.box_range;
       const trend = box.trend_boxes || {};
       const directions = {ascending:'상승', descending:'하락', flat:'횡보'};
@@ -25317,7 +25317,7 @@ function renderForecast(d, isKrx) {
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
     } else {
       const sr = bp.strategy_rec || {};
-      if (d.box_range && entryGuideEl) entryGuideEl.innerHTML = '<b>가격 기준:</b> 박스권 미확인으로 기존 지표·변동성 기반 매수·매도 참고 가격을 표시합니다. 지지·반등 확인 전에는 진입 대기하며 공격적 목표는 돌파 확인 후 검토합니다.';
+      if (d.box_range && entryGuideEl) entryGuideEl.innerHTML = d.box_range.legacy_buy_display ? '<b>가격 기준:</b> 박스권 미확인으로 기존 지표·변동성 기반 참고 가격을 표시합니다. 반등 확인 전에는 진입 대기합니다.' : '<b>가격 기준:</b> TP1~TP5에 계산된 박스 진입 가격대를 상단부터 하단까지 분할 표시합니다. 독립 지지선 5개나 매도 목표를 의미하지 않으며 지지·반등 확인 후 검토합니다.';
       const cur = bp.current;
       const fmtPct = p => (p >= 0 ? `<span style="color:#3fb950">+${p}%</span>` : `<span style="color:#f85149">${p}%</span>`);
 
@@ -25717,7 +25717,7 @@ function renderForecast(d, isKrx) {
         : '';
       const orderingRelaxed = (bp.price_structure && bp.price_structure.ordering_relaxed) || {};
       const recSubtitle = [
-        isProvisional ? '데이터 축적 전까지 주문·비중 산정 보류' : (isWaitMode ? '지금은 대기 · 참고용 가격대' : '1차 구간보다 아래에서 버티는 힘을 확인한 뒤 본 진입'),
+        isProvisional ? '데이터 축적 전까지 주문·비중 산정 보류' : (isWaitMode ? '지금은 대기 · 참고용 가격대' : (bp.box_stage_display ? '지지 반등·재시험 확인 후 본 진입' : '1차 구간보다 아래에서 버티는 힘을 확인한 뒤 본 진입')),
         evidenceSummaryText('recommended'),
         orderingRelaxed.recommended ? '극단적 변동성으로 현재가 10% 하한에 닿아 밴드 순서 일부 완화' : '',
       ].filter(Boolean).join(' · ');

@@ -109,9 +109,37 @@ def apply_box_prediction(response, dd, *, in_progress=False):
                 band["price_source"] = "legacy_estimate"
                 band["confirm_note"] = plan["reason"]
             continue
-        buy[family] = [{"band": "A", "range": [plan["low"], plan["high"]] if plan["low"] is not None else None,
-                        "entry_eligible": plan["eligible"], "basis": plan["reason"], "steps": [],
-                        "evidence_class": "observed_box" if plan["low"] is not None else "insufficient"}]
+        bounds = _valid_range([plan["low"], plan["high"]])
+        steps = []
+        if bounds:
+            low, high = bounds
+            width = (high - low) / 5
+            for index in range(5):
+                step_high = high - width * index
+                step_low = low if index == 4 else high - width * (index + 1)
+                steps.append({
+                    "label": f"TP{index + 1}", "price": (step_low + step_high) / 2,
+                    "price_range": [step_low, step_high],
+                    "decline_pct_range": [(1-step_high/current)*100, (1-step_low/current)*100] if current else None,
+                    "decline_pct": (1-(step_low+step_high)/2/current)*100 if current else None,
+                    "basis": plan["reason"],
+                    "price_range_basis": "관측 진입 구간 내부를 상단→하단 5단계로 분할; 독립 지지선 또는 매도 목표가 아님",
+                    "probability_label": "미산정", "period_label": "확인 후 진입",
+                    "allocation_pct": 0, "entry_eligible": plan["eligible"],
+                })
+        buy[family] = [{
+            "band": "A", "range": bounds, "entry_eligible": plan["eligible"],
+            "basis": plan["reason"], "steps": steps, "price_source": plan["price_source"],
+            "strategy_label": "박스 지지 탐색" if key == "exploration" else "지지 반등 본 진입",
+            "strategy_desc": plan["reason"], "confirm_note": plan["reason"],
+            "entry_role": "소액 탐색 진입" if key == "exploration" else "반등 확인 후 본 진입",
+            "allocation_pct": 0,
+            "evidence_label": "관측 박스 구간" if box.get("support") else "추세 재시험 구간" if bounds else "자료 부족",
+            "evidence_note": plan["reason"], "evidence_level": "structure" if bounds else "unavailable",
+            "range_order_basis": "TP1~TP5는 계산된 진입 가격대의 상단부터 하단까지 분할 표시",
+            "evidence_class": "observed_box" if bounds else "insufficient",
+        }]
+    buy["box_stage_display"] = True
     for family, key in (("aggressive", "exploration"), ("recommended", "main")):
         plan = box["entries"][key]
         if plan.get("price_source") == "legacy_estimate":
