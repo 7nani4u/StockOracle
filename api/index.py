@@ -18208,6 +18208,8 @@ def route(path: str, params: Dict) -> Dict:
             except Exception:
                 pass
 
+        _box_source_dd = {key: list(dd.get(key) or []) for key in ("Open", "High", "Low", "Close", "Volume", "Date")}
+
         # ── Step 2: 현재가 보정 ───────────────────────────────────────────────
         # 반드시 calc_buy_price / calc_target_price / calc_risk 호출 전에 완료해야 함.
         # 보정된 last 가 예측·리스크 계산의 기준값(현재가)으로 사용됩니다.
@@ -18970,9 +18972,7 @@ def route(path: str, params: Dict) -> Dict:
         except Exception as _recon_e:
             _log_route_issue(sym, "tab_reconciliation", _recon_e)
 
-        _record_prediction_and_update_outcomes(
-            sym, market, period, dd, buy_price, risk, event_risk, learning_adjustment
-        )
+        # Box entries require confirmation-aware replay; do not record legacy ATR outcomes as box validation.
 
         pattern_overlays = []
         try:
@@ -19179,6 +19179,8 @@ def route(path: str, params: Dict) -> Dict:
                 "meta": (_correlation_report or {}).get("meta"),
             },
         }
+        from market_briefing.box_prediction import apply_box_prediction
+        response = apply_box_prediction(response, _box_source_dd, in_progress=_volume_in_progress)
         response = apply_prediction_price_contract(response, _price_anchor)
         if str(params.get("lite") or "").lower() in {"1", "true", "yes"}:
             response = _compact_stock_response(response)
@@ -22514,7 +22516,7 @@ function shareToTelegram() {
   const tpFromEnd = (scen, offset = 1) => {
     const s = risk[scen];
     const levels = s && Array.isArray(s.tp_levels) ? s.tp_levels : [];
-    const level = levels[levels.length - offset];
+    const level = levels[Math.max(0, levels.length - offset)];
     return level && typeof level.price === 'number' ? level.price : null;
   };
   const tp1 = fmtP(tpFromEnd('conservative'));  // 보수적 목표 상단
@@ -25297,6 +25299,22 @@ function renderForecast(d, isKrx) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
       if (entryTitleEl) entryTitleEl.textContent = '🎯 진입 전략: 데이터 확인 필요';
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
+    } else if (d.box_range) {
+      const box = d.box_range;
+      const trend = box.trend_boxes || {};
+      const directions = {ascending:'상승', descending:'하락', flat:'횡보'};
+      const states = {upward_reversal:'상승 전환', downward_reversal:'하락 전환', failed_upward_reversal:'상승 전환 실패', continuation:'방향 유지', unconfirmed:'전환 확인 대기', insufficient:'자료 부족'};
+      const horizontalStates = {range:'박스 유지', support_rebound:'지지 반등', resistance_rejection:'저항 재하락', breakout_pending:'상단 돌파 확인 대기', breakout_confirmed:'상단 돌파 확인', breakdown_pending:'하단 이탈 확인 대기', breakdown_confirmed:'하단 이탈 확인', false_breakout:'상단 돌파 실패', no_box:'수평 박스 미형성', insufficient_data:'자료 부족'};
+      const trendSummary = ['short','long'].map(key => {
+        const scale = (trend.scales || {})[key] || {};
+        const channel = scale.current || {};
+        const change = scale.transition || {};
+        return `${key === 'short' ? '작은' : '큰'} 박스: ${directions[channel.direction] || '자료 부족'} · ${states[change.state] || '확인 대기'}`;
+      }).join(' / ');
+      const card = (plan, title, cls) => `<div class="buy-card ${cls}" style="padding:12px 14px"><div class="buy-label">${title}</div><div style="font-weight:800;margin:8px 0">${plan.low != null && plan.high != null ? fmtRange(plan.low, plan.high, isKrx) : '가격 표시 보류'}</div><div class="prediction-mini-list">${_escPrediction(plan.reason || '')}</div><div style="font-size:11px;color:${plan.eligible ? '#3fb950' : '#d29922'}">${plan.eligible ? '진입 조건 충족' : '진입 대기 / 부적합'}</div></div>`;
+      bpEl.innerHTML = `<div class="prediction-mini-list">박스권 상태: ${_escPrediction(horizontalStates[box.state] || box.state)} · 품질 점수 ${(box.confidence * 100).toFixed(0)}점 (승률 아님)<br>${_escPrediction(trendSummary)}${trend.scale_conflict ? ' · 큰 하락 박스와 충돌: 본 진입 대기' : ''}<br>${(box.evidence || []).map(_escPrediction).join(' · ')}</div><div class="buy-price-grid">${card(box.entries.exploration, '⚡ 1차 탐색 구간 · 소액 테스트', 'aggressive')}${card(box.entries.main, '📍 2차 매수 구간 · 본 진입', 'recommended')}</div>`;
+      if (entryGuideEl) entryGuideEl.innerHTML = '<b>진입 원칙:</b> 1차는 지지 영역 소액 탐색, 2차는 확정 일봉의 지지 반등 또는 박스 상승 전환 후 재시험 확인을 통한 본 진입입니다. 현재 시세 이격과 종합 위험 판단을 함께 확인합니다.';
+      if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
     } else {
       const sr = bp.strategy_rec || {};
       const cur = bp.current;
@@ -25752,7 +25770,17 @@ function renderForecast(d, isKrx) {
     rgEl.innerHTML = '<div class="prediction-mini-list">리스크 계산에 필요한 가격·변동성 데이터가 부족합니다.</div>';
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = '';
   }
-  if (rgEl && risk) {
+  if (rgEl && risk && d.box_range) {
+    rgEl.innerHTML = ['conservative', 'balanced', 'aggressive'].map(key => {
+      const sc = risk[key];
+      return `<div class="risk-card ${key}"><div class="risk-icon">${sc.icon}</div><div class="risk-name">${sc.label}</div><div class="risk-row"><span class="risk-lbl">🎯 전체 목표 청산 범위</span><span class="risk-tgt">${sc.target ? fmtRange(sc.target[0], sc.target[1], isKrx) : '가격 표시 보류'}</span></div><div class="prediction-mini-list">${(sc.target_basis || []).map(_escPrediction).join('<br>')}</div></div>`;
+    }).join('');
+    const stop = (d.pullback_analysis || {}).stop_loss;
+    if (Number.isFinite(stop) && stop > 0) rgEl.innerHTML += `<div class="prediction-mini-list" style="grid-column:1/-1">손절 참고: ${fmt(stop, isKrx)} · 기존 변동성 위험 관리 기준</div>`;
+    const event = d.event_risk || {};
+    if (riskEventBannerEl) riskEventBannerEl.innerHTML = (event.reasons || []).map(reason => `<div class="prediction-mini-list">${_escPrediction(reason)}</div>`).join('');
+  }
+  if (rgEl && risk && !d.box_range) {
     // ── 이벤트 캘린더 위험 배너 (리스크 그리드 헤더) ──
     // buy-price에서 계산된 eventRiskHtml을 재사용하되, risk 카드와 동일한 소스(d.event_risk || risk.event_risk)로 재생성하여
     // 매수 구간과 리스크 관리 간의 결합도를 낮춘다. 점수 0이면 배너 숨김.
@@ -26468,6 +26496,14 @@ function renderCharts(d, isKrx) {
       }
     }
     candleSeries.setData(candleData);
+    const boxZones = cd.box_range || {};
+    ['support', 'resistance'].forEach(key => {
+      const zone = boxZones[key];
+      if (!zone) return;
+      [zone.low, zone.high].forEach(price => {
+        if (Number.isFinite(price) && price > 0) candleSeries.createPriceLine({price, color: key === 'support' ? '#3fb950' : '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: key === 'support' ? '박스 지지' : '박스 저항'});
+      });
+    });
 
     // 패턴은 기본적으로 숨기고 차트에 마우스를 올리거나 터치한 동안만 표시한다.
     const overlayOptions = cd.pattern_overlay_options || {};
