@@ -25317,7 +25317,7 @@ function renderForecast(d, isKrx) {
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
     } else {
       const sr = bp.strategy_rec || {};
-      if (d.box_range && entryGuideEl) entryGuideEl.innerHTML = d.box_range.legacy_buy_display ? '<b>가격 기준:</b> 박스권 미확인으로 기존 지표·변동성 기반 참고 가격을 표시합니다. 반등 확인 전에는 진입 대기합니다.' : '<b>가격 기준:</b> TP1~TP5에 계산된 박스 진입 가격대를 상단부터 하단까지 분할 표시합니다. 독립 지지선 5개나 매도 목표를 의미하지 않으며 지지·반등 확인 후 검토합니다.';
+      if (d.box_range && entryGuideEl) entryGuideEl.innerHTML = d.box_range.legacy_buy_display ? '<b>가격 기준:</b> 박스권 미확인으로 기존 지표·변동성 기반 참고 가격을 표시합니다. 반등 확인 전에는 진입 대기합니다.' : '<b>가격 기준:</b> 밴드 A·B·C의 기존 1~5단계 가격을 유지하고 박스 진입 구간과 겹치는 단계에 함께 표시합니다. 지지·반등 확인 후 검토합니다.';
       const cur = bp.current;
       const fmtPct = p => (p >= 0 ? `<span style="color:#3fb950">+${p}%</span>` : `<span style="color:#f85149">${p}%</span>`);
 
@@ -25622,6 +25622,8 @@ function renderForecast(d, isKrx) {
           const priceRange = Array.isArray(s.price_range) && s.price_range.length === 2
             ? s.price_range : [s.price, s.price];
           const priceText = fmtRange(priceRange[0], priceRange[1], isKrx);
+          const boxStepHtml = Array.isArray(s.box_entry_overlap) && s.box_entry_overlap.length === 2
+            ? `<small style="display:block;color:#58a6ff;font-size:9px;white-space:normal" title="${_escPrediction(s.box_entry_note || '')}">${_escPrediction(s.box_entry_label || '박스 진입')} ${fmtRange(s.box_entry_overlap[0], s.box_entry_overlap[1], isKrx)}</small>` : '';
           const declineRange = Array.isArray(s.decline_pct_range) && s.decline_pct_range.length === 2
             ? s.decline_pct_range.map(Number) : [Number(s.decline_pct), Number(s.decline_pct)];
           const declineText = declineRange.every(Number.isFinite)
@@ -25633,7 +25635,7 @@ function renderForecast(d, isKrx) {
           const stepTitle = `${stepBasis} · ${s.price_range_basis || '단계별 주문 허용 범위'}${periodBasis} · 단계 배분 ${s.allocation_pct || 0}%`;
           return `<div class="buy-stage-row" role="row" title="${stepTitle}" aria-label="${s.label}, 매수 가격 범위 ${priceText}, 현재가 대비 ${declineText}, 도달 확률 ${probabilityText}, 예상 ${periodText}, 단계 배분 ${s.allocation_pct || 0}%">
             <span class="buy-stage-name" role="cell" style="color:${bc}">${s.label}</span>
-            <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}</span>
+            <span class="buy-stage-price" role="cell" style="color:${bc}">${priceText}${boxStepHtml}</span>
             <span class="buy-stage-drop" role="cell">${declineText}</span>
             <span class="buy-stage-prob ${hasProbability ? '' : 'buy-stage-unavailable'}" role="cell" style="color:${probabilityColor}" title="${_escPrediction(s.probability_note || '')}">${probabilityText}</span>
             <span class="buy-stage-days ${s.days_min == null ? 'buy-stage-unavailable' : ''}" role="cell">${periodText}</span>
@@ -25649,6 +25651,8 @@ function renderForecast(d, isKrx) {
           </div>
           ${stepRows || '<div class="buy-stage-unavailable">분석 데이터 부족</div>'}
         </div>`;
+        const boxBandHtml = Array.isArray(b.box_entry_range) && b.box_entry_range.length === 2
+          ? `<div class="buy-band-detail" style="color:#58a6ff">• ${_escPrediction(b.box_entry_label || '박스 진입')}: ${fmtRange(b.box_entry_range[0], b.box_entry_range[1], isKrx)} · ${(b.steps || []).some(step => step.box_entry_overlap) ? '겹치는 단계에 함께 표시' : '현재 밴드 1~5단계와 겹치지 않음'}<br>${_escPrediction(b.box_entry_note || '')}</div>` : '';
         const rangeOrderDetail = `<div class="buy-band-detail">• ${_escPrediction(b.range_order_basis || '밴드별 기술 지지와 변동성에 따라 서로 다른 가격 범위를 산정')}</div>`;
         // 가격 근거 등급: 구조(서로 다른 근거 2종 이상 겹침) / 단일 지표 / 변동성 기반. 표시를 보류하지 않고
         // 사용자가 신뢰 수준을 판단하도록 등급·가장 가까운 근거·단계별 도달 확률 범위를 함께 보여준다.
@@ -25682,7 +25686,7 @@ function renderForecast(d, isKrx) {
               ${rangeOrderDetail}
               ${evidenceHtml}
               <div class="buy-band-detail">• ${b.strategy_desc || ''}</div>
-              <div class="buy-band-detail">• ${b.atr_basis}</div>`;
+              <div class="buy-band-detail">• ${b.atr_basis || '관측 지지·반등 가격 기준'}</div>`;
         return `<div class="buy-band-card" style="${dimStyle}border:1px solid ${isPriority ? bc+'55' : '#21262d'}">
           <div class="buy-band-head">
             <div class="buy-band-title" style="color:${bc}">${b.strategy_label || `밴드 ${b.band}`}${priTag}</div>
@@ -25697,6 +25701,7 @@ function renderForecast(d, isKrx) {
             <span style="font-size:10px;font-weight:800;color:${bc};text-align:right;white-space:nowrap">${bandRangeText}</span>
           </div>
           ${stageTable}
+          ${boxBandHtml}
           ${detailHtml}
         </div>`;
       };

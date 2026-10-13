@@ -102,12 +102,29 @@ def apply_box_prediction(response, dd, *, in_progress=False):
     buy["box_range"] = box
     for family, key in (("aggressive_bands", "exploration"), ("recommended_bands", "main")):
         plan = box["entries"][key]
-        if plan.get("price_source") == "legacy_estimate" and original_buy.get(family):
+        if original_buy.get(family):
             buy[family] = deepcopy(original_buy[family])
+            box_bounds = _valid_range([plan["low"], plan["high"]]) if plan.get("price_source") != "legacy_estimate" else None
             for band in buy[family]:
-                band["entry_eligible"] = False
-                band["price_source"] = "legacy_estimate"
-                band["confirm_note"] = plan["reason"]
+                band["strategy_label"] = "밴드 " + str(band.get("band") or "")
+                band["entry_eligible"] = bool(plan["eligible"])
+                band["box_entry_range"] = box_bounds
+                band["box_entry_note"] = plan["reason"]
+                band["box_entry_label"] = "박스 지지 탐색" if key == "exploration" else "지지 반등 본 진입"
+                for step in (band.get("steps") or []) if box_bounds else []:
+                    step_bounds = _valid_range(step.get("price_range"))
+                    overlap = None
+                    if box_bounds and step_bounds:
+                        low, high = max(box_bounds[0], step_bounds[0]), min(box_bounds[1], step_bounds[1])
+                        if low <= high:
+                            overlap = [low, high]
+                    step["box_entry_overlap"] = overlap
+                    step["box_entry_label"] = band["box_entry_label"] if overlap else None
+                    step["box_entry_note"] = plan["reason"] if overlap else None
+                if plan.get("price_source") == "legacy_estimate":
+                    band["entry_eligible"] = False
+                    band["price_source"] = "legacy_estimate"
+                    band["confirm_note"] = plan["reason"]
             continue
         bounds = _valid_range([plan["low"], plan["high"]])
         steps = []
