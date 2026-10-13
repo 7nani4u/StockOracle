@@ -3,6 +3,7 @@ from copy import deepcopy
 import math
 from .box_range import analyze_box_range
 from .trend_boxes import analyze_trend_boxes
+from .box_exit import attach_box_exit_levels
 
 
 def _valid_range(value):
@@ -197,6 +198,7 @@ def apply_box_prediction(response, dd, *, in_progress=False):
         card["return"] = round((target[1] / current - 1) * 100, 2) if target and current else None
         if target:
             card["tp_levels"] = [{"price": target[1], "price_range": target, "basis": plan["reason"]}]
+    attach_box_exit_levels(risk, original_risk, box, current)
     pa = response.get("pullback_analysis")
     if isinstance(pa, dict):
         pa["target_main"] = box["targets"]["neutral"]["high"]

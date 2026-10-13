@@ -25776,7 +25776,7 @@ function renderForecast(d, isKrx) {
     rgEl.innerHTML = '<div class="prediction-mini-list">리스크 계산에 필요한 가격·변동성 데이터가 부족합니다.</div>';
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = '';
   }
-  if (rgEl && risk && d.box_range && !d.box_range.legacy_sell_display) {
+  if (rgEl && risk && d.box_range && !d.box_range.legacy_sell_display && !d.box_range.box_tp_display) {
     rgEl.innerHTML = ['conservative', 'balanced', 'aggressive'].map(key => {
       const sc = risk[key];
       return `<div class="risk-card ${key}"><div class="risk-icon">${sc.icon}</div><div class="risk-name">${sc.label}</div><div class="risk-row"><span class="risk-lbl">🎯 전체 목표 청산 범위</span><span class="risk-tgt">${sc.target ? fmtRange(sc.target[0], sc.target[1], isKrx) : '가격 표시 보류'}</span></div><div class="prediction-mini-list">${(sc.target_basis || []).map(_escPrediction).join('<br>')}</div></div>`;
@@ -25786,7 +25786,7 @@ function renderForecast(d, isKrx) {
     const event = d.event_risk || {};
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = (event.reasons || []).map(reason => `<div class="prediction-mini-list">${_escPrediction(reason)}</div>`).join('');
   }
-  if (rgEl && risk && (!d.box_range || d.box_range.legacy_sell_display)) {
+  if (rgEl && risk && (!d.box_range || d.box_range.legacy_sell_display || d.box_range.box_tp_display)) {
     // ── 이벤트 캘린더 위험 배너 (리스크 그리드 헤더) ──
     // buy-price에서 계산된 eventRiskHtml을 재사용하되, risk 카드와 동일한 소스(d.event_risk || risk.event_risk)로 재생성하여
     // 매수 구간과 리스크 관리 간의 결합도를 낮춘다. 점수 0이면 배너 숨김.
@@ -25919,11 +25919,11 @@ function renderForecast(d, isKrx) {
         <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
           <div class="risk-icon">${sc.icon}</div>
           <div class="risk-name">${sc.label}</div>
-          <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc}</div>
+          <div class="risk-desc" style="font-size:11px;color:#8b949e;margin-bottom:8px">${sc.desc || '박스 청산 근거 확인'}</div>
           ${entryStatusHtml}
           <div class="risk-row" style="margin-bottom:4px">
             <span class="risk-lbl">🎯 전체 목표 청산 범위</span>
-            <span class="risk-tgt" style="font-size:12px">${fmtRange(scenarioTargetRange[0], scenarioTargetRange[1], isKrx)}</span>
+            <span class="risk-tgt" style="font-size:12px">${Array.isArray(scenarioTargetRange) && scenarioTargetRange.length === 2 ? fmtRange(scenarioTargetRange[0], scenarioTargetRange[1], isKrx) : '가격 표시 보류'}</span>
           </div>
           ${(sc.target_basis && sc.target_basis.length) ? `
           <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:6px">
@@ -25936,19 +25936,20 @@ function renderForecast(d, isKrx) {
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;${DIVIDER}">
             <div>
               <div style="font-size:10px;color:#8b949e">손절 %</div>
-              <div style="font-size:12px;color:#f85149;font-weight:700">${sc.stop_pct}%</div>
+              <div style="font-size:12px;color:#f85149;font-weight:700">${sc.stop_pct != null ? sc.stop_pct + '%' : '산정 보류'}</div>
             </div>
             <div style="text-align:center">
               <div style="font-size:10px;color:#8b949e">R/R 비율</div>
-              <div style="font-size:14px;font-weight:800;color:${rrColor(sc.rr_ratio)}">${sc.rr_ratio}:1</div>
+              <div style="font-size:14px;font-weight:800;color:${rrColor(sc.rr_ratio)}">${sc.rr_ratio != null ? sc.rr_ratio + ':1' : '산정 보류'}</div>
             </div>
             <div style="text-align:right">
               <div style="font-size:10px;color:#8b949e">목표 수익</div>
-              <div style="font-size:12px;color:#3fb950;font-weight:700">+${sc.return}%</div>
+              <div style="font-size:12px;color:#3fb950;font-weight:700">${sc.return != null ? '+' + sc.return + '%' : '산정 보류'}</div>
             </div>
           </div>
           ${pbHtml}
           <div style="font-size:10px;color:#8b949e;margin-top:6px;line-height:1.5">💡 ${sc.interpretation || ''}</div>
+          ${(sc.box_exit_unmatched || []).map(item => `<div class="prediction-mini-list">${_escPrediction(item.label)}: ${fmtRange(item.low,item.high,isKrx)} · 기존 TP1~TP5 범위 밖<br>${_escPrediction(item.reason)}</div>`).join('')}
           ${sc.tp_levels && sc.tp_levels.length ? `
           <div role="table" aria-label="${sc.label} 목표가 레벨별 도달 가능성" style="margin-top:8px;padding-top:8px;${DIVIDER}">
             <div class="risk-tp-level risk-tp-head" role="row">
@@ -25969,12 +25970,13 @@ function renderForecast(d, isKrx) {
               const levelRange = Array.isArray(lv.price_range) && lv.price_range.length === 2
                 ? lv.price_range : [lv.price, lv.price];
               const levelPriceText = fmtRange(levelRange[0], levelRange[1], isKrx);
+              const boxExitHtml = (lv.box_exit_annotations || []).map(item => `<small style="display:block;color:#58a6ff;font-size:9px;white-space:normal" title="${_escPrediction(item.reason || '')}${Array.isArray(item.full_range) ? ' · 전체 박스 목표: ' + fmtRange(item.full_range[0],item.full_range[1],isKrx) : ''}">${_escPrediction(item.label)} ${fmtRange(item.low, item.high, isKrx)} · ${item.eligible ? '확인 조건 충족' : '조건 확인 대기'}</small>`).join('');
               const levelBackground = lv.highlight_primary_exit
                 ? 'background:linear-gradient(90deg,#162a46,#111b2c);box-shadow:inset 3px 0 #58a6ff,0 0 0 1px #388bfd55;'
                 : 'background:#0d1117;';
               return `<div class="risk-tp-level" role="row" style="${levelBackground}border-radius:5px;padding:5px 7px;margin-bottom:3px">
                 <span role="cell" style="font-size:10px;font-weight:700;color:${tpC}">TP${i+1}</span>
-                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600;white-space:nowrap" title="${_escPrediction([lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '', lv.probability_basis || '', lv.price_range_basis || ''].filter(Boolean).join(' · '))}">${levelPriceText}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
+                <span role="cell" style="font-size:10px;color:#cdd9e5;font-weight:600;white-space:nowrap" title="${_escPrediction([lv.basis && lv.basis !== 'ATR 시나리오' ? lv.basis : '', lv.probability_basis || '', lv.price_range_basis || ''].filter(Boolean).join(' · '))}">${levelPriceText}${boxExitHtml}${lv.basis && lv.basis !== 'ATR 시나리오' ? `<small style="display:block;font-size:8px;color:#6e7681;font-weight:400;margin-top:1px">${_escPrediction(lv.basis)}</small>` : ''}</span>
                 <span role="cell" style="font-size:10px;color:#3fb950">${_isFiniteNumber(lv.return_pct) ? '+' + lv.return_pct + '%' : '산정 보류'}</span>
                 <span role="cell" style="font-size:10px;color:${tpC}">가능성 ${probText}${isProvisionalLevel && hasProbability ? '<small style="display:block;color:#d29922">관찰용 추정</small>' : ''}</span>
                 <span role="cell" style="font-size:10px;color:#8b949e;text-align:right">${daysText}</span>
