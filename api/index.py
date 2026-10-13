@@ -25299,7 +25299,7 @@ function renderForecast(d, isKrx) {
       bpEl.innerHTML = '<p style="color:#484f58;font-size:13px">데이터 부족</p>';
       if (entryTitleEl) entryTitleEl.textContent = '🎯 진입 전략: 데이터 확인 필요';
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
-    } else if (d.box_range) {
+    } else if (d.box_range && !d.box_range.legacy_buy_display) {
       const box = d.box_range;
       const trend = box.trend_boxes || {};
       const directions = {ascending:'상승', descending:'하락', flat:'횡보'};
@@ -25317,6 +25317,7 @@ function renderForecast(d, isKrx) {
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
     } else {
       const sr = bp.strategy_rec || {};
+      if (d.box_range && entryGuideEl) entryGuideEl.innerHTML = '<b>가격 기준:</b> 박스권 미확인으로 기존 지표·변동성 기반 매수·매도 참고 가격을 표시합니다. 지지·반등 확인 전에는 진입 대기하며 공격적 목표는 돌파 확인 후 검토합니다.';
       const cur = bp.current;
       const fmtPct = p => (p >= 0 ? `<span style="color:#3fb950">+${p}%</span>` : `<span style="color:#f85149">${p}%</span>`);
 
@@ -25770,7 +25771,7 @@ function renderForecast(d, isKrx) {
     rgEl.innerHTML = '<div class="prediction-mini-list">리스크 계산에 필요한 가격·변동성 데이터가 부족합니다.</div>';
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = '';
   }
-  if (rgEl && risk && d.box_range) {
+  if (rgEl && risk && d.box_range && !d.box_range.legacy_sell_display) {
     rgEl.innerHTML = ['conservative', 'balanced', 'aggressive'].map(key => {
       const sc = risk[key];
       return `<div class="risk-card ${key}"><div class="risk-icon">${sc.icon}</div><div class="risk-name">${sc.label}</div><div class="risk-row"><span class="risk-lbl">🎯 전체 목표 청산 범위</span><span class="risk-tgt">${sc.target ? fmtRange(sc.target[0], sc.target[1], isKrx) : '가격 표시 보류'}</span></div><div class="prediction-mini-list">${(sc.target_basis || []).map(_escPrediction).join('<br>')}</div></div>`;
@@ -25780,7 +25781,7 @@ function renderForecast(d, isKrx) {
     const event = d.event_risk || {};
     if (riskEventBannerEl) riskEventBannerEl.innerHTML = (event.reasons || []).map(reason => `<div class="prediction-mini-list">${_escPrediction(reason)}</div>`).join('');
   }
-  if (rgEl && risk && !d.box_range) {
+  if (rgEl && risk && (!d.box_range || d.box_range.legacy_sell_display)) {
     // ── 이벤트 캘린더 위험 배너 (리스크 그리드 헤더) ──
     // buy-price에서 계산된 eventRiskHtml을 재사용하되, risk 카드와 동일한 소스(d.event_risk || risk.event_risk)로 재생성하여
     // 매수 구간과 리스크 관리 간의 결합도를 낮춘다. 점수 0이면 배너 숨김.

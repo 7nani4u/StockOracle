@@ -5,7 +5,19 @@ from .box_range import analyze_box_range
 from .trend_boxes import analyze_trend_boxes
 
 
+def _valid_range(value):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    try:
+        low, high = map(float, value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return [low, high] if math.isfinite(low) and math.isfinite(high) and 0 < low <= high else None
+
+
 def apply_box_prediction(response, dd, *, in_progress=False):
+    original_buy = deepcopy(response.get("buy_price") or {})
+    original_risk = deepcopy(response.get("risk_scenarios") or {})
     source = {key: list(value) for key, value in dd.items()}
     if in_progress:
         source = {key: value[:-1] for key, value in source.items()}
@@ -62,27 +74,67 @@ def apply_box_prediction(response, dd, *, in_progress=False):
         for plan in box["entries"].values():
             plan["eligible"] = False
             plan["reason"] += " · 기존 종합 위험 판단에 따라 신규 진입 보류"
+    # Preserve existing computed prices as explicitly conditional estimates.
+    # A missing box must not erase the application's independent pricing model.
+    invalidated = box["state"] in {"breakdown_pending", "breakdown_confirmed", "breakout_confirmed"}
+    for key, family in (("exploration", "aggressive"), ("main", "recommended")):
+        plan = box["entries"][key]
+        plan["price_source"] = "observed_box" if box.get("support") else "trend_retest" if plan["low"] is not None else "unavailable"
+        reference = _valid_range((original_buy.get(family) or {}).get("range"))
+        if plan["low"] is None and reference and current is not None and not invalidated:
+            plan.update(low=reference[0], high=reference[1], eligible=False, price_source="legacy_estimate",
+                        reason="박스 미확인 · 기존 지표/변동성 계산 참고 가격 · 지지·반등 확인 후 검토")
+    for key, family in (("conservative", "conservative"), ("neutral", "balanced"), ("aggressive", "aggressive")):
+        plan = box["targets"][key]
+        plan["price_source"] = "observed_box" if plan["low"] is not None else "unavailable"
+        card = original_risk.get(family) or {}
+        reference = _valid_range(card.get("tp_range")) or _valid_range(card.get("target"))
+        if plan["low"] is None and reference and current is not None and reference[0] > current and not invalidated:
+            plan.update(low=reference[0], high=reference[1], eligible=False, price_source="legacy_estimate",
+                        reason="기존 지표/변동성 기반 조건부 매도 추정 · 관측 박스 저항 목표와 구분" + (" · 상단 돌파 확인 후 검토" if key == "aggressive" else ""))
+    box["legacy_buy_display"] = all(p.get("price_source") == "legacy_estimate" for p in box["entries"].values())
+    box["legacy_sell_display"] = all(p.get("price_source") == "legacy_estimate" for p in box["targets"].values())
+    if box["legacy_buy_display"] or box["legacy_sell_display"]:
+        box["evidence"].append("박스 미확인 시 기존 계산 가격을 조건부 참고 구간으로 표시; 즉시 진입 신호 아님")
     response["box_range"] = box
     response.setdefault("chart_data", {})["box_range"] = box
     buy = deepcopy(prior)
     buy["box_range"] = box
     for family, key in (("aggressive_bands", "exploration"), ("recommended_bands", "main")):
         plan = box["entries"][key]
+        if plan.get("price_source") == "legacy_estimate" and original_buy.get(family):
+            buy[family] = deepcopy(original_buy[family])
+            for band in buy[family]:
+                band["entry_eligible"] = False
+                band["price_source"] = "legacy_estimate"
+                band["confirm_note"] = plan["reason"]
+            continue
         buy[family] = [{"band": "A", "range": [plan["low"], plan["high"]] if plan["low"] is not None else None,
                         "entry_eligible": plan["eligible"], "basis": plan["reason"], "steps": [],
                         "evidence_class": "observed_box" if plan["low"] is not None else "insufficient"}]
     for family, key in (("aggressive", "exploration"), ("recommended", "main")):
         plan = box["entries"][key]
+        if plan.get("price_source") == "legacy_estimate":
+            buy[family] = deepcopy(original_buy[family])
+            buy[family].update(price_source="legacy_estimate", entry_eligible=False)
+            buy[family]["basis"] = plan["reason"] + " · " + str(buy[family].get("basis") or "")
+            continue
         buy[family] = {"range": [plan["low"], plan["high"]] if plan["low"] is not None else None,
                        "pct": None, "basis": plan["reason"], "interpretation": plan["reason"]}
     restrictive = trend_risk or box["state"] in {"breakdown_pending", "breakdown_confirmed", "false_breakout"}
     prior_action = (prior.get("strategy_rec") or {}).get("action_key")
     action = "wait_breakdown" if restrictive or prior_action == "wait_breakdown" else "box_entry" if any(p["eligible"] for p in box["entries"].values()) else "wait_support"
-    buy["strategy_rec"] = {"action_key": action, "rationale": box["evidence"]}
+    buy["strategy_rec"] = {**(prior.get("strategy_rec") or {}), "action_key": action, "rationale": box["evidence"]}
     response["buy_price"] = buy
     risk = response.setdefault("risk_scenarios", {})
     for key, target_key in (("conservative", "conservative"), ("balanced", "neutral"), ("aggressive", "aggressive")):
         plan = box["targets"][target_key]
+        if plan.get("price_source") == "legacy_estimate":
+            risk[key] = deepcopy(original_risk[key])
+            risk[key].update(target_eligible=False, entry_eligible=False, expected_value_pct=None,
+                             entry_status=plan["reason"], price_source="legacy_estimate")
+            risk[key]["target_basis"] = [plan["reason"]] + list(risk[key].get("target_basis") or [])
+            continue
         card = risk.setdefault(key, {})
         card.setdefault("label", {"conservative": "보수적", "balanced": "중립적", "aggressive": "공격적"}[key])
         card.setdefault("icon", {"conservative": "🛡️", "balanced": "⚖️", "aggressive": "🚀"}[key])
@@ -104,10 +156,13 @@ def apply_box_prediction(response, dd, *, in_progress=False):
         levels = outlook.setdefault("levels", {})
         for key in ("support", "resistance"):
             zone = box.get(key)
-            levels[key] = zone["center"] if zone else None
+            if not zone:
+                continue
+            levels[key] = zone["center"]
             levels[key + "_label"] = "관측 박스 " + key if zone else "박스 근거 부족"
             levels[key + "_gap_pct"] = round((levels[key] / current - 1) * 100, 2) if zone and current else None
-        levels["warning_zone"] = [box["support"]["low"], box["support"]["high"]] if box.get("support") else []
+        if box.get("support"):
+            levels["warning_zone"] = [box["support"]["low"], box["support"]["high"]]
         outlook["box_range"] = box
         outlook["box_execution_status"] = action
         outlook["forecast_basis_note"] = "통계적 가격 분포와 영상 기반 박스 전환의 실행 조건은 별도; 예측 분포가 진입 허용을 뜻하지 않음"
