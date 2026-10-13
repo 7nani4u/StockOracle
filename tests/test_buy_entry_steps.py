@@ -509,15 +509,15 @@ def test_evidence_levels_reflect_how_many_independent_price_sources_overlap():
             assert min(probabilities) <= band["reach_probability_mid_pct"] <= max(probabilities)
 
 
-def test_entry_sections_always_use_fixed_titles_and_never_show_withheld_cards():
+def test_entry_sections_keep_titles_and_withhold_unsubstantiated_box_prices():
     assert "⚡ 1차 탐색 구간 · 소액 테스트" in HTML
     assert "📍 2차 매수 구간 · 본 진입" in HTML
     # 제목은 신규상장(관찰 전용)에서도 바뀌지 않고, 칩으로만 구분한다
     assert "⚡ 관찰 가격 구간 · 흐름 확인" not in HTML
     assert "관찰 전용</span>" in HTML
-    # 옛 '표시 보류' 카드 문구가 더는 없어야 한다
-    for withheld_text in ("가격 표시 보류", "탐색 범위 표시를 보류했습니다", "주 진입 범위 표시를 보류했습니다"):
-        assert withheld_text not in HTML
+    # 박스 전략은 관측 근거가 없으면 강제 가격 대신 명시적으로 보류한다.
+    assert "가격 표시 보류" in HTML
+    assert "else if (d.box_range)" in HTML
     # 근거 등급과 추정 확률 표기
     assert "b.evidence_label" in HTML
     assert "b.nearest_reference" in HTML
