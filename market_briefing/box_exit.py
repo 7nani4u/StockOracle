@@ -41,24 +41,54 @@ def attach_box_exit_levels(risk, original, box, current):
     box["measured_move"] = measured
     invalidated = box.get("state") in {"breakdown_pending", "breakdown_confirmed", "breakout_confirmed"}
     for key, strategy in (("conservative", "conservative"), ("balanced", "neutral"), ("aggressive", "aggressive")):
-        card = risk[key]
-        plan = box["targets"][strategy]
+        card = risk.setdefault(key, {})
+        plan = (box.get("targets") or {}).get(strategy) or {}
         observed = _bounds([plan.get("low"), plan.get("high")]) if plan.get("price_source") != "legacy_estimate" else None
-        old = original.get(key) or {}
+        old = (original or {}).get(key) or {}
         old_levels = old.get("tp_levels") or []
-        valid_old = len(old_levels) == 5 and all(_bounds(lv.get("price_range") or [lv.get("price"),lv.get("price")]) for lv in old_levels)
-        if valid_old and not invalidated:
+        valid_old = len(old_levels) == 5 and all(_bounds(lv.get("price_range") or [lv.get("price"), lv.get("price")]) for lv in old_levels)
+        # 원본 5단이 있으면 박스 상태와 무관하게 항상 유지한다(기존에는 돌파·이탈 때 버렸다).
+        # 박스 정보는 덧붙임 주석·범위로만 추가한다.
+        if valid_old:
             preserved = deepcopy(old)
-            preserved.update(entry_eligible=False, entry_status=card.get("entry_status"), expected_value_pct=None,
-                             box_target_range=observed, box_target_basis=plan["reason"],
-                             price_source=card.get("price_source", "existing_tp_model"))
+            # 기존 카드는 box_prediction에서 이미 원본을 유지하고 있으므로,
+            # 여기서는 TP를 덮지 않고 박스 주석 필드만 보존·병합한다.
+            preserved["box_target_range"] = observed
+            preserved["box_target_basis"] = plan.get("reason")
+            preserved["price_source"] = card.get("price_source") or preserved.get("price_source") or "existing_tp_model"
+            # entry_eligible/expected_value는 box_prediction이 정한 값을 우선한다(있을 때만).
+            if card.get("entry_status"):
+                preserved["entry_status"] = card.get("entry_status")
+            if "entry_eligible" in card:
+                preserved["entry_eligible"] = card.get("entry_eligible")
+            # card에 이미 있는 박스 주석이 있으면 유지
+            for extra in ("box_exit_unmatched", "box_exit_annotations"):
+                if extra in card and extra not in preserved:
+                    preserved[extra] = card[extra]
             risk[key] = card = preserved
-        elif observed:
+        elif observed and not card.get("tp_levels"):
             low, high = observed
             card["tp_levels"] = [{"price": low+(high-low)*(i+.5)/5,
                                     "price_range": [low+(high-low)*i/5, low+(high-low)*(i+1)/5],
                                     "basis": "박스 목표 구간 내부 분할; 독립 저항 5개 아님",
                                     "prob_pct": None, "avg_days": None} for i in range(5)]
+        # 그래도 TP가 비어 있으면 원본 target/tp_range에서 5단을 복원한다.
+        # 어떤 종목에서도 TP표가 비어 "산정 보류"만 남지 않게 하는 최후 보장이다.
+        if not card.get("tp_levels"):
+            fallback_range = (_bounds(card.get("tp_range")) or _bounds(card.get("target"))
+                              or _bounds((old.get("tp_range") or old.get("target") or [None, None]))
+                              or (observed if observed else None))
+            if fallback_range and current:
+                low, high = fallback_range
+                if high > current and low > 0:
+                    card["tp_levels"] = [{"price": low+(high-low)*(i+.5)/5,
+                                            "price_range": [low+(high-low)*i/5, low+(high-low)*(i+1)/5],
+                                            "basis": "기존 목표 범위 유지 분할; 박스 미확인 시에도 표시",
+                                            "prob_pct": None, "avg_days": None} for i in range(5)]
+                    if not card.get("tp_range"):
+                        card["tp_range"] = list(fallback_range)
+                    if not card.get("target"):
+                        card["target"] = list(fallback_range)
         annotations = []
         if observed:
             annotations.append({"low": observed[0], "high": observed[1],

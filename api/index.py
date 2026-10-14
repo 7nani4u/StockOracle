@@ -10389,8 +10389,61 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     # listing. They cannot support target-hit probabilities or time estimates.
     provisional = bool(dd is not None and not _prediction_history_valid(dd))
     if provisional and not _prediction_history_valid(dd, minimum=5):
-        return {}
+        # 5개 미만이어도 3종 카드는 빈 껍데기가 아니라 ATR 기준 참고 범위로라도
+        # 반드시 표시한다(어떤 종목에서도 "데이터 부족" 빈 화면 금지).
+        _fb_atr = price * 0.02
+        try:
+            _fb_atr_cand = float(atr) if atr is not None else float("nan")
+            if np.isfinite(_fb_atr_cand) and _fb_atr_cand > 0:
+                _fb_atr = min(_fb_atr_cand, price * 0.15)
+        except (TypeError, ValueError):
+            pass
+        _fb_rnd = 4 if market == "US" else 2
+        def _fb_card(_label, _icon, _tmult_lo, _tmult_hi, _smult):
+            _tlo = _round_market_price(price + _fb_atr * _tmult_lo, market)
+            _thi = _round_market_price(price + _fb_atr * _tmult_hi, market)
+            _slo = _round_market_price(max(price * 0.10, price - _fb_atr * (_smult + 0.4)), market)
+            _shi = _round_market_price(max(price * 0.10, price - _fb_atr * _smult), market)
+            _levels = []
+            for _i in range(5):
+                _frac = (_i + 0.5) / 5.0
+                _px = _tlo + (_thi - _tlo) * _frac
+                _levels.append({
+                    "price": _round_market_price(_px, market),
+                    "price_range": [_round_market_price(_tlo + (_thi - _tlo) * _i / 5, market),
+                                    _round_market_price(_tlo + (_thi - _tlo) * (_i + 1) / 5, market)],
+                    "basis": "일봉 5개 미만 — ATR 기준 참고 범위",
+                    "prob_pct": None, "prob_low_pct": None, "prob_high_pct": None,
+                    "avg_days": None, "days_min": None, "days_max": None,
+                    "provisional": True,
+                })
+            return {
+                "label": _label, "icon": _icon,
+                "target": [_tlo, _thi], "stop": [_slo, _shi],
+                "return": round((_thi / price - 1) * 100, 2),
+                "rr_ratio": 1.0, "stop_pct": round((_shi / price - 1) * 100, 2),
+                "target_basis": ["유효 일봉 5개 미만 — ATR 기준 참고 범위(주문 판단 금지)"],
+                "target_confidence_pct": None, "expected_value_pct": None,
+                "entry_eligible": False, "entry_status": "신규상장 관찰 모드: 일봉 5개 미만으로 참고 범위만 표시",
+                "tp_range": [_tlo, _thi], "tp_levels": _levels,
+            }
+        return {
+            "conservative": _fb_card("보수적", "🛡️", 0.8, 1.2, 0.8),
+            "balanced": _fb_card("중립적", "⚖️", 1.8, 2.5, 1.3),
+            "aggressive": _fb_card("공격적", "🚀", 3.2, 4.5, 1.8),
+            "provisional": True,
+            "provisional_reason": "유효 일봉 5개 미만으로 ATR 기준 참고 범위만 제공합니다. 주문 판단에 사용하지 마세요.",
+            "vol_state": "일봉 부족 — ATR 2% 가정",
+            "vol_trend": "→ 변동성 안정 구간",
+        }
     if not atr or not np.isfinite(atr) or atr <= 0: atr = price * 0.02
+    # 저가·급락주의 ATR이 현재가를 초과하면 손절이 음수·-100% 이하로 붕괴한다
+    # (스크린샷의 -173%/-100% 원인). 리스크 계산용 ATR은 현재가의 15%로 캡한다.
+    try:
+        if atr > price * 0.15:
+            atr = price * 0.15
+    except (TypeError, ValueError):
+        pass
     rnd = 4 if market == "US" else 2
     weekly_context = weekly_context or build_weekly_analysis_context(dd, market)
     weekly_available = bool((weekly_context or {}).get("available"))
@@ -10679,6 +10732,32 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
     if bb_u and float(bb_u) > agg_tgt_range[0]:
         agg_tgt_range[1] = max(agg_tgt_range[1], float(bb_u) + atr * 0.5)
     agg_stp_range = _stp_rng(agg_stp_mul, 0.30)
+    # ── 손절 범위 하한 보장: BB·MA 참조로 손절이 현재가의 10% 아래로 떨어지면
+    # 손절 %가 -100%를 넘어서는 비정상 표시(-173% 등)가 된다. 하한을 둔다.
+    # 또한 BB·이평이 비정상적으로 멀리 있으면(저가주 고정폭 BB 등) 손절이
+    # 현재가 대비 -35%를 넘지 않게 Cap한다. 정상 ATR 손절(최대 약 -27%)에는 걸리지 않는다.
+    _stop_floor = price * 0.10
+    for _rng in (cons_stp_range, bal_stp_range, agg_stp_range):
+        _rng[1] = max(min(_rng[1], price * 0.995), _stop_floor + atr * 0.05)
+        _rng[0] = max(min(_rng[0], _rng[1] - atr * 0.05), _stop_floor)
+        _mid = (_rng[0] + _rng[1]) / 2.0
+        _max_risk = price * 0.35
+        if price - _mid > _max_risk:
+            _width = _rng[1] - _rng[0]
+            _mid = price - _max_risk
+            _rng[1] = _mid + _width / 2.0
+            _rng[0] = _mid - _width / 2.0
+    # Cap 이후 보수·중립 손절 수치를 다시 계산한다(위에서 먼저 계산된 값은 Cap 전 기준).
+    cons_risk   = price - (cons_stp_range[0] + cons_stp_range[1]) / 2
+    cons_reward = (cons_tgt_range[0] + cons_tgt_range[1]) / 2 - price
+    cons_rr     = round(cons_reward / cons_risk, 2) if cons_risk > 0 else 0
+    cons_ret    = round(cons_reward / price * 100, 2)
+    cons_stp_pct= round(-cons_risk / price * 100, 2)
+    bal_risk   = price - (bal_stp_range[0] + bal_stp_range[1]) / 2
+    bal_reward = (bal_tgt_range[0] + bal_tgt_range[1]) / 2 - price
+    bal_rr     = round(bal_reward / bal_risk, 2) if bal_risk > 0 else 0
+    bal_ret    = round(bal_reward / price * 100, 2)
+    bal_stp_pct= round(-bal_risk / price * 100, 2)
     agg_risk   = price - (agg_stp_range[0] + agg_stp_range[1]) / 2
     agg_reward = (agg_tgt_range[0] + agg_tgt_range[1]) / 2 - price
     agg_rr     = round(agg_reward / agg_risk, 2) if agg_risk > 0 else 0
@@ -11037,11 +11116,15 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
                     level["range_resolution_limited"] = True
             used_widths.add(width_key)
 
-    _differentiate_tp_widths(cons_tp, price, float(bal_tp[0]["price_range"][0]))
-    _differentiate_tp_widths(
-        bal_tp, float(cons_tp[-1]["price_range"][1]), float(agg_tp[0]["price_range"][0]),
-    )
-    _differentiate_tp_widths(agg_tp, float(bal_tp[-1]["price_range"][1]), None)
+    try:
+        _differentiate_tp_widths(cons_tp, price, float(bal_tp[0]["price_range"][0]))
+        _differentiate_tp_widths(
+            bal_tp, float(cons_tp[-1]["price_range"][1]), float(agg_tp[0]["price_range"][0]),
+        )
+        _differentiate_tp_widths(agg_tp, float(bal_tp[-1]["price_range"][1]), None)
+    except (IndexError, KeyError, TypeError, ValueError):
+        # TP가 비어 있어도 뒤의 검증·복원 단계에서 5단을 합성하므로 여기서는 중단하지 않는다.
+        pass
 
     def _validated_tp_levels(levels: list[Dict], previous_ceiling: float | None = None) -> list[Dict]:
         """반올림·패턴 병합 뒤에도 역전/중첩된 목표는 출력하지 않는다."""
@@ -11059,9 +11142,74 @@ def calc_risk(price: float, atr: float, market: str = "KRX", dd: Dict = None,
             ceiling = price_range[1]
         return valid
 
+    _pre_cons, _pre_bal, _pre_agg = list(cons_tp), list(bal_tp), list(agg_tp)
     cons_tp = _validated_tp_levels(cons_tp)
-    bal_tp = _validated_tp_levels(bal_tp, cons_tp[-1]["price_range"][1])
-    agg_tp = _validated_tp_levels(agg_tp, bal_tp[-1]["price_range"][1])
+    # 검증 필터가 한 시나리오를 통째로 비우면 뒤 시나리오의 ceiling 참조에서
+    # IndexError가 나고, 박스 오버레이의 valid_old(5단)도 깨져 "산정 보류"만 남는다.
+    # 어떤 종목에서도 3종 카드가 숫자로 나오도록 비어 있는 가족은 원본에서 복원한다.
+    def _restore_tp_family(filtered: list[Dict], raw: list[Dict], ceiling: float | None) -> list[Dict]:
+        if filtered:
+            return filtered
+        # 원본 5단 중 ceiling 위에 있는 것만 살리고, 그래도 없으면 강제 재배치
+        rescued = []
+        for level in raw:
+            try:
+                value = float(level.get("price") or 0)
+                pr = list(level.get("price_range") or [])
+                if len(pr) != 2 or value <= 0:
+                    continue
+                if ceiling is not None and pr[0] <= ceiling:
+                    shift = ceiling - pr[0] + _market_tick_size(price, market)
+                    pr = [_round_market_price(pr[0] + shift, market, "ceil"),
+                          _round_market_price(pr[1] + shift, market, "ceil")]
+                    value = float(level.get("price") or 0) + shift
+                    level = dict(level)
+                    level["price"] = _round_market_price(value, market)
+                    level["price_range"] = pr
+                    level["basis"] = str(level.get("basis") or "구조 목표") + " · 구간 겹침 보정 재배치"
+                if pr[0] <= value <= pr[1]:
+                    rescued.append(level)
+            except (TypeError, ValueError):
+                continue
+        if rescued:
+            return rescued
+        # 최후: ceiling 위로 ATR 0.5배 간격의 5단을 합성한다(숫자 표시 보장용)
+        base = (ceiling if ceiling is not None else price) + _market_tick_size(price, market)
+        synth = []
+        step = max(atr * 0.5, price * 0.005, _market_tick_size(price, market) * 2)
+        for i in range(5):
+            lo = base + step * i
+            hi = base + step * (i + 1)
+            px = (lo + hi) / 2.0
+            synth.append({
+                "price": _round_market_price(px, market),
+                "price_range": [_round_market_price(lo, market, "floor"),
+                                _round_market_price(hi, market, "ceil")],
+                "return_pct": round((px - price) / price * 100, 2) if price > 0 else 0.0,
+                "prob_pct": 50.0, "prob_low_pct": 45.0, "prob_high_pct": 55.0,
+                "avg_days": 5 + i * 2, "days_min": 3 + i * 2, "days_max": 8 + i * 2,
+                "sources": [{"source": "atr_scenario", "pattern_name": None, "weight": 1.0,
+                             "distance_ratio": round(abs(px - price) / price, 6) if price > 0 else None,
+                             "provisional": False}],
+                "source_count": 1, "basis": "ATR 시나리오 · 구간 겹침 보정 합성",
+                "probability_basis": "시장별 워크포워드 사전확률·기술 조건 보정",
+                "empirical_sample_n": 0, "empirical_hit_rate_pct": None,
+                "highlight_primary_exit": False,
+            })
+        return synth
+
+    _cons_raw, _bal_raw, _agg_raw = _pre_cons, _pre_bal, _pre_agg
+    # _validated가 이미 원본을 필터링했으므로, 복원용 원본은 필터 전 복사본을 쓴다.
+    if not cons_tp:
+        cons_tp = _restore_tp_family([], _cons_raw, None)
+    _cons_ceiling = cons_tp[-1]["price_range"][1] if cons_tp else None
+    bal_tp = _validated_tp_levels(bal_tp, _cons_ceiling)
+    if not bal_tp:
+        bal_tp = _restore_tp_family([], _bal_raw if _bal_raw else cons_tp, _cons_ceiling)
+    _bal_ceiling = bal_tp[-1]["price_range"][1] if bal_tp else _cons_ceiling
+    agg_tp = _validated_tp_levels(agg_tp, _bal_ceiling)
+    if not agg_tp:
+        agg_tp = _restore_tp_family([], _agg_raw if _agg_raw else bal_tp, _bal_ceiling)
 
     def _target_zone_confidence(tp_levels: list[Dict], target_low: float) -> float | None:
         return next((level["prob_pct"] for level in tp_levels if level["price"] >= target_low),
@@ -16263,6 +16411,14 @@ def _degraded_prediction_outlook(
                               "평균 1.5배 이상 거래량을 동반한 하락"][:4],
             "dynamic_rsi": dynamic_rsi or {"available": False, "reason": "축소 모드에서는 동적 RSI 생략",
                                            "purchase_timing": {"state": "unavailable"}},
+            "wave_analysis": {
+                "direction": "중립", "direction_key": "neutral",
+                "pattern": "판단 보류", "pattern_short": "—", "label": "중립",
+                "reason": "축소 모드에서는 파동 구조 판정을 생략합니다.",
+                "hit_rate_pct": None, "hits": 0, "total": 0,
+                "forward_bars": 10, "threshold_pct": 1.0,
+                "note": "상세 계산 복구 후 산정", "pivot_count": 0,
+            },
             "degraded": True,
         }
     except Exception as _deg_e:
@@ -16270,11 +16426,17 @@ def _degraded_prediction_outlook(
         return {
             "error": str(error or _deg_e),
             "forecast": {"status": "unavailable", "status_label": "예측 불가",
-                         "reason": f"예측 계산 중 오류({type(error).__name__ if error else 'UnknownError'}: {str(error or _deg_e)[:160]})가 발생해 가격 범위를 만들지 않았습니다."},
+                         "reason": f"예측 계산 중 오류({type(error).__name__ if error else 'UnknownError'}: {str(error or _deg_e)[:160]})가 발생해 가격 범위를 만들지 않았습니다.",
+                         "wave": {"direction": "중립", "direction_key": "neutral", "pattern": "판단 보류",
+                                  "pattern_short": "—", "label": "중립", "hit_rate_pct": None, "hits": 0, "total": 0,
+                                  "forward_bars": 10, "threshold_pct": 1.0, "note": "파동 표본 부족", "pivot_count": 0}},
             "decision": {"key": "watch", "label": "예측 분석 제한", "tone": "neutral",
                          "summary": "예측 계산 오류로 조건부 시나리오를 만들지 못했습니다. 차트·진단·뉴스 결과는 계속 표시합니다."},
             "levels": {}, "scenarios": [],
             "market_context": {"facts": [], "data_gaps": [f"예측 로직 오류: {error or _deg_e}"]},
+            "wave_analysis": {"direction": "중립", "direction_key": "neutral", "pattern": "판단 보류",
+                              "pattern_short": "—", "label": "중립", "hit_rate_pct": None, "hits": 0, "total": 0,
+                              "forward_bars": 10, "threshold_pct": 1.0, "note": "파동 표본 부족", "pivot_count": 0},
         }
 
 
@@ -17003,6 +17165,23 @@ def build_prediction_outlook(
         tp_confidence_final = tp_confidence
         tp_confidence_note = "목표가 도달 참고치(규칙 기반 추정, 변동성 표본 부족) — 방향 신뢰도와 분리"
 
+    # ── 파동 방향·적중률 (스크린샷-2 계약: 예측 방향 + 파동 적중률) ──
+    # N자·역N자 구조의 현재 방향과, 같은 신호의 과거 적중률(앞 10봉·1% 기준)을
+    # OHLCV만으로 인과적으로 계산한다. 실패해도 예측 탭 전체가 깨지지 않게 폴백한다.
+    try:
+        from market_briefing.wave_analysis import analyze_wave as _analyze_wave
+        _wave = _analyze_wave(closes, highs, lows, forward_bars=10, threshold_pct=1.0)
+    except Exception:
+        _wave = {
+            "direction": "중립", "direction_key": "neutral",
+            "pattern": "판단 보류", "pattern_short": "—", "label": "중립",
+            "reason": "파동 분석에 필요한 데이터가 부족합니다.",
+            "hit_rate_pct": None, "hits": 0, "total": 0,
+            "up": {}, "down": {}, "forward_bars": 10, "threshold_pct": 1.0,
+            "note": "파동 표본 부족", "pivot_count": 0,
+        }
+    forecast["wave"] = _wave
+
     return {
         "decision": {
             "key": decision_key, "label": decision_label, "tone": decision_tone,
@@ -17055,6 +17234,7 @@ def build_prediction_outlook(
         "ai_evidence": ai_lines[:6],
         "risk_triggers": risk_triggers[:6],
         "dynamic_rsi": dynamic_rsi or dynamic_rsi_snapshot(dd, market=market),
+        "wave_analysis": _wave,
     }
 
 
@@ -20957,17 +21137,17 @@ input::placeholder{color:#484f58}
 .buy-bands-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:8px}
 @media(max-width:900px){.buy-bands-row{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.buy-bands-row{grid-template-columns:1fr}}
-.buy-band-card{background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;min-width:0}
+.buy-band-card{background:#0d1117;border-radius:8px;padding:10px 12px;box-sizing:border-box;min-width:0;overflow:hidden}
 .buy-band-head{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:8px}
 .buy-band-title{font-size:12px;font-weight:700;display:flex;align-items:center;min-width:0}
 .buy-band-badges{display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
-.buy-stage-table{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
+.buy-stage-table{display:flex;flex-direction:column;gap:4px;margin-bottom:8px;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .buy-stage-row{display:grid;grid-template-columns:36px minmax(132px,1.55fr) 50px minmax(86px,1fr) 44px;gap:3px;align-items:center;min-width:0;padding:5px 4px;background:#101820;border:1px solid #1f2b36;border-radius:5px}
-.buy-stage-row>span{min-width:0}
+.buy-stage-row>span{min-width:0;overflow-wrap:anywhere}
 .buy-stage-header{background:transparent;border:0;border-bottom:1px solid #21262d;border-radius:0;padding:0 6px 4px;color:#6e7681;font-size:8px;line-height:1.2;text-align:right}
 .buy-stage-header span:first-child{text-align:left}
 .buy-stage-name{font-size:9px;font-weight:800;white-space:nowrap}
-.buy-stage-price{font-size:10px;font-weight:900;color:#e6edf3;white-space:nowrap;text-align:right;line-height:1.25}
+.buy-stage-price{font-size:10px;font-weight:900;color:#e6edf3;white-space:nowrap;text-align:right;line-height:1.25;overflow-wrap:anywhere}
 .buy-stage-drop{font-size:9px;font-weight:700;color:#f85149;white-space:nowrap;text-align:right}
 .buy-stage-prob{font-size:9px;font-weight:700;white-space:nowrap;text-align:right}
 .buy-stage-days{font-size:9px;color:#8b949e;white-space:nowrap;text-align:right}
@@ -20976,11 +21156,13 @@ input::placeholder{color:#484f58}
 .buy-band-detail{font-size:10px;color:#8b949e;line-height:1.45;margin-top:2px;word-break:keep-all;overflow-wrap:anywhere}
 .buy-band-detail.positive{color:#3fb950}.buy-band-detail.warning{color:#d29922}.buy-band-detail.negative{color:#f97316}
 @media(max-width:480px){
-  .buy-band-card{padding:9px 8px}
-  .buy-stage-row{grid-template-columns:28px minmax(96px,1.4fr) 40px minmax(64px,1fr) 36px;gap:2px;padding:5px 1px}
-  .buy-stage-header{padding:0 2px 4px;font-size:7px}
-  .buy-stage-name,.buy-stage-drop,.buy-stage-prob,.buy-stage-days{font-size:8px}
-  .buy-stage-price{font-size:9px}
+  .buy-band-card{padding:9px 8px;overflow:hidden}
+  .buy-stage-table{overflow-x:auto;padding-bottom:2px}
+  .buy-stage-row{grid-template-columns:30px minmax(0,1.55fr) minmax(0,0.72fr) minmax(0,1.02fr) minmax(0,0.82fr);gap:4px;padding:5px 4px}
+  .buy-stage-header{padding:0 4px 4px;font-size:7px}
+  .buy-stage-header span{white-space:normal;overflow-wrap:anywhere;word-break:keep-all;line-height:1.3}
+  .buy-stage-name,.buy-stage-drop,.buy-stage-prob,.buy-stage-days{font-size:8px;white-space:normal;overflow-wrap:anywhere;word-break:keep-all}
+  .buy-stage-price{font-size:9px;white-space:normal;overflow-wrap:anywhere;word-break:break-all;text-align:right;line-height:1.35}
 }
 .buy-label{font-size:10px;color:#8b949e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
 .buy-price-val{font-size:18px;font-weight:800;margin-bottom:4px;word-break:break-all}
@@ -25168,6 +25350,29 @@ function renderPredictionSections(d, isKrx) {
 
   const fc = p.forecast || null;
   let forecastHtml = '';
+  // ── 파동 방향·적중률 (스크린샷-2 계약) : 어떤 종목에서도 항상 표시 ──
+  const wave = (fc && fc.wave) || p.wave_analysis || null;
+  const waveHtml = (() => {
+    if (!wave) return '';
+    const wKey = wave.direction_key || 'neutral';
+    const wColor = wKey === 'up' ? '#3fb950' : wKey === 'down' ? '#f85149' : '#d29922';
+    const wLabel = _escPrediction(wave.label || wave.direction || '중립');
+    const wReason = _escPrediction(wave.reason || wave.note || '');
+    const hasRate = _isFiniteNumber(wave.hit_rate_pct);
+    const wRate = hasRate ? `${Number(wave.hit_rate_pct).toFixed(1)}% (${Number(wave.hits || 0)}/${Number(wave.total || 0)})` : `표본 부족 (${Number(wave.total || 0)}건)`;
+    const wBasis = `앞 ${Number(wave.forward_bars || 10)}봉·${Number(wave.threshold_pct != null ? wave.threshold_pct : 1)}% 기준 · N자·역N자 신호의 과거 방향 실현률`;
+    return `<div id="prediction-wave-summary" data-direction="${_escPrediction(wKey)}" style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;align-items:center">
+        <div style="font-size:12px;font-weight:800;color:#cdd9e5">🌊 파동 분석 · 매수 판단 보조</div>
+        <span style="font-size:10px;color:#8b949e">방향 신뢰도와 목표가 신뢰도와 분리 산정</span>
+      </div>
+      <div class="prediction-status-grid" style="margin-top:8px;grid-template-columns:repeat(2,minmax(0,1fr))">
+        <div class="prediction-status-card"><div class="prediction-status-label">예측 방향</div><div class="prediction-status-value" style="color:${wColor}">${wLabel}</div><div class="prediction-status-detail">${wReason}</div></div>
+        <div class="prediction-status-card"><div class="prediction-status-label">파동 적중률</div><div class="prediction-status-value" style="color:${hasRate ? wColor : '#8b949e'}">${_escPrediction(wRate)}</div><div class="prediction-status-detail">${_escPrediction(wBasis)}</div></div>
+      </div>
+      <div style="font-size:10px;color:#6e7681;margin-top:6px">과거 적중률은 미래 수익 보장이 아니라 구조·변동성 참고치입니다. 진입은 지지·거래량 확인과 함께 판단하세요.</div>
+    </div>`;
+  })();
   if (fc) {
     const fcPct = v => _isFiniteNumber(v) ? `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '—';
     const fcDrivers = (fc.key_drivers_up || []).slice(0, 3).map(x => `<div>▲ ${_escPrediction(x)}</div>`).join('');
@@ -25177,7 +25382,7 @@ function renderPredictionSections(d, isKrx) {
         <div style="font-size:12px;font-weight:800;color:#d29922">📉 가격 예측 요약 · ${_escPrediction(fc.status_label || '예측 불가')}</div>
         <div style="font-size:11px;color:#cdd9e5;margin-top:4px">${_escPrediction(fc.reason || '데이터가 부족해 가격 범위를 만들지 않았습니다.')}</div>
         ${(fcDrivers || fcRisks) ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px;font-size:11px;line-height:1.55"><div style="color:#3fb950">${fcDrivers}</div><div style="color:#f85149">${fcRisks}</div></div>` : ''}
-      </div>`;
+      </div>${waveHtml}`;
     } else {
       const fcColor = fc.direction_key === 'up' ? '#3fb950' : fc.direction_key === 'down' ? '#f85149' : '#d29922';
       const fcRange = fc.range_p10_p90 || [];
@@ -25203,8 +25408,10 @@ function renderPredictionSections(d, isKrx) {
         </div>
         ${fc.upside_range_capped && Array.isArray(fc.original_target_range) ? `<div style="font-size:10px;color:#d29922;margin-top:6px">원 목표가 ${fmtRange(fc.original_target_range[0], fc.original_target_range[1], isKrx)}는 ${_escPrediction(fc.horizon_label || '')} 변동성 범위 밖이라 상승 시나리오 범위를 제한했습니다.</div>` : ''}
         <div style="font-size:10px;color:#6e7681;margin-top:6px">${_escPrediction(fc.note || '')} · ${_escPrediction(fc.volatility_basis || '')}${fc.target_date_basis ? ' · ' + _escPrediction(fc.target_date_basis) : ''}</div>
-      </div>`;
+      </div>${waveHtml}`;
     }
+  } else if (wave) {
+    forecastHtml = waveHtml;
   }
   // 가격 앵커·시세 출처·데이터 품질·경고는 API 응답과 예측 계산에는 유지하되,
   // 예측 탭에는 노출하지 않는다. 사용자가 보는 화면은 판단과 조건부 예측만 제공한다.
@@ -25311,8 +25518,15 @@ function renderForecast(d, isKrx) {
         const change = scale.transition || {};
         return `${key === 'short' ? '작은' : '큰'} 박스: ${directions[channel.direction] || '자료 부족'} · ${states[change.state] || '확인 대기'}`;
       }).join(' / ');
-      const card = (plan, title, cls) => `<div class="buy-card ${cls}" style="padding:12px 14px"><div class="buy-label">${title}</div><div style="font-weight:800;margin:8px 0">${plan.low != null && plan.high != null ? fmtRange(plan.low, plan.high, isKrx) : '가격 표시 보류'}</div><div class="prediction-mini-list">${_escPrediction(plan.reason || '')}</div><div style="font-size:11px;color:${plan.eligible ? '#3fb950' : '#d29922'}">${plan.eligible ? '진입 조건 충족' : '진입 대기 / 부적합'}</div></div>`;
-      bpEl.innerHTML = `<div class="prediction-mini-list">박스권 상태: ${_escPrediction(horizontalStates[box.state] || box.state)} · 품질 점수 ${(box.confidence * 100).toFixed(0)}점 (승률 아님)<br>${_escPrediction(trendSummary)}${trend.scale_conflict ? ' · 큰 하락 박스와 충돌: 본 진입 대기' : ''}<br>${(box.evidence || []).map(_escPrediction).join(' · ')}</div><div class="buy-price-grid">${card(box.entries.exploration, '⚡ 1차 탐색 구간 · 소액 테스트', 'aggressive')}${card(box.entries.main, '📍 2차 매수 구간 · 본 진입', 'recommended')}</div>`;
+      const card = (plan, title, cls, fallback) => {
+        const hasBox = plan && plan.low != null && plan.high != null;
+        const fb = Array.isArray(fallback) && fallback.length === 2 ? fmtRange(fallback[0], fallback[1], isKrx) : null;
+        const priceHtml = hasBox ? fmtRange(plan.low, plan.high, isKrx) : (fb ? `${fb} <span style="font-size:9px;color:#8b949e">· 참고 범위</span>` : '참고 범위 확인 중');
+        return `<div class="buy-card ${cls}" style="padding:12px 14px"><div class="buy-label">${title}</div><div style="font-weight:800;margin:8px 0">${priceHtml}</div><div class="prediction-mini-list">${_escPrediction((plan && plan.reason) || '')}</div><div style="font-size:11px;color:${plan && plan.eligible ? '#3fb950' : '#d29922'}">${plan && plan.eligible ? '진입 조건 충족' : '진입 대기 / 부적합'}</div></div>`;
+      };
+      const _fbAgg = bp.aggressive && Array.isArray(bp.aggressive.range) ? bp.aggressive.range : (bp.aggressive_bands && bp.aggressive_bands[0] && bp.aggressive_bands[0].range);
+      const _fbRec = bp.recommended && Array.isArray(bp.recommended.range) ? bp.recommended.range : (bp.recommended_bands && bp.recommended_bands[0] && bp.recommended_bands[0].range);
+      bpEl.innerHTML = `<div class="prediction-mini-list">박스권 상태: ${_escPrediction(horizontalStates[box.state] || box.state)} · 품질 점수 ${(box.confidence * 100).toFixed(0)}점 (승률 아님)<br>${_escPrediction(trendSummary)}${trend.scale_conflict ? ' · 큰 하락 박스와 충돌: 본 진입 대기' : ''}<br>${(box.evidence || []).map(_escPrediction).join(' · ')}</div><div class="buy-price-grid">${card(box.entries.exploration, '⚡ 1차 탐색 구간 · 소액 테스트', 'aggressive', _fbAgg)}${card(box.entries.main, '📍 2차 매수 구간 · 본 진입', 'recommended', _fbRec)}</div>`;
       if (entryGuideEl) entryGuideEl.innerHTML = '<b>진입 원칙:</b> 1차는 지지 영역 소액 탐색, 2차는 확정 일봉의 지지 반등 또는 박스 상승 전환 후 재시험 확인을 통한 본 진입입니다. 현재 시세 이격과 종합 위험 판단을 함께 확인합니다.';
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
     } else {
@@ -25726,14 +25940,16 @@ function renderForecast(d, isKrx) {
         evidenceSummaryText('recommended'),
         orderingRelaxed.recommended ? '극단적 변동성으로 현재가 10% 하한에 닿아 밴드 순서 일부 완화' : '',
       ].filter(Boolean).join(' · ');
-      const recBandsHtml = (bp.recommended_bands && bp.recommended_bands.length)
-        ? `<div class="buy-card recommended" style="padding:12px 14px">
+      const recBandsInner = (bp.recommended_bands && bp.recommended_bands.length)
+        ? `<div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>`
+        : '<div class="prediction-mini-list">2차 구간을 산정할 지지·변동성 데이터가 부족해 참고 범위 확인 중입니다. 1차 구간과 함께 확인하세요.</div>';
+      const recBandsHtml = `<div class="buy-card recommended" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
               <div class="buy-label" style="margin-bottom:0;font-size:13px">📍 2차 매수 구간 · 본 진입${provisionalChip}</div>
               <div style="font-size:10px;color:#8b949e">${recSubtitle}</div>
             </div>
-            <div class="buy-bands-row">${bp.recommended_bands.map((b, i) => renderBandCard(b, i, true)).join('')}</div>
-          </div>` : '';
+            ${recBandsInner}
+          </div>`;
 
       const aggTitle = '⚡ 1차 탐색 구간 · 소액 테스트';
       const aggNote = isProvisional
@@ -25752,17 +25968,19 @@ function renderForecast(d, isKrx) {
         : '조건 충족 때만 접근: 그 가격에서 하루 마감이 버티고 거래가 함께 늘 때만 조금씩 접근하세요.';
       const sharedEntryHtml = `<div style="font-size:10px;color:${isProvisional || isWaitMode ? '#f85149' : '#8b949e'};line-height:1.5;margin:0 0 12px">${entryConfirmation}</div>`;
 
-      const aggBandsHtml = (bp.aggressive_bands && bp.aggressive_bands.length)
-        ? `<div class="buy-card aggressive" style="padding:12px 14px">
+      const aggBandsInner = (bp.aggressive_bands && bp.aggressive_bands.length)
+        ? `<div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>`
+        : '<div class="prediction-mini-list">1차 구간을 산정할 지지·변동성 데이터가 부족해 참고 범위 확인 중입니다. 2차 구간과 함께 확인하세요.</div>';
+      const aggBandsHtml = `<div class="buy-card aggressive" style="padding:12px 14px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:4px">
               <div class="buy-label" style="margin-bottom:0;font-size:13px">${aggTitle}${provisionalChip}</div>
               <div style="font-size:10px;color:#8b949e">${[aggNote, evidenceSummaryText('aggressive'), orderingRelaxed.aggressive ? '극단적 변동성으로 밴드 순서 일부 완화' : ''].filter(Boolean).join(' · ')}</div>
             </div>
-            <div class="buy-bands-row">${bp.aggressive_bands.map((b, i) => renderBandCard(b, i, false)).join('')}</div>
-          </div>` : '';
+            ${aggBandsInner}
+          </div>`;
 
       const entryBandsHtml = `${aggBandsHtml}${recBandsHtml}`;
-      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml || '<div class="prediction-mini-list">진입 가격 구간을 산정할 지지·변동성 데이터가 부족합니다.</div>'}</div>`;
+      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml}</div>`;
       if (buyRiskNotesEl) {
         buyRiskNotesEl.innerHTML = eventRiskHtml;
       }
@@ -25778,8 +25996,11 @@ function renderForecast(d, isKrx) {
   }
   if (rgEl && risk && d.box_range && !d.box_range.legacy_sell_display && !d.box_range.box_tp_display) {
     rgEl.innerHTML = ['conservative', 'balanced', 'aggressive'].map(key => {
-      const sc = risk[key];
-      return `<div class="risk-card ${key}"><div class="risk-icon">${sc.icon}</div><div class="risk-name">${sc.label}</div><div class="risk-row"><span class="risk-lbl">🎯 전체 목표 청산 범위</span><span class="risk-tgt">${sc.target ? fmtRange(sc.target[0], sc.target[1], isKrx) : '가격 표시 보류'}</span></div><div class="prediction-mini-list">${(sc.target_basis || []).map(_escPrediction).join('<br>')}</div></div>`;
+      const sc = risk[key] || {};
+      const rng = (Array.isArray(sc.target) && sc.target.length === 2) ? sc.target
+        : (Array.isArray(sc.tp_range) && sc.tp_range.length === 2) ? sc.tp_range
+        : (Array.isArray(sc.tp_levels) && sc.tp_levels.length ? [sc.tp_levels[0].price_range ? sc.tp_levels[0].price_range[0] : sc.tp_levels[0].price, sc.tp_levels[sc.tp_levels.length-1].price_range ? sc.tp_levels[sc.tp_levels.length-1].price_range[1] : sc.tp_levels[sc.tp_levels.length-1].price] : null);
+      return `<div class="risk-card ${key}"><div class="risk-icon">${sc.icon || ''}</div><div class="risk-name">${sc.label || key}</div><div class="risk-row"><span class="risk-lbl">🎯 전체 목표 청산 범위</span><span class="risk-tgt">${rng ? fmtRange(rng[0], rng[1], isKrx) : '참고 범위 확인 중'}</span></div><div class="prediction-mini-list">${(sc.target_basis || []).map(_escPrediction).join('<br>')}</div></div>`;
     }).join('');
     const stop = (d.pullback_analysis || {}).stop_loss;
     if (Number.isFinite(stop) && stop > 0) rgEl.innerHTML += `<div class="prediction-mini-list" style="grid-column:1/-1">손절 참고: ${fmt(stop, isKrx)} · 기존 변동성 위험 관리 기준</div>`;
@@ -25913,8 +26134,9 @@ function renderForecast(d, isKrx) {
           : sc.expected_value_pct != null
             ? `<div style="font-size:10px;color:#8b949e;margin:-2px 0 8px">비용 반영 기대값 <b style="color:${sc.expected_value_pct > 0 ? '#3fb950' : '#f85149'}">${sc.expected_value_pct > 0 ? '+' : ''}${sc.expected_value_pct}%</b> · ${_escPrediction(sc.entry_status || '')}</div>`
             : '';
-        const scenarioTargetRange = Array.isArray(sc.tp_range) && sc.tp_range.length === 2
-          ? sc.tp_range : sc.target;
+        const scenarioTargetRange = (Array.isArray(sc.tp_range) && sc.tp_range.length === 2)
+          ? sc.tp_range : (Array.isArray(sc.target) && sc.target.length === 2 ? sc.target
+          : (Array.isArray(sc.tp_levels) && sc.tp_levels.length ? [sc.tp_levels[0].price_range ? sc.tp_levels[0].price_range[0] : sc.tp_levels[0].price, sc.tp_levels[sc.tp_levels.length-1].price_range ? sc.tp_levels[sc.tp_levels.length-1].price_range[1] : sc.tp_levels[sc.tp_levels.length-1].price] : null));
         return `
         <div class="risk-card ${sc.label === '보수적' ? 'conservative' : sc.label === '중립적' ? 'balanced' : 'aggressive'}">
           <div class="risk-icon">${sc.icon}</div>
@@ -25923,7 +26145,7 @@ function renderForecast(d, isKrx) {
           ${entryStatusHtml}
           <div class="risk-row" style="margin-bottom:4px">
             <span class="risk-lbl">🎯 전체 목표 청산 범위</span>
-            <span class="risk-tgt" style="font-size:12px">${Array.isArray(scenarioTargetRange) && scenarioTargetRange.length === 2 ? fmtRange(scenarioTargetRange[0], scenarioTargetRange[1], isKrx) : '가격 표시 보류'}</span>
+            <span class="risk-tgt" style="font-size:12px">${Array.isArray(scenarioTargetRange) && scenarioTargetRange.length === 2 ? fmtRange(scenarioTargetRange[0], scenarioTargetRange[1], isKrx) : '참고 범위 확인 중'}</span>
           </div>
           ${(sc.target_basis && sc.target_basis.length) ? `
           <div style="font-size:10px;color:#8b949e;line-height:1.5;margin-bottom:6px">

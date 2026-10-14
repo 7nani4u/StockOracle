@@ -180,24 +180,109 @@ def apply_box_prediction(response, dd, *, in_progress=False):
     buy["strategy_rec"] = {**(prior.get("strategy_rec") or {}), "action_key": action, "rationale": box["evidence"]}
     response["buy_price"] = buy
     risk = response.setdefault("risk_scenarios", {})
+    # ── 리스크 3종(보수/중립/공격)은 어떤 종목·어떤 박스 상태에서도 항상 숫자로 표시한다.
+    # 기존에는 관측 박스가 없거나(돌파·이탈·미형성) 현재가가 박스 목표를 지났을 때
+    # calc_risk가 만든 target/tp_levels/rr/return을 None·[]으로 지워
+    # "가격 표시 보류"/"산정 보류"만 남겼다. 이제 원본 가격을 절대 지우지 않고
+    # 박스 정보는 overlay注釈(box_target_range/basis)로만 덧붙인다.
+    _LABELS = {"conservative": "보수적", "balanced": "중립적", "aggressive": "공격적"}
+    _ICONS = {"conservative": "🛡️", "balanced": "⚖️", "aggressive": "🚀"}
+    _fallback_market = str(response.get("market") or "KRX").upper()
+    if _fallback_market not in ("KRX", "US"):
+        _fallback_market = "KRX"
+
+    def _fallback_risk_card(key: str) -> dict:
+        base = current if current and current > 0 else 100.0
+        atr_fb = base * 0.02
+        tgt_hi = base + atr_fb * {"conservative": 1.2, "balanced": 2.5, "aggressive": 4.5}[key]
+        tgt_lo = base + atr_fb * {"conservative": 0.8, "balanced": 1.8, "aggressive": 3.2}[key]
+        stp_hi = base - atr_fb * 0.8
+        stp_lo = base - atr_fb * 1.2
+        levels = []
+        for i in range(5):
+            frac = (i + 0.5) / 5.0
+            px = tgt_lo + (tgt_hi - tgt_lo) * frac
+            levels.append({
+                "price": px, "price_range": [tgt_lo + (tgt_hi - tgt_lo) * i / 5,
+                                             tgt_lo + (tgt_hi - tgt_lo) * (i + 1) / 5],
+                "basis": "박스·지표 근거 부족 시 ATR 기준 참고 범위",
+                "prob_pct": None, "avg_days": None,
+            })
+        return {
+            "label": _LABELS[key], "icon": _ICONS[key],
+            "target": [tgt_lo, tgt_hi], "tp_range": [tgt_lo, tgt_hi],
+            "tp_levels": levels, "stop": [stp_lo, stp_hi],
+            "stop_pct": round((sum([stp_lo, stp_hi]) / 2 / base - 1) * 100, 2),
+            "return": round((tgt_hi / base - 1) * 100, 2),
+            "rr_ratio": 1.0,
+            "target_basis": ["관측 박스·지표 근거 부족 — ATR 기준 참고 범위(조건 확인 후 검토)"],
+            "target_confidence_pct": None, "expected_value_pct": None,
+            "target_eligible": False, "entry_eligible": False,
+            "entry_status": "박스 미확인 · ATR 참고 범위 · 지지·반등 확인 후 검토",
+            "price_source": "fallback_estimate",
+        }
+
     for key, target_key in (("conservative", "conservative"), ("balanced", "neutral"), ("aggressive", "aggressive")):
         plan = box["targets"][target_key]
-        if plan.get("price_source") == "legacy_estimate":
-            risk[key] = deepcopy(original_risk[key])
-            risk[key].update(target_eligible=False, entry_eligible=False, expected_value_pct=None,
-                             entry_status=plan["reason"], price_source="legacy_estimate")
-            risk[key]["target_basis"] = [plan["reason"]] + list(risk[key].get("target_basis") or [])
+        orig = deepcopy(original_risk.get(key) or {})
+        observed = _valid_range([plan.get("low"), plan.get("high")]) if plan.get("price_source") != "legacy_estimate" else None
+        if not orig or not _valid_range(orig.get("tp_range") or orig.get("target")):
+            if observed and current:
+                orig = _fallback_risk_card(key)
+                # 관측 박스가 있으면 그 범위를 우선 사용하되 숫자는 반드시 유지
+                orig.update(target=list(observed), tp_range=list(observed),
+                            target_basis=[plan.get("reason") or "관측 박스 목표"],
+                            target_eligible=bool(plan.get("eligible")),
+                            entry_eligible=False, entry_status=plan.get("reason") or orig.get("entry_status"),
+                            price_source="observed_box")
+                orig["tp_levels"] = [{"price": observed[1], "price_range": list(observed),
+                                      "basis": plan.get("reason") or "관측 박스 목표"}]
+                if current:
+                    try:
+                        orig["return"] = round((observed[1] / current - 1) * 100, 2)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+            elif orig and _valid_range(orig.get("target") or orig.get("tp_range")):
+                pass  # 부분 원본이라도 유지
+            else:
+                orig = _fallback_risk_card(key)
+                if plan.get("reason"):
+                    orig["target_basis"] = [plan.get("reason")] + list(orig.get("target_basis") or [])
+                    orig["entry_status"] = plan.get("reason")
+            risk[key] = orig
+            # 박스 overlay 필드는 항상 기록
+            risk[key].setdefault("label", _LABELS[key])
+            risk[key].setdefault("icon", _ICONS[key])
+            risk[key]["box_target_range"] = observed
+            risk[key]["box_target_basis"] = plan.get("reason")
             continue
+        # 원본이 있으면: 가격·손절·수익·R/R·TP 5단을 그대로 유지하고 박스만 덧붙인다.
         card = risk.setdefault(key, {})
-        card.setdefault("label", {"conservative": "보수적", "balanced": "중립적", "aggressive": "공격적"}[key])
-        card.setdefault("icon", {"conservative": "🛡️", "balanced": "⚖️", "aggressive": "🚀"}[key])
-        target = [plan["low"], plan["high"]] if plan["low"] is not None else None
-        card.update(target=target, tp_range=target, tp_levels=[], target_basis=[plan["reason"]],
-                    target_confidence_pct=None, breakout_probability_pct=None, expected_value_pct=None,
-                    rr_ratio=None, target_eligible=plan["eligible"], entry_eligible=False, entry_status=plan["reason"])
-        card["return"] = round((target[1] / current - 1) * 100, 2) if target and current else None
-        if target:
-            card["tp_levels"] = [{"price": target[1], "price_range": target, "basis": plan["reason"]}]
+        card.update(deepcopy(orig))
+        card.setdefault("label", _LABELS[key])
+        card.setdefault("icon", _ICONS[key])
+        card["box_target_range"] = observed
+        card["box_target_basis"] = plan.get("reason")
+        card["box_target_eligible"] = bool(plan.get("eligible")) if observed else False
+        if observed:
+            basis = list(card.get("target_basis") or [])
+            tag = "박스 관측: " + str(plan.get("reason") or "")
+            if tag.strip() and tag not in basis:
+                basis.append(tag)
+                card["target_basis"] = basis
+        else:
+            # 박스 미확인·돌파·이탈이어도 가격은 유지. 진입만 보수적으로 보류 표기.
+            card["price_source"] = plan.get("price_source") or card.get("price_source") or "no_box_preserved"
+            if plan.get("reason"):
+                basis = list(card.get("target_basis") or [])
+                if plan["reason"] not in basis:
+                    card["target_basis"] = [plan["reason"]] + basis
+                # 기존 진입 판정을 덮지 않고 박스 사유만 덧붙인다: entry_eligible은 원본 유지가
+                # 원칙이나, 박스 이탈 시 무리한 진입 권유를 막기 위해 False로만 좁힌다(True->False만 허용).
+                if card.get("entry_eligible") is True and box.get("state") in {
+                        "breakdown_pending", "breakdown_confirmed", "breakout_confirmed", "false_breakout"}:
+                    card["entry_eligible"] = False
+                    card["entry_status"] = plan.get("reason") or card.get("entry_status")
     attach_box_exit_levels(risk, original_risk, box, current)
     pa = response.get("pullback_analysis")
     if isinstance(pa, dict):
