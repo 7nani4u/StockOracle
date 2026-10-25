@@ -1,5 +1,5 @@
 {
-  "contract_version": "2026-10-09.2",
+  "contract_version": "2026-10-24.1",
   "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
   "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
   "nullable_fields": [
@@ -112,7 +112,24 @@
       "clusters": "ordered support clusters with center, range, score, source_count, sources and labels"
     },
     "atr_pct": "number",
-    "vol_trend": "expanding | contracting | normal"
+    "vol_trend": "expanding | contracting | normal",
+    "box_tactics": {
+      "version": "string; box execution rule version (video OlMBqW3FBes applied)",
+      "video_evidence": "object; url, review_method, reviewed_on, verified_principles, supplementary_rules, limits. The order-book pressure is an OHLCV proxy, not real bid/ask data.",
+      "regime": {"key": "trend_retest | breakout_confirmed | range_support | range_wait | breakout_watch | breakout_unconfirmed | false_breakout | mode_breakdown | no_trade | no_data", "label": "string", "tradeable": "boolean", "why": ["string"], "watch": ["string"]},
+      "midline": {"available": "boolean", "price": "number | null", "state": "strong | normal | weak | unknown", "strength_label": "string", "score": "number | null", "volume_share": "number | null; share of box volume allocated to the middle third", "time_share": "number | null", "note": "string"},
+      "speed": {"available": "boolean", "state": "fast | normal | slow | unknown", "label": "string", "speed_atr_per_bar": "number | null", "ratio": "number | null; versus the box-window median", "direction": "up | down | flat", "note": "string"},
+      "pressure": {"support": {"verdict": "buy | sell | balanced | unknown", "label": "string", "touches": "integer", "net": "number | null", "conflicts": "integer", "implication": "string"}, "resistance": "same structure", "latest_bar": "object | null; OHLCV pressure proxy for the last completed bar", "note": "string"},
+      "volume": {"ratio": "number | null; last volume / previous 20-bar median", "label": "string"},
+      "flow": {"available": "boolean", "foreign": "number | null; KRX net bought shares", "institution": "number | null", "net": "number | null", "label": "string", "note": "string"},
+      "plan": {"status": "ready | wait | none", "side": "long | none", "entry": "{low, high, mid, condition} | null", "stop": "{price, basis} | null", "targets": [{"price": "number", "low": "number", "high": "number", "pct": "number", "label": "string", "reason": "string"}], "risk_reward": "number | null", "rr_to_final": "number | null", "pyramid": "object | null", "invalidation": ["string"], "exit_rule": "string"},
+      "checklist": [{"key": "string", "label": "string", "value": "string", "ok": "boolean", "detail": "string"}],
+      "conditions_met": "integer",
+      "conditions_total": "integer",
+      "rule_check": {"available": "boolean", "support_touches": "integer", "midline_first": "integer", "stop_first": "integer", "ambiguous": "integer", "midline_rate": "number | null; in-sample rule check, not a probability", "breakout_touches": "integer", "breakout_holds": "integer", "breakout_hold_rate": "number | null", "note": "string"},
+      "summary": "string",
+      "limits": "string"
+    }
   },
   "risk_scenarios": {
     "current_price": "number; equals price_anchor.current_price",
@@ -134,7 +151,9 @@
         "days_min": "number | null",
         "days_max": "number | null",
         "provisional": "boolean, optional"
-      }]
+      }],
+      "box_midline_exit": "optional; {price, pct: 50, label, reason, source: video_OlMBqW3FBes, eligible}; annotations only, TP1~TP5 prices are never rewritten",
+      "box_exit_split": "optional; [midline 50%, opposite edge 50%]"
     },
     "balanced": "same scenario structure",
     "aggressive": "same scenario structure"
@@ -150,6 +169,8 @@
   },
   "prediction_outlook": {
     "price_anchor": "same snapshot as top-level price_anchor",
+    "box_tactics": "same structure as buy_price.box_tactics; the execution regime and plan do not change the statistical forecast distribution",
+    "box_tactics_status": "regime key",
     "decision": {
       "key": "string",
       "label": "string",
