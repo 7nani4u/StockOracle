@@ -10,6 +10,8 @@ import math
 from dataclasses import asdict, dataclass
 from statistics import median
 
+from .ohlcv import load as load_ohlcv
+
 
 @dataclass(frozen=True)
 class BoxRangeConfig:
@@ -46,31 +48,27 @@ def analyze_box_range(dd, config=None):
         raise ValueError("Invalid box range configuration")
     result = {"state": "insufficient_data", "support": None, "resistance": None,
               "box": None, "atr": None, "confidence": 0.0, "evidence": [],
+              "data_quality": None,
               "entries": {"exploration": _plan(), "main": _plan()},
               "targets": {k: _plan() for k in ("conservative", "neutral", "aggressive")},
               "config": asdict(cfg)}
     try:
-        arrays = [[float(x) for x in dd.get(plural, dd.get(capital, []))]
-                  for plural, capital in (("opens", "Open"), ("highs", "High"),
-                                          ("lows", "Low"), ("closes", "Close"),
-                                          ("volumes", "Volume"))]
-        if len({len(a) for a in arrays}) != 1:
-            raise ValueError("misaligned arrays")
-        op, hi, lo, cl, vol = arrays
+        (op, hi, lo, cl, vol), quality = load_ohlcv(
+            dd, window=cfg.lookback + cfg.confirmation_bars + cfg.atr_period + 5)
+        result["data_quality"] = quality
         dates = dd.get("dates", dd.get("Date"))
         if dates is not None:
             normalized_dates = [str(d) for d in dates]
             if (len(dates) != len(cl) or len(set(normalized_dates)) != len(dates)
                     or normalized_dates != sorted(normalized_dates)):
                 raise ValueError("dates must align, be unique and chronological")
-        for o, h, l, c, v in zip(*arrays):
-            if (not all(math.isfinite(x) for x in (o, h, l, c, v))
-                    or min(o, h, l, c) <= 0 or v < 0 or h < max(o, c, l)
-                    or l > min(o, c, h)):
-                raise ValueError("invalid OHLCV")
     except (ValueError, TypeError, AttributeError) as exc:
         result["evidence"] = ["유효하지 않은 OHLCV: " + str(exc)]
         return result
+    if quality["repaired_rows"] or quality["repaired_volume"]:
+        result["evidence"].append(
+            f"OHLC 외피 보정 {quality['repaired_rows']}행(종가 불변, 최대 {quality['max_gap_pct']:.2e})"
+            + (f" · 음수 거래량 {quality['repaired_volume']}행 0 처리" if quality["repaired_volume"] else ""))
     if len(cl) < cfg.min_bars + cfg.confirmation_bars:
         result["evidence"] = ["박스권 학습 및 최근 확인에 필요한 봉 부족"]
         return result

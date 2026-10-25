@@ -4,6 +4,7 @@ import math
 from .box_range import analyze_box_range
 from .trend_boxes import analyze_trend_boxes
 from .box_exit import attach_box_exit_levels
+from .box_tactics import analyze_box_tactics
 
 
 def _valid_range(value):
@@ -50,6 +51,21 @@ def apply_box_prediction(response, dd, *, in_progress=False):
         box["entries"]["main"] = dict(trend["entry_zone"])
         box["entries"]["main"]["reason"] += " · 추세 회귀 채널의 전환·재시험 보완 기준"
     box["evidence"].extend(trend["evidence"])
+    # ── 영상 OlMBqW3FBes 적용: 박스 중간선 자석·속도·OHLCV 압력 프록시 ──
+    # 영상의 호가창은 일봉으로 재현할 수 없으므로 압력은 근사치로만 표기한다.
+    tactics = analyze_box_tactics(source, box, trend, current, flow=response.get("investor_flow"))
+    box["tactics"] = tactics
+    box["tactics_version"] = tactics.get("version")
+    box["tactics_data_quality"] = tactics.get("data_quality")
+    reversal = tactics.get("reversal") or {}
+    box["reversal"] = reversal
+    if reversal.get("state") == "confirmed":
+        for plan in box["entries"].values():
+            plan["eligible"] = False
+            plan["reason"] += " · 실행 규칙: 저항 매도 우위·가짜 돌파 하락 시나리오 — 신규 매수 회피"
+    midline = (tactics.get("midline") or {}).get("price")
+    if midline is not None:
+        box["midline"] = midline
     if trend_risk or box["state"] == "false_breakout":
         for plan in box["entries"].values():
             plan["eligible"] = False
@@ -75,6 +91,35 @@ def apply_box_prediction(response, dd, *, in_progress=False):
         for plan in box["entries"].values():
             plan["eligible"] = False
             plan["reason"] += " · 기존 종합 위험 판단에 따라 신규 진입 보류"
+    # ── 영상 실행 규칙 게이팅: 느린 흐름·약한 중간 자석·반대 압력·가짜 돌파는
+    #    가격을 지우지 않고 "진입 불가 사유"만 덧붙인다(무조건 표시 계약 유지).
+    regime = tactics.get("regime") or {}
+    regime_key = regime.get("key")
+    non_tradeable = {"no_data", "no_trade", "mode_breakdown", "false_breakout",
+                     "breakout_watch", "breakout_unconfirmed", "range_wait"}
+    if regime_key in non_tradeable:
+        tag = " · 실행 규칙: " + str(regime.get("label") or "관망") + " — " + str((regime.get("why") or ["조건 미충족"])[0])
+        for plan in box["entries"].values():
+            if plan.get("eligible"):
+                plan["eligible"] = False
+                plan["reason"] += tag
+    if regime_key == "breakout_confirmed":
+        entry = (tactics.get("plan") or {}).get("entry") or {}
+        low, high = entry.get("low"), entry.get("high")
+        if low is not None and high is not None:
+            status = (tactics.get("plan") or {}).get("status")
+            tradeable = (tactics.get("plan") or {}).get("tradeable")
+            box["entries"]["main"] = {
+                "low": low, "high": high, "eligible": status == "ready" and tradeable is not False,
+                "reason": "돌파 확인 후 재시험 매수 · " + str(entry.get("condition") or ""),
+                "price_source": "breakout_retest",
+            }
+            box["entries"]["exploration"] = {
+                "low": low, "high": high, "eligible": False,
+                "reason": "돌파 확인 구간: 추격 대신 재시험 1회만 허용",
+                "price_source": "breakout_retest",
+            }
+    box["execution_regime"] = regime_key
     # Preserve existing computed prices as explicitly conditional estimates.
     # A missing box must not erase the application's independent pricing model.
     invalidated = box["state"] in {"breakdown_pending", "breakdown_confirmed", "breakout_confirmed"}
@@ -165,6 +210,7 @@ def apply_box_prediction(response, dd, *, in_progress=False):
             "evidence_class": "observed_box" if bounds else "insufficient",
         }]
     buy["box_stage_display"] = True
+    buy["box_tactics"] = tactics
     for family, key in (("aggressive", "exploration"), ("recommended", "main")):
         plan = box["entries"][key]
         if plan.get("price_source") == "legacy_estimate":
@@ -174,7 +220,7 @@ def apply_box_prediction(response, dd, *, in_progress=False):
             continue
         buy[family] = {"range": [plan["low"], plan["high"]] if plan["low"] is not None else None,
                        "pct": None, "basis": plan["reason"], "interpretation": plan["reason"]}
-    restrictive = trend_risk or box["state"] in {"breakdown_pending", "breakdown_confirmed", "false_breakout"}
+    restrictive = trend_risk or box["state"] in {"breakdown_pending", "breakdown_confirmed", "false_breakout"} or reversal.get("state") == "confirmed"
     prior_action = (prior.get("strategy_rec") or {}).get("action_key")
     action = "wait_breakdown" if restrictive or prior_action == "wait_breakdown" else "box_entry" if any(p["eligible"] for p in box["entries"].values()) else "wait_support"
     buy["strategy_rec"] = {**(prior.get("strategy_rec") or {}), "action_key": action, "rationale": box["evidence"]}
@@ -303,7 +349,10 @@ def apply_box_prediction(response, dd, *, in_progress=False):
         if box.get("support"):
             levels["warning_zone"] = [box["support"]["low"], box["support"]["high"]]
         outlook["box_range"] = box
+        outlook["box_tactics"] = tactics
+        outlook["box_reversal"] = reversal
         outlook["box_execution_status"] = action
+        outlook["box_tactics_status"] = regime_key
         outlook["forecast_basis_note"] = "통계적 가격 분포와 영상 기반 박스 전환의 실행 조건은 별도; 예측 분포가 진입 허용을 뜻하지 않음"
         decision = outlook.setdefault("decision", {})
         if action in {"wait_breakdown", "wait_support"}:

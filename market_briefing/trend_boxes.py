@@ -6,6 +6,8 @@ are configurable engineering choices, not thresholds stated by the video.
 from dataclasses import asdict, dataclass
 import math
 
+from .ohlcv import load as load_ohlcv
+
 
 @dataclass(frozen=True)
 class TrendBoxConfig:
@@ -33,26 +35,20 @@ def analyze_trend_boxes(dd, config=None):
         raise ValueError("Invalid trend box configuration")
     transition = lambda state, reason: {"state": state, "eligible": False, "reason": reason}
     result = {"status": "insufficient_data", "scales": {}, "atr": None,
+              "data_quality": None,
               "transition": transition("insufficient", "완료 봉 부족"),
               "scale_conflict": False,
               "entry_zone": {"low": None, "high": None, "eligible": False, "reason": "완료 봉 부족"},
               "evidence": [], "policy_rule": "general_TA_supplement", "config": asdict(cfg)}
     try:
-        arrays = [[float(v) for v in dd.get(k, dd.get(alias, []))] for k, alias in
-                  (("opens", "Open"), ("highs", "High"), ("lows", "Low"),
-                   ("closes", "Close"), ("volumes", "Volume"))]
-        if len({len(a) for a in arrays}) != 1:
-            raise ValueError("misaligned arrays")
-        op, hi, lo, cl, vol = arrays
+        (op, hi, lo, cl, vol), quality = load_ohlcv(
+            dd, window=2 * cfg.long_window + cfg.confirmation_bars + cfg.atr_period + 5)
+        result["data_quality"] = quality
         dates = dd.get("dates", dd.get("Date"))
         if dates is not None:
             ds = [str(v) for v in dates]
             if len(ds) != len(cl) or len(set(ds)) != len(ds) or ds != sorted(ds):
                 raise ValueError("dates must align and be unique chronological values")
-        for o, h, l, c, v in zip(*arrays):
-            if (not all(math.isfinite(x) for x in (o, h, l, c, v)) or min(o, h, l, c) <= 0
-                    or v < 0 or h < max(o, c, l) or l > min(o, c, h)):
-                raise ValueError("invalid OHLCV")
     except (ValueError, TypeError, AttributeError) as exc:
         result.update(status="invalid_data", evidence=[str(exc)])
         return result

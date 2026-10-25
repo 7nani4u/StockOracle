@@ -116,4 +116,24 @@ def attach_box_exit_levels(risk, original, box, current):
             if not matched:
                 unmatched.append(annotation)
         card["box_exit_unmatched"] = unmatched
+        # ── 영상 OlMBqW3FBes: 박스 중간선 50% + 반대편 50% 분할 청산 ──
+        # 기존 TP1~TP5 행은 절대 수정하지 않고, 중립 카드에 별도 청산 메모만 붙인다.
+        midline = _bounds([box.get("midline"), box.get("midline")])
+        range_like = box.get("state") in {"range", "support_rebound", "resistance_rejection"}
+        if key == "balanced" and midline and current and range_like and midline[0] > current:
+            far = observed or _bounds([plan.get("low"), plan.get("high")])
+            card["box_midline_exit"] = {
+                "price": midline[0],
+                "pct": 50,
+                "label": "박스 중간선 1차 익절(50%)",
+                "reason": "영상 사례: 중간 1/3 거래가 많을수록 중간선이 자석처럼 작동한다. 남은 50%는 반대편 가장자리에서 청산.",
+                "source": "video_OlMBqW3FBes",
+                "eligible": bool(far and far[1] > midline[0]),
+            }
+            card["box_exit_split"] = [
+                {"low": midline[0], "high": midline[0], "pct": 50,
+                 "label": "중간선 50%", "reason": "자석 회귀 1차 목표"},
+                {"low": (far or [None, None])[0], "high": (far or [None, None])[1], "pct": 50,
+                 "label": "반대편 50%", "reason": "박스 반대편 저항/지지에서 잔여 청산"},
+            ]
     box["box_tp_display"] = True
