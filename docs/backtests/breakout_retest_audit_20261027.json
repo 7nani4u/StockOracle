@@ -1,0 +1,42 @@
+{
+  "as_of": "2026-10-27",
+  "stride": 3,
+  "counts": {
+    "tickers": 52,
+    "snapshots": 19700,
+    "confirmed_breakout_candidates": 48,
+    "old_quote_only_ready": 1,
+    "blocked_unconfirmed_retest": 1
+  },
+  "missing_checks": {
+    "retest": 1
+  },
+  "examples": [
+    {
+      "ticker": "MU",
+      "date": "2023-05-23",
+      "checks": [
+        {
+          "key": "quote",
+          "label": "현재 시세가 진입 구간",
+          "ok": true
+        },
+        {
+          "key": "retest",
+          "label": "확정 일봉 재시험 지지",
+          "ok": false
+        },
+        {
+          "key": "pressure",
+          "label": "재시험 매수 압력",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Historical cached daily prefixes only; no future rows used for decisions.",
+    "Counts describe contract conformance, not prediction accuracy or profitability.",
+    "Raw box tactics; final service-wide risk gates are outside this comparison."
+  ]
+}
