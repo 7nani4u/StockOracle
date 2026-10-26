@@ -18,7 +18,10 @@ def test_execution_renderer_is_separate_and_clears_old_plan():
     data = {'prediction_outlook': {'decision': {'key': 'watch'}},
             'box_range': {'tactics': {'regime': {'key': 'range_support', 'tradeable': True,
                          'label': '지지 확인'}, 'summary': '시험 실행',
-                         'plan': {'status': 'wait', 'tradeable': False, 'entry': {'low': 90, 'high': 91}}}},
+                         'plan': {'status': 'wait', 'tradeable': False, 'entry': {'low': 90, 'high': 91},
+                                  'geometry': {'first_target_rr': 1.5, 'breakeven_rate': .57,
+                                               'measured_rate': None, 'ok': None},
+                                  'entry_checks': [{'label': '확정 일봉 재시험 지지', 'ok': False}]}}},
             'buy_price': {'box_stage_display': True}, 'risk_scenarios': None}
     script = r'''
 const vm = require('vm');
@@ -42,6 +45,9 @@ console.log(JSON.stringify({plan, entries, cleared:elements['box-execution-secti
     rendered = json.loads(result.stdout)
     assert '박스 실행 플랜' in rendered['plan']
     assert '대기' in rendered['plan']
+    assert '비교 자료 부족' in rendered['plan']
+    assert '감사 0%' not in rendered['plan']
+    assert '확정 일봉 재시험 지지' in rendered['plan']
     assert '박스 실행 플랜' not in rendered['entries']
     assert rendered['cleared']['innerHTML'] == ''
     assert rendered['cleared']['hidden'] is True
