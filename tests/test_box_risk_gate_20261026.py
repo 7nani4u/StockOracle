@@ -54,6 +54,7 @@ def test_raw_tactics_cannot_advertise_execution_after_final_risk_block(monkeypat
     assert plan["tradeable"] is False
     assert plan["status"] != "ready"
     assert not (plan.get("pyramid") or {}).get("ready")
+    assert "진입 보류" in out["box_range"]["tactics"]["summary"]
 
 
 def test_unblocked_breakout_stays_eligible(monkeypatch):

@@ -1,10 +1,9 @@
 """Execution regressions: measured outcomes must use attainable fill prices."""
-import math
-
 import pandas as pd
 import pytest
 
-from scripts.audit_box_tactics import plan_event, support_event, breakout_event, load_prices
+from scripts.audit_box_tactics import plan_event, support_event, breakout_event, load_prices, Bucket
+from scripts import audit_box_tactics as audit
 
 
 def prices(rows):
@@ -93,3 +92,66 @@ def test_incomplete_cache_schema_is_skipped(tmp_path):
     path = tmp_path / 'bad.csv'
     pd.DataFrame({'Close': [100]}, index=['2025-01-01']).to_csv(path)
     assert load_prices(str(path)) is None
+
+
+def test_unresolved_events_are_in_primary_rate_denominator():
+    bucket = Bucket()
+    bucket.add(True, False)
+    bucket.add(False, True)
+    bucket.add(False, False)
+    assert bucket.as_dict()['midline_rate'] == .3333
+    assert bucket.as_dict()['resolved_only_rate'] == .5
+
+
+def test_post_target_stop_move_applies_next_bar():
+    plan = tactics()
+    plan['plan']['stop_after_t1'] = 100
+    frame = prices([(100, 101, 99, 100), (100, 111, 95, 105), (105, 106, 99, 101)])
+    result = plan_event(frame, 0, plan, 2)
+    assert result['r'] == .5
+    assert result['exit_index'] == 2
+
+
+def test_profit_gap_is_resolved_before_intraday_low():
+    frame = prices([(100, 101, 99, 100), (100, 105, 95, 100), (125, 126, 80, 90)])
+    assert plan_event(frame, 0, tactics(), 2)['r'] == 1.5
+
+
+@pytest.mark.parametrize('weights', [(50, 20), (100, 100), (-1, 101)])
+def test_invalid_target_weights_are_rejected(weights):
+    plan = tactics()
+    for t, w in zip(plan['plan']['targets'], weights):
+        t['pct'] = w
+    frame = prices([(100, 101, 99, 100), (100, 121, 99, 115)])
+    assert plan_event(frame, 0, plan, 1) is None
+
+
+def test_audit_rejects_overlapping_positions_and_propagates_costs(monkeypatch):
+    frame = prices([(100, 101, 99, 100)] * 115)
+    monkeypatch.setattr(audit, 'analyze_box_range', lambda dd: {'state': 'range'})
+    monkeypatch.setattr(audit, 'analyze_trend_boxes', lambda dd: {})
+    monkeypatch.setattr(audit, 'analyze_box_tactics', lambda *a, **k: {})
+    monkeypatch.setattr(audit, 'support_event', lambda *a: None)
+    monkeypatch.setattr(audit, 'breakout_event', lambda *a: None)
+    def event(frame, i, tactics, horizon, **kwargs):
+        assert kwargs == {'cost_pct': .2, 'slippage_pct': .1}
+        return {'r': 1, 'exit': 'horizon', 'entry_index': i+1, 'exit_index': i+10}
+    monkeypatch.setattr(audit, 'plan_event', event)
+    result = audit.audit_ticker('TEST', frame, 1, cost_pct=.2, slippage_pct=.1)
+    assert len(result['plans']) == 2  # entries 91 and 101; no simultaneous positions
+
+
+def test_cli_skips_invalid_cache_and_accepts_plain_output_filename(tmp_path, monkeypatch):
+    cache = tmp_path / 'cache'
+    cache.mkdir()
+    pd.DataFrame({'Close': [100]}).to_csv(cache / 'BROKEN.csv')
+    prices([(100, 101, 99, 100)] * 200).to_csv(cache / 'GOOD.csv')
+    monkeypatch.setattr(audit, 'CACHE_DIR', str(cache))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(audit, 'audit_ticker', lambda *a, **k:
+        {'support': [], 'breakout': [], 'plans': [], 'states': audit.Counter(), 'regimes': audit.Counter()})
+    assert audit.main(['--out', 'result.json', '--cost-pct', '.2', '--slippage-pct', '.1']) == 0
+    import json
+    report = json.loads((tmp_path / 'result.json').read_text(encoding='utf-8'))
+    assert report['tickers'] == 1
+    assert report['execution']['cost_round_trip_pct'] == .2
