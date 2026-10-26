@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from market_briefing.rsi_research import laguerre_rsi, valid_segments, entry_signals, paired_bootstrap
+from market_briefing.rsi_research import laguerre_rsi, valid_segments, entry_signals, paired_bootstrap, trade_summary
 
 
 def frame(closes):
@@ -68,3 +68,67 @@ def test_bootstrap_is_paired_reproducible_and_keeps_zero_trade_symbols():
     assert a == paired_bootstrap([2, 3, 0], [1, 2, 0], samples=200)
     assert a['symbols'] == 3
     assert a['mean_difference_pct'] == pytest.approx(2/3)
+
+
+def test_summary_keeps_inactive_symbols_and_cost_stress_reduces_return():
+    trades = [{'ticker': 'A', 'entry_date': '2022-01-01', 'return_pct': 10},
+              {'ticker': 'A', 'entry_date': '2022-02-01', 'return_pct': -5}]
+    result = trade_summary(trades, ['A', 'B'])
+    assert result['by_symbol']['A'] == pytest.approx(4.5)
+    assert result['by_symbol']['B'] == 0
+    assert result['equal_symbol_return_pct'] == pytest.approx(2.25)
+    assert result['mean_completed_trade_drawdown_pct'] == pytest.approx(-2.5)
+    assert trade_summary(trades, ['A', 'B'], extra_cost=.3)['equal_symbol_return_pct'] < 2.25
+
+
+def test_selection_uses_supplied_training_scores_and_has_no_test_access():
+    from scripts.compare_rsi_laguerre import select_gamma
+    assert select_gamma({'gamma.3': .1, 'gamma.5': .2, 'gamma.7': -.1}) == 'gamma.5'
+    with pytest.raises(ValueError):
+        select_gamma({'bad': float('nan')})
+
+
+def test_higher_returns_alone_cannot_pass_adoption():
+    from scripts.compare_rsi_laguerre import adoption_checks
+    candidate = {'trades': 10, 'mean_trade_return_pct': 2, 'profit_factor': 2,
+                 'mean_completed_trade_drawdown_pct': -30}
+    base = {'mean_completed_trade_drawdown_pct': -10}
+    out = adoption_checks(candidate, base, {'mean_difference_pct': 10, 'ci95': [-1, 21]}, 1, -2)
+    assert out['test_improved'] is True
+    assert out['test_minimum_30_trades'] is False
+    assert out['paired_ci_positive'] is False
+    assert out['drawdown_not_worse'] is False
+    assert out['stress_improved'] is False
+
+
+def test_dynamic_oscillator_substitution_only_changes_input_not_config():
+    from market_briefing.dynamic_rsi import add_dynamic_rsi_features
+    data = frame(100 + np.sin(np.arange(200)/4)*5)
+    oscillator = laguerre_rsi(data.Close)
+    actual = entry_signals(data, oscillator, dynamic=True)
+    expected = add_dynamic_rsi_features(data.assign(RSI=oscillator), market='US')
+    trigger = np.flatnonzero(expected.DRSI_Signal.eq(1).to_numpy())
+    assert [s['signal_index'] for s in actual] == [int(i) for i in trigger if i >= 126]
+
+
+def test_offline_cli_comparison_serializes_both_markets_without_runtime_change(tmp_path):
+    import json
+    from scripts.compare_rsi_laguerre import run
+    cache = tmp_path/'cache'
+    cache.mkdir()
+    data = frame(100 + np.sin(np.arange(180)/4)*5)
+    data.index.name = 'Date'
+    data.to_csv(cache/'000000_KS.csv')
+    data.to_csv(cache/'TEST.csv')
+    output = tmp_path/'result.json'
+    report = run(cache, output)
+    saved = json.loads(output.read_text(encoding='utf-8'))
+    assert saved['runtime_changed'] is False
+    assert report['replacement_supported_by_this_test'] is False
+    assert saved['symbols'] == {'KRX': ['000000_KS'], 'US': ['TEST']}
+    assert len(saved['summaries']) == 11
+    assert output.with_suffix('.trades.csv').exists()
+    for split in saved['splits']:
+        for market in ('KRX', 'US'):
+            assert 'wilder' in saved['summaries']
+            assert saved['summaries']['wilder'][split][market]['by_symbol']
