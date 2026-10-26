@@ -329,9 +329,9 @@ def _ml_honest_auc(metadata: dict | None) -> tuple[float, str, dict]:
     return estimates[basis], basis, estimates
 
 
-def _ml_blend_weight(auc: float, approved: bool = True) -> float:
+def _ml_blend_weight(auc: float, approved: bool = True, *, direction: str | None = None) -> float:
     """검증 AUC → 확률 블렌드 가중. <0.52: 0%(신뢰 없음), 0.52~0.56: 10%, 0.56~0.60: 15%, 0.60~0.65: 20%, 그 이상 25%."""
-    if not approved or auc < 0.52:
+    if not approved or auc < 0.52 or str(direction or "").upper() == "NEUTRAL":
         return 0.0
     if auc < 0.56:
         return 0.10
@@ -18812,7 +18812,7 @@ def route(path: str, params: Dict) -> Dict:
                 # 검증 AUC(training_metadata.json)로 가중을 정한다. 근거 AUC 는 선택 편향이 없는 추정 중 최솟값이다
                 # (홀드아웃 0.569 는 탐색에 쓰인 값이라 낙관적 — 워크포워드 0.546·OOF 0.515, _ml_honest_auc 참조).
                 _auc, _auc_basis, _auc_estimates = _ml_honest_auc(_ml_get_metadata())
-                _ml_weight = _ml_blend_weight(_auc, _ml_approved)
+                _ml_weight = _ml_blend_weight(_auc, _ml_approved, direction=ml_prediction.get("direction"))
                 # High volatility penalty: reduce weight by 30%
                 try:
                     _atr_pct = float(ml_prediction.get("atr_pct", 2.0))
@@ -22157,10 +22157,6 @@ input::placeholder{color:#484f58}
           <div id="prediction-overview-section"></div>
         </div>
         <div class="card">
-          <div class="card-title">📊 기술적 현재 상태</div>
-          <div id="prediction-status-section"></div>
-        </div>
-        <div class="card">
           <div class="card-title">🧠 AI·패턴 보조 진단</div>
           <div id="prediction-ai-context-section"></div>
         </div>
@@ -23619,32 +23615,6 @@ function renderSignalConfidence(d) {
       '</span>'
     : '';
 
-  const reasons = [];
-  (sc.cap_reasons || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
-  (ci.reason || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
-  (sentiment.reasons || []).forEach(reason => { if (reason && !reasons.includes(reason)) reasons.push(reason); });
-  if (!reasons.length) reasons.push('분석 지표 간 신호가 대체로 일치하며 별도 제한 요인이 확인되지 않았습니다.');
-  const reasonHtml = reasons.map(reason =>
-    '<div class="signal-confidence-reason"><span class="signal-confidence-reason-icon">•</span><span>' +
-    _escPrediction(reason) + '</span></div>'
-  ).join('');
-
-  const newsMetaParts = [];
-  if (sentiment.source_breakdown) {
-    const sourceLabels = {dart:'DART', disclosure:'공시', naver:'네이버', yahoo_rss:'야후파이낸스', google_news:'구글뉴스', google_news_ko:'구글뉴스(한국어)', news:'뉴스', x:'X'};
-    const parts = Object.keys(sentiment.source_breakdown).map(key =>
-      (sourceLabels[key] || key) + ' ' + sentiment.source_breakdown[key]
-    );
-    if (parts.length) newsMetaParts.push('뉴스 출처: ' + parts.join(' · '));
-  }
-  if (sentiment.quality != null) {
-    newsMetaParts.push('뉴스 품질 ' + sentiment.quality + (sentiment.effective_n != null ? ' · 유효표본 ' + sentiment.effective_n : ''));
-  }
-  if (sentiment.credibility_weighted) newsMetaParts.push('출처 신뢰도 가중 적용');
-  const newsMetaHtml = newsMetaParts.length
-    ? '<div class="signal-confidence-news-meta">📰 ' + _escPrediction(newsMetaParts.join(' · ')) + '</div>'
-    : '';
-
   el.innerHTML =
     '<div class="signal-confidence-header">' +
       '<div><div class="signal-confidence-title">🧭 신호 신뢰도 종합</div>' +
@@ -23673,9 +23643,7 @@ function renderSignalConfidence(d) {
           ' 방향 종합점수는 ' + weightedText + '점이며 50점은 중립 기준입니다.</div>' +
         '<div class="signal-confidence-definition">주의: ' + conf.toFixed(0) + '%는 주가의 상승확률이나 적중확률이 아닙니다. AI·기술·뉴스·시장 신호의 일치도와 데이터 불확실성을 종합한 값입니다.</div>' +
       '</div>' +
-    '</div>' +
-    '<div class="signal-confidence-section"><div class="signal-confidence-section-title">신뢰도 제한·변동 요인</div>' +
-      '<div class="signal-confidence-reason-grid">' + reasonHtml + '</div>' + newsMetaHtml + '</div>';
+    '</div>';
 }
 // ── 종목 분석 결과 렌더링 ──
 function renderResult(d) {
@@ -25242,13 +25210,12 @@ function _predictionTone(tone) {
 function renderPredictionSections(d, isKrx) {
   const p = d.prediction_outlook || null;
   const overviewEl = document.getElementById('prediction-overview-section');
-  const statusEl = document.getElementById('prediction-status-section');
   const scenariosEl = document.getElementById('prediction-scenarios-section');
   const aiContextEl = document.getElementById('prediction-ai-context-section');
-  if (!overviewEl || !statusEl || !scenariosEl || !aiContextEl) return;
+  if (!overviewEl || !scenariosEl || !aiContextEl) return;
   if (!p || !p.decision) {
     const fallback = '<p style="color:#8b949e;font-size:12px">현재 앱에서 확보한 데이터가 부족해 상세 조건부 시나리오를 만들 수 없습니다.</p>';
-    overviewEl.innerHTML = fallback; statusEl.innerHTML = fallback; scenariosEl.innerHTML = fallback;
+    overviewEl.innerHTML = fallback; scenariosEl.innerHTML = fallback;
     aiContextEl.innerHTML = fallback;
     return;
   }
@@ -25356,24 +25323,7 @@ function renderPredictionSections(d, isKrx) {
     </section>`;
   }
 
-  // ── ⑤ 기술적 상태 요약: 5개 카드 (대표 상태 → 핵심 수치 → 짧은 해석) ──
-  const statusHtml = (p.status || []).map(item => {
-    const color = _predictionTone(item.tone);
-    // 각 카드의 detail에서 불필요한 지표 나열을 줄이고, 핵심만
-    const detail = _escPrediction(item.detail || '');
-    const shortDetail = detail.split('·').slice(0,2).join(' · ');
-    return `<div class="prediction-status-card">
-      <div class="prediction-status-label">${_escPrediction(item.label)} <span class="prediction-help" title="${_escPrediction(item.help || '')}">?</span></div>
-      <div class="prediction-status-value" style="color:${color};font-size:13px">${_escPrediction(item.value)}</div>
-      <div class="prediction-status-detail" style="font-size:10px;color:#8b949e">${shortDetail}</div>
-    </div>`;
-  }).join('');
-  const technicalHtml = statusHtml
-    ? `<div class="prediction-status-grid">${statusHtml}</div>`
-    : `<div class="prediction-mini-list" style="padding:10px;border:1px solid #30363d;border-radius:8px">기술 지표를 확보하지 못해 현재 상태를 표시할 수 없습니다. 일봉 데이터가 누적되면 추세·거래량·변동성·주요 가격을 표시합니다.</div>`;
-
   const fc = p.forecast || null;
-  let forecastHtml = '';
   // ── 파동 방향·적중률 (스크린샷-2 계약) : 어떤 종목에서도 항상 표시 ──
   const wave = (fc && fc.wave) || p.wave_analysis || null;
   const waveHtml = (() => {
@@ -25397,50 +25347,9 @@ function renderPredictionSections(d, isKrx) {
       <div style="font-size:10px;color:#6e7681;margin-top:6px">과거 적중률은 미래 수익 보장이 아니라 구조·변동성 참고치입니다. 진입은 지지·거래량 확인과 함께 판단하세요.</div>
     </div>`;
   })();
-  if (fc) {
-    const fcPct = v => _isFiniteNumber(v) ? `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '—';
-    const fcDrivers = (fc.key_drivers_up || []).slice(0, 3).map(x => `<div>▲ ${_escPrediction(x)}</div>`).join('');
-    const fcRisks = (fc.key_risks_down || []).slice(0, 3).map(x => `<div>▼ ${_escPrediction(x)}</div>`).join('');
-    if (fc.status === 'unavailable' || fc.base_price == null) {
-      forecastHtml = `<div id="prediction-forecast-summary" data-status="unavailable" style="background:#0d1117;border:1px solid #d2992255;border-radius:10px;padding:12px;margin-bottom:12px">
-        <div style="font-size:12px;font-weight:800;color:#d29922">📉 가격 예측 요약 · ${_escPrediction(fc.status_label || '예측 불가')}</div>
-        <div style="font-size:11px;color:#cdd9e5;margin-top:4px">${_escPrediction(fc.reason || '데이터가 부족해 가격 범위를 만들지 않았습니다.')}</div>
-        ${(fcDrivers || fcRisks) ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px;font-size:11px;line-height:1.55"><div style="color:#3fb950">${fcDrivers}</div><div style="color:#f85149">${fcRisks}</div></div>` : ''}
-      </div>${waveHtml}`;
-    } else {
-      const fcColor = fc.direction_key === 'up' ? '#3fb950' : fc.direction_key === 'down' ? '#f85149' : '#d29922';
-      const fcRange = fc.range_p10_p90 || [];
-      const fcRangeRet = fc.range_return_pct || [];
-      const fcProb = fc.scenario_probabilities || {};
-      const probabilityText = value => _isFiniteNumber(value) ? `${Number(value)}%` : '미산정';
-      const sigmaText = _isFiniteNumber(fc.sigma_horizon_pct) ? `${Number(fc.sigma_horizon_pct).toFixed(1)}%` : '미산정';
-      const fcStatusColor = fc.status === 'ok' ? '#3fb950' : '#d29922';
-      forecastHtml = `<div id="prediction-forecast-summary" data-status="${_escPrediction(fc.status)}" style="background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;align-items:center">
-          <div style="font-size:12px;font-weight:800;color:#cdd9e5">📈 ${_escPrediction(fc.horizon_label || '')} 가격 예측 요약 <span style="font-size:10px;color:#8b949e;font-weight:400">기준일 ${_escPrediction(fc.as_of_date || '—')} → 대상 거래일 ${_escPrediction(fc.target_date || '—')} (${Number(fc.horizon_days || 0)}거래일)</span></div>
-          <span style="font-size:10px;border:1px solid ${fcStatusColor}55;color:${fcStatusColor};border-radius:999px;padding:1px 7px">${_escPrediction(fc.status_label || '')}</span>
-        </div>
-        <div class="prediction-status-grid" style="margin-top:8px">
-          <div class="prediction-status-card"><div class="prediction-status-label">예상 방향</div><div class="prediction-status-value" style="color:${fcColor}">${_escPrediction(fc.direction || '—')}</div><div class="prediction-status-detail">상승 ${probabilityText(fcProb.up)} · 횡보 ${probabilityText(fcProb.sideways)} · 하락 ${probabilityText(fcProb.down)}</div></div>
-          <div class="prediction-status-card"><div class="prediction-status-label">기준 예상가</div><div class="prediction-status-value" style="color:${fcColor}">${fmt(fc.base_price, isKrx)}</div><div class="prediction-status-detail">현재가 대비 ${fcPct(fc.expected_return_pct)}</div></div>
-          <div class="prediction-status-card"><div class="prediction-status-label">예상 범위 (P10~P90)</div><div class="prediction-status-value" style="font-size:12px;white-space:nowrap">${fmtRange(fcRange[0], fcRange[1], isKrx)}</div><div class="prediction-status-detail">${fcPct(fcRangeRet[0])} ~ ${fcPct(fcRangeRet[1])}</div></div>
-          <div class="prediction-status-card"><div class="prediction-status-label">불확실성</div><div class="prediction-status-value">${_escPrediction(fc.uncertainty || '—')}</div><div class="prediction-status-detail">기간 변동성 1σ ±${sigmaText}</div></div>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px;font-size:11px;line-height:1.55">
-          <div style="color:#3fb950"><div style="font-size:10px;color:#8b949e;margin-bottom:2px">주요 상승 요인</div>${fcDrivers}</div>
-          <div style="color:#f85149"><div style="font-size:10px;color:#8b949e;margin-bottom:2px">주요 하락 위험</div>${fcRisks}</div>
-        </div>
-        ${fc.upside_range_capped && Array.isArray(fc.original_target_range) ? `<div style="font-size:10px;color:#d29922;margin-top:6px">원 목표가 ${fmtRange(fc.original_target_range[0], fc.original_target_range[1], isKrx)}는 ${_escPrediction(fc.horizon_label || '')} 변동성 범위 밖이라 상승 시나리오 범위를 제한했습니다.</div>` : ''}
-        <div style="font-size:10px;color:#6e7681;margin-top:6px">${_escPrediction(fc.note || '')} · ${_escPrediction(fc.volatility_basis || '')}${fc.target_date_basis ? ' · ' + _escPrediction(fc.target_date_basis) : ''}</div>
-      </div>${waveHtml}`;
-    }
-  } else if (wave) {
-    forecastHtml = waveHtml;
-  }
   // 가격 앵커·시세 출처·데이터 품질·경고는 API 응답과 예측 계산에는 유지하되,
   // 예측 탭에는 노출하지 않는다. 사용자가 보는 화면은 판단과 조건부 예측만 제공한다.
-  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${forecastHtml}${stagesHtml}</div>`;
-  statusEl.innerHTML = technicalHtml;
+  overviewEl.innerHTML = `<div class="prediction-stack">${decisionHtml}${waveHtml}${stagesHtml}</div>`;
 
   // ── ③/④ 조건부 시나리오: 시간축 명확화 + 중복 제거 ──
   const horizonNote = _escPrediction(p.scenario_note || '');
@@ -25555,7 +25464,7 @@ function renderForecast(d, isKrx) {
       if (buyRiskNotesEl) buyRiskNotesEl.innerHTML = '';
     } else {
       const sr = bp.strategy_rec || {};
-      if (d.box_range && entryGuideEl) entryGuideEl.innerHTML = d.box_range.legacy_buy_display ? '<b>가격 기준:</b> 박스권 미확인으로 기존 지표·변동성 기반 참고 가격을 표시합니다. 반등 확인 전에는 진입 대기합니다.' : '<b>가격 기준:</b> 밴드 A·B·C의 기존 1~5단계 가격을 유지하고 박스 진입 구간과 겹치는 단계에 함께 표시합니다. 지지·반등 확인 후 검토합니다.';
+      if (d.box_range && entryGuideEl) entryGuideEl.innerHTML = d.box_range.legacy_buy_display ? '' : '<b>가격 기준:</b> 밴드 A·B·C의 기존 1~5단계 가격을 유지하고 박스 진입 구간과 겹치는 단계에 함께 표시합니다. 지지·반등 확인 후 검토합니다.';
       const cur = bp.current;
       const fmtPct = p => (p >= 0 ? `<span style="color:#3fb950">+${p}%</span>` : `<span style="color:#f85149">${p}%</span>`);
 
