@@ -278,6 +278,8 @@ def correlate_and_narrow(
         _ml_trust = ml_prediction.get("trust") if isinstance(ml_prediction, dict) else None
         if _ml_trust is not None:
             ml_bias *= _clamp(_num(_ml_trust, 1.0), 0.0, 1.0)
+        if ml_prediction and str(ml_prediction.get("direction") or "").upper() == "NEUTRAL":
+            ml_bias = 0.0  # conditional UP odds do not authorize a directional vote
         signals["ml"] = ml_bias
         # 신호 신뢰도 — confidence 는 '신호가 중립에서 얼마나 극단적인가'(50~88)이지 방향이 아니다.
         # 부호 없이 투표에 넣으면 SELL(하락) 신호의 높은 신뢰도가 항상 '상승' 표로 집계돼 하락 국면의

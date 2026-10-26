@@ -191,16 +191,19 @@ def load_model(force_reload: bool = False) -> bool:
         _FEATURE_COLS = list(FEATURE_COLS)
         return False
 
-    # Explicitly rejected/experimental artifacts must not become production predictions.
+    # Approval and real-data provenance must both be explicit before deserialization.
     try:
         with open(model_dir / METADATA_FILENAME, encoding="utf-8") as handle:
             candidate_meta = json.load(handle)
     except (OSError, ValueError):
         candidate_meta = {}
-    provenance = candidate_meta.get("data_provenance") or {}
-    if ((candidate_meta.get("validation") or {}).get("passed") is False
-            or provenance.get("synthetic_present") is True
-            or provenance.get("known") is False
+    if not isinstance(candidate_meta, dict):
+        candidate_meta = {}
+    validation = candidate_meta.get("validation")
+    provenance = candidate_meta.get("data_provenance")
+    if (not isinstance(validation, dict) or validation.get("passed") is not True
+            or not isinstance(provenance, dict) or provenance.get("known") is not True
+            or provenance.get("synthetic_present") is not False
             or candidate_meta.get("experimental_override") is True):
         logger.warning("[ML] Rejected experimental/unvalidated model metadata")
         _MODEL, _MODEL_AVAILABLE, _MODEL_TYPE = None, False, "none"
@@ -513,53 +516,58 @@ def _sigmoid_calibrate(proba: float, calib: Dict[str, float]) -> float:
         return proba
 
 
-def _predict_proba(feature_vec: List[float]) -> float:
-    """Run model.predict_proba and return prob of class 1 (UP). Handles lightgbm booster vs sklearn."""
-    if _MODEL is None:
-        return 0.5
+def _predict_probability_details(feature_vec: List[float]) -> tuple[float, Optional[Dict[str, float]]]:
+    """Infer once and retain unconditional class probabilities beside directional odds.
+
+    The existing calibrated UP value is P(UP | UP or DOWN), not P(UP).
+    Return details locally so simultaneous requests never share inference results.
+    """
+    model = _MODEL
+    if model is None:
+        return 0.5, None
     X = np.array(feature_vec, dtype=float).reshape(1, -1)
     # handle NaN/inf
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
     try:
-        if _MODEL_TYPE == "lightgbm":
-            # lightgbm Booster has different API
-            try:
-                # LGBMClassifier has predict_proba
-                proba = _MODEL.predict_proba(X)
-                if isinstance(proba, np.ndarray) and proba.ndim == 2 and proba.shape[1] >= 2:
-                    if proba.shape[1] >= 3:
-                        return float(proba[0, 1] / max(proba[0, 0] + proba[0, 1], 1e-8))
-                    return float(proba[0, 1])
-                # fallback: Booster predict returns margin
-                raw = _MODEL.predict(X)
-                # if raw in [0,1] already probs
-                if isinstance(raw, np.ndarray):
-                    v = float(raw[0])
-                    return v if 0 <= v <= 1 else 1 / (1 + math.exp(-v))
-                return float(raw)
-            except AttributeError:
-                # pure Booster
-                import lightgbm as lgb  # type: ignore
-                raw = _MODEL.predict(X)
-                v = float(raw[0]) if isinstance(raw, np.ndarray) else float(raw)
-                # if booster trained as binary, raw is prob already
-                return v if 0 <= v <= 1 else 1 / (1 + math.exp(-v))
-        else:
-            # sklearn or generic joblib
-            if hasattr(_MODEL, "predict_proba"):
-                proba = _MODEL.predict_proba(X)
-                if proba.shape[1] >= 3:
-                    return float(proba[0, 1] / max(proba[0, 0] + proba[0, 1], 1e-8))
-                return float(proba[0, 1]) if proba.shape[1] > 1 else float(proba[0, 0])
-            elif hasattr(_MODEL, "decision_function"):
-                score = float(_MODEL.decision_function(X)[0])
-                return 1 / (1 + math.exp(-score))
+        if hasattr(model, "predict_proba"):
+            probabilities = np.asarray(model.predict_proba(X), dtype=float)
+        elif _MODEL_TYPE == "lightgbm":
+            raw = np.asarray(model.predict(X), dtype=float)
+            if raw.ndim == 2:
+                probabilities = raw  # multiclass Booster has no classes_ attribute
             else:
-                pred = _MODEL.predict(X)
-                return 0.75 if int(pred[0]) == 1 else 0.25
+                value = float(raw.reshape(-1)[0])
+                probability = value if 0 <= value <= 1 else 1 / (1 + math.exp(-value))
+                probabilities = np.array([[1 - probability, probability]])
+        elif hasattr(model, "decision_function"):
+            score = float(model.decision_function(X)[0])
+            probability = 1 / (1 + math.exp(-score))
+            probabilities = np.array([[1 - probability, probability]])
+        else:
+            probability = 0.75 if int(model.predict(X)[0]) == 1 else 0.25
+            return probability, None
+        if probabilities.ndim != 2 or probabilities.shape[0] != 1:
+            raise ValueError("Invalid model probability shape")
+        values = probabilities[0]
+        classes = list(getattr(model, "classes_", range(len(values))))
+        if (len(classes) != len(values) or len(set(classes)) != len(classes)
+                or any(label not in (0, 1, 2) for label in classes)
+                or not np.isfinite(values).all() or (values < 0).any()
+                or (values > 1).any() or not np.isclose(values.sum(), 1.0)):
+            raise ValueError("Invalid model class probabilities")
+        by_class = dict(zip(classes, values))
+        down, up, neutral = (float(by_class.get(label, 0.0)) for label in (0, 1, 2))
+        directional_mass = up + down
+        probability = up / directional_mass if directional_mass > 0 else 0.5
+        return probability, {"DOWN": down, "UP": up, "NEUTRAL": neutral}
     except Exception as e:
         logger.warning(f"[ML] predict_proba failed: {e}")
-        return 0.5
+        return 0.5, None
+
+
+def _predict_proba(feature_vec: List[float]) -> float:
+    """Compatibility API: return P(UP | UP or DOWN), respecting classes_ order."""
+    return _predict_probability_details(feature_vec)[0]
 
 
 def _heuristic_proba_fallback(feature_dict: Dict[str, float]) -> float:
@@ -638,6 +646,9 @@ def predict_from_ohlcv(
         "confidence": 0.5,
         "prob_up": 0.5,
         "prob_down": 0.5,
+        "probability_basis": "heuristic",
+        "prob_neutral": None,
+        "class_probabilities": None,
         "horizon": "14d",
         "market": market,
         "model_available": is_model_available(),
@@ -663,6 +674,7 @@ def predict_from_ohlcv(
                     fallback["prob_up"] = 0.46
             except Exception:
                 pass
+        fallback["prob_down"] = 1.0 - fallback["prob_up"]
         return fallback
 
     # lazy load model on first call
@@ -682,8 +694,9 @@ def predict_from_ohlcv(
             v = 0.0
         feature_vec.append(float(v))
 
+    class_probabilities = None
     if is_model_available() and _MODEL is not None:
-        prob_up_raw = _predict_proba(feature_vec)
+        prob_up_raw, class_probabilities = _predict_probability_details(feature_vec)
         # calibration
         if _CALIB_PARAMS is not None:
             prob_up = _sigmoid_calibrate(prob_up_raw, _CALIB_PARAMS)
@@ -708,6 +721,9 @@ def predict_from_ohlcv(
         pass
     if confidence < _ACTION_CONFIDENCE_MIN:
         direction = "NEUTRAL"
+    if class_probabilities and class_probabilities["NEUTRAL"] >= max(
+            class_probabilities["UP"], class_probabilities["DOWN"]):
+        direction = "NEUTRAL"
 
     return {
         "direction": direction,
@@ -716,6 +732,10 @@ def predict_from_ohlcv(
         "prob_up": round(float(prob_up), 3),
         "prob_up_raw": round(float(prob_up_raw), 3) if 'prob_up_raw' in locals() else round(float(prob_up), 3),
         "prob_down": round(float(prob_down), 3),
+        "probability_basis": "directional_conditional" if is_model_available() else "heuristic",
+        "prob_neutral": round(class_probabilities["NEUTRAL"], 3) if class_probabilities else None,
+        "class_probabilities": ({name: round(value, 3) for name, value in class_probabilities.items()}
+                                if class_probabilities else None),
         "horizon": "14d",
         "market": market,
         "model_available": is_model_available(),

@@ -57,6 +57,24 @@ def apply_box_prediction(response, dd, *, in_progress=False):
     box["tactics"] = tactics
     box["tactics_version"] = tactics.get("version")
     box["tactics_data_quality"] = tactics.get("data_quality")
+    regime = tactics.get("regime") or {}
+    regime_key = regime.get("key")
+    if regime_key == "breakout_confirmed":
+        entry = (tactics.get("plan") or {}).get("entry") or {}
+        low, high = entry.get("low"), entry.get("high")
+        if low is not None and high is not None:
+            status = (tactics.get("plan") or {}).get("status")
+            tradeable = (tactics.get("plan") or {}).get("tradeable")
+            box["entries"]["main"] = {
+                "low": low, "high": high, "eligible": status == "ready" and tradeable is not False,
+                "reason": "돌파 확인 후 재시험 매수 · " + str(entry.get("condition") or ""),
+                "price_source": "breakout_retest",
+            }
+            box["entries"]["exploration"] = {
+                "low": low, "high": high, "eligible": False,
+                "reason": "돌파 확인 구간: 추격 대신 재시험 1회만 허용",
+                "price_source": "breakout_retest",
+            }
     reversal = tactics.get("reversal") or {}
     box["reversal"] = reversal
     if reversal.get("state") == "confirmed":
@@ -103,29 +121,26 @@ def apply_box_prediction(response, dd, *, in_progress=False):
             if plan.get("eligible"):
                 plan["eligible"] = False
                 plan["reason"] += tag
-    if regime_key == "breakout_confirmed":
-        entry = (tactics.get("plan") or {}).get("entry") or {}
-        low, high = entry.get("low"), entry.get("high")
-        if low is not None and high is not None:
-            status = (tactics.get("plan") or {}).get("status")
-            tradeable = (tactics.get("plan") or {}).get("tradeable")
-            box["entries"]["main"] = {
-                "low": low, "high": high, "eligible": status == "ready" and tradeable is not False,
-                "reason": "돌파 확인 후 재시험 매수 · " + str(entry.get("condition") or ""),
-                "price_source": "breakout_retest",
-            }
-            box["entries"]["exploration"] = {
-                "low": low, "high": high, "eligible": False,
-                "reason": "돌파 확인 구간: 추격 대신 재시험 1회만 허용",
-                "price_source": "breakout_retest",
-            }
+    # Final risk gates also govern the raw execution card shown in the UI.
+    execution = tactics.get("plan") or {}
+    allowed = (box["entries"]["main"].get("eligible")
+               if regime_key in {"breakout_confirmed", "trend_retest"}
+               else any(p.get("eligible") for p in box["entries"].values()))
+    if not allowed and execution.get("status") == "ready":
+        execution.update(status="wait", tradeable=False)
+        reasons = list(dict.fromkeys(p.get("reason", "진입 보류") for p in box["entries"].values()))
+        execution["risk_gate_reasons"] = reasons
+        execution["invalidation"] = list(execution.get("invalidation") or []) + reasons
+        tactics["summary"] = "진입 보류 · " + " / ".join(reasons)
+        if execution.get("pyramid"):
+            execution["pyramid"].update(ready=False, enabled=False)
     box["execution_regime"] = regime_key
     # Preserve existing computed prices as explicitly conditional estimates.
     # A missing box must not erase the application's independent pricing model.
     invalidated = box["state"] in {"breakdown_pending", "breakdown_confirmed", "breakout_confirmed"}
     for key, family in (("exploration", "aggressive"), ("main", "recommended")):
         plan = box["entries"][key]
-        plan["price_source"] = "observed_box" if box.get("support") else "trend_retest" if plan["low"] is not None else "unavailable"
+        plan.setdefault("price_source", "observed_box" if box.get("support") else "trend_retest" if plan["low"] is not None else "unavailable")
         reference = _valid_range((original_buy.get(family) or {}).get("range"))
         if plan["low"] is None and reference and current is not None and not invalidated:
             plan.update(low=reference[0], high=reference[1], eligible=False, price_source="legacy_estimate",
@@ -238,7 +253,17 @@ def apply_box_prediction(response, dd, *, in_progress=False):
         _fallback_market = "KRX"
 
     def _fallback_risk_card(key: str) -> dict:
-        base = current if current and current > 0 else 100.0
+        if current is None:
+            return {
+                "label": _LABELS[key], "icon": _ICONS[key],
+                "target": None, "tp_range": None, "tp_levels": [], "stop": None,
+                "stop_pct": None, "return": None, "rr_ratio": None,
+                "target_basis": ["유효한 현재 시세 미확보 — 가격 계산 보류"],
+                "target_confidence_pct": None, "expected_value_pct": None,
+                "target_eligible": False, "entry_eligible": False,
+                "entry_status": "유효한 현재 시세 미확보", "price_source": "unavailable",
+            }
+        base = current
         atr_fb = base * 0.02
         tgt_hi = base + atr_fb * {"conservative": 1.2, "balanced": 2.5, "aggressive": 4.5}[key]
         tgt_lo = base + atr_fb * {"conservative": 0.8, "balanced": 1.8, "aggressive": 3.2}[key]

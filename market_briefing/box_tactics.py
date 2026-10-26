@@ -56,7 +56,7 @@ from statistics import median
 
 from .ohlcv import load as load_ohlcv
 
-VERSION = "2026-10-25.dupond-box-v3"
+VERSION = "2026-10-26.dupond-box-v4"
 
 VIDEO_EVIDENCE = {
     "url": "https://www.youtube.com/watch?v=OlMBqW3FBes",
@@ -78,6 +78,9 @@ VIDEO_EVIDENCE = {
         "ATR_normalisation",
         "volume_median_participation",
         "numeric_thresholds_not_in_video",
+        "single_add_50_percent_instead_of_video_two_adds",
+        "breakout_split_exits_instead_of_video_final_entry_3R_full_exit",
+        "stop_after_t1_policy",
     ],
     "limits": (
         "영상의 호가창 압력은 일봉 OHLCV로 직접 재현할 수 없어 종가 위치·몸통·꼬리·"
@@ -729,7 +732,7 @@ def build_plan(regime, box, mid, speed, support_pressure, resistance_pressure,
             "stop": {"price": _round(stop, 4), "basis": "재시험 구간 하단 - 0.6 ATR"},
             "stop_after_t1": _round(entry_mid, 4),
             "targets": [t1, t2],
-            "risk_reward": 3.0,
+            "risk_reward": 2.0,
             "rr_to_final": 3.0,
             "pyramid": None,
             "geometry": _plan_geometry(1.0, measured=False),
