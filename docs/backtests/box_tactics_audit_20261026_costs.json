@@ -1,0 +1,321 @@
+{
+  "snapshots": 19700,
+  "tickers": 52,
+  "state_counts": {
+    "no_box": 16225,
+    "range": 1013,
+    "resistance_rejection": 263,
+    "breakdown_pending": 52,
+    "breakdown_confirmed": 216,
+    "insufficient_data": 1340,
+    "breakout_confirmed": 236,
+    "false_breakout": 55,
+    "support_rebound": 243,
+    "breakout_pending": 57
+  },
+  "regime_counts": {
+    "range_wait": 862,
+    "breakout_watch": 426,
+    "mode_breakdown": 262,
+    "no_data": 60,
+    "breakout_confirmed": 48,
+    "breakout_unconfirmed": 179,
+    "false_breakout": 54,
+    "no_trade": 97,
+    "range_support": 147
+  },
+  "support_tests": {
+    "samples": 284,
+    "midline_first": 108,
+    "stop_first": 155,
+    "unresolved": 21,
+    "ambiguous": 1,
+    "midline_rate": 0.3803,
+    "midline_rate_ci": [
+      0.3258,
+      0.438
+    ],
+    "resolved_only_rate": 0.4106,
+    "mean_r": null
+  },
+  "support_by_magnet": {
+    "normal": {
+      "samples": 129,
+      "midline_first": 46,
+      "stop_first": 73,
+      "unresolved": 10,
+      "ambiguous": 0,
+      "midline_rate": 0.3566,
+      "midline_rate_ci": [
+        0.2792,
+        0.4423
+      ],
+      "resolved_only_rate": 0.3866,
+      "mean_r": null
+    },
+    "strong": {
+      "samples": 68,
+      "midline_first": 20,
+      "stop_first": 39,
+      "unresolved": 9,
+      "ambiguous": 0,
+      "midline_rate": 0.2941,
+      "midline_rate_ci": [
+        0.1992,
+        0.4111
+      ],
+      "resolved_only_rate": 0.339,
+      "mean_r": null
+    },
+    "weak": {
+      "samples": 87,
+      "midline_first": 42,
+      "stop_first": 43,
+      "unresolved": 2,
+      "ambiguous": 1,
+      "midline_rate": 0.4828,
+      "midline_rate_ci": [
+        0.3807,
+        0.5863
+      ],
+      "resolved_only_rate": 0.4941,
+      "mean_r": null
+    }
+  },
+  "support_by_speed": {
+    "fast": {
+      "samples": 126,
+      "midline_first": 45,
+      "stop_first": 71,
+      "unresolved": 10,
+      "ambiguous": 1,
+      "midline_rate": 0.3571,
+      "midline_rate_ci": [
+        0.2788,
+        0.4439
+      ],
+      "resolved_only_rate": 0.3879,
+      "mean_r": null
+    },
+    "normal": {
+      "samples": 36,
+      "midline_first": 11,
+      "stop_first": 19,
+      "unresolved": 6,
+      "ambiguous": 0,
+      "midline_rate": 0.3056,
+      "midline_rate_ci": [
+        0.18,
+        0.4686
+      ],
+      "resolved_only_rate": 0.3667,
+      "mean_r": null
+    },
+    "slow": {
+      "samples": 122,
+      "midline_first": 52,
+      "stop_first": 65,
+      "unresolved": 5,
+      "ambiguous": 0,
+      "midline_rate": 0.4262,
+      "midline_rate_ci": [
+        0.342,
+        0.5149
+      ],
+      "resolved_only_rate": 0.4444,
+      "mean_r": null
+    }
+  },
+  "support_by_pressure": {
+    "balanced": {
+      "samples": 115,
+      "midline_first": 49,
+      "stop_first": 59,
+      "unresolved": 7,
+      "ambiguous": 0,
+      "midline_rate": 0.4261,
+      "midline_rate_ci": [
+        0.3395,
+        0.5174
+      ],
+      "resolved_only_rate": 0.4537,
+      "mean_r": null
+    },
+    "buy": {
+      "samples": 96,
+      "midline_first": 32,
+      "stop_first": 58,
+      "unresolved": 6,
+      "ambiguous": 0,
+      "midline_rate": 0.3333,
+      "midline_rate_ci": [
+        0.2471,
+        0.4324
+      ],
+      "resolved_only_rate": 0.3556,
+      "mean_r": null
+    },
+    "sell": {
+      "samples": 73,
+      "midline_first": 27,
+      "stop_first": 38,
+      "unresolved": 8,
+      "ambiguous": 1,
+      "midline_rate": 0.3699,
+      "midline_rate_ci": [
+        0.2682,
+        0.4845
+      ],
+      "resolved_only_rate": 0.4154,
+      "mean_r": null
+    }
+  },
+  "support_by_regime": {
+    "breakout_watch": {
+      "samples": 87,
+      "midline_first": 42,
+      "stop_first": 43,
+      "unresolved": 2,
+      "ambiguous": 1,
+      "midline_rate": 0.4828,
+      "midline_rate_ci": [
+        0.3807,
+        0.5863
+      ],
+      "resolved_only_rate": 0.4941,
+      "mean_r": null
+    },
+    "no_trade": {
+      "samples": 40,
+      "midline_first": 20,
+      "stop_first": 15,
+      "unresolved": 5,
+      "ambiguous": 0,
+      "midline_rate": 0.5,
+      "midline_rate_ci": [
+        0.352,
+        0.648
+      ],
+      "resolved_only_rate": 0.5714,
+      "mean_r": null
+    },
+    "range_support": {
+      "samples": 53,
+      "midline_first": 17,
+      "stop_first": 29,
+      "unresolved": 7,
+      "ambiguous": 0,
+      "midline_rate": 0.3208,
+      "midline_rate_ci": [
+        0.2109,
+        0.4548
+      ],
+      "resolved_only_rate": 0.3696,
+      "mean_r": null
+    },
+    "range_wait": {
+      "samples": 104,
+      "midline_first": 29,
+      "stop_first": 68,
+      "unresolved": 7,
+      "ambiguous": 0,
+      "midline_rate": 0.2788,
+      "midline_rate_ci": [
+        0.2017,
+        0.3717
+      ],
+      "resolved_only_rate": 0.299,
+      "mean_r": null
+    }
+  },
+  "breakout_hold": {
+    "balanced": {
+      "held": 23,
+      "samples": 32,
+      "rate": 0.7188,
+      "rate_ci": [
+        0.5463,
+        0.8444
+      ]
+    },
+    "buy": {
+      "held": 17,
+      "samples": 22,
+      "rate": 0.7727,
+      "rate_ci": [
+        0.5656,
+        0.8988
+      ]
+    },
+    "sell": {
+      "held": 12,
+      "samples": 15,
+      "rate": 0.8,
+      "rate_ci": [
+        0.5481,
+        0.9295
+      ]
+    },
+    "unknown": {
+      "held": 2,
+      "samples": 3,
+      "rate": 0.6667,
+      "rate_ci": [
+        0.2077,
+        0.9385
+      ]
+    }
+  },
+  "ready_plans": {
+    "samples": 15,
+    "mean_r": 0.7391,
+    "win_rate": 0.4,
+    "win_rate_ci": [
+      0.1982,
+      0.6425
+    ],
+    "exit_counts": {
+      "stop_gap": 1,
+      "target2": 4,
+      "stop": 8,
+      "horizon": 2
+    },
+    "by_magnet": {
+      "normal": {
+        "samples": 12,
+        "mean_r": 0.2442,
+        "win_rate": 0.3333
+      },
+      "strong": {
+        "samples": 3,
+        "mean_r": 2.7184,
+        "win_rate": 0.6667
+      }
+    }
+  },
+  "limitations": [
+    "일봉 완료 창만 사용하며 신호 봉 종가 이후만 채점한다.",
+    "실제 다음 시가와 지정 비용·슬리피지로 계산; 종목별 동시 포지션은 하나다.",
+    "시가 갭을 먼저 처리하고 이후 같은 봉의 목표·손절 경합은 손절 우선이다.",
+    "지지 도달률 분모에 기간 내 미도달을 포함; resolved_only_rate는 별도다.",
+    "겹치는 지지 관측은 독립 표본이 아니므로 Wilson 구간은 기술적 참고다.",
+    "표본 비율은 확률 보정이 아니며, 표본이 적은 칸은 신뢰구간이 넓다.",
+    "영상은 분단위 차트를 다루고 이 감사는 일봉이므로 시간 규모가 다르다."
+  ],
+  "generated_at": "2026-10-26T14:53:19+00:00",
+  "stride": 3,
+  "horizon_bars": 10,
+  "cache_dir": "datasets\\audit_cache",
+  "module_version": "2026-10-26.dupond-box-v4",
+  "audit_version": "2026-10-26.execution-v2",
+  "execution": {
+    "cost_round_trip_pct": 0.2,
+    "slippage_each_side_pct": 0.1,
+    "fill_basis": "next_open",
+    "positions_per_ticker": 1,
+    "stop_move_timing": "next_bar",
+    "pyramiding_simulated": false
+  },
+  "decision_basis": "raw_box_tactics_rules; excludes final service trend/quote/overall-risk gates",
+  "source": "scripts/audit_box_tactics.py"
+}
