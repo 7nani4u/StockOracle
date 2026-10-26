@@ -791,10 +791,10 @@ def test_forecast_tab_keeps_only_actionable_sections_in_required_order():
     buy_pos = forecast_html.index('id="buy-price-section"')
     scenario_pos = forecast_html.index('id="prediction-scenarios-section"')
     risk_pos = forecast_html.index('id="risk-grid"')
-    status_pos = forecast_html.index('id="prediction-status-section"')
     ai_pos = forecast_html.index('id="prediction-ai-context-section"')
 
-    assert overview_pos < status_pos < ai_pos < buy_pos < risk_pos < scenario_pos
+    assert overview_pos < ai_pos < buy_pos < risk_pos < scenario_pos
+    assert 'id="prediction-status-section"' not in forecast_html
     assert "분석 흐름" not in forecast_html
     assert "📈 목표 가격 범위" not in forecast_html
     assert 'id="target-price-section"' not in forecast_html
@@ -897,7 +897,7 @@ def test_forecast_renders_dynamic_rsi_purchase_timing_and_conditions():
     assert "watch: '관찰'" in renderer
     assert "${_escPrediction(timing.state || '')}" not in renderer
     assert "이 단계 수는 상승확률이나 적중률이 아닙니다" in renderer
-    assert forecast_html.index('id="prediction-overview-section"') < forecast_html.index('id="prediction-status-section"')
+    assert forecast_html.index('id="prediction-overview-section"') < forecast_html.index('id="prediction-ai-context-section"')
     assert forecast_html.index('id="prediction-ai-context-section"') < forecast_html.index('id="buy-price-section"')
     assert "127봉 전 신호" not in renderer
 

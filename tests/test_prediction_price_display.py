@@ -84,10 +84,14 @@ def test_int_day_window_helper_keeps_order():
 def test_price_ranges_render_on_one_line_with_single_unit():
     assert "function fmtRange(lo, hi, isKrx)" in HTML
     assert HTML.count("fmtRange(") >= 8
-    # 매수 단계 가격 셀 줄바꿈 금지
-    assert ".buy-stage-price{font-size:10px;font-weight:900;color:#e6edf3;white-space:nowrap;text-align:right;line-height:1.25}" in HTML
+    # 매수 단계 가격 셀: 데스크톱 줄바꿈 금지 + 모바일에서는 줄바꿈 허용(잘림 방지)
+    assert ".buy-stage-price{font-size:10px;font-weight:900;color:#e6edf3;white-space:nowrap;text-align:right;line-height:1.25;overflow-wrap:anywhere}" in HTML
+    assert ".buy-stage-price{font-size:9px;white-space:normal;overflow-wrap:anywhere;word-break:break-all" in HTML
     # 목표가 셀·청산 범위 줄바꿈 금지
     assert ".risk-tgt{color:#f85149;font-weight:700;white-space:nowrap}" in HTML
     # 가격 열 확장 (좁은 열이 '원' 고아 단어를 만든다)
     assert "minmax(132px,1.55fr)" in HTML
     assert "minmax(106px,1.35fr)" in HTML
+    # 모바일 잘림 방지: 스크롤 + 줄바꿈 폴백이 있어야 한다
+    assert ".buy-stage-table{display:flex;flex-direction:column;gap:4px;margin-bottom:8px;overflow-x:auto" in HTML
+    assert "minmax(0,1.55fr)" in HTML

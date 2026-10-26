@@ -515,9 +515,10 @@ def test_entry_sections_keep_titles_and_withhold_unsubstantiated_box_prices():
     # 제목은 신규상장(관찰 전용)에서도 바뀌지 않고, 칩으로만 구분한다
     assert "⚡ 관찰 가격 구간 · 흐름 확인" not in HTML
     assert "관찰 전용</span>" in HTML
-    # 박스 전략은 관측 근거가 없으면 강제 가격 대신 명시적으로 보류한다.
-    assert "가격 표시 보류" in HTML
-    assert "else if (d.box_range)" in HTML
+    # 무조건 표시 계약: 두 구간 제목은 밴드가 비어도 항상 렌더링된다.
+    assert "recBandsInner" in HTML and "aggBandsInner" in HTML
+    assert "참고 범위 확인 중" in HTML
+    assert "else if (d.box_range && !d.box_range.legacy_buy_display && !bp.box_stage_display)" in HTML
     # 근거 등급과 추정 확률 표기
     assert "b.evidence_label" in HTML
     assert "b.nearest_reference" in HTML

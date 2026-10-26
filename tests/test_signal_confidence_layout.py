@@ -26,13 +26,13 @@ def test_signal_confidence_layout_restores_compact_context_chips():
 
     for text in (
         "종합 신뢰도", "현재 해석", "거시 ", "뉴스감정 ",
-        "신뢰도 제한·변동 요인", "상승확률이나 적중확률이 아닙니다",
+        "상승확률이나 적중확률이 아닙니다",
         "데이터 ", "상한 ", "최적 ",
     ):
         assert text in renderer
     for data_key in (
         "macro_regime", "sector_relative",
-        "days_to_earnings", "sentiment", "cap_reasons", "confidence_interval",
+        "days_to_earnings", "sentiment", "confidence_interval",
         "history_confidence", "optimal_lookback_days",
     ):
         assert data_key in renderer
@@ -40,6 +40,8 @@ def test_signal_confidence_layout_restores_compact_context_chips():
     assert "방향 점수 구성" not in renderer
     assert "signal-confidence-factor-grid" not in renderer
     assert "signal-confidence-source-grid" not in renderer
+    assert "신뢰도 제한·변동 요인" not in renderer
+    assert 'class="signal-confidence-reason-grid"' not in renderer
 
 
 def test_confidence_meter_is_accessible_and_explains_the_neutral_baseline():

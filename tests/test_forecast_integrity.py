@@ -134,12 +134,14 @@ console.log(JSON.stringify({first, clearedRisk: elements['risk-grid'].innerHTML,
     rendered = json.loads(completed.stdout)
     assert "데이터 상태: 데이터 부족" not in rendered["first"]["overview"]
     assert "RSI 미확보" in rendered["first"]["overview"]
-    assert "상승 미산정" in rendered["first"]["overview"]
-    assert "1σ ±미산정" in rendered["first"]["overview"]
+    assert 'prediction-forecast-summary' not in rendered["first"]["overview"]
+    assert "가격 예측 요약" not in rendered["first"]["overview"]
     assert "가능성 산정 보류" in rendered["first"]["risk"]
     assert "기간 산정 보류" in rendered["first"]["risk"]
     assert "리스크 계산에 필요한" in rendered["clearedRisk"]
-    assert "진입 가격 구간을 산정할" in rendered["emptyEntry"]
+    # 무조건 표시 계약: 빈 buy_price에서도 두 구간 제목은 항상 렌더링된다.
+    assert "1차 탐색 구간" in rendered["emptyEntry"]
+    assert "2차 매수 구간" in rendered["emptyEntry"]
 
 
 def test_completed_dynamic_rsi_renders_entry_price_and_clears_it_when_waiting():
