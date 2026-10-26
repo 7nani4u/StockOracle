@@ -755,12 +755,18 @@ def build_plan(regime, box, mid, speed, support_pressure, resistance_pressure,
                      50, "1차 50% · 1.5R", "돌파 후 재시험 지지 확인 시 절반 청산")
         t2 = _target(entry_mid + risk * 3.0, entry_mid + risk * 2.8, entry_mid + risk * 3.2,
                      50, "2차 50% · 3R", "영상 기준 1:3 손익비 최종 목표")
-        status = "ready" if current is not None and entry_low - atr * 0.5 <= current <= entry_high + atr * 0.5 else "wait"
+        quote_in_zone = current is not None and entry_low - atr * 0.5 <= current <= entry_high + atr * 0.5
         latest = rows[-1] if rows else None
         retest_now = bool(latest and latest["low"] <= entry_high and latest["close"] >= entry_low)
         pressure_now = (resistance_pressure or {}).get("verdict") == "buy"
         volume_now = ((volume_context or {}).get("ratio") or 0) >= 1.2
-        pyramid_ready = retest_now and pressure_now and volume_now
+        entry_checks = [
+            {"key": "quote", "label": "현재 시세가 진입 구간", "ok": quote_in_zone},
+            {"key": "retest", "label": "확정 일봉 재시험 지지", "ok": retest_now},
+            {"key": "pressure", "label": "재시험 매수 압력", "ok": pressure_now},
+        ]
+        status = "ready" if all(check["ok"] for check in entry_checks) else "wait"
+        pyramid_ready = status == "ready" and volume_now
         pyramid_checks = [
             {"key": "retest", "label": "깨진 저항 재시험", "ok": retest_now},
             {"key": "pressure", "label": "재시험 매수 압력", "ok": pressure_now},
@@ -769,6 +775,7 @@ def build_plan(regime, box, mid, speed, support_pressure, resistance_pressure,
         return {
             "status": status, "side": "long",
             "tradeable": status == "ready",
+            "entry_checks": entry_checks,
             "entry": {"low": _round(entry_low, 4), "high": _round(entry_high, 4),
                       "mid": _round(entry_mid, 4),
                       "condition": "깨진 저항의 재시험에서 종가 지지 + 매수 압력 우위 확인"},
@@ -1201,6 +1208,9 @@ def _summary(regime, plan):
         return (f"{regime.get('label')} · 진입 {_price_text(entry['low'])}~{_price_text(entry['high'])}, "
                 f"{(plan.get('exit_rule') or '')}{warning}")
     if key == "wait":
+        missing = [item["label"] for item in plan.get("entry_checks") or [] if not item.get("ok")]
+        if missing:
+            return f"{regime.get('label')} · 진입 대기: " + " · ".join(missing) + " 확인 필요"
         return f"{regime.get('label')} · 가격이 진입 구간에 오면 실행, 지금은 추격 금지"
     why = (regime.get("why") or ["실행 조건 미충족"])[0]
     return f"{regime.get('label')} · {why}"

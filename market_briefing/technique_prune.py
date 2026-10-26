@@ -117,7 +117,7 @@ def rules_cache_token(path: str | None = None) -> str:
     target = path or rules_path()
     try:
         stat = os.stat(target)
-        return f"{stat.st_mtime_ns}:{stat.st_size}"
+        return f"{stat.st_mtime_ns}:{stat.st_size}:{stat.st_ino}:{stat.st_ctime_ns}"
     except OSError:
         return "missing"
 
@@ -128,7 +128,14 @@ def load_rules(path: str | None = None,
     target = path or rules_path()
     now = time.monotonic()
     token = rules_cache_token(target)
+    # Windows can preserve identical timestamp/size on rapid in-place writes.
+    # Reread during activation; stable multi-MB artifacts retain the cheap TTL path.
+    try:
+        activating = abs(time.time_ns() - os.stat(target).st_mtime_ns) < 2_000_000_000
+    except OSError:
+        activating = False
     if (target in _RULES_CACHE and _RULES_CACHE_TOKEN.get(target) == token
+            and not activating
             and (now - _RULES_CACHE_TS.get(target, 0.0)) < ttl):
         cached = _RULES_CACHE[target]
         return dict(cached) if isinstance(cached, dict) else {}
