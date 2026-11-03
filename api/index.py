@@ -21590,7 +21590,6 @@ input::placeholder{color:#484f58}
 .wf-table{width:100%;border-collapse:collapse;font-size:10px;margin-top:4px}
 .wf-table th,.wf-table td{padding:2px 4px;border-bottom:1px solid #21262d;text-align:left;white-space:nowrap}
 .wf-table th{color:#6e7681;font-weight:600}
-.wf-footnote{font-size:10px;color:#6e7681;margin-top:8px;line-height:1.6}
 @media(max-width:900px){
   .wf-days{display:flex;overflow-x:auto;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;padding-bottom:4px}
   .wf-day{flex:0 0 158px;scroll-snap-align:start}
@@ -22141,7 +22140,6 @@ input::placeholder{color:#484f58}
           </div>
           <div class="wf-days" id="wf-days"></div>
           <div class="wf-detail" id="wf-detail" aria-live="polite"></div>
-          <div class="wf-footnote" id="wf-footnote"></div>
         </div>
       </section>
 
@@ -27484,7 +27482,6 @@ function _wfRender(d, notice) {
     }
   }
   _wfRenderDetail();
-  _wfRenderFootnote(d);
 }
 
 function _wfDayBadge(day) {
@@ -27598,14 +27595,10 @@ function _wfForecastBlock(f, title) {
       ['예상 등락률', `<b class="${_wfChgCls(f.expected_pct)}">${_wfSigned(f.expected_pct)}</b>`],
       ['80% 변동 범위', `${_wfSigned(f.low_pct)} ~ ${_wfSigned(f.high_pct)}` + (closeRange ? `<br><span class="wf-muted">지수 ${closeRange}</span>` : '')],
       ['최근 변동성', f.sigma_pct != null ? `일 ${_wfEsc(f.sigma_pct)}% (EWMA)` : ''],
-      ['신뢰도', `<b>${_wfEsc(conf.label || '—')}</b>` + (conf.note ? `<br><span class="wf-muted">${_wfEsc(conf.note)}</span>` : '')],
-      ['모델', `${_wfEsc(f.model)} · 학습 ${_wfEsc(f.n_train)}일 · ${_wfEsc(f.model_version)}`],
-      ['데이터 기준', `국내 ${_wfMD(f.anchor)} 종가 ${_wfNum(f.anchor_close)}` + (f.us_session ? ` · 미국 ${_wfMD(f.us_session)} 마감 반영` : ' · 미국 마감 미반영') +
-                     (f.horizon > 1 ? ` · ${_wfEsc(f.horizon)}거래일 앞` : '')],
+      ['신뢰도', `<b>${_wfEsc(conf.label || '—')}</b>`],
       ['생성 시각', `${_wfTime(f.generated_at)} (정보 마감 ${_wfTime(f.info_cutoff)})`],
     ]) +
-    (drivers ? `<div style="margin-top:4px"><b>주요 영향 지표</b> <span class="wf-muted">(모델 기여도 — 인과 관계 아님)</span><ul class="wf-drivers">${drivers}</ul></div>` : '') +
-    (f.note ? `<div class="wf-note">${_wfEsc(f.note)}</div>` : '');
+    (drivers ? `<div style="margin-top:4px"><b>주요 영향 지표</b> <span class="wf-muted">(모델 기여도 — 인과 관계 아님)</span><ul class="wf-drivers">${drivers}</ul></div>` : '');
 }
 
 function _wfIndexDetail(code, e) {
@@ -27698,24 +27691,6 @@ function _wfRenderDetail() {
   else if (!day.trading) body = `<div class="wf-note">⛔ 휴장 — ${_wfEsc(day.closure_reason || '')}. 거래가 없어 예측을 만들지 않습니다.</div>`;
   else body = `<div class="wf-detail-grid">${_WF_CODES.map(c => `<div class="wf-detail-col">${_wfIndexDetail(c, (day.per_index || {})[c])}</div>`).join('')}</div>`;
   el.innerHTML = `<div class="wf-detail-title"><span>📋 ${title}</span><span class="wf-muted" style="font-weight:400;font-size:10px">카드를 눌러 다른 날 보기</span></div>${body}`;
-}
-
-function _wfRenderFootnote(d) {
-  const el = _wfEl('wf-footnote');
-  if (!el) return;
-  const v = d.validation || {};
-  const live = d.live_record || {};
-  const line = c => {
-    const x = v[c] || {};
-    const l = live[c] || {};
-    return `${_WF_NAMES[c]} 적중 ${_wfRate(x.accuracy)} (다수 클래스 ${_wfRate(x.majority_accuracy)}, 미국 방향 단순 규칙 ${_wfRate(x.us_direction_accuracy)})` +
-      ` · Brier ${x.brier ?? '—'} (기준 ${x.brier_base ?? '—'}) · n=${x.n ?? '—'}` +
-      ` · 실시간 누적 ${l.live_hits || 0}/${l.live_scored || 0}`;
-  };
-  const range = ((v.KOSPI || {}).holdout_range || []).join(' ~ ');
-  el.innerHTML = `검증(장 시작 전 예측, walk-forward 보류 구간 ${_wfEsc(range)}): ${_wfEsc(line('KOSPI'))} / ${_wfEsc(line('KOSDAQ'))}. ` +
-    `2거래일 이상 앞 예측과 미국 장 마감 전 예측은 국내 지표만으로 기저율보다 나은 근거가 없어 기저율을 그대로 표시합니다. ` +
-    `코스닥은 방향 적중률이 미국 방향 단순 규칙과 비슷하고 확률 품질(Brier)만 나았습니다. 통계적 추정이며 투자 권유가 아닙니다.`;
 }
 
 function _wfSelect(dateIso) {

@@ -595,7 +595,7 @@ const days = elements['wf-days'].innerHTML;
 const detail = elements['wf-detail'].innerHTML;
 sandbox.__wf.select('2026-11-07');
 console.log(JSON.stringify({days, detail, sat: elements['wf-detail'].innerHTML,
-  foot: elements['wf-footnote'].innerHTML, meta: elements['wf-head-meta'].textContent}));
+  meta: elements['wf-head-meta'].textContent}));
 """.replace("SOURCE", json.dumps(_weekly_js(), ensure_ascii=False)).replace("DATA", json.dumps(payload, ensure_ascii=False))
     done = subprocess.run(["node", "-"], input=harness, text=True, encoding="utf-8", capture_output=True, timeout=60)
     assert done.returncode == 0, done.stderr[-3000:]
@@ -614,7 +614,13 @@ console.log(JSON.stringify({days, detail, sat: elements['wf-detail'].innerHTML,
     assert "장 시작 전 예측" in out["days"]
     assert "오늘" in out["days"]
     assert "다음 거래주 첫 거래일" in out["sat"]
-    assert "66.2%" in out["foot"] and "54.5%" in out["foot"]
     assert "미국 11/03 마감" in out["meta"]
+    # 메인 페이지에서 숨긴 문구: 신뢰도 설명·모델·데이터 기준 행, 예측 안내문, 검증 각주
+    rendered = out["days"] + out["detail"] + out["sat"]
+    for hidden in ("기저율보다 나은 정보가 없어", "<span>모델</span>", "<span>데이터 기준</span>",
+                   "미국 장이 아직 끝나지 않아", "거래일 앞 예측 —", "walk-forward 보류 구간",
+                   "과거 검증(2022~2026 보류 구간)"):
+        assert hidden not in rendered, hidden
+    assert "wf-footnote" not in _weekly_js() and 'id="wf-footnote"' not in SOURCE
     assert "undefined" not in out["days"] + out["detail"] + out["sat"]
     assert "NaN" not in out["days"] + out["detail"] + out["sat"]
