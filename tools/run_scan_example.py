@@ -63,7 +63,7 @@ def main():
     print("=" * 60)
 
     # KOSPI200 벤치마크 데이터
-    bench_data = fetch_ohlcv("^KS200", "1y")
+    bench_data = fetch_ohlcv("^KS11", "1y")  # ^KS200 은 Yahoo 가 1행만 반환
     bench_closes = bench_data.get("closes", [])
 
     # 스냅샷 & 품질 필터 빌드

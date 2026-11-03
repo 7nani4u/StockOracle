@@ -19456,15 +19456,25 @@ def route(path: str, params: Dict) -> Dict:
         return debug_info
 
     if path == "/api/cron":
+        # 주간 예측 원장은 다른 작업 실패와 무관하게 갱신한다(매시 정각: 장 시작 전·장중·마감 결과 기록).
+        weekly_status: Dict[str, Any] = {}
+        try:
+            from market_briefing.weekly_forecast import build_weekly_payload
+            weekly = build_weekly_payload(force=True)
+            weekly_status = {"ok": bool(weekly.get("ok")), "generated_at": weekly.get("generated_at"),
+                             "stale": bool(weekly.get("data_stale"))}
+        except Exception as e:
+            weekly_status = {"ok": False, "error": str(e)}
         try:
             fetch_screener()
             fetch_toss_overseas_screener()
             kr_surge_performance = _kr_surge_performance_payload(update=True)
             return {"status": "ok", "message": "Cache warmed and KR surge performance updated",
                     "kr_surge_performance": {"event_count": kr_surge_performance.get("event_count"),
-                                             "as_of": kr_surge_performance.get("as_of")}}
+                                             "as_of": kr_surge_performance.get("as_of")},
+                    "weekly_forecast": weekly_status}
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": str(e), "weekly_forecast": weekly_status}
 
     if path == "/api/price":
         # 미국 주식 현재가 전용 경량 엔드포인트 — 캐시 없음, 폴링용
@@ -19694,6 +19704,18 @@ def route(path: str, params: Dict) -> Dict:
         if str(params.get("refresh") or "") == "1":
             _CACHE.pop("fetch_us_opening_surge|()|[]", None)
         return fetch_us_opening_surge()
+
+    if path == "/api/kr/weekly-forecast":
+        # 코스피·코스닥 주간 방향 예측 캘린더 (market_briefing/weekly_forecast.py)
+        # 실패해도 마지막 정상 결과를 '오래된 데이터'로 돌려주며 임의 예측값을 만들지 않는다.
+        try:
+            from market_briefing.weekly_forecast import build_weekly_payload, start_scheduler_once
+            start_scheduler_once()
+            refresh = str(params.get("refresh") or "") in ("1", "true", "yes")
+            return build_weekly_payload(force=refresh)
+        except Exception as e:
+            print(f"[weekly-forecast] 오류: {e}\n{traceback.format_exc()}")
+            return {"ok": False, "error": f"주간 예측 생성 실패: {e}", "data_stale": True}
 
     # ── HybridTurtle 통합 엔드포인트 ─────────────────────────────────────────
     # /api/scan             → 7단계 스캔 엔진 실행
@@ -21129,6 +21151,7 @@ input::placeholder{color:#484f58}
 /* 매수 적정가 카드 */
 .buy-price-grid{display:flex;flex-direction:column;gap:16px;margin-bottom:16px}
 .forecast-guide{font-size:11px;color:#8b949e;line-height:1.55;margin:0 0 12px;padding:9px 11px;background:#0d1117;border:1px solid #30363d;border-radius:8px}
+.forecast-guide:empty{display:none}
 .forecast-guide b{color:#cdd9e5}
 .buy-card{border-radius:12px;padding:12px 14px;border:1px solid transparent}
 .buy-card.aggressive{background:#2d200a;border-color:#4d3615}
@@ -21502,6 +21525,80 @@ input::placeholder{color:#484f58}
 .ci-name{font-size:11px;color:#8b949e;margin-bottom:3px;font-weight:500}
 .ci-val{font-size:17px;font-weight:700}
 .ci-chg{font-size:12px;font-weight:600;margin-top:2px}
+
+/* ── 📅 코스피·코스닥 주간 예측 (시장 현황 ↔ 업종별 흐름 사이) ── */
+#weekly-forecast{margin-top:16px}
+#weekly-forecast [hidden]{display:none!important}
+.wf-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px}
+.wf-head-left{min-width:0;flex:1;display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.wf-header>.home-section-refresh{flex-shrink:0;white-space:nowrap}
+.wf-title{font-size:14px;font-weight:700;color:#e6edf3}
+.wf-phase{font-size:10px;padding:2px 7px;border-radius:10px;background:#21262d;color:#8b949e;border:1px solid #30363d}
+.wf-stale-badge{font-size:10px;font-weight:600;color:#d29922;background:#2d2200;border:1px solid #4a3800;border-radius:10px;padding:2px 7px}
+.wf-head-meta{flex-basis:100%;font-size:10px;color:#8b949e;line-height:1.5}
+.wf-legend{font-size:10px;color:#6e7681;margin-bottom:7px;display:flex;flex-wrap:wrap;gap:4px 10px}
+.wf-state{text-align:center;padding:14px;color:#8b949e;font-size:12px}
+.wf-days{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px}
+.wf-day{
+  background:#161b22;border:1px solid #30363d;border-radius:10px;padding:9px 9px 8px;
+  cursor:pointer;min-width:0;text-align:left;color:inherit;font:inherit;
+  display:flex;flex-direction:column;gap:5px;transition:border-color .15s,background .15s
+}
+.wf-day:hover{border-color:#388bfd}
+.wf-day:focus-visible{outline:2px solid #388bfd;outline-offset:1px}
+.wf-day.wf-today{border-color:#388bfd;background:#161e2e;box-shadow:0 0 0 1px #388bfd55 inset}
+.wf-day.wf-selected{border-color:#58a6ff;background:#1a2233}
+.wf-day.wf-closed{background:#13171d}
+.wf-day-head{display:flex;align-items:baseline;justify-content:space-between;gap:4px}
+.wf-day-dow{font-size:12px;font-weight:700;color:#e6edf3;white-space:nowrap}
+.wf-day-dow small{font-size:10px;font-weight:600;color:#8b949e;margin-left:3px}
+.wf-today-tag{font-size:9px;font-weight:700;color:#58a6ff;margin-left:3px}
+.wf-kind{font-size:9px;padding:1px 6px;border-radius:8px;background:#21262d;color:#8b949e;white-space:nowrap}
+.wf-kind.k-actual{background:#0c2d6b;color:#79c0ff}
+.wf-kind.k-preopen{background:#0d2d1a;color:#3fb950}
+.wf-kind.k-intraday{background:#2d2200;color:#d29922}
+.wf-kind.k-closed{background:#2d2200;color:#d29922}
+.wf-row{background:#1c2230;border:1px solid #21262d;border-radius:8px;padding:5px 7px;min-width:0}
+.wf-row-top{display:flex;align-items:baseline;flex-wrap:wrap;gap:1px 5px;min-width:0}
+.wf-name{font-size:10px;color:#8b949e;flex-shrink:0}
+.wf-dir{font-size:11px;font-weight:700;min-width:0;overflow-wrap:anywhere}
+.wf-sub{font-size:10px;color:#8b949e;margin-top:2px;line-height:1.45;overflow-wrap:anywhere}
+.wf-sub b{color:#cdd9e5;font-weight:600}
+.wf-up{color:#3fb950}
+.wf-down{color:#f85149}
+.wf-hold{color:#8b949e}
+.wf-actual{color:#58a6ff}
+.wf-muted{color:#6e7681}
+.wf-hit{color:#3fb950;font-weight:700}
+.wf-miss{color:#f85149;font-weight:700}
+.wf-closed-body{font-size:11px;color:#d29922;text-align:center;padding:16px 4px 10px;line-height:1.5}
+.wf-sat-line{font-size:10px;color:#8b949e;line-height:1.55}
+.wf-sat-line b{color:#cdd9e5}
+.wf-detail{margin-top:8px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 12px}
+.wf-detail:empty{display:none}
+.wf-detail-title{font-size:12px;font-weight:700;color:#e6edf3;margin-bottom:8px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.wf-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.wf-detail-col{min-width:0;font-size:11px;color:#8b949e;line-height:1.65}
+.wf-detail-col h4{font-size:12px;color:#e6edf3;margin:0 0 4px}
+.wf-detail-col b{color:#cdd9e5;font-weight:600}
+.wf-kv{display:grid;grid-template-columns:auto 1fr;gap:1px 10px}
+.wf-kv>span:nth-child(odd){color:#6e7681;white-space:nowrap}
+.wf-kv>span:nth-child(even){min-width:0;overflow-wrap:anywhere}
+.wf-drivers{list-style:none;margin:4px 0 0;padding:0}
+.wf-drivers li{display:flex;justify-content:space-between;gap:8px;border-bottom:1px dashed #21262d;padding:1px 0}
+.wf-note{font-size:10px;color:#6e7681;margin-top:4px;line-height:1.5}
+.wf-table{width:100%;border-collapse:collapse;font-size:10px;margin-top:4px}
+.wf-table th,.wf-table td{padding:2px 4px;border-bottom:1px solid #21262d;text-align:left;white-space:nowrap}
+.wf-table th{color:#6e7681;font-weight:600}
+.wf-footnote{font-size:10px;color:#6e7681;margin-top:8px;line-height:1.6}
+@media(max-width:900px){
+  .wf-days{display:flex;overflow-x:auto;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+  .wf-day{flex:0 0 158px;scroll-snap-align:start}
+}
+@media(max-width:640px){
+  .wf-detail-grid{grid-template-columns:1fr}
+  .wf-day{flex-basis:150px}
+}
 
 /* ── 📰 주요 뉴스 ── */
 #market-news{margin-bottom:20px}
@@ -22017,6 +22114,37 @@ input::placeholder{color:#484f58}
         </div>
       </div>
 
+      <!-- 1.5 📅 코스피·코스닥 주간 예측 (시장 현황과 업종별 흐름 사이) -->
+      <section id="weekly-forecast" class="home-section" aria-labelledby="wf-title">
+        <div class="wf-header">
+          <div class="wf-head-left">
+            <span class="wf-title" id="wf-title">📅 코스피·코스닥 주간 예측</span>
+            <span class="wf-phase" id="wf-phase" hidden></span>
+            <span class="wf-stale-badge" id="wf-stale-badge" hidden></span>
+            <div class="wf-head-meta" id="wf-head-meta"></div>
+          </div>
+          <button type="button" id="wf-refresh-btn" onclick="loadWeeklyForecast(true)" class="home-section-refresh" title="최신 데이터로 다시 계산">🔄 새로고침</button>
+        </div>
+        <div id="wf-loading" class="wf-state">
+          <div class="spinner" style="margin:0 auto 8px;width:22px;height:22px;border-width:3px"></div>
+          주간 예측을 계산하고 있습니다...
+        </div>
+        <div id="wf-error" class="wf-state" hidden>
+          주간 예측을 불러오지 못했습니다 — 가짜 예측값은 표시하지 않습니다.
+          <button type="button" onclick="loadWeeklyForecast(true)" class="home-section-refresh" style="margin-left:6px">재시도</button>
+          <div id="wf-error-detail" style="margin-top:6px;color:#6e7681;font-size:11px"></div>
+        </div>
+        <div id="wf-content" hidden>
+          <div class="wf-legend" aria-hidden="true">
+            <span>🟢 상승 예상</span><span>🔴 하락 예상</span><span>⚪ 판단 유보</span>
+            <span>🔵 실제 결과</span><span>⛔ 휴장</span><span>⚠ 데이터 부족</span>
+          </div>
+          <div class="wf-days" id="wf-days"></div>
+          <div class="wf-detail" id="wf-detail" aria-live="polite"></div>
+          <div class="wf-footnote" id="wf-footnote"></div>
+        </div>
+      </section>
+
       <!-- 2. 🏭 업종별 흐름 -->
       <div id="sector-flow" class="home-section">
         <div id="sector-flow-loading" style="text-align:center;padding:14px;color:#484f58;font-size:12px">
@@ -22160,21 +22288,22 @@ input::placeholder{color:#484f58}
           <div class="card-title">🧠 AI·패턴 보조 진단</div>
           <div id="prediction-ai-context-section"></div>
         </div>
+        <div class="card forecast-scenario-group">
+          <div class="card-title">🧭 조건부 시나리오와 무효화 조건</div>
+          <div id="prediction-scenarios-section"></div>
+        </div>
         <!-- 매수 전략 카드: 현재가 분석 → 가격 구간 → 분할 매수 흐름 통합 -->
         <div class="card forecast-entry-group">
           <div class="card-title" id="forecast-entry-title">🎯 진입 전략</div>
           <div class="forecast-guide" id="forecast-entry-guide"><b>진입 원칙:</b> 1차는 가볍게 반등을 확인하는 소액 구간, 2차는 버티는 힘이 재확인되면 비중을 늘리는 본격 구간입니다. 두 구간 모두 ‘하루 마감가가 가격을 지키고 + 거래량이 다시 늘 때’만 단계적으로 접근하세요.</div>
           <div id="buy-price-section"></div>
         </div>
+        <div id="box-execution-section" hidden></div>
         <!-- 리스크 관리와 목표 청산 -->
         <div class="card">
           <div class="card-title" id="forecast-risk-title">🛡️ 리스크 관리와 목표 청산</div>
           <div id="risk-event-banner"></div>
           <div class="risk-grid" id="risk-grid"></div>
-        </div>
-        <div class="card forecast-scenario-group">
-          <div class="card-title">🧭 조건부 시나리오와 무효화 조건</div>
-          <div id="prediction-scenarios-section"></div>
         </div>
       </div>
       <!-- 뉴스 탭 -->
@@ -25430,6 +25559,11 @@ function renderForecast(d, isKrx) {
     ? '<b>관찰 원칙:</b> 일봉 20개가 쌓일 때까지 이 가격대는 추세와 거래량을 확인하는 참고 범위입니다. 주문·비중·목표 수익 판단에는 사용하지 마세요.'
     : '<b>진입 원칙:</b> 1차는 가볍게 반등을 확인하는 소액 구간, 2차는 버티는 힘이 재확인되면 비중을 늘리는 본격 구간입니다. 두 구간 모두 ‘하루 마감가가 가격을 지키고 + 거래량이 다시 늘 때’만 단계적으로 접근하세요.';
 
+  const executionEl = document.getElementById('box-execution-section');
+  if (executionEl) {
+    executionEl.innerHTML = renderBoxExecutionPlan(d, isKrx);
+    executionEl.hidden = !executionEl.innerHTML.trim();
+  }
   renderPredictionSections(d, isKrx);
   // ── 매수 전략 섹션 ──
   const bpEl = document.getElementById('buy-price-section');
@@ -25914,98 +26048,7 @@ function renderForecast(d, isKrx) {
 
       const entryBandsHtml = `${aggBandsHtml}${recBandsHtml}`;
       // ── 영상 OlMBqW3FBes: 박스 실행 플랜(중간선 자석·압력·속도·50:50 청산) ──
-      const boxTacticsHtml = (() => {
-        const bt = (d.box_range && d.box_range.tactics) || null;
-        if (!bt || !bt.regime) return '';
-        const rg = bt.regime || {};
-        const md = bt.midline || {};
-        const sp = bt.speed || {};
-        const pr = bt.pressure || {};
-        const supP = pr.support || {};
-        const resP = pr.resistance || {};
-        const vol = bt.volume || {};
-        const plan = bt.plan || {};
-        const rv = bt.reversal || {};
-        const dq = bt.data_quality || {};
-        const pyr = plan.pyramid || null;
-        const tone = rg.tradeable ? '#3fb950'
-          : ['breakout_watch', 'breakout_unconfirmed', 'range_wait'].includes(rg.key) ? '#d29922' : '#f85149';
-        const pctText = v => Number.isFinite(Number(v)) ? `${Math.round(Number(v) * 100)}%` : '—';
-        const ratioText = v => Number.isFinite(Number(v)) ? `${Number(v).toFixed(2)}x` : '—';
-        const chip = (label, value, ok) => `<div class="box-tactics-chip"><span class="bt-k">${label}</span><span class="bt-v" style="color:${ok ? '#3fb950' : '#d29922'}">${_escPrediction(String(value || '확인 불가'))}</span></div>`;
-        const entry = plan.entry || null;
-        const stop = plan.stop || null;
-        const targets = Array.isArray(plan.targets) ? plan.targets : [];
-        const targetRow = t => {
-          if (!t) return '';
-          const range = (t.low != null && t.high != null) ? (t.low === t.high ? fmt(t.price, isKrx) : fmtRange(t.low, t.high, isKrx)) : (t.price != null ? fmt(t.price, isKrx) : '—');
-          return `<div class="box-tactics-row"><span class="bt-k">${_escPrediction(t.label || '목표')} · ${Number(t.pct || 0)}%</span><span class="bt-v">${range}</span></div>`;
-        };
-        const planRows = [];
-        if (entry) planRows.push(`<div class="box-tactics-row"><span class="bt-k">진입 구간</span><span class="bt-v" style="color:${tone}">${fmtRange(entry.low, entry.high, isKrx)}</span></div>`);
-        if (stop) planRows.push(`<div class="box-tactics-row"><span class="bt-k">손절</span><span class="bt-v" style="color:#f85149">${fmt(stop.price, isKrx)}</span></div>`);
-        if (targets.length) planRows.push(targets.map(targetRow).join(''));
-        const geo = plan.geometry || null;
-        if (geo && Number.isFinite(Number(geo.breakeven_rate))) {
-          const okGeo = geo.ok === true;
-          const measuredText = Number.isFinite(Number(geo.measured_rate)) ? ` · 감사 ${pctText(geo.measured_rate)}` : '';
-          planRows.push(`<div class="box-tactics-row" style="border-left:2px solid ${okGeo ? '#3fb950' : '#f85149'};padding-left:6px"><span class="bt-k">손익분기</span><span class="bt-v" style="color:${okGeo ? '#3fb950' : '#f85149'}">1차 ${Number(geo.first_target_rr).toFixed(2)}R · 필요 ${pctText(geo.breakeven_rate)}${measuredText} · ${okGeo ? '구조 통과' : '구조 미달(실행 보류)'}</span></div>`);
-        }
-        if (pyr) {
-          const pc = (pyr.checks || []).map(c => `${c.ok ? '✓' : '✗'}${c.label}`).join(' ');
-          planRows.push(`<div class="box-tactics-row"><span class="bt-k">불타기 추가</span><span class="bt-v" style="color:${pyr.ready ? '#3fb950' : '#d29922'}">${pyr.ready ? '준비됨' : '대기'} · ${_escPrediction(pc || pyr.condition || '')}</span></div>`);
-        }
-        if (rv.available && rv.state !== 'none') {
-          const rvTone = rv.state === 'confirmed' ? '#f85149' : '#d29922';
-          planRows.push(`<div class="box-tactics-row" style="border-left:2px solid ${rvTone};padding-left:6px"><span class="bt-k">하락 시나리오</span><span class="bt-v" style="color:${rvTone}">${_escPrediction(rv.label || '')} — ${_escPrediction(rv.reason || '')}</span></div>`);
-          if (rv.state === 'confirmed' && rv.targets && rv.targets.length) {
-            planRows.push(`<div class="box-tactics-row"><span class="bt-k">하락 시 참고</span><span class="bt-v">${rv.targets.map(t => `${Number(t.pct || 0)}% ${fmt(t.price, isKrx)}`).join(' → ')}</span></div>`);
-          }
-        }
-        const checklist = (bt.checklist || []).slice(0, 6).map(it => `<li style="color:${it.ok ? '#8b949e' : '#d29922'}">${it.ok ? '✓' : '△'} ${_escPrediction(it.label || it.key)}: ${_escPrediction(String(it.value || '—'))}${it.detail ? ` — ${_escPrediction(it.detail)}` : ''}</li>`).join('');
-        const why = (rg.why || []).map(w => `<li>${_escPrediction(w)}</li>`).join('');
-        const watch = (rg.watch || []).map(w => `<li>${_escPrediction(w)}</li>`).join('');
-        const rc = bt.rule_check || {};
-        const rcText = rc.available
-          ? `같은 박스 규칙 점검: 지지 접촉 ${rc.support_touches || 0}회 중 중간선 선도달 ${rc.midline_first || 0}회 · 손절 선도달 ${rc.stop_first || 0}회${rc.ambiguous ? ` · 동시 ${rc.ambiguous}회` : ''} (${rc.horizon_bars || 0}봉 이내, 표본 적음)`
-          : '';
-        const au = bt.audit || {};
-        const auMag = au.by_magnet || {};
-        const auRate = st => Number.isFinite(Number((auMag[st] || {}).rate)) ? pctText(auMag[st].rate) : '—';
-        const auditText = Number.isFinite(Number((au.overall || {}).rate))
-          ? `감사(${_escPrediction(au.measured_on || '')} · 지지 ${(au.overall || {}).samples || 0}건): 중간선 선도달 ${pctText(au.overall.rate)} · 강한 자석 ${auRate('strong')} / 보통 ${auRate('normal')} / 약한 자석 ${auRate('weak')} → 영상의 강한 자석 우위는 재현되지 않음. 도달 순서 비율이며 확률 아님`
-          : '';
-        const flow = bt.flow || {};
-        const flowText = flow.available
-          ? `수급 보조: ${flow.label || ''} (외국인 ${flow.foreign > 0 ? '+' : ''}${flow.foreign || 0} · 기관 ${flow.institution > 0 ? '+' : ''}${flow.institution || 0})`
-          : '';
-        return `<div class="box-tactics" style="border-color:${tone}55">
-          <div class="box-tactics-head">
-            <div class="box-tactics-title">🧭 박스 실행 플랜 <span class="box-tactics-badge" style="color:${tone};background:${tone}1a;border:1px solid ${tone}55">${_escPrediction(rg.label || '확인 중')}</span></div>
-            <div style="font-size:10px;color:#8b949e">중간선 자석 · 압력 · 속도</div>
-            <div class="box-tactics-summary">${_escPrediction(bt.summary || '')}</div>
-          </div>
-          <div class="box-tactics-chips">
-            ${chip('중간선 자석', `${md.strength_label || '확인 불가'}${md.available ? ' · 중간 거래량 ' + pctText(md.volume_share) : ''}`, md.state === 'strong' || md.state === 'normal')}
-            ${chip('속도', `${sp.label || '확인 불가'}${sp.available ? ' · ' + ratioText(sp.ratio) : ''}`, sp.state === 'fast' || sp.state === 'normal')}
-            ${chip('지지 압력(프록시)', supP.label || '확인 불가', supP.verdict === 'buy')}
-            ${chip('저항 압력(프록시)', resP.label || '확인 불가', resP.verdict === 'sell')}
-            ${chip('거래량', vol.ratio != null ? ratioText(vol.ratio) + ' · ' + (vol.label || '') : '확인 불가', vol.ratio != null && vol.ratio >= 1)}
-          </div>
-          <div class="box-tactics-plan">
-            ${planRows.join('') || `<div class="box-tactics-row"><span class="bt-k">실행</span><span class="bt-v" style="color:${tone}">${_escPrediction((rg.why || ['진입 없음'])[0])}</span></div>`}
-          </div>
-          ${why ? `<ul class="box-tactics-list">${why}</ul>` : ''}
-          ${watch ? `<ul class="box-tactics-list" style="color:#d29922">${watch}</ul>` : ''}
-          ${checklist ? `<ul class="box-tactics-list">${checklist}</ul>` : ''}
-          ${rcText ? `<div class="box-tactics-foot">${_escPrediction(rcText)}</div>` : ''}
-          ${auditText ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">${auditText}</div>` : ''}
-          ${flowText ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">${_escPrediction(flowText)}</div>` : ''}
-          ${dq.repaired_rows ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">데이터 품질: 최근 ${dq.validated_rows || 0}봉 중 OHLC 외피 ${dq.repaired_rows}행 보정(종가 불변, 1e-6 이하 부동소수만). 창 안의 큰 불일치는 보정하지 않고 계산을 중단합니다.</div>` : ''}
-          <div class="box-tactics-foot">압력은 일봉 OHLCV 프록시이며 실제 호가창이 아닙니다. 중간선 50%·반대편 50%는 영상 사례의 청산 규칙이고, 돌파 1:3 손익비는 조건부 참고입니다. ${_escPrediction(bt.limits || '')}</div>
-        </div>`;
-      })();
-      bpEl.innerHTML = stratBanner + boxTacticsHtml + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml}</div>`;
+      bpEl.innerHTML = stratBanner + sharedEntryHtml + `<div class="buy-price-grid">${entryBandsHtml}</div>`;
       if (buyRiskNotesEl) {
         buyRiskNotesEl.innerHTML = eventRiskHtml;
       }
@@ -26234,6 +26277,103 @@ function renderForecast(d, isKrx) {
         </div>`;
       }).join('')}`;
   }
+}
+
+function renderBoxExecutionPlan(d, isKrx) {
+  const bt = (d.box_range && d.box_range.tactics) || null;
+  if (!bt || !bt.regime) return '';
+  const rg = bt.regime || {};
+  const md = bt.midline || {};
+  const sp = bt.speed || {};
+  const pr = bt.pressure || {};
+  const supP = pr.support || {};
+  const resP = pr.resistance || {};
+  const vol = bt.volume || {};
+  const plan = bt.plan || {};
+  const rv = bt.reversal || {};
+  const dq = bt.data_quality || {};
+  const pyr = plan.pyramid || null;
+  const executionReady = plan.status === 'ready' && plan.tradeable !== false;
+  const tone = executionReady ? '#3fb950' : plan.status === 'wait' ? '#d29922'
+    : ['breakout_watch', 'breakout_unconfirmed', 'range_wait'].includes(rg.key) ? '#d29922' : '#f85149';
+  const pctText = v => _isFiniteNumber(v) ? `${Math.round(Number(v) * 100)}%` : '—';
+  const ratioText = v => _isFiniteNumber(v) ? `${Number(v).toFixed(2)}x` : '—';
+  const chip = (label, value, ok) => `<div class="box-tactics-chip"><span class="bt-k">${label}</span><span class="bt-v" style="color:${ok ? '#3fb950' : '#d29922'}">${_escPrediction(String(value || '확인 불가'))}</span></div>`;
+  const entry = plan.entry || null;
+  const stop = plan.stop || null;
+  const targets = Array.isArray(plan.targets) ? plan.targets : [];
+  const targetRow = t => {
+    if (!t) return '';
+    const range = (t.low != null && t.high != null) ? (t.low === t.high ? fmt(t.price, isKrx) : fmtRange(t.low, t.high, isKrx)) : (t.price != null ? fmt(t.price, isKrx) : '—');
+    return `<div class="box-tactics-row"><span class="bt-k">${_escPrediction(t.label || '목표')} · ${Number(t.pct || 0)}%</span><span class="bt-v">${range}</span></div>`;
+  };
+  const planRows = [];
+  if (entry) planRows.push(`<div class="box-tactics-row"><span class="bt-k">진입 구간</span><span class="bt-v" style="color:${tone}">${fmtRange(entry.low, entry.high, isKrx)}</span></div>`);
+  if (Array.isArray(plan.entry_checks) && plan.entry_checks.length) {
+    const checks = plan.entry_checks.map(c => `${c.ok ? '✓' : '△'} ${_escPrediction(c.label || c.key)}`).join(' · ');
+    planRows.push(`<div class="box-tactics-row"><span class="bt-k">진입 확인 조건</span><span class="bt-v">${checks}</span></div>`);
+  }
+  if (stop) planRows.push(`<div class="box-tactics-row"><span class="bt-k">손절</span><span class="bt-v" style="color:#f85149">${fmt(stop.price, isKrx)}</span></div>`);
+  if (targets.length) planRows.push(targets.map(targetRow).join(''));
+  const geo = plan.geometry || null;
+  if (geo && _isFiniteNumber(geo.breakeven_rate)) {
+    const okGeo = geo.ok === true;
+    const measuredText = _isFiniteNumber(geo.measured_rate) ? ` · 감사 ${pctText(geo.measured_rate)}` : '';
+    planRows.push(`<div class="box-tactics-row" style="border-left:2px solid ${okGeo ? '#3fb950' : '#f85149'};padding-left:6px"><span class="bt-k">손익분기</span><span class="bt-v" style="color:${okGeo ? '#3fb950' : '#f85149'}">1차 ${Number(geo.first_target_rr).toFixed(2)}R · 필요 ${pctText(geo.breakeven_rate)}${measuredText} · ${okGeo ? '구조 통과' : geo.ok === false ? '미달 주의(참고)' : '비교 자료 부족'}</span></div>`);
+  }
+  if (pyr) {
+    const pc = (pyr.checks || []).map(c => `${c.ok ? '✓' : '✗'}${c.label}`).join(' ');
+    planRows.push(`<div class="box-tactics-row"><span class="bt-k">불타기 추가</span><span class="bt-v" style="color:${pyr.ready ? '#3fb950' : '#d29922'}">${pyr.ready ? '준비됨' : '대기'} · ${_escPrediction(pc || pyr.condition || '')}</span></div>`);
+  }
+  if (rv.available && rv.state !== 'none') {
+    const rvTone = rv.state === 'confirmed' ? '#f85149' : '#d29922';
+    planRows.push(`<div class="box-tactics-row" style="border-left:2px solid ${rvTone};padding-left:6px"><span class="bt-k">하락 시나리오</span><span class="bt-v" style="color:${rvTone}">${_escPrediction(rv.label || '')} — ${_escPrediction(rv.reason || '')}</span></div>`);
+    if (rv.state === 'confirmed' && rv.targets && rv.targets.length) {
+      planRows.push(`<div class="box-tactics-row"><span class="bt-k">하락 시 참고</span><span class="bt-v">${rv.targets.map(t => `${Number(t.pct || 0)}% ${fmt(t.price, isKrx)}`).join(' → ')}</span></div>`);
+    }
+  }
+  const checklist = (bt.checklist || []).slice(0, 6).map(it => `<li style="color:${it.ok ? '#8b949e' : '#d29922'}">${it.ok ? '✓' : '△'} ${_escPrediction(it.label || it.key)}: ${_escPrediction(String(it.value || '—'))}${it.detail ? ` — ${_escPrediction(it.detail)}` : ''}</li>`).join('');
+  const why = (rg.why || []).map(w => `<li>${_escPrediction(w)}</li>`).join('');
+  const watch = (rg.watch || []).map(w => `<li>${_escPrediction(w)}</li>`).join('');
+  const rc = bt.rule_check || {};
+  const rcText = rc.available
+    ? `같은 박스 규칙 점검: 지지 접촉 ${rc.support_touches || 0}회 중 중간선 선도달 ${rc.midline_first || 0}회 · 손절 선도달 ${rc.stop_first || 0}회${rc.ambiguous ? ` · 동시 ${rc.ambiguous}회` : ''} (${rc.horizon_bars || 0}봉 이내, 표본 적음)`
+    : '';
+  const au = bt.audit || {};
+  const auMag = au.by_magnet || {};
+  const auRate = st => _isFiniteNumber((auMag[st] || {}).rate) ? pctText(auMag[st].rate) : '—';
+  const auditText = _isFiniteNumber((au.overall || {}).rate)
+    ? `감사(${_escPrediction(au.measured_on || '')} · 지지 ${(au.overall || {}).samples || 0}건): 중간선 선도달 ${pctText(au.overall.rate)} · 강한 자석 ${auRate('strong')} / 보통 ${auRate('normal')} / 약한 자석 ${auRate('weak')} → 영상의 강한 자석 우위는 재현되지 않음. 도달 순서 비율이며 확률 아님`
+    : '';
+  const flow = bt.flow || {};
+  const flowText = flow.available
+    ? `수급 보조: ${flow.label || ''} (외국인 ${flow.foreign > 0 ? '+' : ''}${flow.foreign || 0} · 기관 ${flow.institution > 0 ? '+' : ''}${flow.institution || 0})`
+    : '';
+  return `<div class="box-tactics" style="border-color:${tone}55">
+    <div class="box-tactics-head">
+      <div class="box-tactics-title">🧭 박스 실행 플랜 <span class="box-tactics-badge" style="color:${tone};background:${tone}1a;border:1px solid ${tone}55">${_escPrediction(executionReady ? (rg.label || '조건 충족') : '진입 대기')}</span></div>
+      <div style="font-size:10px;color:#8b949e">중간선 자석 · 압력 · 속도</div>
+      <div class="box-tactics-summary">${_escPrediction(bt.summary || '')}</div>
+    </div>
+    <div class="box-tactics-chips">
+      ${chip('중간선 자석', `${md.strength_label || '확인 불가'}${md.available ? ' · 중간 거래량 ' + pctText(md.volume_share) : ''}`, md.state === 'strong' || md.state === 'normal')}
+      ${chip('속도', `${sp.label || '확인 불가'}${sp.available ? ' · ' + ratioText(sp.ratio) : ''}`, sp.state === 'fast' || sp.state === 'normal')}
+      ${chip('지지 압력(프록시)', supP.label || '확인 불가', supP.verdict === 'buy')}
+      ${chip('저항 압력(프록시)', resP.label || '확인 불가', resP.verdict === 'sell')}
+      ${chip('거래량', vol.ratio != null ? ratioText(vol.ratio) + ' · ' + (vol.label || '') : '확인 불가', vol.ratio != null && vol.ratio >= 1)}
+    </div>
+    <div class="box-tactics-plan">
+      ${planRows.join('') || `<div class="box-tactics-row"><span class="bt-k">실행</span><span class="bt-v" style="color:${tone}">${_escPrediction((rg.why || ['진입 없음'])[0])}</span></div>`}
+    </div>
+    ${why ? `<ul class="box-tactics-list">${why}</ul>` : ''}
+    ${watch ? `<ul class="box-tactics-list" style="color:#d29922">${watch}</ul>` : ''}
+    ${checklist ? `<ul class="box-tactics-list">${checklist}</ul>` : ''}
+    ${rcText ? `<div class="box-tactics-foot">${_escPrediction(rcText)}</div>` : ''}
+    ${auditText ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">${auditText}</div>` : ''}
+    ${flowText ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">${_escPrediction(flowText)}</div>` : ''}
+    ${dq.repaired_rows ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">데이터 품질: 최근 ${dq.validated_rows || 0}봉 중 OHLC 외피 ${dq.repaired_rows}행 보정(종가 불변, 1e-6 이하 부동소수만). 창 안의 큰 불일치는 보정하지 않고 계산을 중단합니다.</div>` : ''}
+    <div class="box-tactics-foot">압력은 일봉 OHLCV 프록시이며 실제 호가창이 아닙니다. 중간선 50%·반대편 50%는 영상 사례의 청산 규칙이고, 돌파 1:3 손익비는 조건부 참고입니다. ${_escPrediction(bt.limits || '')}</div>
+  </div>`;
 }
 
 function renderTechnicalSignals(d) {
@@ -27151,9 +27291,462 @@ function renderMarketCore(d) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 🏭 업종별 흐름 — 메인 페이지 자동 로드
+// 📅 코스피·코스닥 주간 예측 — 월~금 거래일 예측 + 토요일 주간 결과
+// 서버: /api/kr/weekly-forecast (market_briefing/weekly_forecast.py)
+// 원칙: 서버가 계산한 값만 그린다. 값이 없으면 '데이터 부족'·'휴장'으로 표시하고
+//       임의 값으로 채우지 않는다. 예측(사전)·장중 수정·실제 결과를 따로 표시한다.
 // ═══════════════════════════════════════════════════════════════
+const _WF_CACHE_KEY  = 'stockoracle:weekly-forecast:v2';
+const _WF_CLIENT_TTL = 10 * 60 * 1000;     // 첫 화면용 브라우저 캐시(표시 후 곧바로 서버 갱신)
+const _WF_NAMES = {KOSPI: '코스피', KOSDAQ: '코스닥'};
+const _WF_CODES = ['KOSPI', 'KOSDAQ'];
+const _WF_DOW = ['월', '화', '수', '목', '금', '토', '일'];
+let _wfData = null;
+let _wfSelected = null;
+let _wfRequestSeq = 0;
+let _wfInflight = null;
+let _wfTimer = null;
+let _wfPendingRefresh = false;
+let _wfScrolledOnce = false;
+
+function _wfEl(id) { return document.getElementById(id); }
+
+function _wfShow(state) {
+  const map = {loading: 'wf-loading', error: 'wf-error', content: 'wf-content'};
+  Object.entries(map).forEach(([key, id]) => { const el = _wfEl(id); if (el) el.hidden = key !== state; });
+}
+
+function _wfReadClientCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(_WF_CACHE_KEY) || 'null');
+    if (!cached || !cached.savedAt || !cached.data || !Array.isArray(cached.data.days)) return null;
+    if (Date.now() - cached.savedAt > _WF_CLIENT_TTL) return null;
+    return cached.data;
+  } catch (_) { return null; }
+}
+
+function _wfWriteClientCache(data) {
+  try { localStorage.setItem(_WF_CACHE_KEY, JSON.stringify({savedAt: Date.now(), data})); } catch (_) {}
+}
+
+function _wfSchedule(seconds) {
+  clearTimeout(_wfTimer);
+  const sec = Math.max(60, Math.min(3600, Number(seconds) || 600));
+  _wfTimer = setTimeout(() => {
+    if (document.hidden) { _wfPendingRefresh = true; return; }
+    loadWeeklyForecast(false);
+  }, sec * 1000);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !_wfData) return;
+  const age = Date.now() - new Date(_wfData.generated_at || 0).getTime();
+  const limit = (((_wfData.refresh || {}).next_refresh_seconds) || 600) * 1000;
+  if (_wfPendingRefresh || age > limit) {
+    _wfPendingRefresh = false;
+    loadWeeklyForecast(false);
+  }
+});
+
+function loadWeeklyForecast(force) {
+  if (!_wfEl('weekly-forecast')) return Promise.resolve();
+  if (_wfInflight && !force) return _wfInflight;
+  const seq = ++_wfRequestSeq;
+  if (!_wfData) {
+    const cached = _wfReadClientCache();
+    if (cached) {
+      _wfData = cached;
+      _wfRender(cached, '이전 계산 결과 표시 · 최신 데이터 확인 중');
+      _wfShow('content');
+    } else {
+      _wfShow('loading');
+    }
+  }
+  const btn = _wfEl('wf-refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 계산 중'; }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+  const request = (async () => {
+    try {
+      const r = await fetch('/api/kr/weekly-forecast' + (force ? '?refresh=1' : ''),
+                            {signal: controller.signal, cache: force ? 'reload' : 'default'});
+      if (!r.ok) throw new Error('서버 응답 ' + r.status);
+      const d = await r.json();
+      if (seq !== _wfRequestSeq) return;
+      if (!d || d.ok === false || !Array.isArray(d.days)) throw new Error((d && d.error) || '예측 생성 실패');
+      _wfData = d;
+      _wfWriteClientCache(d);
+      _wfRender(d, '');
+      _wfShow('content');
+      _wfSchedule((d.refresh || {}).next_refresh_seconds);
+    } catch (e) {
+      if (seq !== _wfRequestSeq) return;
+      const msg = e && e.name === 'AbortError' ? '응답 시간 초과' : ((e && e.message) || '알 수 없는 오류');
+      if (_wfData) {
+        _wfRender(_wfData, '갱신 실패(' + msg + ') · 마지막 계산 결과 표시 중');
+        _wfShow('content');
+      } else {
+        const det = _wfEl('wf-error-detail');
+        if (det) det.textContent = msg;
+        _wfShow('error');
+      }
+      _wfSchedule(120);
+      console.warn('[weekly-forecast] 로드 실패:', e);
+    } finally {
+      clearTimeout(timeoutId);
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 새로고침'; }
+      if (_wfInflight === request) _wfInflight = null;
+    }
+  })();
+  _wfInflight = request;
+  return request;
+}
+
+// ── 형식 도우미 ────────────────────────────────────────────────
+function _wfEsc(v) { return _escPrediction(v); }
+function _wfMD(iso) { return iso ? String(iso).slice(5, 10).replace('-', '/') : '—'; }
+function _wfDow(iso) {
+  if (!iso) return '';
+  const p = String(iso).slice(0, 10).split('-').map(Number);
+  return _WF_DOW[(new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay() + 6) % 7];
+}
+function _wfTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('ko-KR', {timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric',
+                                    hour: '2-digit', minute: '2-digit', hour12: false});
+}
+function _wfSigned(v) {
+  const n = Number(v);
+  return (v == null || !Number.isFinite(n)) ? '—' : (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+function _wfProb(v) { const n = Number(v); return (v == null || !Number.isFinite(n)) ? '—' : n.toFixed(1) + '%'; }
+function _wfRate(v) { const n = Number(v); return (v == null || !Number.isFinite(n)) ? '—' : (n * 100).toFixed(1) + '%'; }
+function _wfNum(v) {
+  const n = Number(v);
+  return (v == null || !Number.isFinite(n)) ? '—'
+    : n.toLocaleString('ko-KR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+function _wfIcon(dir) { return dir === 'up' ? '🟢' : dir === 'down' ? '🔴' : '⚪'; }
+function _wfDirCls(dir) { return dir === 'up' ? 'wf-up' : dir === 'down' ? 'wf-down' : 'wf-hold'; }
+function _wfDirWord(dir) { return dir === 'up' ? '상승' : dir === 'down' ? '하락' : dir === 'flat' ? '보합' : '유보'; }
+function _wfChgCls(v) { const n = Number(v); return n > 0 ? 'wf-up' : n < 0 ? 'wf-down' : 'wf-hold'; }
+
+// ── 렌더링 ─────────────────────────────────────────────────────
+function _wfRender(d, notice) {
+  _wfData = d;
+  const phaseMap = {pre_open: '장 시작 전', open: '장중', closed: '장 마감', holiday: '휴장일', weekend: '주말'};
+  const phase = _wfEl('wf-phase');
+  if (phase) { phase.textContent = phaseMap[d.market_phase] || ''; phase.hidden = !phaseMap[d.market_phase]; }
+
+  const ds = d.data_status || {};
+  const kr = ['KOSPI', 'KOSDAQ'].map(c => {
+    const s = ds[c] || {};
+    return _WF_NAMES[c] + ' ' + (s.available ? _wfMD(s.last_session) + ' 종가' + (s.delayed ? '(지연)' : '') : '수집 실패');
+  }).join(' · ');
+  const us = ds.US || {};
+  const usTxt = us.last_complete_session
+    ? '미국 ' + _wfMD(us.last_complete_session) + ' 마감' + ((us.pending_sessions || []).length ? ' (' + _wfMD(us.pending_sessions[0]) + ' 진행 중)' : '')
+    : '미국 지표 수집 실패';
+  const week = d.week || {};
+  const meta = _wfEl('wf-head-meta');
+  if (meta) {
+    meta.textContent = _wfMD(week.monday) + '(월) ~ ' + _wfMD(week.saturday) + '(토) · 데이터 기준 ' + kr + ' · ' + usTxt +
+      ' · 계산 ' + _wfTime(d.generated_at) + ' · 다음 자동 갱신 약 ' +
+      Math.round((((d.refresh || {}).next_refresh_seconds) || 600) / 60) + '분 후';
+  }
+
+  const badge = _wfEl('wf-stale-badge');
+  const staleParts = [];
+  if (notice) staleParts.push(notice);
+  if (d.data_stale) staleParts.push('오래된 데이터' + (d.stale_since ? '(' + _wfTime(d.stale_since) + ' 계산)' : ''));
+  if ((d.warnings || []).length) staleParts.push('주의 ' + d.warnings.length + '건');
+  if (badge) {
+    badge.textContent = '⚠️ ' + staleParts.join(' · ');
+    badge.title = (d.warnings || []).join('\n');
+    badge.hidden = !staleParts.length;
+  }
+
+  const days = d.days || [];
+  if (!_wfSelected || !days.some(x => x.date === _wfSelected)) {
+    const today = days.find(x => x.is_today);
+    const next = days.find(x => x.trading && Object.values(x.per_index || {}).some(e => e && e.status === 'forecast'));
+    _wfSelected = (today || next || days[0] || {}).date || null;
+  }
+  const daysEl = _wfEl('wf-days');
+  if (daysEl) {
+    daysEl.innerHTML = days.map(_wfDayHtml).join('');
+    if (!_wfScrolledOnce && daysEl.scrollWidth > daysEl.clientWidth + 4) {
+      const cur = daysEl.querySelector('.wf-today') || daysEl.querySelector('.wf-selected');
+      if (cur) daysEl.scrollLeft = Math.max(0, cur.offsetLeft - daysEl.offsetLeft - 8);
+      _wfScrolledOnce = true;
+    }
+  }
+  _wfRenderDetail();
+  _wfRenderFootnote(d);
+}
+
+function _wfDayBadge(day) {
+  if (day.scope === 'saturday') {
+    const s = day.summary || {};
+    return s.final ? '<span class="wf-kind k-actual">주간 확정</span>' : '<span class="wf-kind">집계 중</span>';
+  }
+  if (!day.trading) return '<span class="wf-kind k-closed">휴장</span>';
+  const entries = _WF_CODES.map(c => (day.per_index || {})[c]).filter(Boolean);
+  if (entries.some(e => e.status === 'actual')) {
+    const prov = entries.some(e => e.actual && e.actual.provisional);
+    return '<span class="wf-kind k-actual">' + (prov ? '잠정 결과' : '결과 확정') + '</span>';
+  }
+  if (entries.some(e => e.status === 'intraday')) return '<span class="wf-kind k-intraday">장중</span>';
+  if (entries.some(e => e.status === 'pending')) return '<span class="wf-kind">종가 대기</span>';
+  const f = entries.map(e => e.forecast).find(Boolean);
+  if (f) return '<span class="wf-kind' + (f.kind === 'preopen' ? ' k-preopen' : '') + '">' + _wfEsc(f.kind_label) + '</span>';
+  return '<span class="wf-kind">데이터 부족</span>';
+}
+
+function _wfDayHtml(day) {
+  const cls = ['wf-day', day.is_today ? 'wf-today' : '', day.date === _wfSelected ? 'wf-selected' : '',
+               (!day.trading && day.scope !== 'saturday') ? 'wf-closed' : ''].filter(Boolean).join(' ');
+  const dow = day.scope === 'saturday' ? '토 아침' : _wfDow(day.date);
+  const head = `<div class="wf-day-head"><span class="wf-day-dow">${dow}<small>${_wfMD(day.date)}</small>` +
+               `${day.is_today ? '<span class="wf-today-tag">오늘</span>' : ''}</span>${_wfDayBadge(day)}</div>`;
+  let body;
+  if (day.scope === 'saturday') body = _wfSaturdayCard(day);
+  else if (!day.trading) body = `<div class="wf-closed-body">⛔ 휴장<br><span class="wf-muted">${_wfEsc(day.closure_reason || '')}</span></div>`;
+  else body = _WF_CODES.map(c => _wfRowHtml(c, (day.per_index || {})[c])).join('');
+  const label = `${_wfMD(day.date)} ${day.weekday || ''} 상세 보기`;
+  return `<div class="${cls}" role="button" tabindex="0" data-wf-date="${_wfEsc(day.date)}"
+    aria-pressed="${day.date === _wfSelected}" aria-label="${_wfEsc(label)}">${head}${body}</div>`;
+}
+
+function _wfForecastLine(f) {
+  if (!f) return '';
+  return `${_wfIcon(f.direction)} <span class="${_wfDirCls(f.direction)}">${_wfDirWord(f.direction)}</span> ${_wfProb(f.prob_up)}↑`;
+}
+
+function _wfRowHtml(code, e) {
+  const name = `<span class="wf-name">${_WF_NAMES[code]}</span>`;
+  if (!e) return `<div class="wf-row"><div class="wf-row-top">${name}<span class="wf-dir wf-muted">⚠ 데이터 부족</span></div></div>`;
+  if (e.status === 'actual') {
+    const a = e.actual || {};
+    const ev = e.evaluation || {};
+    const hit = ev.hit === true ? '<span class="wf-hit">✓ 적중</span>' : ev.hit === false ? '<span class="wf-miss">✗ 미적중</span>'
+      : (e.final ? '<span class="wf-muted">적중 제외</span>' : '');
+    return `<div class="wf-row"><div class="wf-row-top">${name}<span class="wf-dir wf-actual">🔵 실제 ${_wfDirWord(a.direction)}</span></div>
+      <div class="wf-sub"><b class="${_wfChgCls(a.change_pct)}">${_wfSigned(a.change_pct)}</b>${a.provisional ? ' · 잠정' : ''}</div>
+      <div class="wf-sub">예측 ${e.final ? _wfForecastLine(e.final) : '없음'} ${hit}</div></div>`;
+  }
+  if (e.status === 'intraday') {
+    const n = e.intraday;
+    const pre = e.final ? `사전 ${_wfForecastLine(e.final)}` : '';
+    if (!n) return `<div class="wf-row"><div class="wf-row-top">${name}<span class="wf-dir wf-muted">장중 시세 없음</span></div><div class="wf-sub">${pre}</div></div>`;
+    const word = n.direction === 'up' ? '상승 우세' : n.direction === 'down' ? '하락 우세' : '판단 유보';
+    return `<div class="wf-row"><div class="wf-row-top">${name}<span class="wf-dir ${_wfDirCls(n.direction)}">${_wfIcon(n.direction)} 장중 ${word}</span></div>
+      <div class="wf-sub">현재 <b class="${_wfChgCls(n.current_pct)}">${_wfSigned(n.current_pct)}</b> · 상승 ${_wfProb(n.prob_up)}</div>
+      <div class="wf-sub">${pre}</div></div>`;
+  }
+  if (e.status === 'forecast' && e.forecast) {
+    const f = e.forecast;
+    const conf = (f.confidence || {}).label || '—';
+    return `<div class="wf-row"><div class="wf-row-top">${name}<span class="wf-dir ${_wfDirCls(f.direction)}">${_wfIcon(f.direction)} ${_wfEsc(f.direction_label)}</span></div>
+      <div class="wf-sub">상승 <b>${_wfProb(f.prob_up)}</b> · 예상 <b class="${_wfChgCls(f.expected_pct)}">${_wfSigned(f.expected_pct)}</b></div>
+      <div class="wf-sub">신뢰도 ${_wfEsc(conf)}</div></div>`;
+  }
+  if (e.status === 'pending') {
+    return `<div class="wf-row"><div class="wf-row-top">${name}<span class="wf-dir wf-muted">⏳ 종가 확정 대기</span></div>
+      <div class="wf-sub">사전 ${_wfForecastLine(e.final) || '—'}</div></div>`;
+  }
+  return `<div class="wf-row"><div class="wf-row-top">${name}<span class="wf-dir wf-muted">⚠ 데이터 부족</span></div>
+    <div class="wf-sub">${_wfEsc(e.message || '')}</div></div>`;
+}
+
+function _wfSaturdayCard(day) {
+  const s = (day.summary || {}).per_index || {};
+  const lines = _WF_CODES.map(c => {
+    const x = s[c] || {};
+    const acc = x.scored ? ` (${_wfRate(x.accuracy)})` : '';
+    return `<div class="wf-sat-line"><b>${_WF_NAMES[c]}</b> 적중 ${x.hits || 0}/${x.scored || 0}${acc}${x.holds ? ' · 유보 ' + x.holds : ''}</div>`;
+  }).join('');
+  const nw = (day.next_week || {}).per_index || {};
+  const out = _WF_CODES.map(c => {
+    const x = nw[c] || {};
+    const f = x.first;
+    return f ? `<div class="wf-sat-line">${_WF_NAMES[c]} ${_wfMD(x.first_day)}(${_wfDow(x.first_day)}) ${_wfForecastLine(f)}</div>` : '';
+  }).join('');
+  return `<div class="wf-row"><div class="wf-sub" style="margin-top:0"><b>이번 주 예측 vs 실제</b></div>${lines}</div>` +
+         `<div class="wf-row"><div class="wf-sub" style="margin-top:0"><b>다음 거래주 전망</b></div>${out || '<div class="wf-sat-line">계산 불가</div>'}</div>`;
+}
+
+function _wfKv(rows) {
+  return '<div class="wf-kv">' + rows.filter(r => r && r[1] != null && r[1] !== '').map(r =>
+    `<span>${_wfEsc(r[0])}</span><span>${r[1]}</span>`).join('') + '</div>';
+}
+
+function _wfForecastBlock(f, title) {
+  if (!f) return '';
+  const conf = f.confidence || {};
+  const closeRange = f.low_close != null
+    ? `${_wfNum(f.low_close)} ~ ${_wfNum(f.high_close)} (중앙 ${_wfNum(f.expected_close)})` : '';
+  const drivers = (f.drivers || []).map(x =>
+    `<li><span>${_wfEsc(x.label)} <span class="wf-muted">${_wfEsc(x.value_text)}</span></span>` +
+    `<span class="${x.direction === 'up' ? 'wf-up' : 'wf-down'}">${x.direction === 'up' ? '▲ 상승 요인' : '▼ 하락 요인'} ${Math.abs(x.contribution).toFixed(2)}</span></li>`).join('');
+  return `<div style="margin-bottom:6px"><b>${_wfEsc(title)}</b> — ${_wfEsc(f.kind_label)}${f.reconstructed ? ' · <span class="wf-muted">장 시작 후 재구성(실시간 기록 아님)</span>' : ''}</div>` +
+    _wfKv([
+      ['방향', `${_wfIcon(f.direction)} <b class="${_wfDirCls(f.direction)}">${_wfEsc(f.direction_label)}</b> (유보 범위 50±${_wfEsc(((_wfData || {}).validation || {}).hold_band_pct || 5)}%p)`],
+      ['확률', `상승 <b>${_wfProb(f.prob_up)}</b> / 하락 <b>${_wfProb(f.prob_down)}</b>`],
+      ['예상 등락률', `<b class="${_wfChgCls(f.expected_pct)}">${_wfSigned(f.expected_pct)}</b>`],
+      ['80% 변동 범위', `${_wfSigned(f.low_pct)} ~ ${_wfSigned(f.high_pct)}` + (closeRange ? `<br><span class="wf-muted">지수 ${closeRange}</span>` : '')],
+      ['최근 변동성', f.sigma_pct != null ? `일 ${_wfEsc(f.sigma_pct)}% (EWMA)` : ''],
+      ['신뢰도', `<b>${_wfEsc(conf.label || '—')}</b>` + (conf.note ? `<br><span class="wf-muted">${_wfEsc(conf.note)}</span>` : '')],
+      ['모델', `${_wfEsc(f.model)} · 학습 ${_wfEsc(f.n_train)}일 · ${_wfEsc(f.model_version)}`],
+      ['데이터 기준', `국내 ${_wfMD(f.anchor)} 종가 ${_wfNum(f.anchor_close)}` + (f.us_session ? ` · 미국 ${_wfMD(f.us_session)} 마감 반영` : ' · 미국 마감 미반영') +
+                     (f.horizon > 1 ? ` · ${_wfEsc(f.horizon)}거래일 앞` : '')],
+      ['생성 시각', `${_wfTime(f.generated_at)} (정보 마감 ${_wfTime(f.info_cutoff)})`],
+    ]) +
+    (drivers ? `<div style="margin-top:4px"><b>주요 영향 지표</b> <span class="wf-muted">(모델 기여도 — 인과 관계 아님)</span><ul class="wf-drivers">${drivers}</ul></div>` : '') +
+    (f.note ? `<div class="wf-note">${_wfEsc(f.note)}</div>` : '');
+}
+
+function _wfIndexDetail(code, e) {
+  const head = `<h4>${_WF_NAMES[code]}</h4>`;
+  if (!e) return head + '정보 없음';
+  const parts = [];
+  if (e.status === 'actual') {
+    const a = e.actual || {};
+    const ev = e.evaluation || {};
+    parts.push(_wfKv([
+      ['실제 결과', `🔵 <b class="${_wfChgCls(a.change_pct)}">${_wfDirWord(a.direction)} ${_wfSigned(a.change_pct)}</b>${a.provisional ? ' · 시세 기준 잠정' : ''}`],
+      ['종가', `${_wfNum(a.close)} (전일 ${_wfNum(a.prev_close)}) · ${_wfEsc(a.source || '')}`],
+      ['적중 여부', ev.hit === true ? '<span class="wf-hit">✓ 적중</span>' : ev.hit === false ? '<span class="wf-miss">✗ 미적중</span>'
+                    : _wfEsc(ev.note || (e.final ? '적중 계산 제외' : '평가할 사전 예측 없음'))],
+      ['예상 대비 오차', ev.abs_error_pct != null ? `${_wfEsc(ev.abs_error_pct)}%p · 80% 범위 ${ev.in_range ? '안' : '밖'}` : ''],
+      ['확률 점수(Brier)', ev.brier != null ? _wfEsc(ev.brier) : ''],
+    ]));
+    if (e.final) parts.push('<hr style="border:0;border-top:1px solid #21262d;margin:6px 0">' + _wfForecastBlock(e.final, '채점한 사전 예측'));
+  } else if (e.status === 'intraday') {
+    const n = e.intraday;
+    if (n) {
+      parts.push(`<div style="margin-bottom:4px"><b>장중 수정 예측</b> <span class="wf-muted">(장 시작 전 예측과 별도 기록)</span></div>` + _wfKv([
+        ['현재 지수', `${_wfNum(n.current)} (<b class="${_wfChgCls(n.current_pct)}">${_wfSigned(n.current_pct)}</b>) · ${_wfTime(n.quote_time)}`],
+        ['종가 상승 확률', `<b>${_wfProb(n.prob_up)}</b> (남은 ${_wfEsc(n.minutes_left)}분)`],
+        ['종가 80% 범위', `${_wfSigned(n.low_pct)} ~ ${_wfSigned(n.high_pct)}`],
+        ['방식', _wfEsc(n.model)],
+      ]));
+    } else {
+      parts.push(`<div class="wf-note">${_wfEsc(e.message || '장중 시세를 받지 못했습니다')}</div>`);
+    }
+    if (e.final) parts.push('<hr style="border:0;border-top:1px solid #21262d;margin:6px 0">' + _wfForecastBlock(e.final, '장 시작 전 예측'));
+  } else if (e.status === 'forecast') {
+    parts.push(_wfForecastBlock(e.forecast, '예측'));
+    if (e.first && e.forecast && e.first.generated_at !== e.forecast.generated_at) {
+      parts.push(`<div class="wf-note">최초 예측(${_wfTime(e.first.generated_at)}, ${_wfEsc(e.first.kind_label)}): ` +
+                 `${_wfIcon(e.first.direction)} ${_wfEsc(e.first.direction_label)} · 상승 ${_wfProb(e.first.prob_up)} — 이후 ${_wfEsc(e.revisions || 1)}회 개정</div>`);
+    }
+  } else if (e.status === 'pending') {
+    parts.push(`<div class="wf-note">${_wfEsc(e.message || '')}</div>`);
+    if (e.final) parts.push(_wfForecastBlock(e.final, '장 시작 전 예측'));
+  } else {
+    parts.push(`<div class="wf-note">⚠ ${_wfEsc(e.message || '데이터 부족')}</div>`);
+  }
+  return head + parts.join('');
+}
+
+function _wfSaturdayDetail(day) {
+  const s = (day.summary || {}).per_index || {};
+  const cols = _WF_CODES.map(c => {
+    const x = s[c] || {};
+    const rows = (x.days || []).map(r => `<tr><td>${_wfMD(r.date)}(${_wfDow(r.date)})</td>` +
+      `<td>${r.predicted ? _wfIcon(r.predicted) + ' ' + _wfDirWord(r.predicted) + (r.reconstructed ? '*' : '') : '—'}</td>` +
+      `<td>${_wfProb(r.prob_up)}</td><td>${r.actual ? '🔵 ' + _wfDirWord(r.actual) : '—'}</td>` +
+      `<td class="${_wfChgCls(r.change_pct)}">${_wfSigned(r.change_pct)}</td>` +
+      `<td>${r.hit === true ? '<span class="wf-hit">✓</span>' : r.hit === false ? '<span class="wf-miss">✗</span>' : '—'}</td></tr>`).join('');
+    const nw = ((day.next_week || {}).per_index || {})[c] || {};
+    return `<div class="wf-detail-col"><h4>${_WF_NAMES[c]}</h4>` +
+      `<table class="wf-table"><thead><tr><th>날짜</th><th>사전 예측</th><th>상승확률</th><th>실제</th><th>등락</th><th>적중</th></tr></thead><tbody>${rows}</tbody></table>` +
+      _wfKv([
+        ['방향 적중', `${x.hits || 0}/${x.scored || 0}` + (x.scored ? ` (${_wfRate(x.accuracy)})` : '') + (x.holds ? ` · 유보 ${x.holds}` : '')],
+        ['실시간 기록만', `${x.live_hits || 0}/${x.live_scored || 0}`],
+        ['평균 Brier', x.mean_brier != null ? _wfEsc(x.mean_brier) : '—'],
+        ['평균 절대 오차', x.mean_abs_error_pct != null ? _wfEsc(x.mean_abs_error_pct) + '%p' : '—'],
+        ['80% 범위 안', `${x.range_hits || 0}/${x.settled || 0}`],
+      ]) +
+      (nw.first ? '<hr style="border:0;border-top:1px solid #21262d;margin:6px 0">' +
+        _wfForecastBlock(nw.first, `다음 거래주 첫 거래일 ${_wfMD(nw.first_day)}`) +
+        `<div class="wf-note">그 뒤 거래일: ${_wfEsc(nw.rest_kind === 'advance' ? '선행 예측(기저율)' : nw.rest_kind || '—')} 상승 ${_wfProb(nw.rest_prob_up)}</div>` : '') +
+      '</div>';
+  }).join('');
+  let prev = '';
+  const pw = day.previous_week;
+  if (pw && pw.per_index) {
+    prev = '<div class="wf-note">지난주(' + _wfMD(pw.monday) + '~) 결과: ' + _WF_CODES.map(c => {
+      const x = pw.per_index[c] || {};
+      return _WF_NAMES[c] + ' 적중 ' + (x.hits || 0) + '/' + (x.scored || 0);
+    }).join(' · ') + '</div>';
+  }
+  return `<div class="wf-detail-grid">${cols}</div>${prev}<div class="wf-note">${_wfEsc((day.summary || {}).note || '')} * 표시는 장 시작 후 재구성한 예측입니다.</div>`;
+}
+
+function _wfRenderDetail() {
+  const el = _wfEl('wf-detail');
+  if (!el || !_wfData) return;
+  const day = (_wfData.days || []).find(x => x.date === _wfSelected);
+  if (!day) { el.innerHTML = ''; return; }
+  let title = `${_wfMD(day.date)} (${day.scope === 'saturday' ? '토 아침 · 주간 결과와 다음 주 전망' : _wfEsc(day.weekday)})${day.is_today ? ' · 오늘' : ''}`;
+  let body;
+  if (day.scope === 'saturday') body = _wfSaturdayDetail(day);
+  else if (!day.trading) body = `<div class="wf-note">⛔ 휴장 — ${_wfEsc(day.closure_reason || '')}. 거래가 없어 예측을 만들지 않습니다.</div>`;
+  else body = `<div class="wf-detail-grid">${_WF_CODES.map(c => `<div class="wf-detail-col">${_wfIndexDetail(c, (day.per_index || {})[c])}</div>`).join('')}</div>`;
+  el.innerHTML = `<div class="wf-detail-title"><span>📋 ${title}</span><span class="wf-muted" style="font-weight:400;font-size:10px">카드를 눌러 다른 날 보기</span></div>${body}`;
+}
+
+function _wfRenderFootnote(d) {
+  const el = _wfEl('wf-footnote');
+  if (!el) return;
+  const v = d.validation || {};
+  const live = d.live_record || {};
+  const line = c => {
+    const x = v[c] || {};
+    const l = live[c] || {};
+    return `${_WF_NAMES[c]} 적중 ${_wfRate(x.accuracy)} (다수 클래스 ${_wfRate(x.majority_accuracy)}, 미국 방향 단순 규칙 ${_wfRate(x.us_direction_accuracy)})` +
+      ` · Brier ${x.brier ?? '—'} (기준 ${x.brier_base ?? '—'}) · n=${x.n ?? '—'}` +
+      ` · 실시간 누적 ${l.live_hits || 0}/${l.live_scored || 0}`;
+  };
+  const range = ((v.KOSPI || {}).holdout_range || []).join(' ~ ');
+  el.innerHTML = `검증(장 시작 전 예측, walk-forward 보류 구간 ${_wfEsc(range)}): ${_wfEsc(line('KOSPI'))} / ${_wfEsc(line('KOSDAQ'))}. ` +
+    `2거래일 이상 앞 예측과 미국 장 마감 전 예측은 국내 지표만으로 기저율보다 나은 근거가 없어 기저율을 그대로 표시합니다. ` +
+    `코스닥은 방향 적중률이 미국 방향 단순 규칙과 비슷하고 확률 품질(Brier)만 나았습니다. 통계적 추정이며 투자 권유가 아닙니다.`;
+}
+
+function _wfSelect(dateIso) {
+  if (!dateIso) return;
+  _wfSelected = dateIso;
+  document.querySelectorAll('#wf-days .wf-day').forEach(el => {
+    const on = el.dataset.wfDate === dateIso;
+    el.classList.toggle('wf-selected', on);
+    el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  _wfRenderDetail();
+}
+
+(function _wfBindDayEvents() {
+  const host = _wfEl('wf-days');
+  if (!host) return;
+  host.addEventListener('click', ev => {
+    const card = ev.target.closest('[data-wf-date]');
+    if (card) _wfSelect(card.dataset.wfDate);
+  });
+  host.addEventListener('keydown', ev => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const card = ev.target.closest('[data-wf-date]');
+    if (!card) return;
+    ev.preventDefault();
+    _wfSelect(card.dataset.wfDate);
+  });
+})();
+
 const _SECTOR_FLOW_CACHE_KEY = 'stockoracle:sector-flow:v1';
+let _sectorFlowAutoRetry = 0;   // 골격만 보일 때 자동 재시도 횟수(무한 반복 방지)
 const _SECTOR_FLOW_CLIENT_TTL = 30 * 60 * 1000;
 let _sectorFlowRequest = null;
 
@@ -27258,17 +27851,30 @@ async function loadSectorFlow(force = false) {
       const d = await r.json();
       if (d.error) throw new Error(d.error);
       renderSectorFlow(d);
+      _sectorFlowAutoRetry = 0;
       if (!d.is_fallback && !d.is_placeholder) _writeSectorFlowClientCache(d);
       if (elStatus) elStatus.textContent = d.is_stale ? '캐시 데이터 · 서버 갱신 중' : '최신 데이터';
     } catch(e) {
       // 이미 카드가 보이는 상태이므로 느린 네트워크에서 전체 영역을 오류로 바꾸지 않는다.
-      const hasVisibleData = !!((_sectorFlowSnapshot || {}).sectors || []).length;
+      const snap = _sectorFlowSnapshot || {};
+      const hasVisibleData = !!(snap.sectors || []).length;
+      // 골격(placeholder)만 보이는 상태는 '표시 데이터'가 아니다 — 등락률이 없다는 사실을 알리고
+      // 서버 첫 호출(공개 토큰 조회) 지연을 고려해 한 번만 자동 재시도한다.
+      const onlySkeleton = !!snap.is_placeholder;
       if (!hasVisibleData) {
         elCont.style.display = 'none';
         elErr.style.display = 'block';
       }
-      if (elStatus) elStatus.textContent = e && e.name === 'AbortError'
-        ? '응답 지연 · 표시 데이터 유지' : '갱신 실패 · 표시 데이터 유지';
+      const reason = e && e.name === 'AbortError' ? '응답 지연' : '갱신 실패';
+      if (onlySkeleton && _sectorFlowAutoRetry < 1) {
+        _sectorFlowAutoRetry += 1;
+        if (elStatus) elStatus.textContent = `${reason} · 등락률 미수신 — 잠시 후 자동 재시도`;
+        setTimeout(() => loadSectorFlow(true), 4000);
+      } else if (elStatus) {
+        elStatus.textContent = onlySkeleton
+          ? `${reason} · 등락률 미수신 — 🔄 새로고침으로 다시 시도`
+          : `${reason} · 표시 데이터 유지`;
+      }
       console.warn('[sector-flow] 로드 실패:', e.message);
     } finally {
       clearTimeout(timeoutId);
@@ -28917,6 +29523,7 @@ function fetchTossAiSummary(ticker, market) {
 updatePeriodGuide(); // 분석 기간의 실제 봉 간격과 권장 용도 표시
 loadMarketCore();   // ⭐ 페이지 로드 시 오늘의 핵심 자동 로드
 loadSectorFlow();   // 🏭 업종별 흐름 자동 로드
+loadWeeklyForecast(); // 📈 코스피·코스닥 주간 예측 자동 로드
 initAlerts();       // 🔔 알림 시스템 초기화
 
 // ── Pull-to-Refresh (모바일) ──
@@ -28988,6 +29595,9 @@ initAlerts();       // 🔔 알림 시스템 초기화
         // 입력창은 표시용 정식 종목명일 수 있으므로 현재 결과의 정규 티커를 사용한다.
         p = analyze(currentData && currentData.symbol ? currentData.symbol : '')
           .then(function(){ switchTab(savedTab); });
+      } else {
+        // 홈 화면: 예전에는 p 가 비어 표시만 돌고 아무것도 다시 불러오지 않았다.
+        p = Promise.all([loadMarketCore(), loadSectorFlow(true), loadWeeklyForecast(true)]);
       }
     }
 
@@ -29890,6 +30500,28 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
             except Exception:
                 _smx, _swr = 300, 600
             cache_control = f"public, max-age=30, s-maxage={_smx}, stale-while-revalidate={_swr}"
+
+        elif path == "/api/kr/weekly-forecast" and isinstance(data, dict) and (
+                data.get("ok") is False or data.get("data_stale")):
+            # 실패·오래된 결과는 CDN 에 남기지 않는다(복구 즉시 새 결과가 보이도록)
+            cache_control = "no-store"
+        elif path == "/api/kr/weekly-forecast":
+            # 주간 예측 — 장중/장전에도 데이터 앤커만 바뀌면 갱신되므로 짧은 s-maxage
+            try:
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                _KST = _tz(timedelta(hours=9))
+                _now = _dt.now(_KST)
+                _h   = _now.hour + _now.minute / 60.0
+                _wd  = _now.weekday()
+                if _wd >= 5:
+                    _smx, _swr = 600, 1800         # 주말: 10분 + 지연 갱신
+                elif 8.5 <= _h < 16.0:
+                    _smx, _swr = 90, 240           # 장 시작 전후 집중 갱신 구간: 90초
+                else:
+                    _smx, _swr = 600, 1800         # 심야: 10분
+            except Exception:
+                _smx, _swr = 120, 300
+            cache_control = f"public, s-maxage={_smx}, stale-while-revalidate={_swr}"
 
         elif path in ("/api/stock", "/api/price", "/api/alert/quote"):
             # 실시간 현재가 포함 응답 — 캐시 금지.

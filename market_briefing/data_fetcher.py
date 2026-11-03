@@ -150,14 +150,24 @@ _INDEX_KEYS = {
 
 
 def _kr_market_status(now_kst: datetime | None = None) -> str:
-    """시각으로 확정할 수 있는 범위까지만 국내 시장 상태를 표시한다."""
+    """KRX 거래일 달력과 정규장 시각으로 국내 시장 상태를 표시한다(공휴일·연말 휴장·지연 개장 포함)."""
     now = now_kst or datetime.now(KST)
     if now.weekday() >= 5:
         return "휴장 · 최근 영업일 종가"
+    try:
+        from market_briefing.krx_calendar import holiday_name, session_hours
+        closure = holiday_name(now.date())
+        if closure:
+            return f"휴장({closure}) · 최근 영업일 종가"
+        open_t, close_t = session_hours(now.date())
+        open_m = open_t.hour * 60 + open_t.minute
+        close_m = close_t.hour * 60 + close_t.minute
+    except Exception:
+        open_m, close_m = 9 * 60, 15 * 60 + 30
     minutes = now.hour * 60 + now.minute
-    if minutes < 9 * 60:
+    if minutes < open_m:
         return "장 시작 전 · 직전 종가"
-    if minutes < 15 * 60 + 30:
+    if minutes < close_m:
         return "장중"
     return "장 마감 · 종가"
 
@@ -438,35 +448,30 @@ def _parse_index_change(raw: str, direction_hint: str | None = None) -> dict:
 def _reconcile_index_market_status(indices: dict, overnight: list[dict], now_kst: datetime | None = None) -> None:
     """이미 수집한 KOSPI 200 최근 거래일로 평일 휴장·미갱신 가능성을 보수적으로 표시한다."""
     now = now_kst or datetime.now(KST)
-    # Yahoo 의 ^KS200 은 5일 조회에도 1행만 반환해 overnight 목록에서 항상 빠졌다. 그 결과 평일 장중마다
-    # 모든 지수가 '시장 상태 확인 불가'로 표시됐다. 일봉이 정상 반환되는 ^KS11(KOSPI)을 우선 사용한다.
+    # 휴장 여부는 KRX 거래일 달력으로 판정한다(_kr_market_status). 야후 ^KS11 일봉 날짜는 참고만 한다:
+    # 2026-11-04 01:00 실측에서 11-03 종가가 9시간 넘게 NaN 이라 마지막 날짜가 한 세션 늦었고,
+    # 예전 규칙(그 날짜 < 오늘이면 '휴장 또는 미갱신')은 정상 거래일 장중·장 마감 후에도 휴장으로 표시했다.
+    # 이제 직전 영업일보다 더 오래된 경우(두 세션 이상 지연)만 미갱신 가능성으로 표시한다.
     benchmark = next((item for item in overnight if item.get("symbol") in ("^KS11", "^KS200")), None)
     trade_date_raw = (benchmark or {}).get("as_of")
     try:
         trade_date = datetime.fromisoformat(str(trade_date_raw)).date()
     except (TypeError, ValueError):
         trade_date = None
+    base_status = _kr_market_status(now)
+    stale = False
+    try:
+        from market_briefing.krx_calendar import is_trading_day, previous_trading_day
+        if trade_date is not None and is_trading_day(now.date()) and base_status in ("장중", "장 마감 · 종가"):
+            stale = trade_date < previous_trading_day(now.date())
+    except Exception:
+        stale = False
     for entry in indices.values():
         if not isinstance(entry, dict):
             continue
         if trade_date:
             entry["trade_date"] = trade_date.isoformat()
-        base_status = entry.get("market_status") or _kr_market_status(now)
-        if (
-            now.weekday() < 5
-            and now.hour * 60 + now.minute >= 9 * 60
-            and trade_date is not None
-            and trade_date < now.date()
-        ):
-            entry["market_status"] = "휴장 또는 데이터 미갱신 · 최근 영업일 종가"
-        elif (
-            now.weekday() < 5
-            and now.hour * 60 + now.minute >= 9 * 60
-            and trade_date is None
-        ):
-            entry["market_status"] = "시장 상태 확인 불가 · 최근 수신 지수"
-        else:
-            entry["market_status"] = base_status
+        entry["market_status"] = "데이터 미갱신 가능 · 최근 수신 지수" if stale else base_status
 
 
 def fetch_fx() -> list[dict]:
