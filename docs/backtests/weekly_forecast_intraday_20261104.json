@@ -1,0 +1,232 @@
+{
+ "generated_at": "2026-11-04T00:55:18.242554+09:00",
+ "checkpoints": [
+  "09:30",
+  "10:00",
+  "11:00",
+  "12:00",
+  "13:00",
+  "14:00",
+  "14:30"
+ ],
+ "indexes": {
+  "KOSPI": {
+   "days": 60,
+   "fit_days": [
+    "2026-08-05",
+    "2026-09-16"
+   ],
+   "test_days": [
+    "2026-09-17",
+    "2026-11-03"
+   ],
+   "scale_fit_brier": {
+    "0.6": 0.1434,
+    "0.8": 0.1422,
+    "1.0": 0.1439,
+    "1.2": 0.1472,
+    "1.4": 0.1512
+   },
+   "selected_scale": 0.8,
+   "test_brier": 0.1285,
+   "test_calibration": [
+    {
+     "bin": "0.00-0.35",
+     "n": 96,
+     "mean_p": 0.0857,
+     "freq_up": 0.1146
+    },
+    {
+     "bin": "0.35-0.45",
+     "n": 11,
+     "mean_p": 0.4019,
+     "freq_up": 0.0909
+    },
+    {
+     "bin": "0.45-0.50",
+     "n": 8,
+     "mean_p": 0.4821,
+     "freq_up": 0.5
+    },
+    {
+     "bin": "0.50-0.55",
+     "n": 5,
+     "mean_p": 0.5302,
+     "freq_up": 0.4
+    },
+    {
+     "bin": "0.55-0.65",
+     "n": 16,
+     "mean_p": 0.587,
+     "freq_up": 0.6875
+    },
+    {
+     "bin": "0.65-1.00",
+     "n": 74,
+     "mean_p": 0.9054,
+     "freq_up": 0.8378
+    }
+   ],
+   "per_checkpoint": {
+    "09:30": {
+     "n": 30,
+     "brier": 0.2183,
+     "accuracy": 0.6333,
+     "sign_rule_accuracy": 0.6333,
+     "brier_coinflip": 0.25
+    },
+    "10:00": {
+     "n": 30,
+     "brier": 0.162,
+     "accuracy": 0.8,
+     "sign_rule_accuracy": 0.8,
+     "brier_coinflip": 0.25
+    },
+    "11:00": {
+     "n": 30,
+     "brier": 0.1461,
+     "accuracy": 0.8,
+     "sign_rule_accuracy": 0.8,
+     "brier_coinflip": 0.25
+    },
+    "12:00": {
+     "n": 30,
+     "brier": 0.1053,
+     "accuracy": 0.9,
+     "sign_rule_accuracy": 0.9,
+     "brier_coinflip": 0.25
+    },
+    "13:00": {
+     "n": 30,
+     "brier": 0.0896,
+     "accuracy": 0.9,
+     "sign_rule_accuracy": 0.9,
+     "brier_coinflip": 0.25
+    },
+    "14:00": {
+     "n": 30,
+     "brier": 0.0894,
+     "accuracy": 0.9,
+     "sign_rule_accuracy": 0.9,
+     "brier_coinflip": 0.25
+    },
+    "14:30": {
+     "n": 30,
+     "brier": 0.089,
+     "accuracy": 0.8667,
+     "sign_rule_accuracy": 0.8667,
+     "brier_coinflip": 0.25
+    }
+   }
+  },
+  "KOSDAQ": {
+   "days": 60,
+   "fit_days": [
+    "2026-08-05",
+    "2026-09-16"
+   ],
+   "test_days": [
+    "2026-09-17",
+    "2026-11-03"
+   ],
+   "scale_fit_brier": {
+    "0.6": 0.1511,
+    "0.8": 0.1488,
+    "1.0": 0.1509,
+    "1.2": 0.1548,
+    "1.4": 0.1593
+   },
+   "selected_scale": 0.8,
+   "test_brier": 0.086,
+   "test_calibration": [
+    {
+     "bin": "0.00-0.35",
+     "n": 95,
+     "mean_p": 0.0804,
+     "freq_up": 0.1053
+    },
+    {
+     "bin": "0.35-0.45",
+     "n": 6,
+     "mean_p": 0.4049,
+     "freq_up": 0.1667
+    },
+    {
+     "bin": "0.45-0.50",
+     "n": 6,
+     "mean_p": 0.4761,
+     "freq_up": 0.5
+    },
+    {
+     "bin": "0.50-0.55",
+     "n": 3,
+     "mean_p": 0.5338,
+     "freq_up": 0.3333
+    },
+    {
+     "bin": "0.55-0.65",
+     "n": 9,
+     "mean_p": 0.5922,
+     "freq_up": 0.5556
+    },
+    {
+     "bin": "0.65-1.00",
+     "n": 91,
+     "mean_p": 0.873,
+     "freq_up": 0.9341
+    }
+   ],
+   "per_checkpoint": {
+    "09:30": {
+     "n": 30,
+     "brier": 0.1179,
+     "accuracy": 0.8333,
+     "sign_rule_accuracy": 0.8333,
+     "brier_coinflip": 0.25
+    },
+    "10:00": {
+     "n": 30,
+     "brier": 0.1396,
+     "accuracy": 0.8,
+     "sign_rule_accuracy": 0.8,
+     "brier_coinflip": 0.25
+    },
+    "11:00": {
+     "n": 30,
+     "brier": 0.1058,
+     "accuracy": 0.8333,
+     "sign_rule_accuracy": 0.8333,
+     "brier_coinflip": 0.25
+    },
+    "12:00": {
+     "n": 30,
+     "brier": 0.0897,
+     "accuracy": 0.8333,
+     "sign_rule_accuracy": 0.8333,
+     "brier_coinflip": 0.25
+    },
+    "13:00": {
+     "n": 30,
+     "brier": 0.0572,
+     "accuracy": 0.9333,
+     "sign_rule_accuracy": 0.9333,
+     "brier_coinflip": 0.25
+    },
+    "14:00": {
+     "n": 30,
+     "brier": 0.0478,
+     "accuracy": 0.9333,
+     "sign_rule_accuracy": 0.9333,
+     "brier_coinflip": 0.25
+    },
+    "14:30": {
+     "n": 30,
+     "brier": 0.0437,
+     "accuracy": 0.9667,
+     "sign_rule_accuracy": 0.9667,
+     "brier_coinflip": 0.25
+    }
+   }
+  }
+ }
+}
