@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+!.env.example
+!.env.*.example
+.vercel/
+datasets/audit_cache/
+
+datasets/technique_research_cache/
+datasets/weekly_forecast_cache/
+datasets/prune_cache/
+datasets/training_features.parquet
+datasets/weekly_forecast_state.json*
+tmp/
+.coverage*

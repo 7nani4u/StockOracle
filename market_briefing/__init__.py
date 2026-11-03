@@ -15,26 +15,79 @@
 #   cross_reference   → 스캔 × 분석 교차 참조 + 최종 점수
 #   dashboard_payload → 대시보드 커맨드 센터 상태 페이로드
 
-from .core_summary import build_core_summary
-from .sector_flow import build_sector_flow
-from .stock_analyzer import analyze_stock, classify_prediction, build_stock_report
-from .dual_score_v2 import (
-    SnapshotRow, score_row, score_all,
-    compute_bqs, compute_fws, compute_penalties, compute_ncs, action_note,
-    calc_hurst_v2, compute_bis_from_candle, compute_chasing_flags,
-    calc_dual_regime_score,
-)
-from .quality_filter import (
-    QualityFilterResult, score_quality, get_quality_score_from_info,
-    get_conviction_bonus,
-)
-from .scan_engine import (
-    StockUniverse, TechnicalSnapshot, ScanCandidate, ScanResult,
-    run_full_scan, build_snapshot_from_ohlcv,
-    run_technical_filters, classify_candidate, rank_candidate,
-    check_anti_chase, check_pullback_continuation,
-    calculate_position_size,
-)
+# 핵심 모듈도 개별 실패가 패키지 전체 import를 깨뜨리지 않게 보호한다.
+# (예: 배포 누락·의존성 미설치 시 from market_briefing.X 가 ModuleNotFoundError로 번지는 문제 방지)
+try:
+    from .core_summary import build_core_summary
+    _CORE_AVAILABLE = True
+except Exception:
+    _CORE_AVAILABLE = False
+    build_core_summary = None
+try:
+    from .sector_flow import build_sector_flow
+    _SECTOR_AVAILABLE = True
+except Exception:
+    _SECTOR_AVAILABLE = False
+    build_sector_flow = None
+try:
+    from .stock_analyzer import analyze_stock, classify_prediction, build_stock_report
+    _ANALYZER_AVAILABLE = True
+except Exception:
+    _ANALYZER_AVAILABLE = False
+    analyze_stock = classify_prediction = build_stock_report = None
+try:
+    from .dual_score_v2 import (
+        SnapshotRow, score_row, score_all,
+        compute_bqs, compute_fws, compute_penalties, compute_ncs, action_note,
+        calc_hurst_v2, compute_bis_from_candle, compute_chasing_flags,
+        calc_dual_regime_score,
+    )
+    _DUAL_AVAILABLE = True
+except Exception:
+    _DUAL_AVAILABLE = False
+    SnapshotRow = score_row = score_all = None
+    compute_bqs = compute_fws = compute_penalties = compute_ncs = action_note = None
+    calc_hurst_v2 = compute_bis_from_candle = compute_chasing_flags = None
+    calc_dual_regime_score = None
+try:
+    from .quality_filter import (
+        QualityFilterResult, score_quality, get_quality_score_from_info,
+        get_conviction_bonus,
+    )
+    _QUALITY_AVAILABLE = True
+except Exception:
+    _QUALITY_AVAILABLE = False
+    QualityFilterResult = score_quality = get_quality_score_from_info = None
+    get_conviction_bonus = None
+try:
+    from .scan_engine import (
+        StockUniverse, TechnicalSnapshot, ScanCandidate, ScanResult,
+        run_full_scan, build_snapshot_from_ohlcv,
+        run_technical_filters, classify_candidate, rank_candidate,
+        check_anti_chase, check_pullback_continuation,
+        calculate_position_size,
+        SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
+        is_scan_price_eligible, apply_leader_promotion,
+        apply_momentum_promotion, momentum_conditions,
+        apply_vcp_promotion, vcp_conditions,
+    )
+    _SCAN_AVAILABLE = True
+except Exception:
+    _SCAN_AVAILABLE = False
+    StockUniverse = TechnicalSnapshot = ScanCandidate = ScanResult = None
+    run_full_scan = build_snapshot_from_ohlcv = None
+    run_technical_filters = classify_candidate = rank_candidate = None
+    check_anti_chase = check_pullback_continuation = None
+    calculate_position_size = None
+    SCAN_US_MAX_PRICE = 70.0
+    SCAN_COLLECT_CAP_US_FULL = 120
+    SCAN_COLLECT_CAP_US_LITE = 48
+    is_scan_price_eligible = None
+    apply_leader_promotion = None
+    apply_momentum_promotion = None
+    momentum_conditions = None
+    apply_vcp_promotion = None
+    vcp_conditions = None
 
 # ── 신규 통합 모듈 (graceful fallback) ────────────────────────────────────────
 
@@ -79,6 +132,81 @@ try:
 except Exception:
     _CONFIDENCE_ENGINE_AVAILABLE = False
 
+try:
+    from .ml_features import (
+        FEATURE_COLS, FEATURE_DESCRIPTIONS, FORWARD_DAYS, DEAD_ZONE,
+        engineer_ticker_features, compute_feature_vector, walk_forward_splits,
+    )
+    _ML_FEATURES_AVAILABLE = True
+except Exception:
+    _ML_FEATURES_AVAILABLE = False
+    FEATURE_COLS = []
+
+try:
+    from .ml_predictor import (
+        predict_direction as ml_predict_direction,
+        predict_from_ohlcv as ml_predict_from_ohlcv,
+        load_model as ml_load_model,
+        is_model_available as ml_is_available,
+        get_feature_columns as ml_feature_columns,
+        get_model_metadata as ml_model_metadata,
+    )
+    _ML_PREDICTOR_AVAILABLE = True
+except Exception:
+    _ML_PREDICTOR_AVAILABLE = False
+
+try:
+    from .ml_evaluate import (
+        evaluate_predictions as ml_evaluate_predictions,
+        time_based_split as ml_time_based_split,
+        walk_forward_evaluate as ml_walk_forward_evaluate,
+        check_data_leakage as ml_check_leakage,
+    )
+    _ML_EVALUATE_AVAILABLE = True
+except Exception:
+    _ML_EVALUATE_AVAILABLE = False
+
+# 뉴스 정규화 단일 원천: forecast_model.normalize_news_items(범용 시간·정렬·중복 제거)와
+# news_evidence.normalize_news_evidence(표시 feed vs 진단 evidence 분리)는 목적이 다르다.
+# 둘을 혼동해 중복 구현이 늘지 않게 여기서 함께 노출한다.
+try:
+    from .news_evidence import normalize_news_evidence
+    _NEWS_EVIDENCE_AVAILABLE = True
+except Exception:
+    _NEWS_EVIDENCE_AVAILABLE = False
+    normalize_news_evidence = None
+try:
+    from .momentum_persistence import (
+        detect_momentum_persistence as detect_momentum_persistence,
+        find_surges as find_momentum_surges,
+        SURGE_MIN_PCT as MOMENTUM_SURGE_MIN_PCT,
+        HOLD_DAYS as MOMENTUM_HOLD_DAYS,
+        RETAIN_FRAC as MOMENTUM_RETAIN_FRAC,
+    )
+    _MOMENTUM_AVAILABLE = True
+except Exception:
+    _MOMENTUM_AVAILABLE = False
+    detect_momentum_persistence = None
+    find_momentum_surges = None
+try:
+    from .vcp import detect_vcp as detect_vcp
+    _VCP_AVAILABLE = True
+except Exception:
+    _VCP_AVAILABLE = False
+    detect_vcp = None
+try:
+    from .forecast_model import (
+        blended_daily_sigma as forecast_blended_sigma,
+        build_forecast_summary as forecast_summary,
+        touch_probability as forecast_touch_probability,
+        touch_probability_range as forecast_touch_range,
+        get_long_run_weight as forecast_long_run_weight,
+        get_vol_error_quantiles as forecast_vol_error_quantiles,
+    )
+    _FORECAST_AVAILABLE = True
+except Exception:
+    _FORECAST_AVAILABLE = False
+
 __all__ = [
     # 기존
     "build_core_summary",
@@ -100,6 +228,10 @@ __all__ = [
     "run_technical_filters", "classify_candidate", "rank_candidate",
     "check_anti_chase", "check_pullback_continuation",
     "calculate_position_size",
+    "SCAN_US_MAX_PRICE", "SCAN_COLLECT_CAP_US_FULL", "SCAN_COLLECT_CAP_US_LITE",
+    "is_scan_price_eligible", "apply_leader_promotion",
+    "apply_momentum_promotion", "momentum_conditions",
+    "apply_vcp_promotion", "vcp_conditions",
     # portfolio_manager
     "PortfolioPosition", "PortfolioState", "PortfolioManager", "TradeRiskAssessment",
     # market_immune
@@ -112,7 +244,22 @@ __all__ = [
     "build_signal_confidence", "get_macro_regime", "get_sector_relative",
     "get_earnings_proximity", "earnings_cap", "disagreement_penalty",
     "confidence_interval", "analyze_news_sentiment",
+    # ml pipeline (StockFlow leakage-safe)
+    "FEATURE_COLS", "FEATURE_DESCRIPTIONS", "FORWARD_DAYS", "DEAD_ZONE",
+    "engineer_ticker_features", "compute_feature_vector", "walk_forward_splits",
+    "ml_predict_direction", "ml_predict_from_ohlcv", "ml_load_model", "ml_is_available",
+    "ml_feature_columns", "ml_model_metadata",
+    "ml_evaluate_predictions", "ml_time_based_split", "ml_walk_forward_evaluate", "ml_check_leakage",
+    "normalize_news_evidence",
+    "detect_momentum_persistence", "find_momentum_surges",
+    "MOMENTUM_SURGE_MIN_PCT", "MOMENTUM_HOLD_DAYS", "MOMENTUM_RETAIN_FRAC",
+    "detect_vcp",
+    "forecast_blended_sigma", "forecast_summary", "forecast_touch_probability",
+    "forecast_touch_range", "forecast_long_run_weight", "forecast_vol_error_quantiles",
     # 가용성 플래그
     "_PORTFOLIO_AVAILABLE", "_IMMUNE_AVAILABLE",
     "_CROSS_REF_AVAILABLE", "_DASHBOARD_AVAILABLE", "_CONFIDENCE_ENGINE_AVAILABLE",
+    "_ML_FEATURES_AVAILABLE", "_ML_PREDICTOR_AVAILABLE", "_ML_EVALUATE_AVAILABLE",
+    "_CORE_AVAILABLE", "_SECTOR_AVAILABLE", "_ANALYZER_AVAILABLE",
+    "_DUAL_AVAILABLE", "_QUALITY_AVAILABLE", "_SCAN_AVAILABLE",
 ]

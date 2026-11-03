@@ -27,6 +27,30 @@ from typing import Any
 
 import numpy as np
 
+try:  # 스캔 엔진(dual_score_v2)과 같은 수익률 기반 R/S 구현을 단일 원천으로 쓴다.
+    from .dual_score_v2 import calc_hurst_v2 as _calc_hurst_returns
+except Exception:  # pragma: no cover - 패키지 밖에서 단독 로드될 때만
+    _calc_hurst_returns = None
+
+try:  # 장중 진행 중 막대의 거래량 처리 (docs/system_audit_20261009.md)
+    from .session_bars import completed_volume_ratio as _completed_volume_ratio
+except Exception:  # pragma: no cover - 패키지 밖에서 단독 로드될 때만
+    _completed_volume_ratio = None
+
+import os as _os
+
+
+def _chase_penalty_enabled() -> bool:
+    """FWS 추격 패널티를 점수에 반영할지. 기본 꺼짐.
+
+    구조 결함: ``highs[-20:]`` 당일포함 기준이면 entry가 항상 현재가 위에 고정돼
+    ext_atr 최대 -0.097·chasing 0회로 가드가 죽는다. 직전20봉(당일제외)으로 고치면
+    표시는 살아나지만, 스캔식 추격 플래그는 이후 수익률과 무관했고(57.4% vs 56.5%)
+    ext 패널티(15/25점)의 예측력도 검증되지 않아 점수에 새로 넣을 근거가 없다.
+    그래서 표시는 직전고정 기준으로 정직하게, 점수 반영은 env로만 켠다.
+    """
+    return _os.getenv("STOCKORACLE_CHASE_PENALTY", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 # ── 상수 ─────────────────────────────────────────────────────────────────────
 
 REGIME_BULLISH  = "BULLISH"
@@ -118,7 +142,12 @@ def _calc_adx(highs, lows, closes, period: int = 14) -> dict | None:
     if len(dx_list) < period:
         return None
 
-    adx = float(np.mean(dx_list[-period:]))
+    # Wilder ADX: 첫 값은 앞 period 개 DX 의 평균, 이후 (직전*(period-1)+DX)/period.
+    # 이전 구현은 최근 period 개 DX 의 단순평균이라 add_indicators 의 ADX(Wilder EWM)와
+    # 최대 ±14포인트 어긋났고 ADX 25 기준을 서로 다르게 넘나들었다(표본의 약 9%).
+    adx = float(np.mean(dx_list[:period]))
+    for dx in dx_list[period:]:
+        adx = (adx * (period - 1) + dx) / period
     return {
         "adx":      round(adx, 2),
         "plus_di":  round(di_plus_list[-1], 2) if di_plus_list else 0.0,
@@ -145,45 +174,45 @@ def _calc_rs(prices_ticker, prices_bench, period: int = 63) -> float | None:
     return round(t_ret - b_ret, 2)
 
 
+def _prior_twenty_day_high(highs: list[float], lookback: int = 20) -> float | None:
+    """브레이크아웃 기준 20일 고점 — 현재 봉을 제외한 직전 ``lookback``봉의 최고가.
+
+    ``highs[-20:]`` 처럼 당일을 포함하면 오늘 고점이 기준에 들어가
+    ``entry_trigger = high + buffer*ATR`` 이 항상 현재가보다 위에 고정되고
+    ``ext_atr`` 이 절대 0.8을 넘지 못해 추격 가드가 죽는다(5,145창 최대 -0.097,
+    chasing 0회). Turtle 원전도 진입 기준은 전일 기준 직전 N일 고점이다.
+    당일 포함 기준이 필요하면 호출측에서 명시적으로 처리한다.
+    """
+    if not highs or len(highs) < 2:
+        return None
+    window = highs[max(0, len(highs) - 1 - lookback):len(highs) - 1]
+    if not window:
+        return None
+    try:
+        return float(max(window))
+    except (TypeError, ValueError):
+        return None
+
+
 # ── 허스트 지수 ───────────────────────────────────────────────────────────────
 
-def calc_hurst(prices: list[float], min_lag: int = 2, max_lag: int = 20) -> float | None:
-    """허스트 지수 계산 (R/S Analysis).
+def calc_hurst(prices: list[float], min_bars: int = 50) -> float | None:
+    """허스트 지수 계산 (로그 수익률 R/S) — 스캔 엔진의 ``calc_hurst_v2`` 와 같은 구현이다.
 
     반환:
-      H > 0.55  → 추세 지속 (BQS 보너스 대상)
-      H ~0.5    → 랜덤 워크
-      H < 0.45  → 평균 회귀 (BQS 보너스 없음, FWS 주의)
+      H > 0.6   → 추세 지속 (BQS 보너스 대상)
+      H ~0.5    → 랜덤 워크 (짧은 표본의 R/S 는 0.55~0.6 쪽으로 치우친다)
+      H < 0.5   → 평균 회귀 (BQS 보너스 없음)
+
+    예전 구현은 가격 '수준'에 R/S 를 적용했다. 가격 수준은 랜덤워크여도 누적 편차의 범위가 표준편차보다
+    한 차수 빠르게 커져 지수가 0.88~0.93 에 고정됐다(랜덤워크 0.905 · 평균회귀 0.882 · 추세지속 0.924,
+    실제 52종목 2,598개 창은 전부 0.7 이상). 그래서 BQS 허스트 보너스 +8 이 모든 종목에 상수로 붙었고,
+    상세 화면에는 '추세 지속 가능성 높음'이 항상 표시됐다. R/S 는 증분(수익률)에 적용해야 한다.
     """
-    arr = np.array(prices, dtype=float)
-    n   = len(arr)
-    if n < max_lag * 2:
+    if _calc_hurst_returns is None:
         return None
-
-    lags = range(min_lag, min(max_lag, n // 2))
-    rs_vals, lag_vals = [], []
-
-    for lag in lags:
-        chunks = [arr[i:i + lag] for i in range(0, n - lag, lag)]
-        if len(chunks) < 2:
-            continue
-        rs_chunk = []
-        for chunk in chunks:
-            mean_c = np.mean(chunk)
-            dev    = np.cumsum(chunk - mean_c)
-            r_range = float(np.max(dev) - np.min(dev))
-            s_std   = float(np.std(chunk, ddof=0))
-            if s_std > 0:
-                rs_chunk.append(r_range / s_std)
-        if rs_chunk:
-            rs_vals.append(np.log(np.mean(rs_chunk)))
-            lag_vals.append(np.log(lag))
-
-    if len(lag_vals) < 3:
-        return None
-
-    slope, _ = np.polyfit(lag_vals, rs_vals, 1)
-    return round(float(slope), 4)
+    value = _calc_hurst_returns([float(p) for p in prices], min_bars=min_bars)
+    return None if value is None else round(float(value), 4)
 
 
 # ── Breakout Integrity Score ─────────────────────────────────────────────────
@@ -238,16 +267,18 @@ def compute_bis(
 
 def compute_regime(
     price: float,
-    ma200: float,
+    ma200: float | None,
     adx_data: dict | None,
     vix: float | None = None,
     advance_decline_ratio: float | None = None,
+    atr_percent: float | None = None,
 ) -> dict:
     """5신호 포인트 기반 레짐 감지 (HybridTurtle §8).
 
     Args:
         price:    현재가 (SPY 또는 KOSPI200)
-        ma200:    200일 이동평균
+        ma200:    200일 이동평균. None/0 이면 ①가격 대 MA200 점수와 ⑤CHOP 밴드를 건너뛴다
+                  (호출측이 종목 자신의 가격으로 대체하면 항상 약세 3점+CHOP 이 되므로 금지).
         adx_data: calc_adx() 반환 dict {"adx", "plus_di", "minus_di", "bullish"}
         vix:      VIX 현재값 (미국: 공포지수, 한국은 None 가능)
         advance_decline_ratio: 상승/하락 비율 (없으면 None)
@@ -320,8 +351,10 @@ def compute_regime(
     else:
         regime = REGIME_SIDEWAYS
 
-    # 변동성 레짐 (ATR% 기반, 단순화)
-    vol_regime = _VOL_REGIME_NORMAL
+    vol_regime = (
+        detect_vol_regime(float(atr_percent))
+        if atr_percent is not None else _VOL_REGIME_NORMAL
+    )
 
     return {
         "regime":    regime,
@@ -329,6 +362,7 @@ def compute_regime(
         "bear_pts":  bear_pts,
         "chop_band": chop_band,
         "vol_regime": vol_regime,
+        "ma200_available": bool(ma200 and ma200 > 0),
     }
 
 
@@ -635,6 +669,7 @@ def compute_hybrid_score(
     vix:              float | None = None,
     adv_decline:      float | None = None,
     earnings_days:    int   | None = None,          # 실적 발표까지 남은 일수
+    volume_in_progress: bool = False,               # 마지막 막대가 장중 진행 중(거래량 누적 중)인가
 ) -> dict:
     """단일 진입점: 종목의 HybridTurtle 복합 점수 전체 계산.
 
@@ -644,11 +679,15 @@ def compute_hybrid_score(
         lows:         일별 저가 리스트
         volumes:      일별 거래량 리스트
         open_prices:  일별 시가 리스트 (BIS용, 없어도 됨)
-        bench_closes: 벤치마크(SPY/KOSPI200) 종가 (RS/레짐용)
+        bench_closes: 벤치마크(SPY/KOSPI200) 종가 (RS/레짐용). 없으면 시장 레짐은 '알 수 없음'(SIDEWAYS)이고
+                      CHOP 밴드·FWS '레짐 불안정' 점수를 부여하지 않는다(시장 레짐은 호출측이 따로 적용).
         bench_ma200:  벤치마크 200일 MA (레짐용)
         vix:          VIX 현재값 (미국 시장)
         adv_decline:  A/D ratio (breadth)
         earnings_days: 실적 발표까지 남은 일 (패널티용)
+        volume_in_progress: True 면 마지막 막대의 거래량이 장중 누적값(최종값 이하)이므로 거래량 비율·BIS 의
+                      거래량 항목을 직전 확정 막대 기준으로 계산한다. 조회 시각만으로 FWS(거래량 위험)가
+                      커지고 NCS 가 내려가던 현상을 없앤다. 가격·ADX·ATR 등은 마지막 막대를 그대로 쓴다.
 
     Returns:
         {
@@ -691,12 +730,15 @@ def compute_hybrid_score(
     atr = _calc_atr(highs, lows, closes)
     atr_pct = (atr / cur_price * 100) if (atr and cur_price) else None
 
-    # 거래량 비율
-    vol_ratio = None
-    if len(volumes) >= 21:
-        avg_vol = float(np.mean(volumes[-21:-1]))
-        if avg_vol > 0:
-            vol_ratio = round(volumes[-1] / avg_vol, 3)
+    # 거래량 비율 — 진행 중 막대의 거래량은 누적 중(최종값 이하)이라 직전 확정 막대로 비교한다.
+    if _completed_volume_ratio is not None:
+        vol_ratio, volume_basis = _completed_volume_ratio(volumes, volume_in_progress)
+    else:  # pragma: no cover - 기존 계산식 그대로
+        vol_ratio, volume_basis = None, "live_bar"
+        if len(volumes) >= 21 and float(np.mean(volumes[-21:-1])) > 0:
+            vol_ratio = volumes[-1] / float(np.mean(volumes[-21:-1]))
+    if vol_ratio is not None:
+        vol_ratio = round(vol_ratio, 3)
 
     # ATR 스파이크/붕괴 감지
     atr_spiking    = False
@@ -709,15 +751,21 @@ def compute_hybrid_score(
             if atr <= old_atr * 0.5:
                 atr_collapsing = True
 
-    # 20일 고점 + 거리
-    high_20d = float(max(highs[-20:])) if len(highs) >= 20 else cur_price
+    # 20일 고점 + 거리 — 직전 20봉(당일 제외) 기준. 당일을 포함하면 오늘 고점이
+    # 기준에 들어가 entry_trigger가 항상 현재가 위에 고정되고 추격 가드가 죽는다.
+    _prior_high = _prior_twenty_day_high([float(h) for h in highs]) if len(highs) >= 2 else None
+    high_20d = float(_prior_high) if _prior_high is not None else cur_price
     dist_to_high = max(0.0, (high_20d - cur_price) / cur_price * 100) if cur_price else 0.0
 
-    # 허스트
-    hurst = calc_hurst(closes) if n >= 40 else None
+    # 허스트 (수익률 R/S, 50봉 미만이면 산정하지 않는다)
+    hurst = calc_hurst(closes) if n >= 50 else None
 
     # BIS (브레이크아웃 무결성)
-    avg_vol_10d = float(np.mean(volumes[-11:-1])) if len(volumes) >= 11 else 0.0
+    # BIS 의 거래량 항목도 같은 기준(진행 중이면 직전 확정 막대)으로 맞춘다.
+    vol_idx = -2 if (volume_in_progress and len(volumes) >= 12) else -1
+    avg_vol_10d = (
+        float(np.mean(volumes[vol_idx - 10:vol_idx])) if len(volumes) >= 10 - vol_idx else 0.0
+    )
     bis_score = 0
     if open_prices and len(open_prices) >= 1:
         bis_score = compute_bis(
@@ -725,7 +773,7 @@ def compute_hybrid_score(
             high_p=highs[-1],
             low_p=lows[-1],
             close_p=closes[-1],
-            volume=volumes[-1] if volumes else 0.0,
+            volume=volumes[vol_idx] if volumes else 0.0,
             avg_volume_10d=avg_vol_10d,
         )
 
@@ -740,16 +788,20 @@ def compute_hybrid_score(
         _calc_ma(bench_closes, 200) if bench_closes and len(bench_closes) >= 200 else None
     )
 
-    # 레짐 감지
+    # 레짐 감지 — 벤치마크 MA200이 없으면 '알 수 없음'으로 두어야 한다.
+    # 예전에는 `ma200 or cur_price` 로 종목 자신의 가격을 MA200 자리에 넣었는데,
+    # 그러면 price == ma200 이라 ① 가격<=MA200 약세 3점이 항상 부여되고 ⑤ CHOP 밴드가
+    # 항상 켜져 레짐이 SIDEWAYS 로 고정되며 FWS 에 '레짐 불안정' +10점이 상수로 더해졌다.
     regime_data  = compute_regime(
         price=bench_price or cur_price,
-        ma200=ma200 or cur_price,
+        ma200=ma200,
         adx_data=adx_data,
         vix=vix,
         advance_decline_ratio=adv_decline,
+        atr_percent=atr_pct,
     )
     regime       = regime_data["regime"]
-    vol_regime   = (detect_vol_regime(atr_pct) if atr_pct else _VOL_REGIME_NORMAL)
+    vol_regime   = regime_data["vol_regime"]
     regime_stable = not regime_data["chop_band"]
 
     # 적응형 ATR 버퍼
@@ -786,9 +838,14 @@ def compute_hybrid_score(
         hurst        = hurst,
         bis_score    = bis_score,
     )
+    # 추격 표시는 직전고점 기준으로 정직하게 계산하되, 점수 반영은 검증 전까지 끈다.
+    # _chase_penalty_enabled()=False면 ext를 0으로 넣어 FWS 추격 0점(기존 dead 상태와
+    # 동일한 점수). True면 원래 설계(0.4→15점·0.8→25점)대로 반영한다.
+    _chase_on = _chase_penalty_enabled()
+    _ext_for_fws = float(anti_chase.get("ext_atr") or 0.0) if _chase_on else 0.0
     fws = compute_fws(
         vol_ratio      = vol_ratio or 1.0,
-        ext_atr        = anti_chase["ext_atr"],
+        ext_atr        = _ext_for_fws,
         adx            = adx_val,
         atr_spiking    = atr_spiking,
         atr_collapsing = atr_collapsing,
@@ -815,6 +872,8 @@ def compute_hybrid_score(
         "atr_spiking":    atr_spiking,
         "atr_collapsing": atr_collapsing,
         "vol_ratio":      vol_ratio,
+        "volume_basis":   volume_basis,
+        "volume_in_progress": bool(volume_in_progress),
         "rs_pct":         rs_pct,
         "twenty_day_high":round(high_20d, 4),
         "dist_to_high":   round(dist_to_high, 2),
@@ -822,5 +881,7 @@ def compute_hybrid_score(
         "stop_price":     entry_info["stop_price"] if entry_info else None,
         "buffer_pct":     entry_info["buffer_pct"] if entry_info else None,
         "anti_chase":     anti_chase,
+        "chase_penalty_enabled": bool(_chase_on),
+        "ext_atr_for_score": round(float(_ext_for_fws), 3),
         "regime_detail":  regime_data,
     }

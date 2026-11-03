@@ -1,0 +1,345 @@
+"""한국경제 코스피 업종등락 데이터를 업종 카드용으로 정규화한다.
+
+공개 웹 화면이 사용하는 API를 호출하되, 화면 번들에서 현재 공개 Bearer 토큰을
+찾아 사용한다. 토큰과 결과는 메모리 캐시해 외부 호출 수를 제한한다.
+"""
+from __future__ import annotations
+
+import os
+import re
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urljoin, urlparse
+
+import requests
+
+from .labels import SECTOR_EMOJI
+
+
+_BASE_URL = "https://markets.hankyung.com"
+_INDUSTRY_PAGE = f"{_BASE_URL}/index-info/industry"
+_TIMEOUT = (2.5, 6)
+_TOKEN_TTL = 6 * 60 * 60
+_SUMMARY_TTL = 5 * 60
+_STOCKS_TTL = 5 * 60
+_KST = timezone(timedelta(hours=9))
+
+# 한국경제 코스피 24개 업종 코드. 클릭 API가 업종 목록을 다시 외부 조회하지
+# 않고도 요청값을 즉시 검증할 수 있도록 사용한다.
+KOSPI_INDUSTRY_CODES = {
+    "제조": "1027", "금융": "1021", "화학": "1008", "제약": "1009",
+    "유통": "1016", "운송장비·부품": "1015", "음식료·담배": "1005", "금속": "1011",
+    "섬유·의류": "1006", "일반서비스": "1026", "종이·목재": "1007", "비금속": "1010",
+    "부동산": "1045", "운송·창고": "1019", "전기·전자": "1013", "보험": "1025",
+    "IT 서비스": "1046", "건설": "1018", "오락·문화": "1047", "기계·장비": "1012",
+    "전기·가스": "1017", "통신": "1020", "증권": "1024", "의료·정밀기기": "1014",
+}
+
+_LOCK = threading.RLock()
+_TOKEN_FETCH_LOCK = threading.Lock()
+_SUMMARY_FETCH_LOCK = threading.Lock()
+_TOP_FETCH_LOCKS: dict[str, threading.Lock] = {}
+_TOKEN_CACHE: tuple[str | None, float] = (None, 0.0)
+_SUMMARY_CACHE: tuple[dict | None, float] = (None, 0.0)
+_TOP_STOCKS_CACHE: dict[str, tuple[dict, float]] = {}
+_SUMMARY_REFRESHING = False
+
+_SESSION = requests.Session()
+_SESSION.headers.update({
+    "Accept": "application/json, text/plain, */*",
+    "Referer": _INDUSTRY_PAGE,
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138 Safari/537.36"
+    ),
+})
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _emoji(name: str) -> str:
+    return SECTOR_EMOJI.get(name) or next(
+        (icon for key, icon in SECTOR_EMOJI.items() if key in name),
+        "🏭",
+    )
+
+
+def _extract_public_token(script: str) -> str | None:
+    patterns = (
+        r'Authorization\s*=\s*"Bearer "\.concat\("([^"]{20,})"\)',
+        r'Bearer\s+([A-Za-z0-9._~-]{20,})',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, script)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _discover_public_token(force: bool = False) -> str:
+    global _TOKEN_CACHE
+    now = time.monotonic()
+    configured = (os.getenv("HANKYUNG_MARKETS_BEARER_TOKEN") or "").strip()
+    if configured and not force:
+        return configured
+    with _LOCK:
+        if not force and _TOKEN_CACHE[0] and _TOKEN_CACHE[1] > now:
+            return _TOKEN_CACHE[0]
+
+    # 동시에 들어온 콜드 스타트 요청은 한 스레드만 페이지/번들을 조회한다.
+    with _TOKEN_FETCH_LOCK:
+        now = time.monotonic()
+        with _LOCK:
+            if not force and _TOKEN_CACHE[0] and _TOKEN_CACHE[1] > now:
+                return _TOKEN_CACHE[0]
+
+        page = _SESSION.get(_INDUSTRY_PAGE, timeout=_TIMEOUT)
+        page.raise_for_status()
+        sources = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', page.text, re.I)
+        # 1) manifest 기반: CSP 변경 시 /_nuxt/ 직접 경로 없이도 빌드 매니페스트에서 추적
+        manifest_urls = []
+        nuxt_urls = []
+        for source in sources:
+            url = urljoin(_BASE_URL, source)
+            parsed = urlparse(url)
+            if parsed.scheme != "https" or parsed.netloc != "markets.hankyung.com":
+                continue
+            if "manifest" in parsed.path or "build-manifest" in parsed.path:
+                manifest_urls.append(url)
+            if "/_nuxt/" in parsed.path:
+                nuxt_urls.append(url)
+        # manifest가 있으면 내부 스크립트 목록을 재귀적으로 수집
+        for m_url in manifest_urls:
+            try:
+                m_resp = _SESSION.get(m_url, timeout=_TIMEOUT)
+                m_resp.raise_for_status()
+                # manifest JSON 또는 JS 내 URL 추출
+                extra = re.findall(r'"/_nuxt/[^"]+\.js"', m_resp.text)
+                for e in extra:
+                    full = urljoin(_BASE_URL, e.strip('"'))
+                    if full not in nuxt_urls:
+                        nuxt_urls.append(full)
+            except Exception:
+                continue
+        # 2) CSP 대비: 페이지 내 인라인 스크립트에서도 토큰 직접 탐색 (번들 없이도 가능)
+        inline_token = _extract_public_token(page.text)
+        if inline_token:
+            with _LOCK:
+                _TOKEN_CACHE = (inline_token, now + _TOKEN_TTL)
+            return inline_token
+        # Nuxt 공통 번들은 보통 문서 끝쪽에 있으므로 역순으로 확인한다.
+        for url in reversed(nuxt_urls):
+            try:
+                response = _SESSION.get(url, timeout=_TIMEOUT)
+                response.raise_for_status()
+                token = _extract_public_token(response.text)
+                if token:
+                    with _LOCK:
+                        _TOKEN_CACHE = (token, now + _TOKEN_TTL)
+                    return token
+            except Exception:
+                continue
+    raise RuntimeError("한국경제 공개 데이터 인증 정보를 찾지 못했습니다.")
+
+
+def _authorized_get_json(path: str):
+    token = _discover_public_token()
+    url = urljoin(_BASE_URL, path)
+    response = _SESSION.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=_TIMEOUT)
+    if response.status_code in (401, 403):
+        token = _discover_public_token(force=True)
+        response = _SESSION.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def _start_summary_background_refresh() -> bool:
+    """만료 캐시를 즉시 제공한 뒤 한 스레드만 최신 데이터를 갱신한다."""
+    global _SUMMARY_REFRESHING
+    with _LOCK:
+        if _SUMMARY_REFRESHING:
+            return False
+        _SUMMARY_REFRESHING = True
+
+    def refresh() -> None:
+        global _SUMMARY_REFRESHING
+        try:
+            fetch_kospi_industry_summary(force=True)
+        except Exception as exc:
+            print(f"[sector-flow] background refresh failed: {exc}")
+        finally:
+            with _LOCK:
+                _SUMMARY_REFRESHING = False
+
+    threading.Thread(
+        target=refresh,
+        name="sector-summary-refresh",
+        daemon=True,
+    ).start()
+    return True
+
+
+def fetch_kospi_industry_summary(force: bool = False) -> dict:
+    """코스피 업종 목록과 업종 자체 등락률을 반환한다."""
+    global _SUMMARY_CACHE
+    now = time.monotonic()
+    with _LOCK:
+        cached, expires = _SUMMARY_CACHE
+        if not force and cached is not None and expires > now:
+            return {**cached, "performance": {"cache_hit": True, "total_ms": 0.0}}
+        stale = cached if not force else None
+
+    # 메모리 캐시가 한 번이라도 준비됐다면 만료 시 외부 API를 기다리지 않는다.
+    # 현재 요청에는 stale 값을 즉시 반환하고 단일 daemon 스레드가 갱신한다.
+    if stale is not None:
+        refreshing = _start_summary_background_refresh()
+        return {
+            **stale,
+            "is_stale": True,
+            "performance": {
+                "cache_hit": True,
+                "stale": True,
+                "refreshing": refreshing,
+                "total_ms": 0.0,
+            },
+        }
+
+    with _SUMMARY_FETCH_LOCK:
+        now = time.monotonic()
+        with _LOCK:
+            cached, expires = _SUMMARY_CACHE
+            if not force and cached is not None and expires > now:
+                return {**cached, "performance": {"cache_hit": True, "total_ms": 0.0}}
+        started = time.perf_counter()
+        try:
+            rows = _authorized_get_json("/api/v2/index/1/industries")
+        except Exception:
+            # 만료 데이터라도 있으면 24개 종목 대체 조회보다 즉시 반환하는 편이 낫다.
+            with _LOCK:
+                stale = _SUMMARY_CACHE[0]
+            if stale is not None:
+                return {**stale, "is_stale": True, "performance": {"cache_hit": True, "stale": True, "total_ms": 0.0}}
+            raise
+        upstream_ms = (time.perf_counter() - started) * 1000
+
+    sectors = []
+    latest_timestamp = ""
+    for row in rows if isinstance(rows, list) else []:
+        name = str(row.get("hname") or "").strip()
+        upcode = str(row.get("upcode") or "").strip()
+        if not name or not upcode:
+            continue
+        trader = row.get("index_trader_delay") or row.get("index_trader") or {}
+        pct = _as_float(trader.get("chgrate"))
+        timestamp = str(trader.get("timestamp") or row.get("timestamp") or "")
+        latest_timestamp = max(latest_timestamp, timestamp)
+        direction = "up" if pct is not None and pct > 0 else "down" if pct is not None and pct < 0 else "flat"
+        sectors.append({
+            "name": name,
+            "upcode": upcode,
+            "emoji": _emoji(name),
+            "stock_count": 2,
+            "member_count": int((row.get("index_updown") or {}).get("totcount") or 0),
+            "stock_names": [],
+            "top_stocks": [],
+            "price_direction": direction,
+            "avg_change_pct": round(pct, 2) if pct is not None else None,
+            "overnight": "neutral",
+            "mood": "positive" if direction == "up" else "negative" if direction == "down" else "neutral",
+            "top_news": [],
+        })
+
+    if not sectors:
+        raise RuntimeError("한국경제 코스피 업종 데이터가 비어 있습니다.")
+    result = {
+        "generated_at": latest_timestamp or datetime.now(_KST).isoformat(),
+        "source": "한국경제 코스피 업종등락",
+        "source_url": _INDUSTRY_PAGE,
+        "sectors": sectors,
+    }
+    with _LOCK:
+        _SUMMARY_CACHE = (result, now + _SUMMARY_TTL)
+    total_ms = round((time.perf_counter() - started) * 1000, 1)
+    print(f"[sector-flow] summary upstream={upstream_ms:.1f}ms total={total_ms:.1f}ms sectors={len(sectors)}")
+    return {**result, "performance": {"cache_hit": False, "upstream_ms": round(upstream_ms, 1), "total_ms": total_ms}}
+
+
+def fetch_industry_top_stocks(upcode: str, limit: int = 2, force: bool = False) -> dict:
+    """한 코스피 업종의 구성종목을 등락률 내림차순으로 정렬해 반환한다."""
+    upcode = str(upcode or "").strip()
+    if not re.fullmatch(r"\d{3,6}", upcode):
+        raise ValueError("유효하지 않은 코스피 업종 코드입니다.")
+    limit = max(1, min(int(limit), 10))
+    now = time.monotonic()
+    with _LOCK:
+        cached = _TOP_STOCKS_CACHE.get(upcode)
+        if not force and cached and cached[1] > now:
+            return {**cached[0], "stocks": cached[0]["stocks"][:limit],
+                    "performance": {"cache_hit": True, "total_ms": 0.0}}
+
+    with _LOCK:
+        fetch_lock = _TOP_FETCH_LOCKS.setdefault(upcode, threading.Lock())
+    with fetch_lock:
+        now = time.monotonic()
+        with _LOCK:
+            cached = _TOP_STOCKS_CACHE.get(upcode)
+            if not force and cached and cached[1] > now:
+                return {**cached[0], "stocks": cached[0]["stocks"][:limit],
+                        "performance": {"cache_hit": True, "total_ms": 0.0}}
+        started = time.perf_counter()
+        try:
+            rows = _authorized_get_json(f"/api/v2/index/{upcode}/stocks")
+        except Exception:
+            with _LOCK:
+                stale = _TOP_STOCKS_CACHE.get(upcode)
+            if stale:
+                return {**stale[0], "stocks": stale[0]["stocks"][:limit], "is_stale": True,
+                        "performance": {"cache_hit": True, "stale": True, "total_ms": 0.0}}
+            raise
+        upstream_ms = (time.perf_counter() - started) * 1000
+
+    selection_started = time.perf_counter()
+    ranked = []
+    latest_timestamp = ""
+    for row in rows if isinstance(rows, list) else []:
+        trader = row.get("stock_trader_delay") or row.get("stock_trader") or {}
+        pct = _as_float(trader.get("chgrate"))
+        name = str(row.get("shname") or "").strip()
+        code = str(row.get("shcode") or "").strip()
+        if pct is None or not name or not re.fullmatch(r"\d{6}", code):
+            continue
+        timestamp = str(trader.get("timestamp") or "")
+        latest_timestamp = max(latest_timestamp, timestamp)
+        ranked.append({
+            "code": code,
+            "name": name,
+            "change_pct": round(pct, 2),
+            "price": _as_float(trader.get("curprc")),
+            "direction": "up" if pct > 0 else "down" if pct < 0 else "flat",
+        })
+    ranked.sort(key=lambda item: (-item["change_pct"], item["name"]))
+    if not ranked:
+        raise RuntimeError("해당 업종의 종목 등락률 데이터가 비어 있습니다.")
+
+    result = {
+        "upcode": upcode,
+        "as_of": latest_timestamp or datetime.now(_KST).isoformat(),
+        "source": "한국경제 코스피 업종등락",
+        "source_url": _INDUSTRY_PAGE,
+        "stocks": ranked,
+    }
+    with _LOCK:
+        _TOP_STOCKS_CACHE[upcode] = (result, now + _STOCKS_TTL)
+    selection_ms = (time.perf_counter() - selection_started) * 1000
+    total_ms = round((time.perf_counter() - started) * 1000, 1)
+    print(f"[sector-flow] top upcode={upcode} upstream={upstream_ms:.1f}ms selection={selection_ms:.1f}ms total={total_ms:.1f}ms rows={len(rows)}")
+    return {**result, "stocks": ranked[:limit], "performance": {
+        "cache_hit": False, "upstream_ms": round(upstream_ms, 1),
+        "selection_ms": round(selection_ms, 1), "total_ms": total_ms,
+    }}

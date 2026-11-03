@@ -1,0 +1,2750 @@
+{
+  "schema_version": 1,
+  "universe_id": "smart-score-coverage-v1",
+  "generated_at": "2026-08-29T09:27:17+00:00",
+  "score_model": "investment_charm.v1",
+  "markets": {
+    "KRX": {
+      "coverage_label": "KRX 주요 상장사 재무 비교 유니버스",
+      "catalog_count": 67,
+      "records": [
+        {
+          "ticker": "000080.KS",
+          "smart_score": 43,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 42,
+            "safety": 37,
+            "profitability": 35,
+            "cash": 48
+          },
+          "industry": "Beverages - Wineries & Distilleries",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "000140.KS",
+          "smart_score": 38,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 42,
+            "safety": 22,
+            "profitability": 25,
+            "cash": 50
+          },
+          "industry": "Beverages - Brewers",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "000270.KS",
+          "smart_score": 54,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 39,
+            "safety": 76,
+            "profitability": 46,
+            "cash": 55
+          },
+          "industry": "Auto Manufacturers",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "000660.KS",
+          "smart_score": 83,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 90,
+            "safety": 90,
+            "profitability": 90,
+            "cash": 67
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "000810.KS",
+          "smart_score": 51,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 35,
+            "safety": 55,
+            "profitability": 38,
+            "cash": null
+          },
+          "industry": "Insurance - Property & Casualty",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "000990.KS",
+          "smart_score": 75,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 69,
+            "safety": 87,
+            "profitability": 66,
+            "cash": 68
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "001040.KS",
+          "smart_score": 39,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 30,
+            "monopoly": 28,
+            "safety": 37,
+            "profitability": 22,
+            "cash": 78
+          },
+          "industry": "Conglomerates",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "003670.KS",
+          "smart_score": 32,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 22,
+            "safety": 55,
+            "profitability": 20,
+            "cash": 18
+          },
+          "industry": "Electrical Equipment & Parts",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "004020.KS",
+          "smart_score": 37,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 30,
+            "monopoly": 14,
+            "safety": 62,
+            "profitability": 16,
+            "cash": 62
+          },
+          "industry": "Steel",
+          "sector": "Basic Materials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "005380.KS",
+          "smart_score": 29,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 30,
+            "monopoly": 32,
+            "safety": 40,
+            "profitability": 34,
+            "cash": 8
+          },
+          "industry": "Auto Manufacturers",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "005490.KS",
+          "smart_score": 42,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 24,
+            "safety": 75,
+            "profitability": 20,
+            "cash": 13
+          },
+          "industry": "Steel",
+          "sector": "Basic Materials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "005930.KS",
+          "smart_score": 83,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 86,
+            "safety": 90,
+            "profitability": 90,
+            "cash": 73
+          },
+          "industry": "Consumer Electronics",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "005935.KS",
+          "smart_score": 83,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 86,
+            "safety": 90,
+            "profitability": 90,
+            "cash": 73
+          },
+          "industry": "Consumer Electronics",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "006400.KS",
+          "smart_score": 35,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 22,
+            "safety": 49,
+            "profitability": 15,
+            "cash": 12
+          },
+          "industry": "Electrical Equipment & Parts",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "009150.KS",
+          "smart_score": 59,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 54,
+            "safety": 76,
+            "profitability": 51,
+            "cash": 30
+          },
+          "industry": "Electronic Components",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "009540.KS",
+          "smart_score": 71,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 62,
+            "safety": 71,
+            "profitability": 65,
+            "cash": 73
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "009830.KS",
+          "smart_score": 32,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 22,
+            "safety": 26,
+            "profitability": 16,
+            "cash": 12
+          },
+          "industry": "Solar",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "010120.KS",
+          "smart_score": 54,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 54,
+            "safety": 62,
+            "profitability": 51,
+            "cash": 13
+          },
+          "industry": "Electrical Equipment & Parts",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "010140.KS",
+          "smart_score": 58,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 39,
+            "safety": 53,
+            "profitability": 46,
+            "cash": 85
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "010950.KS",
+          "smart_score": 47,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 40,
+            "safety": 41,
+            "profitability": 51,
+            "cash": 18
+          },
+          "industry": "Oil & Gas Refining & Marketing",
+          "sector": "Energy",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "011170.KS",
+          "smart_score": 26,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 14,
+            "safety": 53,
+            "profitability": 11,
+            "cash": 7
+          },
+          "industry": "Chemicals",
+          "sector": "Basic Materials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "012330.KS",
+          "smart_score": 50,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 32,
+            "safety": 84,
+            "profitability": 40,
+            "cash": 42
+          },
+          "industry": "Auto Parts",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "012450.KS",
+          "smart_score": 52,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 54,
+            "safety": 41,
+            "profitability": 51,
+            "cash": 23
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "015760.KS",
+          "smart_score": 35,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 22,
+            "monopoly": 49,
+            "safety": 10,
+            "profitability": 51,
+            "cash": 42
+          },
+          "industry": "Utilities - Regulated Electric",
+          "sector": "Utilities",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "017670.KS",
+          "smart_score": 59,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 70,
+            "monopoly": 51,
+            "safety": 62,
+            "profitability": 34,
+            "cash": 80
+          },
+          "industry": "Telecom Services",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "018260.KS",
+          "smart_score": 54,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 32,
+            "safety": 90,
+            "profitability": 40,
+            "cash": 55
+          },
+          "industry": "Information Technology Services",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "028260.KS",
+          "smart_score": 56,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 32,
+            "safety": 76,
+            "profitability": 34,
+            "cash": 55
+          },
+          "industry": "Engineering & Construction",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "028300.KQ",
+          "smart_score": 35,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 28,
+            "safety": 37,
+            "profitability": 6,
+            "cash": 12
+          },
+          "industry": "Biotechnology",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "030200.KS",
+          "smart_score": 43,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 15,
+            "monopoly": 46,
+            "safety": 57,
+            "profitability": 34,
+            "cash": 62
+          },
+          "industry": "Telecom Services",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "032830.KS",
+          "smart_score": 56,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 51,
+            "safety": 81,
+            "profitability": 34,
+            "cash": 18
+          },
+          "industry": "Insurance - Life",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "033780.KS",
+          "smart_score": 69,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 74,
+            "safety": 80,
+            "profitability": 66,
+            "cash": 48
+          },
+          "industry": "Tobacco",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "034020.KS",
+          "smart_score": 38,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 28,
+            "safety": 57,
+            "profitability": 25,
+            "cash": 18
+          },
+          "industry": "Specialty Industrial Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "034730.KS",
+          "smart_score": 50,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 72,
+            "monopoly": 52,
+            "safety": 57,
+            "profitability": 49,
+            "cash": 18
+          },
+          "industry": "Conglomerates",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "035420.KS",
+          "smart_score": 67,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 61,
+            "safety": 76,
+            "profitability": 55,
+            "cash": 62
+          },
+          "industry": "Internet Content & Information",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "035720.KS",
+          "smart_score": 56,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 51,
+            "safety": 80,
+            "profitability": 34,
+            "cash": 78
+          },
+          "industry": "Internet Content & Information",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "036460.KS",
+          "smart_score": 42,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 62,
+            "monopoly": 24,
+            "safety": 18,
+            "profitability": 29,
+            "cash": 78
+          },
+          "industry": "Utilities - Regulated Gas",
+          "sector": "Utilities",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "036570.KS",
+          "smart_score": 79,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 82,
+            "safety": 90,
+            "profitability": 71,
+            "cash": 55
+          },
+          "industry": "Electronic Gaming & Multimedia",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "042660.KS",
+          "smart_score": 58,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 58,
+            "safety": 46,
+            "profitability": 60,
+            "cash": 30
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "051910.KS",
+          "smart_score": 37,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 22,
+            "safety": 55,
+            "profitability": 11,
+            "cash": 23
+          },
+          "industry": "Chemicals",
+          "sector": "Basic Materials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "055550.KS",
+          "smart_score": 65,
+          "available_count": 3,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 64,
+            "safety": null,
+            "profitability": 65,
+            "cash": null
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "058470.KQ",
+          "smart_score": 65,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 22,
+            "monopoly": 79,
+            "safety": 90,
+            "profitability": 81,
+            "cash": 53
+          },
+          "industry": "Semiconductor Equipment & Materials",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "066570.KS",
+          "smart_score": 50,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 32,
+            "safety": 62,
+            "profitability": 35,
+            "cash": 60
+          },
+          "industry": "Consumer Electronics",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "068270.KS",
+          "smart_score": 66,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 72,
+            "monopoly": 78,
+            "safety": 71,
+            "profitability": 71,
+            "cash": 37
+          },
+          "industry": "Biotechnology",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "071090.KS",
+          "smart_score": 46,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 39,
+            "safety": 57,
+            "profitability": 35,
+            "cash": 13
+          },
+          "industry": "Steel",
+          "sector": "Basic Materials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "071840.KS",
+          "smart_score": 38,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 30,
+            "monopoly": 32,
+            "safety": 20,
+            "profitability": 35,
+            "cash": 72
+          },
+          "industry": "Specialty Retail",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "079550.KS",
+          "smart_score": 47,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 49,
+            "safety": 41,
+            "profitability": 51,
+            "cash": 8
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "086790.KS",
+          "smart_score": 60,
+          "available_count": 3,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 64,
+            "safety": null,
+            "profitability": 65,
+            "cash": null
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "096770.KS",
+          "smart_score": 43,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 19,
+            "safety": 45,
+            "profitability": 21,
+            "cash": 57
+          },
+          "industry": "Oil & Gas Refining & Marketing",
+          "sector": "Energy",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "097950.KS",
+          "smart_score": 41,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 28,
+            "safety": 41,
+            "profitability": 16,
+            "cash": 62
+          },
+          "industry": "Packaged Foods",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "105560.KS",
+          "smart_score": 52,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 64,
+            "safety": null,
+            "profitability": 65,
+            "cash": 5
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "196170.KQ",
+          "smart_score": 68,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 15,
+            "monopoly": 90,
+            "safety": 90,
+            "profitability": 80,
+            "cash": 67
+          },
+          "industry": "Biotechnology",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "207940.KS",
+          "smart_score": 80,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 82,
+            "safety": 76,
+            "profitability": 81,
+            "cash": 73
+          },
+          "industry": "Biotechnology",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "241560.KS",
+          "smart_score": 53,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 70,
+            "monopoly": 47,
+            "safety": 76,
+            "profitability": 38,
+            "cash": 35
+          },
+          "industry": "Farm & Heavy Construction Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "247540.KQ",
+          "smart_score": 23,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 15,
+            "monopoly": 28,
+            "safety": 22,
+            "profitability": 24,
+            "cash": 25
+          },
+          "industry": "Electrical Equipment & Parts",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "251270.KS",
+          "smart_score": 60,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 70,
+            "monopoly": 51,
+            "safety": 62,
+            "profitability": 39,
+            "cash": 78
+          },
+          "industry": "Electronic Gaming & Multimedia",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "259960.KS",
+          "smart_score": 83,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 72,
+            "safety": 90,
+            "profitability": 71,
+            "cash": 85
+          },
+          "industry": "Electronic Gaming & Multimedia",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "267260.KS",
+          "smart_score": 73,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 72,
+            "safety": 71,
+            "profitability": 75,
+            "cash": 68
+          },
+          "industry": "Electrical Equipment & Parts",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "271940.KS",
+          "smart_score": 28,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 15,
+            "monopoly": 14,
+            "safety": 90,
+            "profitability": 6,
+            "cash": 17
+          },
+          "industry": "Auto Parts",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "316140.KS",
+          "smart_score": 69,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 72,
+            "monopoly": 64,
+            "safety": null,
+            "profitability": 65,
+            "cash": 75
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "323410.KS",
+          "smart_score": 53,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 64,
+            "safety": null,
+            "profitability": 65,
+            "cash": 5
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "329180.KS",
+          "smart_score": 67,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 54,
+            "safety": 62,
+            "profitability": 61,
+            "cash": 62
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "352820.KS",
+          "smart_score": 51,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 22,
+            "safety": 87,
+            "profitability": 6,
+            "cash": 57
+          },
+          "industry": "Entertainment",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "373220.KS",
+          "smart_score": 35,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 18,
+            "safety": 50,
+            "profitability": 11,
+            "cash": 23
+          },
+          "industry": "Electrical Equipment & Parts",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "377300.KS",
+          "smart_score": 64,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 51,
+            "safety": 80,
+            "profitability": 39,
+            "cash": 62
+          },
+          "industry": "Software - Infrastructure",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        }
+      ]
+    },
+    "US": {
+      "coverage_label": "US 주요 상장사 재무 비교 유니버스",
+      "catalog_count": 119,
+      "records": [
+        {
+          "ticker": "AAPL",
+          "smart_score": 74,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 82,
+            "safety": 50,
+            "profitability": 90,
+            "cash": 73
+          },
+          "industry": "Consumer Electronics",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ABBV",
+          "smart_score": 64,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 77,
+            "safety": 20,
+            "profitability": 68,
+            "cash": 78
+          },
+          "industry": "Drug Manufacturers - General",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ABT",
+          "smart_score": 57,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 59,
+            "safety": 62,
+            "profitability": 51,
+            "cash": 73
+          },
+          "industry": "Medical Devices",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ACHR",
+          "smart_score": 30,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": null,
+            "monopoly": 18,
+            "safety": 90,
+            "profitability": 6,
+            "cash": 7
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ACN",
+          "smart_score": 69,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 59,
+            "safety": 80,
+            "profitability": 66,
+            "cash": 78
+          },
+          "industry": "Information Technology Services",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ADBE",
+          "smart_score": 75,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 86,
+            "safety": 53,
+            "profitability": 90,
+            "cash": 85
+          },
+          "industry": "Software - Application",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ADI",
+          "smart_score": 79,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 78,
+            "safety": 76,
+            "profitability": 71,
+            "cash": 78
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ADP",
+          "smart_score": 66,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 78,
+            "safety": 41,
+            "profitability": 70,
+            "cash": 80
+          },
+          "industry": "Software - Application",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AFRM",
+          "smart_score": 64,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 78,
+            "safety": 42,
+            "profitability": 64,
+            "cash": 55
+          },
+          "industry": "Credit Services",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AIG",
+          "smart_score": 52,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 30,
+            "monopoly": 48,
+            "safety": 58,
+            "profitability": 44,
+            "cash": 78
+          },
+          "industry": "Insurance - Diversified",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ALL",
+          "smart_score": 72,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 72,
+            "safety": 58,
+            "profitability": 75,
+            "cash": 78
+          },
+          "industry": "Insurance - Property & Casualty",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AMD",
+          "smart_score": 76,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 64,
+            "safety": 87,
+            "profitability": 61,
+            "cash": 73
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AMGN",
+          "smart_score": 68,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 81,
+            "safety": 28,
+            "profitability": 80,
+            "cash": 73
+          },
+          "industry": "Drug Manufacturers - General",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AMT",
+          "smart_score": 65,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 70,
+            "monopoly": 90,
+            "safety": 10,
+            "profitability": 80,
+            "cash": 73
+          },
+          "industry": "REIT - Specialty",
+          "sector": "Real Estate",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AMZN",
+          "smart_score": 65,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 72,
+            "safety": 62,
+            "profitability": 65,
+            "cash": 42
+          },
+          "industry": "Internet Retail",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AON",
+          "smart_score": 57,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 78,
+            "safety": 26,
+            "profitability": 70,
+            "cash": 75
+          },
+          "industry": "Insurance Brokers",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AVGO",
+          "smart_score": 81,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 90,
+            "safety": 66,
+            "profitability": 85,
+            "cash": 73
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "AXP",
+          "smart_score": 66,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 81,
+            "safety": 44,
+            "profitability": 70,
+            "cash": 75
+          },
+          "industry": "Credit Services",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "BA",
+          "smart_score": 39,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 34,
+            "safety": 14,
+            "profitability": 34,
+            "cash": 55
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "BAC",
+          "smart_score": 74,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 60,
+            "safety": null,
+            "profitability": 65,
+            "cash": 90
+          },
+          "industry": "Banks - Diversified",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "BKNG",
+          "smart_score": 76,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 85,
+            "safety": 42,
+            "profitability": 88,
+            "cash": 85
+          },
+          "industry": "Travel Services",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "BLK",
+          "smart_score": 75,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 69,
+            "safety": 87,
+            "profitability": 66,
+            "cash": 73
+          },
+          "industry": "Asset Management",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "BRK-B",
+          "smart_score": 73,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 64,
+            "safety": 90,
+            "profitability": 66,
+            "cash": 68
+          },
+          "industry": "Insurance - Diversified",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "C",
+          "smart_score": 51,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 55,
+            "safety": null,
+            "profitability": 60,
+            "cash": 5
+          },
+          "industry": "Banks - Diversified",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CAT",
+          "smart_score": 60,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 68,
+            "safety": 23,
+            "profitability": 70,
+            "cash": 55
+          },
+          "industry": "Farm & Heavy Construction Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CB",
+          "smart_score": 59,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 64,
+            "safety": 49,
+            "profitability": 61,
+            "cash": 75
+          },
+          "industry": "Insurance - Property & Casualty",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CI",
+          "smart_score": 50,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 35,
+            "safety": 45,
+            "profitability": 41,
+            "cash": 67
+          },
+          "industry": "Healthcare Plans",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CL",
+          "smart_score": 57,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 76,
+            "safety": 18,
+            "profitability": 75,
+            "cash": 80
+          },
+          "industry": "Household & Personal Products",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CMCSA",
+          "smart_score": 53,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 22,
+            "monopoly": 62,
+            "safety": 41,
+            "profitability": 56,
+            "cash": 85
+          },
+          "industry": "Telecom Services",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "COF",
+          "smart_score": 66,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 55,
+            "safety": null,
+            "profitability": 60,
+            "cash": 90
+          },
+          "industry": "Credit Services",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "COP",
+          "smart_score": 72,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 64,
+            "safety": 67,
+            "profitability": 61,
+            "cash": 80
+          },
+          "industry": "Oil & Gas E&P",
+          "sector": "Energy",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "COST",
+          "smart_score": 59,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 48,
+            "safety": 57,
+            "profitability": 55,
+            "cash": 55
+          },
+          "industry": "Discount Stores",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CSCO",
+          "smart_score": 72,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 81,
+            "safety": 57,
+            "profitability": 70,
+            "cash": 68
+          },
+          "industry": "Communication Equipment",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CVS",
+          "smart_score": 47,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 28,
+            "safety": 45,
+            "profitability": 24,
+            "cash": 62
+          },
+          "industry": "Healthcare Plans",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "CVX",
+          "smart_score": 74,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 64,
+            "safety": 76,
+            "profitability": 56,
+            "cash": 80
+          },
+          "industry": "Oil & Gas Integrated",
+          "sector": "Energy",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "DE",
+          "smart_score": 50,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 22,
+            "monopoly": 59,
+            "safety": 39,
+            "profitability": 61,
+            "cash": 67
+          },
+          "industry": "Farm & Heavy Construction Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "DIS",
+          "smart_score": 51,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 54,
+            "safety": 53,
+            "profitability": 56,
+            "cash": 55
+          },
+          "industry": "Entertainment",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "DNA",
+          "smart_score": 26,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 15,
+            "monopoly": 31,
+            "safety": 69,
+            "profitability": 6,
+            "cash": 7
+          },
+          "industry": "Biotechnology",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "DUK",
+          "smart_score": 47,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 69,
+            "safety": 22,
+            "profitability": 55,
+            "cash": 37
+          },
+          "industry": "Utilities - Regulated Electric",
+          "sector": "Utilities",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ELV",
+          "smart_score": 47,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 30,
+            "monopoly": 39,
+            "safety": 71,
+            "profitability": 36,
+            "cash": 57
+          },
+          "industry": "Healthcare Plans",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "EMR",
+          "smart_score": 65,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 64,
+            "safety": 57,
+            "profitability": 56,
+            "cash": 80
+          },
+          "industry": "Specialty Industrial Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "EOG",
+          "smart_score": 84,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 86,
+            "safety": 84,
+            "profitability": 81,
+            "cash": 73
+          },
+          "industry": "Oil & Gas E&P",
+          "sector": "Energy",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ETN",
+          "smart_score": 55,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 59,
+            "safety": 50,
+            "profitability": 61,
+            "cash": 62
+          },
+          "industry": "Specialty Industrial Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "GE",
+          "smart_score": 65,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 72,
+            "safety": 45,
+            "profitability": 70,
+            "cash": 62
+          },
+          "industry": "Aerospace & Defense",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "GILD",
+          "smart_score": 50,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 46,
+            "safety": 28,
+            "profitability": 42,
+            "cash": 75
+          },
+          "industry": "Drug Manufacturers - General",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "GOOGL",
+          "smart_score": 79,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 86,
+            "safety": 90,
+            "profitability": 85,
+            "cash": 47
+          },
+          "industry": "Internet Content & Information",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "GS",
+          "smart_score": 57,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 86,
+            "safety": 32,
+            "profitability": 70,
+            "cash": 5
+          },
+          "industry": "Capital Markets",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "HD",
+          "smart_score": 51,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 62,
+            "safety": 14,
+            "profitability": 65,
+            "cash": 62
+          },
+          "industry": "Home Improvement Retail",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "HIG",
+          "smart_score": 71,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 72,
+            "monopoly": 59,
+            "safety": 76,
+            "profitability": 61,
+            "cash": 85
+          },
+          "industry": "Insurance - Diversified",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "HON",
+          "smart_score": 57,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 70,
+            "monopoly": 72,
+            "safety": 23,
+            "profitability": 70,
+            "cash": 48
+          },
+          "industry": "Conglomerates",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "IBM",
+          "smart_score": 55,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 72,
+            "safety": 14,
+            "profitability": 70,
+            "cash": 80
+          },
+          "industry": "Information Technology Services",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "INTU",
+          "smart_score": 67,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 72,
+            "safety": 62,
+            "profitability": 71,
+            "cash": 85
+          },
+          "industry": "Software - Application",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "IONQ",
+          "smart_score": 45,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 22,
+            "safety": 90,
+            "profitability": 6,
+            "cash": 12
+          },
+          "industry": "Computer Hardware",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ISRG",
+          "smart_score": 80,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 82,
+            "safety": 90,
+            "profitability": 81,
+            "cash": 73
+          },
+          "industry": "Medical Instruments & Supplies",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ITW",
+          "smart_score": 61,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 78,
+            "safety": 18,
+            "profitability": 80,
+            "cash": 68
+          },
+          "industry": "Specialty Industrial Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "JNJ",
+          "smart_score": 65,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 81,
+            "safety": 57,
+            "profitability": 75,
+            "cash": 68
+          },
+          "industry": "Drug Manufacturers - General",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "JOBY",
+          "smart_score": 42,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 22,
+            "safety": 81,
+            "profitability": 6,
+            "cash": 7
+          },
+          "industry": "Airports & Air Services",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "JPM",
+          "smart_score": 57,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 69,
+            "safety": null,
+            "profitability": 70,
+            "cash": 5
+          },
+          "industry": "Banks - Diversified",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "KO",
+          "smart_score": 70,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 86,
+            "safety": 50,
+            "profitability": 85,
+            "cash": 60
+          },
+          "industry": "Beverages - Non-Alcoholic",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "LCID",
+          "smart_score": 27,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 14,
+            "safety": 14,
+            "profitability": 6,
+            "cash": 7
+          },
+          "industry": "Auto Manufacturers",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "LIN",
+          "smart_score": 64,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 74,
+            "safety": 57,
+            "profitability": 66,
+            "cash": 62
+          },
+          "industry": "Specialty Chemicals",
+          "sector": "Basic Materials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "LLY",
+          "smart_score": 72,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 90,
+            "safety": 35,
+            "profitability": 90,
+            "cash": 67
+          },
+          "industry": "Drug Manufacturers - General",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "LOW",
+          "smart_score": 44,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 47,
+            "safety": 20,
+            "profitability": 48,
+            "cash": 55
+          },
+          "industry": "Home Improvement Retail",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "LRCX",
+          "smart_score": 79,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 82,
+            "safety": 81,
+            "profitability": 90,
+            "cash": 55
+          },
+          "industry": "Semiconductor Equipment & Materials",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MA",
+          "smart_score": 69,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 90,
+            "safety": 18,
+            "profitability": 90,
+            "cash": 78
+          },
+          "industry": "Credit Services",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MCD",
+          "smart_score": 67,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 85,
+            "safety": 42,
+            "profitability": 82,
+            "cash": 73
+          },
+          "industry": "Restaurants",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MDT",
+          "smart_score": 67,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 68,
+            "safety": 75,
+            "profitability": 56,
+            "cash": 68
+          },
+          "industry": "Medical Devices",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MET",
+          "smart_score": 43,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 44,
+            "safety": 48,
+            "profitability": 40,
+            "cash": 25
+          },
+          "industry": "Insurance - Life",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "META",
+          "smart_score": 71,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 86,
+            "safety": 78,
+            "profitability": 85,
+            "cash": 60
+          },
+          "industry": "Internet Content & Information",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MMM",
+          "smart_score": 61,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 65,
+            "monopoly": 68,
+            "safety": 28,
+            "profitability": 70,
+            "cash": 73
+          },
+          "industry": "Conglomerates",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MO",
+          "smart_score": 62,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 90,
+            "safety": 10,
+            "profitability": 88,
+            "cash": 85
+          },
+          "industry": "Tobacco",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MRK",
+          "smart_score": 50,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 41,
+            "safety": 35,
+            "profitability": 35,
+            "cash": 80
+          },
+          "industry": "Drug Manufacturers - General",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MRSH",
+          "smart_score": 60,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 72,
+            "safety": 30,
+            "profitability": 65,
+            "cash": 73
+          },
+          "industry": "Insurance Brokers",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MS",
+          "smart_score": 56,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 86,
+            "safety": 36,
+            "profitability": 70,
+            "cash": 5
+          },
+          "industry": "Capital Markets",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MSFT",
+          "smart_score": 77,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 80,
+            "monopoly": 90,
+            "safety": 76,
+            "profitability": 85,
+            "cash": 53
+          },
+          "industry": "Software - Infrastructure",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "MU",
+          "smart_score": 80,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 90,
+            "safety": 90,
+            "profitability": 90,
+            "cash": 53
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "NFLX",
+          "smart_score": 75,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 82,
+            "safety": 62,
+            "profitability": 90,
+            "cash": 80
+          },
+          "industry": "Entertainment",
+          "sector": "Communication Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "NKE",
+          "smart_score": 56,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 62,
+            "monopoly": 59,
+            "safety": 59,
+            "profitability": 51,
+            "cash": 48
+          },
+          "industry": "Footwear & Accessories",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "NOW",
+          "smart_score": 56,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 58,
+            "safety": 53,
+            "profitability": 46,
+            "cash": 78
+          },
+          "industry": "Software - Application",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "NVDA",
+          "smart_score": 84,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 90,
+            "safety": 90,
+            "profitability": 90,
+            "cash": 53
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ORCL",
+          "smart_score": 60,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 86,
+            "safety": 23,
+            "profitability": 80,
+            "cash": 37
+          },
+          "industry": "Software - Infrastructure",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PATH",
+          "smart_score": 73,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 68,
+            "safety": 87,
+            "profitability": 55,
+            "cash": 80
+          },
+          "industry": "Software - Infrastructure",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PEP",
+          "smart_score": 60,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 68,
+            "safety": 18,
+            "profitability": 70,
+            "cash": 68
+          },
+          "industry": "Beverages - Non-Alcoholic",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PFE",
+          "smart_score": 56,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 56,
+            "safety": 55,
+            "profitability": 45,
+            "cash": 80
+          },
+          "industry": "Drug Manufacturers - General",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PG",
+          "smart_score": 60,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 30,
+            "monopoly": 78,
+            "safety": 49,
+            "profitability": 75,
+            "cash": 68
+          },
+          "industry": "Household & Personal Products",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PGR",
+          "smart_score": 64,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 58,
+            "safety": 58,
+            "profitability": 65,
+            "cash": 78
+          },
+          "industry": "Insurance - Property & Casualty",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PH",
+          "smart_score": 69,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 72,
+            "safety": 62,
+            "profitability": 75,
+            "cash": 68
+          },
+          "industry": "Specialty Industrial Machinery",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PLD",
+          "smart_score": 68,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 75,
+            "safety": 49,
+            "profitability": 59,
+            "cash": 78
+          },
+          "industry": "REIT - Industrial",
+          "sector": "Real Estate",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PLTR",
+          "smart_score": 86,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 95,
+            "monopoly": 90,
+            "safety": 90,
+            "profitability": 90,
+            "cash": 67
+          },
+          "industry": "Software - Infrastructure",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PM",
+          "smart_score": 62,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 90,
+            "safety": 20,
+            "profitability": 82,
+            "cash": 73
+          },
+          "industry": "Tobacco",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PNC",
+          "smart_score": 72,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 60,
+            "safety": null,
+            "profitability": 65,
+            "cash": 90
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "PRU",
+          "smart_score": 53,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 44,
+            "safety": 26,
+            "profitability": 40,
+            "cash": 78
+          },
+          "industry": "Insurance - Life",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "QCOM",
+          "smart_score": 64,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 22,
+            "monopoly": 72,
+            "safety": 71,
+            "profitability": 75,
+            "cash": 80
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "REGN",
+          "smart_score": 72,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 74,
+            "safety": 90,
+            "profitability": 71,
+            "cash": 73
+          },
+          "industry": "Biotechnology",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "RIVN",
+          "smart_score": 33,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 75,
+            "monopoly": 14,
+            "safety": 63,
+            "profitability": 6,
+            "cash": 7
+          },
+          "industry": "Auto Manufacturers",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "SBUX",
+          "smart_score": 47,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 62,
+            "monopoly": 47,
+            "safety": 10,
+            "profitability": 48,
+            "cash": 67
+          },
+          "industry": "Restaurants",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "SLB",
+          "smart_score": 53,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 49,
+            "safety": 67,
+            "profitability": 51,
+            "cash": 62
+          },
+          "industry": "Oil & Gas Equipment & Services",
+          "sector": "Energy",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "SO",
+          "smart_score": 48,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 65,
+            "monopoly": 69,
+            "safety": 10,
+            "profitability": 61,
+            "cash": 37
+          },
+          "industry": "Utilities - Regulated Electric",
+          "sector": "Utilities",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "SOFI",
+          "smart_score": 49,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 56,
+            "safety": 53,
+            "profitability": 44,
+            "cash": 5
+          },
+          "industry": "Credit Services",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "SPGI",
+          "smart_score": 73,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 81,
+            "safety": 62,
+            "profitability": 71,
+            "cash": 85
+          },
+          "industry": "Financial Data & Stock Exchanges",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "SYK",
+          "smart_score": 71,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 72,
+            "monopoly": 72,
+            "safety": 71,
+            "profitability": 66,
+            "cash": 73
+          },
+          "industry": "Medical Devices",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "TFC",
+          "smart_score": 72,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 72,
+            "monopoly": 60,
+            "safety": null,
+            "profitability": 65,
+            "cash": 90
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "TGT",
+          "smart_score": 58,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 78,
+            "monopoly": 52,
+            "safety": 41,
+            "profitability": 55,
+            "cash": 62
+          },
+          "industry": "Discount Stores",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "TJX",
+          "smart_score": 57,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 62,
+            "safety": 30,
+            "profitability": 65,
+            "cash": 62
+          },
+          "industry": "Apparel Retail",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "TMO",
+          "smart_score": 60,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 64,
+            "safety": 55,
+            "profitability": 61,
+            "cash": 62
+          },
+          "industry": "Diagnostics & Research",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "TRV",
+          "smart_score": 71,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 70,
+            "monopoly": 72,
+            "safety": 58,
+            "profitability": 70,
+            "cash": 85
+          },
+          "industry": "Insurance - Property & Casualty",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "TSLA",
+          "smart_score": 51,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 52,
+            "monopoly": 28,
+            "safety": 84,
+            "profitability": 29,
+            "cash": 60
+          },
+          "industry": "Auto Manufacturers",
+          "sector": "Consumer Cyclical",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "TXN",
+          "smart_score": 78,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 85,
+            "monopoly": 86,
+            "safety": 69,
+            "profitability": 85,
+            "cash": 67
+          },
+          "industry": "Semiconductors",
+          "sector": "Technology",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "UNH",
+          "smart_score": 55,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 70,
+            "monopoly": 39,
+            "safety": 53,
+            "profitability": 46,
+            "cash": 67
+          },
+          "industry": "Healthcare Plans",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "UNP",
+          "smart_score": 66,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 86,
+            "safety": 30,
+            "profitability": 85,
+            "cash": 67
+          },
+          "industry": "Railroads",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "UPS",
+          "smart_score": 47,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 52,
+            "safety": 23,
+            "profitability": 55,
+            "cash": 67
+          },
+          "industry": "Integrated Freight & Logistics",
+          "sector": "Industrials",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "UPST",
+          "smart_score": 44,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 46,
+            "safety": 42,
+            "profitability": 34,
+            "cash": 8
+          },
+          "industry": "Credit Services",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "USB",
+          "smart_score": 71,
+          "available_count": 4,
+          "sub_scores": {
+            "growth": 68,
+            "monopoly": 60,
+            "safety": null,
+            "profitability": 65,
+            "cash": 90
+          },
+          "industry": "Banks - Regional",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "V",
+          "smart_score": 74,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 90,
+            "safety": 57,
+            "profitability": 90,
+            "cash": 73
+          },
+          "industry": "Credit Services",
+          "sector": "Financial Services",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "VRTX",
+          "smart_score": 75,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 60,
+            "monopoly": 79,
+            "safety": 90,
+            "profitability": 81,
+            "cash": 67
+          },
+          "industry": "Biotechnology",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "WMT",
+          "smart_score": 43,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 45,
+            "monopoly": 44,
+            "safety": 37,
+            "profitability": 41,
+            "cash": 48
+          },
+          "industry": "Discount Stores",
+          "sector": "Consumer Defensive",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "XOM",
+          "smart_score": 65,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 90,
+            "monopoly": 54,
+            "safety": 71,
+            "profitability": 56,
+            "cash": 55
+          },
+          "industry": "Oil & Gas Integrated",
+          "sector": "Energy",
+          "source": "Yahoo Finance Ticker.info"
+        },
+        {
+          "ticker": "ZTS",
+          "smart_score": 66,
+          "available_count": 5,
+          "sub_scores": {
+            "growth": 38,
+            "monopoly": 90,
+            "safety": 39,
+            "profitability": 90,
+            "cash": 75
+          },
+          "industry": "Drug Manufacturers - Specialty & Generic",
+          "sector": "Healthcare",
+          "source": "Yahoo Finance Ticker.info"
+        }
+      ]
+    }
+  }
+}

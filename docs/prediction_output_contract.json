@@ -1,70 +1,213 @@
 {
+  "contract_version": "2026-10-24.1",
+  "endpoint": "GET /api/stock?ticker=<symbol>&period=1y",
+  "scope": "prediction-tab fields in the current response; detailed analysis history is fixed to 1y",
+  "nullable_fields": [
+    "rsi",
+    "volume",
+    "prediction_outlook.forecast.base_price",
+    "risk_scenarios.*.tp_levels[].prob_pct",
+    "risk_scenarios.*.tp_levels[].avg_days",
+    "buy_price.*_bands[].steps[].reach_probability_pct (null only if the volatility model itself is unavailable)"
+  ],
+  "data_quality": {
+    "status": "정상 | 데이터 부족 | 오래된 데이터 | 일부 데이터 수집 실패",
+    "last_bar_date": "YYYY-MM-DD or unavailable",
+    "history_bars": "integer",
+    "volume_basis": "live_bar | completed_bar; completed_bar while the last daily bar is still forming during the regular session (volume ratios then use the last confirmed bar)",
+    "source": "string",
+    "warnings": ["string"],
+    "component_status": "object"
+  },
+  "price_anchor": {
+    "anchor_id": "16-character SHA-256 prefix identifying the quote snapshot",
+    "current_price": "number; canonical price shared by all prediction sections",
+    "previous_close": "number | null",
+    "change_pct": "number | null",
+    "market": "KRX | US",
+    "currency": "KRW | USD",
+    "source": "string",
+    "session": "string",
+    "quote_date": "YYYY-MM-DD | null",
+    "quote_time": "string | null",
+    "last_bar_date": "YYYY-MM-DD | null",
+    "is_extended": "boolean",
+    "applied_to_chart": "boolean",
+    "mixed_time_basis": "boolean; true when the quote and confirmed indicator bar use different time bases",
+    "price_basis": "현재 시세 | 최근 확정 종가",
+    "indicator_basis": "string"
+  },
+  "prediction_price_contract": {
+    "status": "ok | corrected",
+    "anchor_id": "same value as price_anchor.anchor_id",
+    "mismatches": ["response field path corrected to the canonical current price"],
+    "mixed_time_basis": "boolean"
+  },
+  "direction_probability": {
+    "prob_up": "number; displayed 22-session rise probability, calibrated to realised frequency (market base rate +/- a near-zero tilt) when probability_calibration.applied",
+    "prob_down": "number; 100 - prob_up",
+    "prob_up_raw": "number; rule-score based probability before calibration (signal score, not a verified probability)",
+    "prob_down_raw": "number",
+    "probability_calibration": "{applied, method, slope, base_rate_pct, horizon_sessions, fitted_period, fitted_rows, note}; applied=false (identity) when models/probability_calibration.json is missing or broken"
+  },
+  "regime_layers": {
+    "index_structure": "{key BULL|BEAR|NEUTRAL, label, value, basis, tone, used_for}; index close vs 60/120-day averages (also exposed as market_regime)",
+    "long_regime": "{key BULLISH|BEARISH|SIDEWAYS, label, value, basis, tone, used_for} | null; benchmark 200-day average + ADX + VIX, only when a benchmark is supplied",
+    "stock_trend": "{key, label, value, basis, tone, used_for} | null; the stock's own ADX/DI when no benchmark is supplied (not a market regime)",
+    "note": "string | null; explains that the layers can disagree on the same day"
+  },
   "buy_price": {
-    "current": "number",
-    "aggressive": {
-      "title": "공격적 매수",
-      "bands": [
-        {
-          "band": "A | B | C",
-          "price_range": ["number_low", "number_high"],
-          "basis": ["ATR/변동성/낙폭/추세 기반 설명"],
-          "expected_return_pct": "number",
-          "win_probability_pct": "number",
-          "loss_probability_pct": "number",
-          "distribution_basis": "백테스트 수익률 분포 + ATR + 추세 강도 + 유사 패턴 빈도 기반"
-        }
-      ]
+    "current": "number; equals price_anchor.current_price",
+    "price_anchor": "same snapshot as top-level price_anchor",
+    "strategy_rec": {
+      "action_key": "string",
+      "action": "string",
+      "confidence_pct": "number"
     },
-    "recommended": {
-      "title": "추천 매수 구간",
-      "bands": [
-        {
-          "band": "A | B | C",
+    "aggressive_bands": [
+      {
+        "band": "A | B | C",
+        "range": ["number_low", "number_high"],
+        "is_available": "always true: the 1st (aggressive_bands) and 2nd (recommended_bands) entry families are always returned with 3 bands x 5 steps",
+        "evidence_level": "structure (2+ independent price sources overlap the range) | indicator (one source) | volatility (no chart source; range sized by ATR and touch probability)",
+        "evidence_label": "string",
+        "evidence_sources": ["Korean source names inside the band"],
+        "evidence_note": "string",
+        "nearest_reference": "{label, price, gap_pct} | null; closest chart level to the band centre",
+        "reach_probability_range_pct": "[min of probability_low_pct, max of probability_high_pct] | null",
+        "reach_probability_mid_pct": "number | null",
+        "steps": [{
           "price_range": ["number_low", "number_high"],
-          "expected_sharpe_ratio": "number",
-          "historical_win_rate_pct": "number",
-          "avg_holding_days": "number",
-          "distribution_basis": "유사 ATR 진입 깊이의 20거래일 목표 도달 분포 기반"
-        }
-      ]
+          "reach_probability_pct": "number; chance the low touches the step price within 30 sessions, zero-drift volatility model",
+          "probability_low_pct": "number; same model with sigma x0.800 (25th percentile of forward/predicted volatility; x0.836 when STOCKORACLE_VOL_LONG_RUN_WEIGHT=0)",
+          "probability_high_pct": "number; same model with sigma x1.200 (75th percentile; x1.268 when STOCKORACLE_VOL_LONG_RUN_WEIGHT=0)",
+          "probability_source": "touch_model",
+          "probability_note": "string",
+          "days_min": "number; 25th percentile of the first-touch day given a touch within 30 sessions (1..30)",
+          "days_max": "number; 75th percentile (1..30)",
+          "period_source": "touch_model"
+        }]
+      }
+    ],
+    "recommended_bands": "same band structure, always strictly below every aggressive band",
+    "price_structure": {
+      "method": "OHLCV, moving-average, Bollinger, swing-low and volume-price candidate clustering",
+      "candidate_count": "integer",
+      "candidate_source_count": "integer",
+      "cluster_count": "integer",
+      "cluster_tolerance": "number; volatility and tick-size adjusted",
+      "atr_pct": "number",
+      "bollinger_width_pct": "number | null",
+      "recent_intraday_range_pct": "number",
+      "market_regime": "BULL | NEUTRAL | BEAR",
+      "market_weighting": "string",
+      "ready": "boolean; chart-structure completeness only, it no longer hides prices",
+      "deep_structure_ready": "boolean; a separate support cluster exists below the 1st-entry family",
+      "display_policy": "always_display_with_evidence_level",
+      "evidence_summary": "{aggressive|recommended: {structure, indicator, volatility}} band counts per evidence level",
+      "ordering_relaxed": "{aggressive, recommended}: true only when the A>B>C step ordering could not be restored above the 10% price floor",
+      "first_second_separated": "boolean",
+      "first_entry_floor": "number",
+      "second_entry_ceiling": "number",
+      "clusters": "ordered support clusters with center, range, score, source_count, sources and labels"
     },
-    "removed_fields": ["conservative"]
+    "atr_pct": "number",
+    "vol_trend": "expanding | contracting | normal",
+    "box_tactics": {
+      "version": "string; box execution rule version (video OlMBqW3FBes applied)",
+      "video_evidence": "object; url, review_method, reviewed_on, verified_principles, supplementary_rules, limits. The order-book pressure is an OHLCV proxy, not real bid/ask data.",
+      "regime": {"key": "trend_retest | breakout_confirmed | range_support | range_wait | breakout_watch | breakout_unconfirmed | false_breakout | mode_breakdown | no_trade | no_data", "label": "string", "tradeable": "boolean", "why": ["string"], "watch": ["string"]},
+      "midline": {"available": "boolean", "price": "number | null", "state": "strong | normal | weak | unknown", "strength_label": "string", "score": "number | null", "volume_share": "number | null; share of box volume allocated to the middle third", "time_share": "number | null", "note": "string"},
+      "speed": {"available": "boolean", "state": "fast | normal | slow | unknown", "label": "string", "speed_atr_per_bar": "number | null", "ratio": "number | null; versus the box-window median", "direction": "up | down | flat", "note": "string"},
+      "pressure": {"support": {"verdict": "buy | sell | balanced | unknown", "label": "string", "touches": "integer", "net": "number | null", "conflicts": "integer", "implication": "string"}, "resistance": "same structure", "latest_bar": "object | null; OHLCV pressure proxy for the last completed bar", "note": "string"},
+      "volume": {"ratio": "number | null; last volume / previous 20-bar median", "label": "string"},
+      "flow": {"available": "boolean", "foreign": "number | null; KRX net bought shares", "institution": "number | null", "net": "number | null", "label": "string", "note": "string"},
+      "plan": {"status": "ready | wait | none", "side": "long | none", "entry": "{low, high, mid, condition} | null", "stop": "{price, basis} | null", "targets": [{"price": "number", "low": "number", "high": "number", "pct": "number", "label": "string", "reason": "string"}], "risk_reward": "number | null", "rr_to_final": "number | null", "pyramid": "object | null", "invalidation": ["string"], "exit_rule": "string"},
+      "checklist": [{"key": "string", "label": "string", "value": "string", "ok": "boolean", "detail": "string"}],
+      "conditions_met": "integer",
+      "conditions_total": "integer",
+      "rule_check": {"available": "boolean", "support_touches": "integer", "midline_first": "integer", "stop_first": "integer", "ambiguous": "integer", "midline_rate": "number | null; in-sample rule check, not a probability", "breakout_touches": "integer", "breakout_holds": "integer", "breakout_hold_rate": "number | null", "note": "string"},
+      "summary": "string",
+      "limits": "string"
+    }
   },
   "risk_scenarios": {
+    "current_price": "number; equals price_anchor.current_price",
+    "price_anchor": "same snapshot as top-level price_anchor",
+    "provisional": "boolean, optional; true when fewer than 20 valid daily closes",
     "conservative": {
       "label": "보수적",
-      "entry_range": ["number_low", "number_high"],
-      "stop_loss": "number",
-      "tp_levels": [
-        {
-          "level": "TP1 | TP2 | TP3",
-          "price": "number",
-          "return_pct": "number",
-          "hit_probability_pct": "number",
-          "avg_days_to_hit": "number_or_range_string",
-          "failed_avg_loss_pct": "number",
-          "risk_reward": "number"
-        }
-      ]
+      "target": ["number_low", "number_high"],
+      "stop": ["number_low", "number_high"],
+      "entry_eligible": "boolean",
+      "tp_levels": [{
+        "price": "number",
+        "price_range": ["number_low", "number_high"],
+        "return_pct": "number | null",
+        "prob_pct": "number | null",
+        "prob_low_pct": "number | null",
+        "prob_high_pct": "number | null",
+        "avg_days": "number | null",
+        "days_min": "number | null",
+        "days_max": "number | null",
+        "provisional": "boolean, optional"
+      }],
+      "box_midline_exit": "optional; {price, pct: 50, label, reason, source: video_OlMBqW3FBes, eligible}; annotations only, TP1~TP5 prices are never rewritten",
+      "box_exit_split": "optional; [midline 50%, opposite edge 50%]"
     },
-    "balanced": "same_as_conservative_schema",
-    "aggressive": "same_as_conservative_schema"
+    "balanced": "same scenario structure",
+    "aggressive": "same scenario structure"
   },
-  "probability_model": {
-    "inputs": ["backtest_return_distribution", "atr_volatility", "trend_strength", "similar_pattern_frequency", "debt_ratio"],
-    "market_branch": {
-      "KRX": {
-        "band_width_multiplier": 1.18,
-        "probability_adjustment_pp": -6,
-        "target_distance_multiplier": 0.95,
-        "volatility_penalty_weight": 1.2
-      },
-      "US": {
-        "band_width_multiplier": 0.92,
-        "probability_adjustment_pp": 5,
-        "target_distance_multiplier": 1.05,
-        "momentum_weight": 1.2
+  "target_price": {
+    "current_price": "number; equals price_anchor.current_price",
+    "price_anchor": "same snapshot as top-level price_anchor",
+    "min_price": "number",
+    "max_price": "number",
+    "reach_probability": "number; chance of touching min_price within horizon_days under the zero-drift volatility model, recomputed after any range adjustment",
+    "reach_probability_basis": "touch_probability | heuristic_fallback (only when volatility is unavailable)",
+    "reach_probability_inputs": "object | null; {sigma_daily, horizon_days} behind reach_probability"
+  },
+  "prediction_outlook": {
+    "price_anchor": "same snapshot as top-level price_anchor",
+    "box_tactics": "same structure as buy_price.box_tactics; the execution regime and plan do not change the statistical forecast distribution",
+    "box_tactics_status": "regime key",
+    "decision": {
+      "key": "string",
+      "label": "string",
+      "confidence": "number; signal agreement, not a calibrated rise probability"
+    },
+    "status": "array of current technical states",
+    "market_context": {"facts": "array", "data_gaps": ["string"]},
+    "dynamic_rsi": {
+      "purchase_timing": {
+        "conditions": "three ordered condition states",
+        "entry_plan": {
+          "status": "ready | passed | null",
+          "reference_price": "number; signal-bar close used as the first-buy reference",
+          "max_price": "number | null; reference_price + 0.5 * signal-bar ATR",
+          "signal_atr": "number | null",
+          "execution_time": "string"
+        }
       }
+    },
+    "scenarios": [{
+      "key": "upside | sideways | downside",
+      "probability": "number; relative scenario weight, not a calibrated outcome probability",
+      "price_range": ["number_low", "number_high"],
+      "expected_days": ["number_early", "number_late"],
+      "conditions": ["string"]
+    }],
+    "forecast": {
+      "status": "ok | limited | unavailable",
+      "reason": "string when unavailable",
+      "horizon_days": "integer",
+      "as_of_date": "YYYY-MM-DD | null",
+      "target_date": "YYYY-MM-DD | null when unavailable",
+      "current_price": "number; equals price_anchor.current_price",
+      "price_anchor_id": "same value as price_anchor.anchor_id",
+      "base_price": "number | absent when unavailable; statistical forecast base, not a second current-price source",
+      "range_p10_p90": "[number_low, number_high] | absent when unavailable",
+      "volatility_basis": "string when calculated"
     }
   }
 }

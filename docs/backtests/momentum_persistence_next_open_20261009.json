@@ -1,0 +1,150 @@
+{
+  "events": 95,
+  "event_horizon_observations": 285,
+  "costs_round_trip_pct": {
+    "KRX": 0.2,
+    "US": 0.1
+  },
+  "limitations": [
+    "Selected cached universe; survivorship bias possible",
+    "Overlapping events; no portfolio or stop-loss simulation",
+    "Costs/slippage are assumptions; no executable quote guarantees",
+    "Corporate action adjustment provenance must be verified"
+  ],
+  "surge_min_pct": 20.0,
+  "hold_days": 3,
+  "retain_frac": 0.5,
+  "entry_mode": "next_open",
+  "slippage_pct": 0.0,
+  "files_loaded": 52,
+  "files_skipped": [],
+  "same_close_execution_assumption": false,
+  "by_group": {
+    "KRX_PASS_5d": {
+      "n": 20,
+      "gross_mean_pct": 1.5414505985074407,
+      "gross_med_pct": -1.7058826583637887,
+      "net_mean_pct": 1.3414505985074405,
+      "pos_rate_pct": 45.0
+    },
+    "KRX_PASS_10d": {
+      "n": 20,
+      "gross_mean_pct": 7.848639709140529,
+      "gross_med_pct": 6.004450497285275,
+      "net_mean_pct": 7.648639709140529,
+      "pos_rate_pct": 75.0
+    },
+    "KRX_PASS_20d": {
+      "n": 20,
+      "gross_mean_pct": 3.3153119708184713,
+      "gross_med_pct": 3.1617036130418774,
+      "net_mean_pct": 3.115311970818471,
+      "pos_rate_pct": 60.0
+    },
+    "KRX_FAIL_5d": {
+      "n": 7,
+      "gross_mean_pct": 2.49041366180665,
+      "gross_med_pct": -2.2073921971252575,
+      "net_mean_pct": 2.29041366180665,
+      "pos_rate_pct": 42.857142857142854
+    },
+    "KRX_FAIL_10d": {
+      "n": 7,
+      "gross_mean_pct": 3.523907956308952,
+      "gross_med_pct": 5.160744500846026,
+      "net_mean_pct": 3.3239079563089517,
+      "pos_rate_pct": 71.42857142857143
+    },
+    "KRX_FAIL_20d": {
+      "n": 7,
+      "gross_mean_pct": -4.769276544810293,
+      "gross_med_pct": -2.170138888888884,
+      "net_mean_pct": -4.969276544810294,
+      "pos_rate_pct": 28.57142857142857
+    },
+    "US_PASS_5d": {
+      "n": 56,
+      "gross_mean_pct": -0.3042513133641442,
+      "gross_med_pct": -2.623882617821555,
+      "net_mean_pct": -0.40425131336414427,
+      "pos_rate_pct": 39.285714285714285
+    },
+    "US_PASS_10d": {
+      "n": 56,
+      "gross_mean_pct": 3.908042048683385,
+      "gross_med_pct": 2.8144415537852407,
+      "net_mean_pct": 3.808042048683384,
+      "pos_rate_pct": 55.35714285714286
+    },
+    "US_PASS_20d": {
+      "n": 56,
+      "gross_mean_pct": 2.3175337218740886,
+      "gross_med_pct": 2.2658642597714884,
+      "net_mean_pct": 2.2175337218740885,
+      "pos_rate_pct": 53.57142857142857
+    },
+    "US_FAIL_5d": {
+      "n": 12,
+      "gross_mean_pct": -0.6472724420894804,
+      "gross_med_pct": -2.645323885962209,
+      "net_mean_pct": -0.7472724420894805,
+      "pos_rate_pct": 41.66666666666667
+    },
+    "US_FAIL_10d": {
+      "n": 12,
+      "gross_mean_pct": 2.0592819781956,
+      "gross_med_pct": -4.86563169775856,
+      "net_mean_pct": 1.9592819781956001,
+      "pos_rate_pct": 41.66666666666667
+    },
+    "US_FAIL_20d": {
+      "n": 12,
+      "gross_mean_pct": 3.1480676302652584,
+      "gross_med_pct": -2.869066056158748,
+      "net_mean_pct": 3.0480676302652583,
+      "pos_rate_pct": 50.0
+    },
+    "ALL_PASS_5d": {
+      "n": 76,
+      "gross_mean_pct": 0.18145971607574668,
+      "gross_med_pct": -2.5905419519429262,
+      "net_mean_pct": 0.055143926602062375,
+      "pos_rate_pct": 40.78947368421053
+    },
+    "ALL_PASS_10d": {
+      "n": 76,
+      "gross_mean_pct": 4.945041433014211,
+      "gross_med_pct": 4.3920597377849475,
+      "net_mean_pct": 4.818725643540528,
+      "pos_rate_pct": 60.526315789473685
+    },
+    "ALL_PASS_20d": {
+      "n": 76,
+      "gross_mean_pct": 2.580106945280505,
+      "gross_med_pct": 2.937277823767226,
+      "net_mean_pct": 2.453791155806821,
+      "pos_rate_pct": 55.26315789473685
+    },
+    "ALL_FAIL_5d": {
+      "n": 19,
+      "gross_mean_pct": 0.5087171751354097,
+      "gross_med_pct": -2.548039251226264,
+      "net_mean_pct": 0.3718750698722517,
+      "pos_rate_pct": 42.10526315789473
+    },
+    "ALL_FAIL_10d": {
+      "n": 19,
+      "gross_mean_pct": 2.598881022763677,
+      "gross_med_pct": 3.0491599253267054,
+      "net_mean_pct": 2.462038917500519,
+      "pos_rate_pct": 52.63157894736842
+    },
+    "ALL_FAIL_20d": {
+      "n": 19,
+      "gross_mean_pct": 0.2311513552374233,
+      "gross_med_pct": -2.170138888888884,
+      "net_mean_pct": 0.09430924997426528,
+      "pos_rate_pct": 42.10526315789473
+    }
+  }
+}

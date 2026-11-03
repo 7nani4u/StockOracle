@@ -274,7 +274,48 @@ def analyze_stock(stock: dict) -> dict:
     if _HYBRID_AVAILABLE:
         s = _enrich_hybrid_inline(s)
 
+    s = _gate_stock_recommendation(s)
     return s
+
+
+def _stock_market(stock: dict) -> str:
+    market = str(stock.get("market") or "").upper()
+    if market in ("KRX", "US"):
+        return market
+    code = str(stock.get("code") or stock.get("ticker") or "")
+    return "KRX" if code.isdigit() else "US"
+
+
+def _gate_stock_recommendation(stock: dict) -> dict:
+    from .technique_prune import technique_allowed, technique_evidence
+    market = _stock_market(stock)
+    stock["recommendation_validation"] = technique_evidence("three_signal_matrix", market)
+    allowed, reason = technique_allowed("three_signal_matrix", market)
+    if not allowed and stock.get("recommendation") in ("buy", "strong_buy"):
+        stock["raw_recommendation"] = stock["recommendation"]
+        stock["recommendation"] = "hold"
+        stock["recommendation_label"] = RECOMMENDATION_LABEL.get("hold", "관망")
+        stock["confidence"] = "low"
+        stock["confidence_label"] = CONFIDENCE_LABEL.get("low", "낮음")
+        stock["rationale"] = (stock.get("rationale") or "") + " | " + reason
+        stock["pruned"] = True
+        stock["prune_reason"] = reason
+    meta = DIRECTION_META.get(stock.get("recommendation"), DIRECTION_META["hold"])
+    stock.update(direction_arrow=meta["arrow"], direction_label=meta["label"], direction_cls=meta["cls"])
+    return stock
+
+
+def _gate_hybrid_score(score: dict, market: str, closes, highs, lows, volumes) -> dict:
+    from .technique_prune import (technique_allowed, technique_evidence, hybrid_conditions, context_conditions)
+    score["context_conditions"] = context_conditions(closes, highs, lows, volumes)
+    score["validation"] = technique_evidence("hybrid_breakout", market)
+    allowed, reason = technique_allowed("hybrid_breakout", market, hybrid_conditions(score))
+    if not allowed and score.get("action") == "AUTO_YES":
+        score["raw_action"] = score["action"]
+        score["action"] = "WAIT"
+        score["pruned"] = True
+        score["prune_reason"] = reason
+    return score
 
 
 def _enrich_hybrid_inline(s: dict) -> dict:
@@ -282,7 +323,8 @@ def _enrich_hybrid_inline(s: dict) -> dict:
 
     history dict의 closes_20d, volume_20d_avg 등을 활용해
     compute_hybrid_score()를 호출하고 결과를 종목 dict에 병합한다.
-    데이터 부족/예외 시 무결하게 스킵한다.
+    highs/lows/volumes가 있으면 실제 OHLCV를 사용해 ATR·BIS·변동성
+    기반 스코어 정확도를 높인다. 데이터 부족/예외 시 무결하게 스킵한다.
     """
     try:
         hist    = s.get("history") or {}
@@ -290,18 +332,29 @@ def _enrich_hybrid_inline(s: dict) -> dict:
         if len(closes) < 10:
             return s
 
-        # history에는 종가만 있으므로 highs/lows는 closes로 근사 (분봉 없이도 동작)
-        highs   = closes[:]
-        lows    = closes[:]
+        # 실제 캔들 데이터 우선 사용 — 없으면 이전처럼 종가 근사로 폴백
+        highs  = [float(x) for x in (hist.get("highs_20d") or []) if x is not None]
+        lows   = [float(x) for x in (hist.get("lows_20d") or []) if x is not None]
+
         volumes: list[float] = []
-        avg_vol = hist.get("volume_20d_avg")
-        if avg_vol:
+        if hist.get("volumes_20d"):
+            volumes = [float(v) for v in hist["volumes_20d"] if v is not None]
+        elif hist.get("volume_20d_avg"):
+            avg_vol = hist["volume_20d_avg"]
             volumes = [float(avg_vol)] * len(closes)
 
-        # 거래량 오늘 값 덮어쓰기
+        use_proxy = False
+        if len(highs) != len(closes) or len(lows) != len(closes):
+            highs = closes[:]
+            lows = closes[:]
+            use_proxy = True
+
+        # 거래량 오늘 값 덮어쓰기 (proxy 볼륨이면 비례 확장)
         today_vol = (s.get("quote") or {}).get("volume")
         if today_vol and volumes:
             volumes[-1] = float(today_vol)
+        elif today_vol and not volumes:
+            volumes = [float(today_vol)] * len(closes)
 
         hscore = compute_hybrid_score(
             closes   = closes,
@@ -309,6 +362,11 @@ def _enrich_hybrid_inline(s: dict) -> dict:
             lows     = lows,
             volumes  = volumes,
         )
+        hscore = _gate_hybrid_score(hscore, _stock_market(s), closes, highs, lows, volumes)
+        hscore["data_quality"] = {
+            "proxy_ohlc": use_proxy,
+            "note": "실제 OHLCV 사용" if not use_proxy else "종가 근사 OHLC — ATR·BIS 변동성 스코어 제한",
+        }
         s["hybrid_score"] = hscore
 
         # ── NCS 기반 추천/신뢰도 보정 ─────────────────────────────────
@@ -368,10 +426,15 @@ def enrich_with_hybrid(
     bench_ma200:  float | None = None,
     vix:          float | None = None,
     earnings_days: int | None = None,
+    volume_in_progress: bool = False,
+    market: str = "KRX",
+    apply_pruning: bool = True,
 ) -> dict:
     """외부 호출용 — OHLCV 데이터에서 하이브리드 점수 직접 계산.
 
     api/index.py 에서 fetch_stock_data()로 가져온 일봉 데이터로 호출 가능.
+    ``volume_in_progress`` 는 마지막 일봉이 장중 진행 중인 막대(거래량 누적 중)일 때 True —
+    거래량 항목을 직전 확정 막대 기준으로 계산한다(market_briefing.session_bars).
 
     Returns:
         compute_hybrid_score() 반환 dict 또는 {"error": str}
@@ -385,7 +448,7 @@ def enrich_with_hybrid(
     l = lows  or closes
     v = volumes or [0.0] * n
     try:
-        return compute_hybrid_score(
+        score = compute_hybrid_score(
             closes        = closes,
             highs         = h,
             lows          = l,
@@ -395,7 +458,12 @@ def enrich_with_hybrid(
             bench_ma200   = bench_ma200,
             vix           = vix,
             earnings_days = earnings_days,
+            volume_in_progress = volume_in_progress,
         )
+        if apply_pruning:
+            cut = -1 if volume_in_progress else None
+            score = _gate_hybrid_score(score, market, closes[:cut], h[:cut], l[:cut], v[:cut])
+        return score
     except Exception as e:
         return {"error": str(e)}
 

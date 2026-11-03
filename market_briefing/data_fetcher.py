@@ -16,16 +16,28 @@ StockOracle용으로 독립 함수 형태로 재구성 (파일 I/O 없음, 순�
 """
 from __future__ import annotations
 
+import math
 import re
 import sys
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from threading import Lock as _Lock
 from typing import Any
 
+import pandas as pd
+import math
+
 import requests
 from bs4 import BeautifulSoup
+
+try:
+    import feedparser as _feedparser
+    _FEEDPARSER_AVAILABLE = True
+except ImportError:
+    _feedparser = None
+    _FEEDPARSER_AVAILABLE = False
 
 KST = timezone(timedelta(hours=9))
 
@@ -74,12 +86,42 @@ def _sector_ttl_seconds() -> int:
 
 # ── 내부 HTTP 헬퍼 ──────────────────────────────────────────────────────────
 
+def _get_with_retry(url: str, headers: dict, timeout: float = 5,
+                    retries: int = 2, backoff: float = 0.2) -> requests.Response:
+    """일시적 네트워크 실패에 대해 지수 백오프 재시도를 수행. 429는 재시도, 그 외 4xx는 즉시 raise."""
+    from requests.exceptions import ConnectionError as _ConnErr
+    from requests.exceptions import HTTPError as _HTTPErr
+    from requests.exceptions import Timeout as _TimeoutErr
+
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout)
+            if r.status_code == 429 and attempt < retries - 1:
+                _time.sleep(backoff * (2 ** attempt) + 0.5)
+                continue
+            r.raise_for_status()
+            return r
+        except _TimeoutErr:
+            last_err = _TimeoutErr("timeout")
+            _time.sleep(backoff * (2 ** attempt))
+        except _ConnErr:
+            last_err = _ConnErr(f"conn {url}")
+            _time.sleep(backoff * (2 ** attempt))
+        except _HTTPErr as e:
+            # 429는 위에서 처리, 그 외 4xx는 재시도해도 성공하지 못함 — 즉시 반환
+            if e.response is not None and 400 <= e.response.status_code < 500:
+                raise
+            last_err = e
+            _time.sleep(backoff * (2 ** attempt))
+    raise last_err if last_err else _ConnErr(f"unreachable {url}")
+
+
 def _get(url: str, referer: str | None = None) -> BeautifulSoup:
     headers = {"User-Agent": _UA, "Accept-Language": "ko-KR,ko;q=0.9"}
     if referer:
         headers["Referer"] = referer
-    r = requests.get(url, headers=headers, timeout=7)   # 15s → 7s
-    r.raise_for_status()
+    r = _get_with_retry(url, headers)
     ct = r.headers.get("content-type", "").lower()
     if "charset" not in ct:
         r.encoding = "euc-kr"
@@ -99,52 +141,337 @@ def _abs_naver_link(href: str) -> str:
 
 # ── 거시 지표 ────────────────────────────────────────────────────────────────
 
-def fetch_market_indices() -> dict[str, Any]:
-    """KOSPI / KOSDAQ / KOSPI200 현재값 + 등락.
+_KRX_INDEX_URL = "https://global.krx.co.kr/main/main.jspx?bld=index_list"
+_INDEX_KEYS = {
+    "KOSPI": "KOSPI",
+    "KOSDAQ": "KOSDAQ",
+    "KOSPI 200": "KOSPI200",
+}
 
-    반환 예:
-      {"KOSPI": {"value":"2,600.12","change_abs":"+12.34","change_pct":"+0.48%","direction":"up"}, ...}
-    """
-    soup = _get("https://finance.naver.com/sise/")
-    result: dict = {}
-    for name, val_sel, chg_sel in (
-        ("KOSPI",    "#KOSPI_now",  "#KOSPI_change"),
-        ("KOSDAQ",   "#KOSDAQ_now", "#KOSDAQ_change"),
-        ("KOSPI200", "#KPI200_now", "#KPI200_change"),
-    ):
-        val_el = soup.select_one(val_sel)
-        chg_el = soup.select_one(chg_sel)
-        if not val_el:
+
+def _kr_market_status(now_kst: datetime | None = None) -> str:
+    """KRX 거래일 달력과 정규장 시각으로 국내 시장 상태를 표시한다(공휴일·연말 휴장·지연 개장 포함)."""
+    now = now_kst or datetime.now(KST)
+    if now.weekday() >= 5:
+        return "휴장 · 최근 영업일 종가"
+    try:
+        from market_briefing.krx_calendar import holiday_name, session_hours
+        closure = holiday_name(now.date())
+        if closure:
+            return f"휴장({closure}) · 최근 영업일 종가"
+        open_t, close_t = session_hours(now.date())
+        open_m = open_t.hour * 60 + open_t.minute
+        close_m = close_t.hour * 60 + close_t.minute
+    except Exception:
+        open_m, close_m = 9 * 60, 15 * 60 + 30
+    minutes = now.hour * 60 + now.minute
+    if minutes < open_m:
+        return "장 시작 전 · 직전 종가"
+    if minutes < close_m:
+        return "장중"
+    return "장 마감 · 종가"
+
+
+def _empty_index_entry(source: str, as_of: str, reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "value": "",
+        "current_value": None,
+        "prev_close": None,
+        "change_abs": "",
+        "change_pct": "",
+        "change_abs_value": None,
+        "change_pct_value": None,
+        "direction": "flat",
+        "source": source,
+        "as_of": as_of,
+        "market_status": _kr_market_status(),
+        "validation": "unavailable",
+        "unavailable_reason": reason,
+    }
+
+
+def _validated_index_entry(
+    *, current: float, change_abs: float, change_pct: float, direction: str,
+    source: str, source_symbol: str, as_of: str,
+) -> dict[str, Any] | None:
+    """현재 지수·절대등락·등락률의 산술 일치 여부를 검증해 표준화한다."""
+    if not all(math.isfinite(v) for v in (current, change_abs, change_pct)) or current <= 0:
+        return None
+    change_abs = abs(change_abs)
+    change_pct = abs(change_pct)
+    if direction == "up":
+        prev_close = current - change_abs
+        sign = 1.0
+    elif direction == "down":
+        prev_close = current + change_abs
+        sign = -1.0
+    else:
+        if change_abs > 0.0001 or change_pct > 0.0001:
+            return None
+        prev_close = current
+        change_abs = 0.0
+        change_pct = 0.0
+        sign = 0.0
+    if prev_close <= 0:
+        return None
+    calculated_pct = abs((current - prev_close) / prev_close * 100)
+    if abs(calculated_pct - change_pct) > 0.05:
+        return None
+    signed_abs = sign * change_abs
+    signed_pct = sign * change_pct
+    prefix = "+" if sign > 0 else "-" if sign < 0 else ""
+    return {
+        "available": True,
+        "value": f"{current:,.2f}",
+        "current_value": round(current, 4),
+        "prev_close": round(prev_close, 4),
+        "change_abs": f"{prefix}{change_abs:,.2f}",
+        "change_pct": f"{prefix}{change_pct:.2f}%",
+        "change_abs_value": round(signed_abs, 4),
+        "change_pct_value": round(signed_pct, 4),
+        "direction": direction,
+        "source": source,
+        "source_symbol": source_symbol,
+        "as_of": as_of,
+        "market_status": _kr_market_status(),
+        "validation": "verified",
+    }
+
+
+def _fetch_market_indices_krx() -> dict[str, Any]:
+    """KRX Global 공식 지수 응답을 이름 기준으로 매핑한다(배열 순서 미사용)."""
+    response = requests.get(
+        _KRX_INDEX_URL,
+        headers={"User-Agent": _UA, "Referer": "https://global.krx.co.kr/main/main.jsp"},
+        timeout=7,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    output = payload.get("output") if isinstance(payload, dict) else None
+    if not isinstance(output, list):
+        raise ValueError("KRX 지수 응답 형식 오류")
+    try:
+        header_date = parsedate_to_datetime(response.headers.get("Date", "")).astimezone(KST)
+    except Exception:
+        header_date = datetime.now(KST)
+    as_of = header_date.isoformat()
+    result = {
+        key: _empty_index_entry("KRX Global", as_of, "원본 데이터 미수신")
+        for key in _INDEX_KEYS.values()
+    }
+    valid_count = 0
+    for raw in output:
+        if not isinstance(raw, dict):
             continue
-        value     = val_el.get_text(" ", strip=True)
-        raw_chg   = chg_el.get_text(" ", strip=True) if chg_el else ""
-        parsed    = _parse_index_change(raw_chg)
-        result[name] = {
-            "value":      value,
-            "change_abs": parsed["abs"],
-            "change_pct": parsed["pct"],
-            "direction":  parsed["direction"],
-        }
+        source_name = str(raw.get("idx_nm") or "").strip()
+        key = _INDEX_KEYS.get(source_name)
+        if not key:
+            continue
+        try:
+            direction_raw = str(raw.get("updown") or "").lower()
+            direction = "up" if direction_raw == "up" else "down" if direction_raw == "down" else "flat"
+            entry = _validated_index_entry(
+                current=float(raw.get("clsprc_idx")),
+                change_abs=float(raw.get("cmpr_idx")),
+                change_pct=float(raw.get("cmpr_rt")),
+                direction=direction,
+                source="KRX Global",
+                source_symbol=source_name,
+                as_of=as_of,
+            )
+        except (TypeError, ValueError):
+            entry = None
+        if entry:
+            result[key] = entry
+            valid_count += 1
+        else:
+            result[key] = _empty_index_entry("KRX Global", as_of, "현재값·전일종가·등락률 검증 실패")
+    if valid_count == 0:
+        raise ValueError("검증 가능한 KRX 지수 데이터 없음")
     return result
 
 
-def _parse_index_change(raw: str) -> dict:
+def _fetch_market_indices_naver() -> dict[str, Any]:
+    """KRX 장애 시 네이버 증권을 한 출처로만 사용하는 전체 폴백."""
+    soup = _get("https://finance.naver.com/sise/")
+    as_of = datetime.now(KST).isoformat()
+    result: dict[str, Any] = {}
+    for name, source_name, val_sel, chg_sel in (
+        ("KOSPI", "KOSPI", "#KOSPI_now", "#KOSPI_change"),
+        ("KOSDAQ", "KOSDAQ", "#KOSDAQ_now", "#KOSDAQ_change"),
+        ("KOSPI200", "KOSPI 200", "#KPI200_now", "#KPI200_change"),
+    ):
+        val_el = soup.select_one(val_sel)
+        chg_el = soup.select_one(chg_sel)
+        direction_hint = (
+            "down" if chg_el and chg_el.select_one(".ndown") else
+            "up" if chg_el and chg_el.select_one(".nup") else None
+        )
+        try:
+            current = float(val_el.get_text(strip=True).replace(",", "")) if val_el else 0.0
+            parsed = _parse_index_change(chg_el.get_text(" ", strip=True) if chg_el else "", direction_hint)
+            entry = _validated_index_entry(
+                current=current,
+                change_abs=float(parsed["abs_value"]),
+                change_pct=float(parsed["pct_value"]),
+                direction=parsed["direction"],
+                source="네이버 증권 (KRX 폴백)",
+                source_symbol=source_name,
+                as_of=as_of,
+            )
+        except (TypeError, ValueError):
+            entry = None
+        result[name] = entry or _empty_index_entry(
+            "네이버 증권 (KRX 폴백)", as_of, "폴백 데이터 검증 실패"
+        )
+    return result
+
+
+def _fetch_market_indices_yfinance() -> dict[str, Any]:
+    """KRX Global·Naver 모두 실패 시 yfinance로 최후 폴백 (KOSPI/KOSDAQ/KOSPI200)."""
+    import yfinance as yf
+    now_iso = datetime.now(KST).isoformat()
+    symbol_map = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "KOSPI200": "^KS200"}
+    fallback_symbol = {"KOSPI": "069500.KS", "KOSDAQ": "229200.KS", "KOSPI200": "^KS11"}
+    result: dict[str, Any] = {}
+    try:
+        tickers = list(symbol_map.values())
+        df = yf.download(tickers, period="5d", auto_adjust=True, progress=False, threads=True)
+    except Exception as exc:
+        raise ValueError(f"yfinance 지수 조회 실패: {exc}")
+    for key, sym in symbol_map.items():
+        try:
+            closes = None
+            if isinstance(df.columns, pd.MultiIndex):
+                try:
+                    closes = df.xs("Close", axis=1, level=0)[sym].dropna() if sym in df.columns.get_level_values(1) else None
+                except Exception:
+                    try:
+                        closes = df["Close"][sym].dropna()
+                    except Exception:
+                        closes = None
+            else:
+                closes = df["Close"].dropna() if "Close" in df.columns else None
+            # fallback ETF 시도
+            if closes is None or len(closes) < 2:
+                fb = fallback_symbol.get(key, "")
+                if fb and fb != sym:
+                    try:
+                        hist = yf.Ticker(fb).history(period="5d", auto_adjust=True)
+                        if hist is not None and len(hist) >= 2 and "Close" in hist.columns:
+                            closes = hist["Close"].dropna()
+                            sym = fb
+                    except Exception:
+                        pass
+            if closes is None or len(closes) < 2:
+                result[key] = _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 데이터 부족")
+                continue
+            cur = float(closes.iloc[-1])
+            prev = float(closes.iloc[-2])
+            if prev <= 0 or cur <= 0 or not (math.isfinite(cur) and math.isfinite(prev)):
+                result[key] = _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 가격 검증 실패")
+                continue
+            change_abs = cur - prev
+            change_pct = change_abs / prev * 100
+            direction = "up" if change_abs > 0 else "down" if change_abs < 0 else "flat"
+            # yfinance 폴백은 검증 없이 직접 표준 엔트리 생성 (산술 일치 보장)
+            entry = _validated_index_entry(
+                current=cur, change_abs=abs(change_abs), change_pct=abs(change_pct),
+                direction=direction, source=f"yfinance 폴백 ({sym})", source_symbol=sym, as_of=now_iso,
+            )
+            result[key] = entry or _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 검증 실패")
+        except Exception as exc:
+            result[key] = _empty_index_entry("yfinance 폴백", now_iso, f"{sym} 예외: {exc}")
+    if not any(v.get("available") for v in result.values()):
+        raise ValueError("yfinance 폴백도 유효 지수 없음")
+    return result
+
+
+def fetch_market_indices() -> dict[str, Any]:
+    """KOSPI·KOSDAQ·KOSPI 200 공식 현재 지수와 전일 대비 정보를 반환한다.
+
+    KRX Global을 기본 출처로 사용하고, 공식 응답 전체를 가져오지 못한 경우
+    네이버 증권을 단일 폴백으로, 그것마저 실패하면 yfinance로 최후 폴백한다.
+    출처를 섞거나 과거 숫자를 재사용하지 않는다.
+    """
+    try:
+        return _fetch_market_indices_krx()
+    except Exception as exc:
+        print(f"[warn] KRX market indices: {exc}", file=sys.stderr)
+        try:
+            return _fetch_market_indices_naver()
+        except Exception as fallback_exc:
+            print(f"[warn] Naver market indices fallback: {fallback_exc}", file=sys.stderr)
+            try:
+                return _fetch_market_indices_yfinance()
+            except Exception as yf_exc:
+                print(f"[warn] yfinance market indices fallback: {yf_exc}", file=sys.stderr)
+                as_of = datetime.now(KST).isoformat()
+                return {
+                    key: _empty_index_entry("미수신", as_of, "지수 데이터 수집 실패 (3개 출처 모두 실패)")
+                    for key in _INDEX_KEYS.values()
+                }
+
+
+def _parse_index_change(raw: str, direction_hint: str | None = None) -> dict:
     parts = raw.split()
-    if len(parts) < 3:
-        return {"abs": "", "pct": "", "direction": "flat"}
-    raw_abs, raw_pct, rise_fall = parts[0], parts[1], parts[2]
-    if rise_fall == "상승":
-        direction, sign = "up", "+"
+    if len(parts) < 2:
+        return {"abs": "", "pct": "", "abs_value": 0.0, "pct_value": 0.0, "direction": "flat"}
+    raw_abs, raw_pct = parts[0], parts[1]
+    rise_fall = parts[2] if len(parts) > 2 else ""
+    if direction_hint in ("up", "down", "flat"):
+        direction = direction_hint
+    elif rise_fall == "상승":
+        direction = "up"
     elif rise_fall == "하락":
+        direction = "down"
+    else:
+        direction = "flat"
+    if direction == "up":
+        direction, sign = "up", "+"
+    elif direction == "down":
         direction, sign = "down", "-"
     else:
         direction, sign = "flat", ""
-    pct_clean = raw_pct.lstrip("+-")
+    abs_value = abs(float(raw_abs.replace(",", "")))
+    pct_value = abs(float(raw_pct.replace("%", "").replace(",", "")))
     return {
-        "abs": f"{sign}{raw_abs}" if sign else raw_abs,
-        "pct": f"{sign}{pct_clean}" if sign else pct_clean,
+        "abs": f"{sign}{abs_value:,.2f}" if sign else f"{abs_value:,.2f}",
+        "pct": f"{sign}{pct_value:.2f}%" if sign else f"{pct_value:.2f}%",
+        "abs_value": abs_value,
+        "pct_value": pct_value,
         "direction": direction,
     }
+
+
+def _reconcile_index_market_status(indices: dict, overnight: list[dict], now_kst: datetime | None = None) -> None:
+    """이미 수집한 KOSPI 200 최근 거래일로 평일 휴장·미갱신 가능성을 보수적으로 표시한다."""
+    now = now_kst or datetime.now(KST)
+    # 휴장 여부는 KRX 거래일 달력으로 판정한다(_kr_market_status). 야후 ^KS11 일봉 날짜는 참고만 한다:
+    # 2026-11-04 01:00 실측에서 11-03 종가가 9시간 넘게 NaN 이라 마지막 날짜가 한 세션 늦었고,
+    # 예전 규칙(그 날짜 < 오늘이면 '휴장 또는 미갱신')은 정상 거래일 장중·장 마감 후에도 휴장으로 표시했다.
+    # 이제 직전 영업일보다 더 오래된 경우(두 세션 이상 지연)만 미갱신 가능성으로 표시한다.
+    benchmark = next((item for item in overnight if item.get("symbol") in ("^KS11", "^KS200")), None)
+    trade_date_raw = (benchmark or {}).get("as_of")
+    try:
+        trade_date = datetime.fromisoformat(str(trade_date_raw)).date()
+    except (TypeError, ValueError):
+        trade_date = None
+    base_status = _kr_market_status(now)
+    stale = False
+    try:
+        from market_briefing.krx_calendar import is_trading_day, previous_trading_day
+        if trade_date is not None and is_trading_day(now.date()) and base_status in ("장중", "장 마감 · 종가"):
+            stale = trade_date < previous_trading_day(now.date())
+    except Exception:
+        stale = False
+    for entry in indices.values():
+        if not isinstance(entry, dict):
+            continue
+        if trade_date:
+            entry["trade_date"] = trade_date.isoformat()
+        entry["market_status"] = "데이터 미갱신 가능 · 최근 수신 지수" if stale else base_status
 
 
 def fetch_fx() -> list[dict]:
@@ -165,34 +492,128 @@ def fetch_fx() -> list[dict]:
 
 
 def fetch_macro_news(limit: int = 15) -> list[dict]:
-    """네이버 금융 메인 뉴스 (거시/시장 전반)."""
-    soup = _get("https://finance.naver.com/news/mainnews.naver")
+    """네이버 금융 메인 뉴스 (거시/시장 전반) — 3단계 폴백으로 빈 결과 방지.
+
+    1차: 네이버 금융 mainnews.naver (기존 파서, li.block1)
+    2차: 네이버 newsList.naver 대체 섹션 (HTML 구조 변경 대응, 테이블 파서)
+    3차: Google News RSS (한국 증시 키워드, feedparser) — 네이버 차단/점검 시 최후 보루
+    """
     items: list[dict] = []
-    for li in soup.select("li.block1"):
-        subj = li.select_one("dd.articleSubject a") or li.select_one("dt a")
-        summ = li.select_one("dd.articleSummary")
-        if not subj:
-            continue
-        href   = _abs_naver_link(subj.get("href", ""))
-        source = date = summary_text = ""
-        if summ:
-            press = summ.select_one(".press")
-            wdate = summ.select_one(".wdate")
-            source = press.get_text(strip=True) if press else ""
-            date   = wdate.get_text(strip=True) if wdate else ""
-            for s in summ.select(".press, .wdate, .source"):
-                s.extract()
-            summary_text = summ.get_text(" ", strip=True)
-        items.append({
-            "title":   subj.get_text(strip=True),
-            "link":    href,
-            "source":  source,
-            "date":    date,
-            "summary": summary_text,
-        })
-        if len(items) >= limit:
-            break
-    return items
+
+    # ── 1차: 네이버 금융 메인 뉴스 (기존) ───────────────────────────────
+    try:
+        soup = _get("https://finance.naver.com/news/mainnews.naver")
+        for li in soup.select("li.block1"):
+            subj = li.select_one("dd.articleSubject a") or li.select_one("dt a")
+            summ = li.select_one("dd.articleSummary")
+            if not subj:
+                continue
+            href   = _abs_naver_link(subj.get("href", ""))
+            source = date = summary_text = ""
+            if summ:
+                press = summ.select_one(".press")
+                wdate = summ.select_one(".wdate")
+                source = press.get_text(strip=True) if press else ""
+                date   = wdate.get_text(strip=True) if wdate else ""
+                for s in summ.select(".press, .wdate, .source"):
+                    s.extract()
+                summary_text = summ.get_text(" ", strip=True)
+            title = subj.get_text(strip=True)
+            if title:
+                items.append({
+                    "title":   title,
+                    "link":    href,
+                    "source":  source or "네이버 금융",
+                    "date":    date,
+                    "summary": summary_text,
+                })
+            if len(items) >= limit:
+                break
+        if items:
+            return items[:limit]
+    except Exception as e:
+        print(f"[warn] fetch_macro_news naver main: {e}", file=sys.stderr)
+
+    # ── 2차: 네이버 대체 리스트 (뉴스 구조 변경 대응) ─────────────────────
+    try:
+        soup2 = _get("https://finance.naver.com/news/news_list.naver?mode=LSS3D&section_id=101&section_id2=258")
+        # 대체 페이지는 dl/dt/dd 또는 table 구조가 섞여 있어 넓게 탐색
+        for sel in ("dl dt a", "td.title a", "ul.realtimeNewsList li a", "dd.articleSubject a"):
+            for a in soup2.select(sel):
+                title = a.get_text(strip=True)
+                if not title or len(title) < 5:
+                    continue
+                href = _abs_naver_link(a.get("href", ""))
+                # 중복 방지
+                if any(x["title"] == title for x in items):
+                    continue
+                items.append({
+                    "title": title,
+                    "link": href,
+                    "source": "네이버 금융",
+                    "date": "",
+                    "summary": "",
+                })
+                if len(items) >= limit:
+                    break
+            if len(items) >= limit:
+                break
+        if len(items) >= 5:
+            return items[:limit]
+        # 5개 미만은 불완전 — 3차로 이어감
+    except Exception as e:
+        print(f"[warn] fetch_macro_news naver alt: {e}", file=sys.stderr)
+
+    # ── 3차: Google News RSS (한국 증시) — 네이버 차단/점검 시 최후 보루 ──
+    if _FEEDPARSER_AVAILABLE and _feedparser is not None:
+        try:
+            rss_urls = [
+                "https://news.google.com/rss/search?q=한국+증시+OR+코스피+OR+코스닥+OR+증시&hl=ko&gl=KR&ceid=KR:ko",
+                "https://news.google.com/rss/search?q=주식+OR+증시+OR+코스피&hl=ko&gl=KR&ceid=KR:ko",
+            ]
+            for rss_url in rss_urls:
+                try:
+                    feed = _feedparser.parse(rss_url)
+                    for entry in getattr(feed, "entries", [])[:limit]:
+                        raw_title = str(getattr(entry, "title", "") or "").strip()
+                        if not raw_title:
+                            continue
+                        # Google News 제목은 "기사제목 - 언론사" 형태 — 언론사 분리
+                        if " - " in raw_title:
+                            core, src = raw_title.rsplit(" - ", 1)
+                        else:
+                            core, src = raw_title, getattr(getattr(entry, "source", None), "title", "") or "Google News"
+                        link = str(getattr(entry, "link", "") or "")
+                        pub = str(getattr(entry, "published", "") or getattr(entry, "pubDate", "") or "")
+                        if any(x["title"] == core for x in items):
+                            continue
+                        items.append({
+                            "title": core,
+                            "link": link,
+                            "source": src or "Google News",
+                            "date": pub,
+                            "summary": "",
+                        })
+                        if len(items) >= limit:
+                            break
+                    if len(items) >= limit:
+                        break
+                except Exception as inner_e:
+                    print(f"[warn] fetch_macro_news google rss inner: {inner_e}", file=sys.stderr)
+                    continue
+            if items:
+                return items[:limit]
+        except Exception as e:
+            print(f"[warn] fetch_macro_news google rss: {e}", file=sys.stderr)
+
+    # ── 최후: 빈 리스트 반환 (프론트에서 빈 상태 메시지 대신 재시도 유도) ──
+    # 그래도 비어 있으면 build_core_summary에서 뉴스 없음으로 처리되나,
+    # 호출측 fetch_macro_context는 []를 그대로 반환하므로 프론트는
+    # "뉴스를 불러올 수 없습니다."를 표시한다. 빈 경우를 줄이기 위해
+    # 위 3단계로 최대한 채웠으므로, 여기 도달은 네트워크 완전 차단 시에만 발생한다.
+    if not items:
+        print(f"[warn] fetch_macro_news all sources failed — returning empty", file=sys.stderr)
+    return items[:limit]
 
 
 def fetch_overnight_markets() -> list[dict]:
@@ -208,7 +629,7 @@ def fetch_overnight_markets() -> list[dict]:
         ("^DJI",     "다우존스"),
         ("^IXIC",    "나스닥"),
         ("^VIX",     "VIX"),
-        ("^KS200",   "KOSPI200 (종가)"),
+        ("^KS11",    "KOSPI (종가)"),
         ("CL=F",     "WTI 원유"),
         ("GC=F",     "금"),
         ("BTC-USD",  "비트코인"),
@@ -324,17 +745,29 @@ def _fetch_quote_mobile_json(code: str) -> dict | None:
         direction = "up" if diff_num > 0 else ("down" if diff_num < 0 else "flat")
         sign      = "+" if diff_num > 0 else ""
 
+        # safe int conversion: NaN guard
+        try:
+            price_int = int(price_num) if math.isfinite(price_num) else 0
+        except Exception:
+            price_int = 0
+        try:
+            diff_int = abs(int(diff_num)) if math.isfinite(diff_num) else 0
+        except Exception:
+            diff_int = 0
         out: dict = {
-            "price":          f"{int(price_num):,}",
-            "change":         f"{abs(int(diff_num)):,}",
-            "change_pct":     f"{sign}{pct_num:.2f}%",
-            "change_pct_num": round(pct_num, 2),
+            "price":          f"{price_int:,}",
+            "change":         f"{diff_int:,}",
+            "change_pct":     f"{sign}{pct_num:.2f}%" if math.isfinite(pct_num) else "0.00%",
+            "change_pct_num": round(pct_num, 2) if math.isfinite(pct_num) else 0.0,
             "direction":      direction,
         }
         if vol_str:
             try:
-                out["volume"] = int(vol_str)
-            except ValueError:
+                # vol_str may be NaN string
+                fv = float(str(vol_str).replace(",", ""))
+                if math.isfinite(fv):
+                    out["volume"] = int(fv)
+            except Exception:
                 pass
         return out
     except Exception:
@@ -383,8 +816,11 @@ def fetch_stock_quote(code: str) -> dict:
                 td = th.find_next("em") or th.find_next("td")
                 if td:
                     try:
-                        out["volume"] = int(td.get_text(strip=True).replace(",", ""))
-                    except ValueError:
+                        txt = td.get_text(strip=True).replace(",", "")
+                        fv = float(txt)
+                        if math.isfinite(fv):
+                            out["volume"] = int(fv)
+                    except Exception:
                         pass
                 break
     except Exception:
@@ -516,7 +952,7 @@ def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     symbol = f"{code}{primary}"
     for suffix in (primary, fallback):
         try:
-            cand = yf.Ticker(f"{code}{suffix}").history(period="1y", auto_adjust=False)
+            cand = yf.Ticker(f"{code}{suffix}").history(period="1y", auto_adjust=True)
         except Exception:
             cand = None
         if cand is not None and len(cand) >= 2:
@@ -532,7 +968,9 @@ def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     low_52w   = float(h["Low"].min())
     last_close = float(closes[-1])
 
-    vols        = [float(v) for v in h["Volume"].tolist()[-20:] if v]
+    vols        = [float(v) for v in h["Volume"].tolist()[-20:] if v is not None]
+    # filter non-finite volumes
+    vols = [v for v in vols if math.isfinite(v) and v >= 0]
     vol_20d_avg = round(sum(vols) / len(vols)) if vols else None
 
     change_20d = None
@@ -543,9 +981,18 @@ def fetch_stock_history(code: str, market: str = "KOSPI") -> dict:
     if high_52w > low_52w:
         pos_52w = round((last_close - low_52w) / (high_52w - low_52w) * 100, 1)
 
+    highs_20d = [float(x) for x in h["High"].tolist()[-20:] if x is not None and math.isfinite(float(x))]
+    lows_20d  = [float(x) for x in h["Low"].tolist()[-20:] if x is not None and math.isfinite(float(x))]
+    opens_20d = [float(x) for x in h["Open"].tolist()[-20:] if x is not None and math.isfinite(float(x))]
+    vols_20d  = [float(v) for v in h["Volume"].tolist()[-20:] if v is not None and math.isfinite(float(v))]
+
     return {
         "symbol":              symbol,
-        "closes_20d":          [round(float(c), 2) for c in last20],
+        "closes_20d":          [round(float(c), 2) for c in last20 if c is not None and math.isfinite(float(c))],
+        "highs_20d":           [round(float(x), 2) for x in highs_20d],
+        "lows_20d":            [round(float(x), 2) for x in lows_20d],
+        "opens_20d":           [round(float(x), 2) for x in opens_20d],
+        "volumes_20d":         [int(v) for v in vols_20d if math.isfinite(v)],
         "fifty_two_week_high": round(high_52w, 2),
         "fifty_two_week_low":  round(low_52w, 2),
         "last_close":          round(last_close, 2),
@@ -564,11 +1011,13 @@ def fetch_proxy_changes(tickers: list[str]) -> dict[str, float]:
     out: dict[str, float] = {}
     for sym in tickers:
         try:
-            h = yf.Ticker(sym).history(period="5d", auto_adjust=False)
-            if len(h) < 2:
+            h = yf.Ticker(sym).history(period="5d", auto_adjust=True)
+            # 마지막 행 종가가 NaN 일 수 있어(장 시작 전·장중) 유효 종가만으로 전일 대비를 계산한다.
+            closes = h["Close"].dropna() if "Close" in h.columns else h.iloc[:0]
+            if len(closes) < 2:
                 continue
-            prev = float(h.iloc[-2]["Close"])
-            last = float(h.iloc[-1]["Close"])
+            prev = float(closes.iloc[-2])
+            last = float(closes.iloc[-1])
             if prev:
                 out[sym] = (last - prev) / prev * 100
         except Exception as e:
@@ -618,15 +1067,16 @@ def fetch_macro_context() -> dict:
         "news":       list,   # 거시 뉴스
       }
     """
-    # ── 캐시 확인 (락 없이 읽기 — 원자적 dict 접근으로 안전) ──────────────
+    # ── 캐시 확인 (TTL은 1회만 계산 — 자정/장경계 뒤집힘으로 읽기·쓰기 시점 TTL이 달라지는 thundering-herd 방지)
+    ttl = _macro_ttl_seconds()
     cached = _MACRO_CACHE["data"]
-    if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < _macro_ttl_seconds():
+    if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < ttl:
         return cached
 
     # ── 캐시 미스: 락 획득 후 재확인 (Thundering-herd 방지) ───────────────
     with _MACRO_LOCK:
         cached = _MACRO_CACHE["data"]
-        if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < _macro_ttl_seconds():
+        if cached and (_time.monotonic() - _MACRO_CACHE["ts"]) < ttl:
             return cached   # 다른 스레드가 이미 갱신한 경우
 
         result: dict = {"generated_at": datetime.now(KST).isoformat()}
@@ -652,6 +1102,8 @@ def fetch_macro_context() -> dict:
                 except Exception as e:
                     print(f"[warn] macro {key}: {e}", file=sys.stderr)
                     result[key] = default
+
+        _reconcile_index_market_status(result.get("indices") or {}, result.get("overnight") or [])
 
         _MACRO_CACHE["data"] = result
         _MACRO_CACHE["ts"]   = _time.monotonic()
@@ -710,8 +1162,7 @@ def fetch_stock_list_snapshot(
     })
     proxy_changes = fetch_proxy_changes(all_proxies) if all_proxies else {}
 
-    result = []
-    for cfg in stock_configs:
+    def _fetch(cfg: dict) -> dict:
         snap = fetch_stock_snapshot(
             code               = cfg["code"],
             market             = cfg.get("market", "KOSPI"),
@@ -722,8 +1173,15 @@ def fetch_stock_list_snapshot(
         for key in ("name", "sector", "owners", "leader", "is_etf"):
             if cfg.get(key) is not None:
                 snap[key] = cfg[key]
-        result.append(snap)
-    return result
+        return snap
+
+    if len(stock_configs) <= 1:
+        return [_fetch(cfg) for cfg in stock_configs]
+
+    # Preserve input order while overlapping independent network waits.
+    workers = min(6, len(stock_configs))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(_fetch, stock_configs))
 
 
 def fetch_stock_list_quote_only(

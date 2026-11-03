@@ -37,11 +37,20 @@ from .dual_score_v2 import (
     VOL_LOW, VOL_NORMAL, VOL_HIGH,
 )
 from .quality_filter import QualityFilterResult, score_quality
+from .session_bars import completed_volume_ratio
 from .hybrid_signals import (
     compute_hybrid_score, compute_regime, detect_vol_regime,
     adaptive_atr_buffer, anti_chase_guard,
     REGIME_BULLISH as HT_BULLISH, REGIME_BEARISH as HT_BEARISH,
 )
+try:
+    from .hybrid_signals import _prior_twenty_day_high as _prior_high20
+except Exception:  # pragma: no cover - 단독 로드 시 폴백
+    def _prior_high20(highs, lookback: int = 20):  # type: ignore
+        if not highs or len(highs) < 2:
+            return None
+        window = list(highs)[max(0, len(highs) - 1 - lookback):len(highs) - 1]
+        return float(max(window)) if window else None
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +77,266 @@ TIER_MULTIPLIER = {
     "junk":    0.0,
     "unknown": 0.5,
 }
+
+# ── 시장별 가격 상한 (출력 필터) ─────────────────────────────────────────────
+# 미국 스캔은 $70 초과 종목을 출력에서 제외한다 (수집 후 실측가 기준).
+SCAN_US_MAX_PRICE = 70.0
+
+# ── 시장별 수집 상한 (Vercel 60s 타임아웃 방지 + 시간 예산 하드가드 병행) ──
+# 미국은 전수 검토를 위해 유니버스 전체를 수집 대상으로 둔다.
+SCAN_COLLECT_CAP_US_FULL = 120
+SCAN_COLLECT_CAP_US_LITE = 48
+
+
+def is_scan_price_eligible(market: str, price: Any) -> bool:
+    """스캔 출력 가격 상한 판정. US는 $70 초과 제외, KRX는 제한 없음."""
+    if str(market or "").upper() != "US":
+        return True
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(value) or value <= 0:
+        return False
+    return value <= SCAN_US_MAX_PRICE
+
+
+def apply_leader_promotion(
+    cands: List[Dict],
+    leader_map: Dict[str, Dict] | None,
+    equity: float = 10_000_000.0,
+    risk_pct: float = 1.0,
+    market: str = "US",
+) -> Dict[str, int]:
+    """리더 반전 BREAKOUT 후보를 진입 준비(READY)로 승격한다.
+
+    스캔 엔진의 자체 돌파 체계와 리더 반전 체계는 진입가·손절가가 다르므로,
+    승격 시 진입 트리거·손절가·이격률·포지션 사이징을 리더 기준으로 교체하고
+    원래 값은 orig_* 로 보존한다 (투명성). 점수(BQS/FWS/NCS)는 손대지 않는다.
+
+    규칙:
+      - leader stage == BREAKOUT 일 때만 승격
+      - EARNINGS_BLOCK(실적 대기)은 하드 게이트라 승격 제외
+      - 진입가·손절가가 유한 양수이고 손절 < 진입일 때만 승격
+    절대 raise하지 않는다.
+    """
+    promoted = 0
+    try:
+        for cd in cands or []:
+            try:
+                if not isinstance(cd, dict):
+                    continue
+                if cd.get("status") == "EARNINGS_BLOCK":
+                    continue
+                lr = ((leader_map or {}).get(cd.get("ticker")) or {})
+                if not isinstance(lr, dict) or lr.get("stage") != "BREAKOUT":
+                    continue
+                from .technique_prune import technique_allowed, technique_evidence, leader_conditions
+                cd["leader_reversal_validation"] = technique_evidence("leader_reversal", market)
+                _allowed, _reason = technique_allowed("leader_reversal", market, leader_conditions(lr))
+                if not _allowed:
+                    cd["leader_reversal_prune_reason"] = _reason
+                    continue
+                try:
+                    entry_f = float(lr.get("entry_trigger"))
+                    stop_f = float(lr.get("stop_price"))
+                    price_f = float(cd.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(entry_f) and math.isfinite(stop_f)
+                        and math.isfinite(price_f)):
+                    continue
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= stop_f:
+                    continue
+                cd["orig_status"] = cd.get("status")
+                cd["orig_entry_trigger"] = cd.get("entry_trigger")
+                cd["orig_stop_price"] = cd.get("stop_price")
+                cd["status"] = "READY"
+                cd["status_source"] = "leader_reversal"
+                cd["entry_trigger"] = round(entry_f, 4)
+                cd["stop_price"] = round(stop_f, 4)
+                cd["distance_pct"] = round((entry_f - price_f) / price_f * 100, 2)
+                try:
+                    sizing = calculate_position_size(
+                        equity, entry_f, stop_f,
+                        cd.get("sleeve") or "CORE", risk_pct)
+                    cd["shares"] = sizing.get("shares")
+                    cd["risk_amount"] = sizing.get("risk_amount")
+                    cd["risk_pct"] = sizing.get("risk_pct")
+                    cd["total_cost"] = sizing.get("total_cost")
+                except Exception:
+                    pass
+                promoted += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"promoted": promoted}
+
+
+from .technique_prune import momentum_conditions
+
+
+def apply_momentum_promotion(
+    cands: List[Dict],
+    momentum_map: Dict[str, Dict] | None,
+    equity: float = 10_000_000.0,
+    risk_pct: float = 1.0,
+    market: str = "KRX",
+) -> Dict[str, int]:
+    """모멘텀 지속 PASS 후보를 진입 준비(READY)로 승격한다.
+
+    리더 승격과 같은 규칙이다: 스캔 자체 돌파 체계와 모멘텀 체계는 진입가·손절가가
+    다르므로 승격 시 모멘텀 기준으로 교체하고 원래 값은 orig_* 로 보존한다.
+    점수(BQS/FWS/NCS)는 손대지 않는다. 연구용 신호라 prune 게이트는 호출측(api)이
+    technique_allowed()로 먼저 거른다. 이미 리더로 승격된 행은 덮지 않는다.
+
+    규칙:
+      - momentum stage == PASS 일 때만 승격
+      - EARNINGS_BLOCK(실적 대기)은 하드 게이트라 승격 제외
+      - 진입가·손절가가 유한 양수이고 손절 < 진입일 때만 승격
+    절대 raise하지 않는다.
+    """
+    promoted = 0
+    try:
+        for cd in cands or []:
+            try:
+                if not isinstance(cd, dict):
+                    continue
+                if cd.get("status") == "EARNINGS_BLOCK":
+                    continue
+                if cd.get("status_source") == "leader_reversal":
+                    continue  # 리더 승격 우선, 덮어쓰지 않음
+                mo = ((momentum_map or {}).get(cd.get("ticker")) or {})
+                if not isinstance(mo, dict) or mo.get("stage") != "PASS":
+                    continue
+                from .technique_prune import technique_allowed, technique_evidence, momentum_conditions
+                cd["momentum_persistence_validation"] = technique_evidence("momentum_persistence", market)
+                _allowed, _reason = technique_allowed("momentum_persistence", market, momentum_conditions(mo))
+                if not _allowed:
+                    cd["momentum_persistence_prune_reason"] = _reason
+                    continue
+                if mo.get("entry_eligible") is False:
+                    continue
+                midpoint = mo.get("midpoint")
+                if midpoint is not None and float(cd.get("price") or 0) < float(midpoint):
+                    continue
+                try:
+                    entry_f = float(mo.get("entry_trigger"))
+                    stop_f = float(mo.get("stop_price"))
+                    price_f = float(cd.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(entry_f) and math.isfinite(stop_f)
+                        and math.isfinite(price_f)):
+                    continue
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= stop_f:
+                    continue
+                cd["orig_status"] = cd.get("status")
+                cd["orig_entry_trigger"] = cd.get("entry_trigger")
+                cd["orig_stop_price"] = cd.get("stop_price")
+                cd["status"] = "READY"
+                cd["status_source"] = "momentum_persistence"
+                cd["entry_trigger"] = round(entry_f, 4)
+                cd["stop_price"] = round(stop_f, 4)
+                cd["distance_pct"] = round((entry_f - price_f) / price_f * 100, 2)
+                try:
+                    sizing = calculate_position_size(
+                        equity, entry_f, stop_f,
+                        cd.get("sleeve") or "CORE", risk_pct)
+                    cd["shares"] = sizing.get("shares")
+                    cd["risk_amount"] = sizing.get("risk_amount")
+                    cd["risk_pct"] = sizing.get("risk_pct")
+                    cd["total_cost"] = sizing.get("total_cost")
+                except Exception:
+                    pass
+                promoted += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"promoted": promoted}
+
+
+from .technique_prune import vcp_conditions
+
+
+def apply_vcp_promotion(
+    cands: List[Dict],
+    vcp_map: Dict[str, Dict] | None,
+    equity: float = 10_000_000.0,
+    risk_pct: float = 1.0,
+    market: str = "KRX",
+) -> Dict[str, int]:
+    """VCP 피벗 돌파(PASS + 가짜돌파 위험없음) 후보를 진입 준비(READY)로 승격한다.
+
+    리더·모멘텀 승격과 같은 규칙이다: 진입가·손절가를 VCP 기준(피벗·수축저점)으로
+    교체하고 원래 값은 orig_* 로 보존한다. 점수(BQS/FWS/NCS)는 손대지 않는다.
+    이미 리더·모멘텀으로 승격된 행은 덮지 않는다. 가짜돌파 위험이 있으면
+    승격하지 않고 표시·집계에만 남긴다.
+
+    규칙:
+      - vcp stage == PASS 이고 false_breakout_risk == False 일 때만 승격
+      - EARNINGS_BLOCK(실적 대기)은 하드 게이트라 승격 제외
+      - 진입가·손절가가 유한 양수이고 손절 < 진입일 때만 승격
+    절대 raise하지 않는다.
+    """
+    promoted = 0
+    try:
+        for cd in cands or []:
+            try:
+                if not isinstance(cd, dict):
+                    continue
+                if cd.get("status") == "EARNINGS_BLOCK":
+                    continue
+                if cd.get("status_source") in ("leader_reversal", "momentum_persistence"):
+                    continue  # 선순위 승격 우선, 덮어쓰지 않음
+                vc = ((vcp_map or {}).get(cd.get("ticker")) or {})
+                if not isinstance(vc, dict) or vc.get("stage") != "PASS":
+                    continue
+                from .technique_prune import technique_allowed, technique_evidence, vcp_conditions
+                cd["vcp_validation"] = technique_evidence("vcp", market)
+                _allowed, _reason = technique_allowed("vcp", market, vcp_conditions(vc))
+                if not _allowed:
+                    cd["vcp_prune_reason"] = _reason
+                    continue
+                if vc.get("false_breakout_risk"):
+                    continue
+                try:
+                    entry_f = float(vc.get("entry_trigger"))
+                    stop_f = float(vc.get("stop_price"))
+                    price_f = float(cd.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                if not (math.isfinite(entry_f) and math.isfinite(stop_f)
+                        and math.isfinite(price_f)):
+                    continue
+                if entry_f <= 0 or stop_f <= 0 or stop_f >= entry_f or price_f <= stop_f:
+                    continue
+                cd["orig_status"] = cd.get("status")
+                cd["orig_entry_trigger"] = cd.get("entry_trigger")
+                cd["orig_stop_price"] = cd.get("stop_price")
+                cd["status"] = "READY"
+                cd["status_source"] = "vcp"
+                cd["entry_trigger"] = round(entry_f, 4)
+                cd["stop_price"] = round(stop_f, 4)
+                cd["distance_pct"] = round((entry_f - price_f) / price_f * 100, 2)
+                try:
+                    sizing = calculate_position_size(
+                        equity, entry_f, stop_f,
+                        cd.get("sleeve") or "CORE", risk_pct)
+                    cd["shares"] = sizing.get("shares")
+                    cd["risk_amount"] = sizing.get("risk_amount")
+                    cd["risk_pct"] = sizing.get("risk_pct")
+                    cd["total_cost"] = sizing.get("total_cost")
+                except Exception:
+                    pass
+                promoted += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {"promoted": promoted}
 
 
 # ── 데이터 구조 ───────────────────────────────────────────────────────────────
@@ -105,6 +374,7 @@ class TechnicalSnapshot:
     median_atr_14:  float = 0.0
     atr_spiking:    bool  = False
     atr_collapsing: bool  = False
+    hybrid_signal: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -523,14 +793,14 @@ def _calc_efficiency(closes: List[float], period: int = 20) -> float:
     return min(net_move / total_path * 100, 100.0)
 
 
-def _calc_vol_ratio(volumes: List[float], period: int = 21) -> float:
-    """현재 거래량 / 20일 평균 거래량."""
-    if len(volumes) < period:
-        return 1.0
-    avg = float(np.mean(volumes[-period:-1]))
-    if avg <= 0:
-        return 1.0
-    return round(volumes[-1] / avg, 3)
+def _calc_vol_ratio(volumes: List[float], period: int = 21, in_progress: bool = False) -> float:
+    """현재 거래량 / 20일 평균 거래량.
+
+    in_progress=True(마지막 막대가 장중 진행 중)이면 거래량이 누적 중(최종값 이하)이라
+    직전 확정 막대의 거래량 비율을 쓴다 — 조회 시각만으로 거래량 위험이 커지는 것을 막는다.
+    """
+    ratio, _basis = completed_volume_ratio(volumes, in_progress, lookback=period - 1)
+    return 1.0 if ratio is None else round(ratio, 3)
 
 
 def _build_snapshot(
@@ -738,6 +1008,22 @@ def run_full_scan(
                     )
             passes_chase = anti_chase_res["passed"]
 
+        from .technique_prune import hybrid_conditions, technique_allowed, technique_evidence, context_conditions
+        _market = "KRX" if stock.currency == "KRW" else "US"
+        _hybrid_conditions = hybrid_conditions(snap.hybrid_signal or {
+            "ncs": ncs, "fws": fws, "regime": regime, "vol_regime": vol_regime,
+            "adx": snap.adx, "dist_to_high": distance_pct})
+        _hybrid_conditions.update(context_conditions(snap.closes, snap.highs, snap.lows, snap.volumes))
+        _prune_allowed, _prune_reason = technique_allowed("hybrid_breakout", _market, _hybrid_conditions)
+        filter_result["technique_validation"] = technique_evidence("hybrid_breakout", _market)
+        if not _prune_allowed:
+            passes_tech = False
+            filter_result["pruned"] = True
+            filter_result["prune_reason"] = _prune_reason
+            if status == "READY":
+                status = "WATCH"
+            a_note = _prune_reason
+
         # ── Stage 7: 최종 후보 구성 ─────────────────────────────────────────
         candidate = ScanCandidate(
             ticker        = ticker,
@@ -821,6 +1107,7 @@ def build_snapshot_from_ohlcv(
     opens:        Optional[List[float]] = None,
     bench_closes: Optional[List[float]] = None,
     weekly_adx:   float = 0.0,
+    volume_in_progress: bool = False,
 ) -> TechnicalSnapshot:
     """OHLCV 데이터에서 TechnicalSnapshot 자동 계산.
 
@@ -834,6 +1121,8 @@ def build_snapshot_from_ohlcv(
         opens:        시가 (BIS 계산용, 선택)
         bench_closes: 벤치마크 종가 (RS 계산용, 선택)
         weekly_adx:   주간 ADX (외부에서 주입, 없으면 0)
+        volume_in_progress: 마지막 막대가 장중 진행 중(거래량 누적 중)이면 True —
+                      거래량 비율·BIS 의 거래량 항목을 직전 확정 막대 기준으로 계산한다.
 
     Returns:
         TechnicalSnapshot
@@ -852,6 +1141,7 @@ def build_snapshot_from_ohlcv(
             volumes       = volumes,
             open_prices   = opens,
             bench_closes  = bench_closes,
+            volume_in_progress = volume_in_progress,
         )
     except Exception as e:
         logger.error("[Snapshot] %s: hybrid_score 계산 실패: %s", ticker, e)
@@ -863,7 +1153,12 @@ def build_snapshot_from_ohlcv(
     adx     = hs.get("adx")     or 0.0
     plus_di = hs.get("plus_di") or 0.0
     minus_di= hs.get("minus_di")or 0.0
-    high_20d= hs.get("twenty_day_high") or (max(highs[-20:]) if n >= 20 else current_price)
+    # 직전 20봉(당일 제외) 기준 — hybrid와 동일. 당일 포함 시 추격 가드가 죽는다.
+    try:
+        _ph = _prior_high20([float(h) for h in highs]) if n >= 2 else None
+    except Exception:
+        _ph = None
+    high_20d = hs.get("twenty_day_high") or (_ph if _ph is not None else (max(highs[:-1]) if n >= 2 else current_price))
 
     # MA200
     ma200 = _calc_ma(closes, 200)
@@ -874,8 +1169,8 @@ def build_snapshot_from_ohlcv(
     # 추세 효율성
     efficiency = _calc_efficiency(closes)
 
-    # 거래량 비율
-    vol_ratio = _calc_vol_ratio(volumes)
+    # 거래량 비율 (진행 중 막대면 직전 확정 막대 기준)
+    vol_ratio = _calc_vol_ratio(volumes, in_progress=volume_in_progress)
 
     # RS vs 벤치마크
     rs = 0.0
@@ -889,14 +1184,15 @@ def build_snapshot_from_ohlcv(
 
     # BIS (최신 캔들)
     bis = 0.0
-    if opens and len(opens) >= 1 and len(volumes) >= 11:
-        avg_vol_10 = float(np.mean(volumes[-11:-1])) if len(volumes) >= 11 else 0
+    bis_vol_idx = -2 if (volume_in_progress and len(volumes) >= 12) else -1
+    if opens and len(opens) >= 1 and len(volumes) >= 10 - bis_vol_idx:
+        avg_vol_10 = float(np.mean(volumes[bis_vol_idx - 10:bis_vol_idx]))
         bis = float(compute_bis_from_candle(
             open_p   = opens[-1],
             high_p   = highs[-1],
             low_p    = lows[-1],
             close_p  = closes[-1],
-            volume   = volumes[-1],
+            volume   = volumes[bis_vol_idx],
             avg_vol_10d = avg_vol_10,
         ))
 
@@ -913,6 +1209,7 @@ def build_snapshot_from_ohlcv(
             median_atr = old_atr
 
     return TechnicalSnapshot(
+        hybrid_signal = hs,
         ticker          = ticker,
         closes          = closes,
         highs           = highs,

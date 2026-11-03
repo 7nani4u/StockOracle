@@ -1,0 +1,222 @@
+from datetime import datetime
+from pathlib import Path
+
+from bs4 import BeautifulSoup
+
+from market_briefing import core_summary, data_fetcher
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = (ROOT / "api" / "index.py").read_text(encoding="utf-8")
+
+
+class _FakeKrxResponse:
+    def __init__(self, output):
+        self._output = output
+        self.headers = {"Date": "Sat, 18 Jul 2026 08:00:00 GMT"}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"output": self._output}
+
+
+def _official_output():
+    # 공식 응답 배열 순서와 무관하게 idx_nm으로 매핑되어야 한다.
+    return [
+        {"idx_nm": "KOSDAQ", "clsprc_idx": "791.84", "cmpr_idx": "37.59", "cmpr_rt": "4.532028", "updown": "down"},
+        {"idx_nm": "KOSPI 200", "clsprc_idx": "1080.36", "cmpr_idx": "83.54", "cmpr_rt": "7.177593", "updown": "down"},
+        {"idx_nm": "KOSPI", "clsprc_idx": "6820.60", "cmpr_idx": "463.81", "cmpr_rt": "6.367159", "updown": "down"},
+    ]
+
+
+def test_krx_indices_are_name_mapped_signed_and_arithmetically_verified(monkeypatch):
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *args, **kwargs: _FakeKrxResponse(_official_output()))
+
+    result = data_fetcher.fetch_market_indices()
+
+    assert result["KOSPI"]["value"] == "6,820.60"
+    assert result["KOSPI"]["prev_close"] == 7284.41
+    assert result["KOSPI"]["change_abs"] == "-463.81"
+    assert result["KOSPI"]["change_pct"] == "-6.37%"
+    assert result["KOSPI"]["direction"] == "down"
+    assert result["KOSPI"]["source"] == "KRX Global"
+    assert result["KOSPI200"]["source_symbol"] == "KOSPI 200"
+    assert all(item["validation"] == "verified" for item in result.values())
+
+
+def test_naver_fallback_uses_direction_marker_not_incorrect_blind_text(monkeypatch):
+    html = """
+    <span id="KOSPI_now">6,820.60</span><span id="KOSPI_change"><span class="ndown"></span>463.81 -6.37%<span class="blind">상승</span></span>
+    <span id="KOSDAQ_now">791.84</span><span id="KOSDAQ_change"><span class="ndown"></span>37.59 -4.53%<span class="blind">상승</span></span>
+    <span id="KPI200_now">1,080.36</span><span id="KPI200_change"><span class="ndown"></span>83.54 -7.18%<span class="blind">상승</span></span>
+    """
+    monkeypatch.setattr(data_fetcher, "_get", lambda *_args, **_kwargs: BeautifulSoup(html, "html.parser"))
+
+    result = data_fetcher._fetch_market_indices_naver()
+
+    assert result["KOSPI"]["direction"] == "down"
+    assert result["KOSPI"]["change_pct"] == "-6.37%"
+    assert result["KOSPI200"]["prev_close"] == 1163.9
+
+
+def test_invalid_official_index_is_not_presented_as_current(monkeypatch):
+    output = _official_output()
+    output[0] = dict(output[0], cmpr_rt="99.0")
+    monkeypatch.setattr(data_fetcher.requests, "get", lambda *args, **kwargs: _FakeKrxResponse(output))
+
+    result = data_fetcher.fetch_market_indices()
+
+    assert result["KOSDAQ"]["available"] is False
+    assert result["KOSDAQ"]["value"] == ""
+    assert result["KOSDAQ"]["validation"] == "unavailable"
+    assert result["KOSPI"]["available"] is True
+
+
+def test_unavailable_indices_do_not_bias_market_mood():
+    indices = {
+        "KOSPI": {"available": False, "direction": "down"},
+        "KOSDAQ": {"available": True, "direction": "up"},
+    }
+
+    assert core_summary._derive_kr_mood(indices) == "positive"
+
+
+def test_market_status_distinguishes_preopen_live_close_and_weekend():
+    kst = data_fetcher.KST
+
+    assert data_fetcher._kr_market_status(datetime(2026, 7, 18, 10, 0, tzinfo=kst)) == "휴장 · 최근 영업일 종가"
+    assert data_fetcher._kr_market_status(datetime(2026, 7, 20, 8, 30, tzinfo=kst)) == "장 시작 전 · 직전 종가"
+    assert data_fetcher._kr_market_status(datetime(2026, 7, 20, 10, 0, tzinfo=kst)) == "장중"
+    assert data_fetcher._kr_market_status(datetime(2026, 7, 20, 16, 0, tzinfo=kst)) == "장 마감 · 종가"
+
+
+def test_yahoo_one_session_lag_is_not_labeled_holiday():
+    # 2026-11-04 01:00 실측: 야후 ^KS11 은 11-03 종가가 NaN 이라 마지막 날짜가 11-02 였다.
+    # 예전 규칙은 이것만으로 정상 거래일(11-03 장 마감 후)을 '휴장 또는 데이터 미갱신'으로 표시했다.
+    kst = data_fetcher.KST
+    lagged = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        lagged, [{"symbol": "^KS11", "as_of": "2026-11-02"}], datetime(2026, 11, 3, 16, 0, tzinfo=kst))
+    assert lagged["KOSPI"]["trade_date"] == "2026-11-02"
+    assert lagged["KOSPI"]["market_status"] == "장 마감 · 종가"
+
+    live = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        live, [{"symbol": "^KS11", "as_of": "2026-11-03"}], datetime(2026, 11, 4, 10, 0, tzinfo=kst))
+    assert live["KOSPI"]["market_status"] == "장중"
+
+    # 직전 영업일보다 더 오래된(두 세션 이상 지연) 경우만 미갱신 가능성 표시
+    stale = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        stale, [{"symbol": "^KS11", "as_of": "2026-10-30"}], datetime(2026, 11, 4, 10, 0, tzinfo=kst))
+    assert stale["KOSPI"]["market_status"] == "데이터 미갱신 가능 · 최근 수신 지수"
+
+    no_date = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(no_date, [], datetime(2026, 11, 4, 10, 0, tzinfo=kst))
+    assert no_date["KOSPI"]["market_status"] == "장중"
+
+
+def test_market_status_uses_krx_calendar_for_weekday_closures():
+    kst = data_fetcher.KST
+    # 추석(평일)·근로자의 날·연말 휴장일·2026 제헌절은 시각과 무관하게 휴장
+    assert data_fetcher._kr_market_status(datetime(2026, 9, 24, 10, 0, tzinfo=kst)).startswith("휴장(")
+    assert data_fetcher._kr_market_status(datetime(2026, 5, 1, 10, 0, tzinfo=kst)).startswith("휴장(근로자의 날)")
+    assert data_fetcher._kr_market_status(datetime(2026, 12, 31, 10, 0, tzinfo=kst)).startswith("휴장(연말 휴장일)")
+    assert data_fetcher._kr_market_status(datetime(2026, 7, 17, 10, 0, tzinfo=kst)).startswith("휴장(제헌절)")
+    # 수능일은 10:00 개장 → 09:30 은 장 시작 전
+    assert data_fetcher._kr_market_status(datetime(2026, 11, 19, 9, 30, tzinfo=kst)) == "장 시작 전 · 직전 종가"
+    holiday = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        holiday, [{"symbol": "^KS11", "as_of": "2026-09-23"}], datetime(2026, 9, 24, 10, 0, tzinfo=kst))
+    assert holiday["KOSPI"]["market_status"].startswith("휴장(")
+
+
+def test_macro_news_fallback_uses_live_naver_route(monkeypatch):
+    requested_urls = []
+
+    def fake_get(url):
+        requested_urls.append(url)
+        return BeautifulSoup("<html></html>", "html.parser")
+
+    monkeypatch.setattr(data_fetcher, "_get", fake_get)
+    monkeypatch.setattr(data_fetcher, "_FEEDPARSER_AVAILABLE", False)
+
+    assert data_fetcher.fetch_macro_news() == []
+    assert requested_urls == [
+        "https://finance.naver.com/news/mainnews.naver",
+        "https://finance.naver.com/news/news_list.naver?mode=LSS3D&section_id=101&section_id2=258",
+    ]
+
+
+def test_ai_sector_card_removed_and_market_detail_reuses_home_snapshot():
+    ai_html = SOURCE.split('<!-- AI 탭 -->', 1)[1].split('<!-- 단계별 분석 리포트 탭 -->', 1)[0]
+    drawer = SOURCE.split("function _buildImmuneHtml", 1)[1].split("</script>", 1)[0]
+    renderer = SOURCE.split("function renderMarketCore", 1)[1].split("async function loadSectorFlow", 1)[0]
+
+    assert "flow-sector-card" not in SOURCE
+    assert "flow-sector-content" not in SOURCE
+    assert "섹터 / 업종 정보" not in ai_html
+    assert "주요 근거" in drawer
+    assert "거시·자금 흐름" in drawer
+    assert "긍정 요인" in drawer
+    assert "부담 요인" in drawer
+    assert "주의사항" in drawer
+    assert "_marketCoreSnapshot || {}" in SOURCE
+    assert "idx.change_abs" in renderer
+    assert "데이터 미수신" in renderer
+
+
+def test_fundamental_cards_use_one_desktop_row_and_keep_mobile_grid():
+    assert ".fund-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}" in SOURCE
+    assert ".fund-grid{grid-template-columns:repeat(2,1fr)}" in SOURCE
+
+
+def test_mobile_volume_card_stretches_to_match_atr_card_height():
+    mobile_css = SOURCE.split("@media(max-width:480px)", 1)[1].split(
+        "@media(max-width:360px)", 1
+    )[0]
+
+    assert ".metrics-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:stretch}" in mobile_css
+    assert ".metric-volume-card,.metric-atr-card{grid-column:span 2}" in mobile_css
+
+
+def test_reconcile_uses_kospi_composite_when_kospi200_symbol_is_unavailable():
+    # Yahoo ^KS200 은 1행만 반환해 overnight 목록에 없다 — ^KS11 의 최근 거래일로 휴장·미갱신을 판단한다.
+    indices = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        indices,
+        [{"symbol": "^KS11", "as_of": "2026-07-17"}],
+        datetime(2026, 7, 20, 10, 0, tzinfo=data_fetcher.KST),
+    )
+    assert indices["KOSPI"]["trade_date"] == "2026-07-17"
+    # 2026-07-17 은 제헌절 휴장 → 07-20(월) 의 직전 영업일은 07-16. 한 세션 이내 지연은 정상 표시.
+    assert indices["KOSPI"]["market_status"] == "장중"
+
+    live = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        live,
+        [{"symbol": "^KS11", "as_of": "2026-07-20"}],
+        datetime(2026, 7, 20, 10, 0, tzinfo=data_fetcher.KST),
+    )
+    assert live["KOSPI"]["market_status"] == "장중"       # 오늘 봉이 있으면 '확인 불가'로 떨어지지 않는다
+
+
+def test_proxy_changes_ignore_a_nan_last_close(monkeypatch):
+    import numpy as np
+    import pandas as pd
+    import pytest
+
+    frame = pd.DataFrame({"Close": [100.0, 101.0, 102.0, 103.0, np.nan]}, index=pd.bdate_range("2026-10-01", periods=5))
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, **_):
+            return frame
+
+    monkeypatch.setattr("yfinance.Ticker", FakeTicker)
+    changes = data_fetcher.fetch_proxy_changes(["SPY"])
+    assert changes["SPY"] == pytest.approx((103.0 - 102.0) / 102.0 * 100.0)

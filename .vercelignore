@@ -1,0 +1,11 @@
+datasets/
+scripts/
+tests/
+tmp/
+__pycache__/
+.pytest_cache/
+.codex-pytest-period-20260818/
+docs/backtests/*.csv
+docs/backtests/*.parquet
+*.parquet
+stockflow/
