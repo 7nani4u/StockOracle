@@ -92,26 +92,45 @@ def test_market_status_distinguishes_preopen_live_close_and_weekend():
     assert data_fetcher._kr_market_status(datetime(2026, 7, 20, 16, 0, tzinfo=kst)) == "장 마감 · 종가"
 
 
-def test_weekday_without_current_trading_bar_is_not_labeled_live():
-    indices = {"KOSPI": {"market_status": "장중", "available": True}}
-    overnight = [{"symbol": "^KS200", "as_of": "2026-07-17"}]
-
+def test_yahoo_one_session_lag_is_not_labeled_holiday():
+    # 2026-11-04 01:00 실측: 야후 ^KS11 은 11-03 종가가 NaN 이라 마지막 날짜가 11-02 였다.
+    # 예전 규칙은 이것만으로 정상 거래일(11-03 장 마감 후)을 '휴장 또는 데이터 미갱신'으로 표시했다.
+    kst = data_fetcher.KST
+    lagged = {"KOSPI": {"market_status": "장중", "available": True}}
     data_fetcher._reconcile_index_market_status(
-        indices,
-        overnight,
-        datetime(2026, 7, 20, 10, 0, tzinfo=data_fetcher.KST),
-    )
+        lagged, [{"symbol": "^KS11", "as_of": "2026-11-02"}], datetime(2026, 11, 3, 16, 0, tzinfo=kst))
+    assert lagged["KOSPI"]["trade_date"] == "2026-11-02"
+    assert lagged["KOSPI"]["market_status"] == "장 마감 · 종가"
 
-    assert indices["KOSPI"]["trade_date"] == "2026-07-17"
-    assert indices["KOSPI"]["market_status"] == "휴장 또는 데이터 미갱신 · 최근 영업일 종가"
+    live = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        live, [{"symbol": "^KS11", "as_of": "2026-11-03"}], datetime(2026, 11, 4, 10, 0, tzinfo=kst))
+    assert live["KOSPI"]["market_status"] == "장중"
+
+    # 직전 영업일보다 더 오래된(두 세션 이상 지연) 경우만 미갱신 가능성 표시
+    stale = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(
+        stale, [{"symbol": "^KS11", "as_of": "2026-10-30"}], datetime(2026, 11, 4, 10, 0, tzinfo=kst))
+    assert stale["KOSPI"]["market_status"] == "데이터 미갱신 가능 · 최근 수신 지수"
 
     no_date = {"KOSPI": {"market_status": "장중", "available": True}}
+    data_fetcher._reconcile_index_market_status(no_date, [], datetime(2026, 11, 4, 10, 0, tzinfo=kst))
+    assert no_date["KOSPI"]["market_status"] == "장중"
+
+
+def test_market_status_uses_krx_calendar_for_weekday_closures():
+    kst = data_fetcher.KST
+    # 추석(평일)·근로자의 날·연말 휴장일·2026 제헌절은 시각과 무관하게 휴장
+    assert data_fetcher._kr_market_status(datetime(2026, 9, 24, 10, 0, tzinfo=kst)).startswith("휴장(")
+    assert data_fetcher._kr_market_status(datetime(2026, 5, 1, 10, 0, tzinfo=kst)).startswith("휴장(근로자의 날)")
+    assert data_fetcher._kr_market_status(datetime(2026, 12, 31, 10, 0, tzinfo=kst)).startswith("휴장(연말 휴장일)")
+    assert data_fetcher._kr_market_status(datetime(2026, 7, 17, 10, 0, tzinfo=kst)).startswith("휴장(제헌절)")
+    # 수능일은 10:00 개장 → 09:30 은 장 시작 전
+    assert data_fetcher._kr_market_status(datetime(2026, 11, 19, 9, 30, tzinfo=kst)) == "장 시작 전 · 직전 종가"
+    holiday = {"KOSPI": {"market_status": "장중", "available": True}}
     data_fetcher._reconcile_index_market_status(
-        no_date,
-        [],
-        datetime(2026, 7, 20, 10, 0, tzinfo=data_fetcher.KST),
-    )
-    assert no_date["KOSPI"]["market_status"] == "시장 상태 확인 불가 · 최근 수신 지수"
+        holiday, [{"symbol": "^KS11", "as_of": "2026-09-23"}], datetime(2026, 9, 24, 10, 0, tzinfo=kst))
+    assert holiday["KOSPI"]["market_status"].startswith("휴장(")
 
 
 def test_macro_news_fallback_uses_live_naver_route(monkeypatch):
@@ -172,7 +191,8 @@ def test_reconcile_uses_kospi_composite_when_kospi200_symbol_is_unavailable():
         datetime(2026, 7, 20, 10, 0, tzinfo=data_fetcher.KST),
     )
     assert indices["KOSPI"]["trade_date"] == "2026-07-17"
-    assert indices["KOSPI"]["market_status"] == "휴장 또는 데이터 미갱신 · 최근 영업일 종가"
+    # 2026-07-17 은 제헌절 휴장 → 07-20(월) 의 직전 영업일은 07-16. 한 세션 이내 지연은 정상 표시.
+    assert indices["KOSPI"]["market_status"] == "장중"
 
     live = {"KOSPI": {"market_status": "장중", "available": True}}
     data_fetcher._reconcile_index_market_status(
