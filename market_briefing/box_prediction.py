@@ -5,6 +5,8 @@ from .box_range import analyze_box_range
 from .trend_boxes import analyze_trend_boxes
 from .box_exit import attach_box_exit_levels
 from .box_tactics import analyze_box_tactics
+from .box_sequence import analyze_box_sequence
+from .box_plan import build_execution_plan
 
 
 def _valid_range(value):
@@ -17,9 +19,35 @@ def _valid_range(value):
     return [low, high] if math.isfinite(low) and math.isfinite(high) and 0 < low <= high else None
 
 
+def _slim_sequence(seq):
+    """Box-sequence fields the UI/debugging needs (drops the raw price arrays)."""
+    keep = ("version", "status", "boxes", "reference", "forming", "staircase", "atr",
+            "last_date", "last_close", "volume_ratio", "warnings", "price_jumps", "config")
+    return {key: seq.get(key) for key in keep}
+
+
+def attach_execution_plan(response, box, source, trend, current, prior_decision):
+    """🧭 박스 실행 플랜: box sequence (video NOIOQP-7PPM) → one decision with prices.
+
+    Runs on the same completed-bar ``source`` as the other box layers. It never makes the
+    service more bullish than the pre-box overall decision (``prior_decision``).
+    """
+    try:
+        seq = analyze_box_sequence(source)
+    except Exception as exc:  # defensive: the analyzer itself never raises
+        seq = {"status": "invalid_data", "warnings": [f"박스 순서 분석 실패: {type(exc).__name__}"]}
+    plan = build_execution_plan(
+        seq, current=current, market=response.get("market") or "KRX", trend=trend,
+        risk={"prior_decision": prior_decision, "event_risk": response.get("event_risk")})
+    box["box_sequence"] = _slim_sequence(seq)
+    box["execution_plan"] = plan
+    return plan
+
+
 def apply_box_prediction(response, dd, *, in_progress=False):
     original_buy = deepcopy(response.get("buy_price") or {})
     original_risk = deepcopy(response.get("risk_scenarios") or {})
+    prior_decision = ((response.get("prediction_outlook") or {}).get("decision") or {}).get("key")
     source = {key: list(value) for key, value in dd.items()}
     if in_progress:
         source = {key: value[:-1] for key, value in source.items()}
@@ -55,6 +83,7 @@ def apply_box_prediction(response, dd, *, in_progress=False):
     # 영상의 호가창은 일봉으로 재현할 수 없으므로 압력은 근사치로만 표기한다.
     tactics = analyze_box_tactics(source, box, trend, current, flow=response.get("investor_flow"))
     box["tactics"] = tactics
+    attach_execution_plan(response, box, source, trend, current, prior_decision)
     box["tactics_version"] = tactics.get("version")
     box["tactics_data_quality"] = tactics.get("data_quality")
     regime = tactics.get("regime") or {}

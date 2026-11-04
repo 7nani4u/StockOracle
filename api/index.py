@@ -21209,6 +21209,39 @@ input::placeholder{color:#484f58}
 .box-tactics-list li{margin-bottom:2px}
 .box-tactics-foot{font-size:9px;color:#6e7681;line-height:1.5;margin-top:8px;padding-top:7px;border-top:1px solid #21262d}
 .box-midline-note{font-size:10px;color:#58a6ff;background:#58a6ff12;border:1px solid #58a6ff44;border-radius:5px;padding:5px 7px;margin:0 0 8px;line-height:1.45}
+/* 🧭 박스 실행 플랜 — 결론 우선 레이아웃(box_range.execution_plan) */
+.bxp-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.bxp-verdict{font-size:13px;font-weight:900;border:1px solid;border-radius:999px;padding:3px 11px;white-space:nowrap}
+.bxp-chip{font-size:10px;color:#cdd9e5;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap}
+.bxp-headline{font-size:14px;font-weight:800;color:#e6edf3;margin:9px 0 4px;padding-left:8px;line-height:1.45;word-break:keep-all}
+.bxp-table{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px;margin-top:6px}
+.bxp-col{min-width:0}
+.bxp-row{display:grid;grid-template-columns:104px minmax(0,1fr);gap:8px;padding:6px 0;border-bottom:1px solid #21262d;align-items:baseline}
+.bxp-k{font-size:10px;color:#8b949e;line-height:1.4}
+.bxp-v{font-size:12px;color:#e6edf3;font-weight:700;overflow-wrap:anywhere;line-height:1.4}
+.bxp-sub{display:block;font-size:9.5px;color:#8b949e;font-weight:400;margin-top:2px;line-height:1.45;word-break:keep-all}
+.bxp-na{color:#8b949e;font-weight:600}
+.bxp-checks{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.bxp-check{font-size:10px;font-weight:700;border-radius:6px;padding:4px 8px;border:1px solid #30363d;background:#161b22;color:#cdd9e5}
+.bxp-check.ok{border-color:#3fb95066;color:#3fb950}
+.bxp-check.no{border-color:#f0883e66;color:#f0883e}
+.bxp-check small{color:#8b949e;font-weight:400;margin-left:5px}
+.bxp-qa-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+.bxp-qa{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:9px 10px;min-width:0}
+.bxp-q{font-size:11px;font-weight:800;color:#e6edf3;margin-bottom:4px}
+.bxp-a{font-size:11px;color:#cdd9e5;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
+.bxp-warn{font-size:10px;color:#d29922;margin-top:8px;line-height:1.55}
+.bxp-details{margin-top:10px;border-top:1px solid #21262d;padding-top:8px}
+.bxp-details summary{cursor:pointer;font-size:11px;color:#58a6ff;font-weight:700}
+.bxp-details ul{font-size:10px;color:#8b949e;line-height:1.55;margin:6px 0;padding-left:16px}
+.bxp-note,.bxp-alt{font-size:10px;color:#8b949e;line-height:1.55;margin:6px 0}
+.bxp-alt b,.bxp-note b{color:#cdd9e5}
+.bxp-boxes{width:100%;border-collapse:collapse;font-size:10px;margin:6px 0}
+.bxp-boxes th,.bxp-boxes td{padding:3px 5px;border-bottom:1px solid #21262d;text-align:left;color:#cdd9e5;white-space:nowrap}
+.bxp-boxes th{color:#6e7681;font-weight:600}
+.box-tactics-embedded{margin:8px 0 0;background:#0d111799}
+@media(max-width:900px){.bxp-table{grid-template-columns:1fr}.bxp-qa-grid{grid-template-columns:1fr}}
+@media(max-width:480px){.bxp-row{grid-template-columns:88px minmax(0,1fr)}.bxp-boxes{display:block;overflow-x:auto}.bxp-headline{font-size:13px}}
 @media(max-width:480px){
   .box-tactics{padding:10px 10px}
   .box-tactics-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -26278,6 +26311,108 @@ function renderForecast(d, isKrx) {
 }
 
 function renderBoxExecutionPlan(d, isKrx) {
+  const ep = d.box_range && d.box_range.execution_plan;
+  if (ep && ep.verdict) return renderBoxDecisionPlan(d, ep, isKrx);
+  return renderBoxTacticsLegacy(d, isKrx, false);
+}
+
+// 🧭 박스 실행 플랜 — 결론(판단·가격·대기·손절·취소)을 먼저, 근거는 접어서 보여준다.
+// 데이터: box_range.execution_plan (market_briefing/box_plan.py, 영상 NOIOQP-7PPM 박스 계단 규칙)
+function renderBoxDecisionPlan(d, ep, isKrx) {
+  const esc = v => _escPrediction(v == null ? '' : String(v));
+  const v = ep.verdict || {};
+  const st = ep.stage || {};
+  const sg = ep.strategy || {};
+  const q = ep.quote || {};
+  const bx = ep.box || null;
+  const pr = ep.prices || {};
+  const tm = ep.timing || {};
+  const tone = ({ buy: '#3fb950', conditional: '#d29922', watch: '#f0883e', exclude: '#f85149' })[v.key] || '#8b949e';
+  const signed = x => _isFiniteNumber(x) ? `${Number(x) > 0 ? '+' : ''}${Number(x).toFixed(2)}%` : '—';
+  const px = x => _isFiniteNumber(x) ? fmt(x, isKrx) : '—';
+  const vsQuote = p => (_isFiniteNumber(p) && _isFiniteNumber(q.price) && Number(q.price) > 0) ? (Number(p) / Number(q.price) - 1) * 100 : null;
+  const row = (k, val, sub) => `<div class="bxp-row"><span class="bxp-k">${k}</span><span class="bxp-v">${val}${sub ? `<span class="bxp-sub">${sub}</span>` : ''}</span></div>`;
+  const left = [];
+  const right = [];
+  if (_isFiniteNumber(q.price)) {
+    left.push(row('현재가', `<b>${px(q.price)}</b>`, `${q.source === 'realtime' ? '실시간 시세' : '마지막 종가'} · 박스는 ${esc(q.last_date || '-')} 완료 일봉 기준`));
+  }
+  if (bx) {
+    left.push(row('박스 하단', px(bx.bottom), `중간 ${px(bx.mid)} · 하단 접촉 ${esc(bx.bottom_touches ?? '-')}회`));
+    left.push(row('박스 상단', px(bx.top), `높이 ${esc(bx.height_pct ?? '-')}% (${esc(bx.height_atr ?? '-')} ATR) · ${esc(bx.start_date || '-')}부터 ${esc(bx.bars ?? '-')}봉 · 상단 접촉 ${esc(bx.top_touches ?? '-')}회`));
+    left.push(row('현재 위치', esc(bx.position_label || '-'), esc((ep.staircase || {}).label || '')));
+  }
+  const entry = pr.entry || null;
+  left.push(row(esc((entry && entry.label) || '1차 매수 후보'),
+    entry ? `<b style="color:${tone}">${fmtRange(entry.low, entry.high, isKrx)}</b>` : `<span class="bxp-na">${esc(pr.entry_unavailable || '산출 불가 — 조건 미충족')}</span>`,
+    entry ? `현재가 대비 ${signed(vsQuote(entry.high))} · ${esc(entry.basis || '')}` : ''));
+  if (pr.add && pr.add.condition) {
+    left.push(row('추가 매수', (pr.add.low != null && pr.add.high != null) ? fmtRange(pr.add.low, pr.add.high, isKrx) : '<span class="bxp-na">새 박스 확정 후 산출</span>', esc(pr.add.condition)));
+  }
+  if (pr.trigger && _isFiniteNumber(pr.trigger.price)) {
+    left.push(row(esc(pr.trigger.label || '돌파 확인 가격'), px(pr.trigger.price), `현재가 대비 ${signed(vsQuote(pr.trigger.price))} · ${esc(pr.trigger.condition || '')}`));
+  }
+  const signal = (ep.conditions || []).find(c => c.key === 'signal') || {};
+  right.push(row('매수 조건', esc(tm.confirm_rule || signal.detail || '-'), esc(signal.detail || '')));
+  right.push(row('대기 기준', esc(st.label || '-'), tm.review ? `확인 봉 ${esc(tm.confirm_bars ?? '-')}개 · ${esc(tm.review)}` : ''));
+  const touch = tm.touch || null;
+  const waitText = touch && touch.p_horizon
+    ? `5거래일 내 약 ${esc((touch.p5 || {}).mid ?? '-')}% · ${esc(touch.horizon_days)}거래일 내 약 ${esc(touch.p_horizon.mid)}%` + (Array.isArray(touch.days_if_reached) ? ` · 닿으면 ${esc(touch.days_if_reached[0])}~${esc(touch.days_if_reached[1])}거래일째` : '')
+    : (tm.immediate ? '대기 없음' : '가격 도달 시점 예측 불가');
+  right.push(row('예상 대기 기간', esc(waitText), touch ? `기준가 ${px(touch.level)} · 무추세 변동성 추정(방향 예측 아님)` : esc(tm.estimate_label || '')));
+  if (pr.stop && _isFiniteNumber(pr.stop.price)) {
+    const stopVsQuote = _isFiniteNumber(pr.stop.pct_from_quote) && Number(pr.stop.pct_from_quote) < 0 ? ` · 현재가 대비 ${signed(pr.stop.pct_from_quote)}` : '';
+    right.push(row('손절 기준', `<b style="color:#f85149">${px(pr.stop.price)}</b>`, `${pr.entry ? '진입 기준 ' + signed(pr.stop.pct_from_entry) : '보유 중일 때'}${stopVsQuote} · ${esc(pr.stop.basis || '')}`));
+  }
+  (pr.targets || []).forEach(t => {
+    right.push(row(esc(t.label || '목표'), `<b style="color:#3fb950">${px(t.price)}</b>`, `진입 기준 ${signed(t.pct_from_entry)}${_isFiniteNumber(t.rr) ? ` · ${esc(t.rr)}R` : ''} · ${esc(t.basis || '')}`));
+  });
+  if (_isFiniteNumber(pr.rr)) {
+    right.push(row('예상 손익비', `<b>${esc(pr.rr)} : 1</b>`, `진입 기준가 ${px(pr.entry_ref)}${_isFiniteNumber(pr.rr_t1) ? ` · 1차 목표 ${esc(pr.rr_t1)}R` : ''} · 수수료·세금 미반영`));
+  }
+  const inval = ep.invalidation || [];
+  right.push(row('매수 취소 조건', esc(inval[0] || '-'), inval.slice(1).map(esc).join(' · ')));
+  const checks = (ep.conditions || []).map(c => {
+    const cls = c.ok === true ? 'ok' : c.ok === false ? 'no' : 'na';
+    const mark = c.ok === true ? '✓' : c.ok === false ? '✗' : '–';
+    return `<span class="bxp-check ${cls}">${mark} ${esc(c.label)}<small>${esc(c.detail || '')}</small></span>`;
+  }).join('');
+  const warnings = (ep.warnings || []).map(w => `<div>⚠ ${esc(w)}</div>`).join('');
+  const qa = [['💡 지금 무엇을 해야 하나?', ep.action], ['⏳ 언제 매수할 수 있나?', ep.when], ['⚠️ 언제 계획을 취소하나?', ep.cancel]]
+    .filter(x => x[1]).map(x => `<div class="bxp-qa"><div class="bxp-q">${x[0]}</div><div class="bxp-a">${esc(x[1])}</div></div>`).join('');
+  const seq = (d.box_range && d.box_range.box_sequence) || {};
+  const relName = { up: '위로(상승)', down: '아래로(하락)', sideways: '겹침(횡보)', first: '시작' };
+  const boxRows = (seq.boxes || []).slice(-5).map(b => `<tr><td>${esc(b.start_date || '-')} ~ ${esc(b.exit_date || b.end_date || '진행 중')}</td><td>${fmtRange(b.bottom, b.top, isKrx)}</td><td>${esc(relName[b.relation] || b.relation || '-')}</td><td>${b.exit === 'up' ? '상단 돌파' : b.exit === 'down' ? '하단 이탈' : '진행 중'}</td></tr>`).join('');
+  const alt = ep.alternative || null;
+  const altHtml = alt ? `<div class="bxp-alt"><b>대안 — ${esc(alt.label || '')}</b>: ${esc(alt.note || '')}${alt.stop && _isFiniteNumber(alt.stop.price) ? ` · 손절 ${px(alt.stop.price)}` : ''}${(alt.targets || []).length ? ` · 목표 ${(alt.targets || []).map(t => px(t.price)).join(' → ')}` : ''}${_isFiniteNumber(alt.rr) ? ` · 손익비 ${esc(alt.rr)}:1` : ''}</div>` : '';
+  const big = ep.big_box || {};
+  const src = (ep.sources || {}).video || {};
+  const legacy = renderBoxTacticsLegacy(d, isKrx, true);
+  return `<div class="box-tactics bxp" style="border-color:${tone}66">
+    <div class="bxp-head">
+      <div class="box-tactics-title">🧭 박스 실행 플랜</div>
+      <span class="bxp-verdict" style="color:${tone};background:${tone}1a;border-color:${tone}66">${esc(v.icon || '')} ${esc(v.label || '산출 불가')}</span>
+      ${st.label ? `<span class="bxp-chip">${esc(st.label)}</span>` : ''}
+      ${sg.key && sg.key !== 'none' ? `<span class="bxp-chip">${esc(sg.label)}</span>` : ''}
+    </div>
+    <div class="bxp-headline" style="border-left:3px solid ${tone}">${esc(v.headline || '')}</div>
+    <div class="bxp-table"><div class="bxp-col">${left.join('')}</div><div class="bxp-col">${right.join('')}</div></div>
+    ${checks ? `<div class="bxp-checks">${checks}</div>` : ''}
+    <div class="bxp-qa-grid">${qa}</div>
+    ${warnings ? `<div class="bxp-warn">${warnings}</div>` : ''}
+    <details class="bxp-details"><summary>계산 근거·세부 분석 보기</summary>
+      ${(ep.evidence || []).length ? `<ul>${(ep.evidence || []).map(e => `<li>${esc(e)}</li>`).join('')}</ul>` : ''}
+      ${big.label ? `<div class="bxp-note">${esc(big.label)}${big.note ? ' — ' + esc(big.note) : ''}</div>` : ''}
+      ${altHtml}
+      ${boxRows ? `<table class="bxp-boxes"><thead><tr><th>박스 기간</th><th>하단~상단</th><th>직전 대비</th><th>결과</th></tr></thead><tbody>${boxRows}</tbody></table>` : ''}
+      <div class="bxp-note"><b>영상에서 확인한 원칙</b> (${esc(src.reviewed_on || '')} · ${esc(src.method || '')})<ul>${(src.stated || []).map(s => `<li>${esc(s)}</li>`).join('')}</ul>영상에 없는 것: ${esc((src.not_stated || []).join(' · '))}<br>보완 규칙: ${esc(((ep.sources || {}).supplements || []).join(' / '))}</div>
+      ${legacy}
+    </details>
+    <div class="box-tactics-foot">일봉 규칙 기반 판단이며 수익·도달을 보장하지 않습니다. 가격은 호가 단위로 맞춘 값이고 손익비는 수수료·세금 전입니다. 매 거래일 종가 마감 후 다시 계산됩니다.</div>
+  </div>`;
+}
+
+function renderBoxTacticsLegacy(d, isKrx, embedded) {
   const bt = (d.box_range && d.box_range.tactics) || null;
   if (!bt || !bt.regime) return '';
   const rg = bt.regime || {};
@@ -26347,9 +26482,10 @@ function renderBoxExecutionPlan(d, isKrx) {
   const flowText = flow.available
     ? `수급 보조: ${flow.label || ''} (외국인 ${flow.foreign > 0 ? '+' : ''}${flow.foreign || 0} · 기관 ${flow.institution > 0 ? '+' : ''}${flow.institution || 0})`
     : '';
-  return `<div class="box-tactics" style="border-color:${tone}55">
+  const legacyTitle = embedded ? '📎 참고: 중간선 자석·압력·속도 규칙(영상 OlMBqW3FBes · 2026-10-25 감사에서 우위 미확인)' : '🧭 박스 실행 플랜';
+  return `<div class="box-tactics${embedded ? ' box-tactics-embedded' : ''}" style="border-color:${tone}55">
     <div class="box-tactics-head">
-      <div class="box-tactics-title">🧭 박스 실행 플랜 <span class="box-tactics-badge" style="color:${tone};background:${tone}1a;border:1px solid ${tone}55">${_escPrediction(executionReady ? (rg.label || '조건 충족') : '진입 대기')}</span></div>
+      <div class="box-tactics-title">${legacyTitle} <span class="box-tactics-badge" style="color:${tone};background:${tone}1a;border:1px solid ${tone}55">${_escPrediction(executionReady ? (rg.label || '조건 충족') : '진입 대기')}</span></div>
       <div style="font-size:10px;color:#8b949e">중간선 자석 · 압력 · 속도</div>
       <div class="box-tactics-summary">${_escPrediction(bt.summary || '')}</div>
     </div>
