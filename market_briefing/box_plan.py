@@ -219,12 +219,25 @@ def _skeleton():
     }
 
 
-def _unavailable(out, reason, need):
+def _unavailable(out, reason, need, review="데이터가 바뀌면 다음 조회 때 다시 계산합니다"):
+    """Data-side failure only: ``reason`` says what is wrong, ``need`` what to check or wait for.
+
+    Every market-side state (box broken, no box yet, failed breakout) has its own price path and
+    never ends here; if it does, that is a bug the six-question audit reports.
+    """
     out["verdict"] = _verdict("unavailable", reason)
     out["stage"] = _stage("no_data")
-    out["action"] = f"{reason}. 매수 가격을 계산하지 않습니다."
+    out["action"] = f"{reason}. 이 상태에서는 가격을 만들면 근거 없는 숫자가 되므로 계산하지 않습니다."
     out["when"] = need
-    out["cancel"] = "계획이 없으므로 취소 조건도 없습니다."
+    out["cancel"] = "아직 세운 매수 계획이 없어 취소할 계획도 없습니다. 데이터가 복구되면 새로 계산합니다."
+    out["prices"] = {"entry": None, "trigger": None, "add": None, "stop": None, "targets": [], "rr": None,
+                     "rr_t1": None, "entry_ref": None, "overhead": None, "holder_stop": None,
+                     "entry_unavailable": reason + " — " + need}
+    out["conditions"] = _conditions(None, None, None, "데이터 문제로 판단 불가", "데이터 문제로 판단 불가", "데이터 문제로 판단 불가")
+    out["timing"] = {"immediate": False, "confirm_bars": None, "confirm_rule": need, "touch": None,
+                     "estimate_label": "데이터 문제가 풀리기 전에는 시점을 말할 수 없습니다. 확인: " + need,
+                     "review": review, "expiry_bars": None}
+    out["invalidation"] = ["세운 계획이 없음 — 데이터 복구 후 새로 계산"]
     return out
 
 
@@ -327,6 +340,89 @@ def _breakout_geometry(box, atr, market, quote, p, boxes):
     }
 
 
+def _conditional(geometry, kind, label, condition):
+    """Mark a geometry's buy zone as a *candidate*: shown with prices, but not buyable yet."""
+    if not geometry:
+        return None
+    out = dict(geometry)
+    # ``below_zone_pct`` (live quote already under a zone built from completed bars = a new low is in
+    # progress) is reported once, as a plan warning, by the callers — not repeated in the condition.
+    out["entry"] = {**geometry["entry"], "kind": kind, "conditional": True, "label": label, "condition": condition}
+    return out
+
+
+def _reclaim_geometry(box, atr, market, quote, p):
+    """Failed-breakdown reclaim: the broken bottom must turn back into support.
+
+    Mirror of the breakout retest: confirm closes above the old bottom, then buy the pull-back to
+    ``bottom .. bottom + 0.5 ATR``. Stop = bottom - 0.6 ATR (reclaim fails), targets = old box
+    mid and top. Weak evidence (Bulkowski: about 59 % of pull-backs to a broken level fall again),
+    so it is only ever shown as a conditional alternative.
+    """
+    top, bottom = box["top"], box["bottom"]
+    trigger = round_tick(bottom + p["break_tol_atr"] * atr, market, "ceil")
+    zone = _zone(bottom, bottom + p["retest_zone_atr"] * atr, market)
+    stop = round_tick(bottom - p["breakout_stop_atr"] * atr, market, "floor")
+    if trigger is None or zone is None or stop is None or stop >= zone[0]:
+        return None
+    entry_ref = (zone[0] + zone[1]) / 2
+    targets = _targets(entry_ref, stop, [
+        ((top + bottom) / 2, "1차 목표 · 이전 박스 중간", "이탈 전 박스의 중간값(되돌림 1차 매물)"),
+        (top, "2차 목표 · 이전 박스 상단", "이탈 전 박스 상단(전체 복귀)"),
+    ], market, quote)
+    if not targets:
+        return None
+    final = targets[-1]
+    return {
+        "key": "reclaim",
+        "trigger": {"price": trigger, "pct_from_quote": _pct(trigger, quote), "label": "이탈 실패 확인가",
+                    "condition": f"일봉 종가 {_fmt(trigger, market)} 이상 {p['confirm_closes']}회 = 이탈 실패(되돌림) 확인"},
+        "entry": {"low": zone[0], "high": zone[1], "ref": round_tick(entry_ref, market, "nearest"),
+                  "basis": f"이탈한 하단 {_fmt(bottom, market)} ~ 하단+0.5 ATR (지지 회복 재확인 자리)"},
+        "stop": {"price": stop, "pct_from_entry": _pct(stop, entry_ref), "pct_from_quote": _pct(stop, quote),
+                 "basis": "이탈한 하단 − 0.6 ATR (회복 실패)"},
+        "targets": targets, "risk": entry_ref - stop, "rr": final["rr"], "rr_t1": targets[0]["rr"],
+        "entry_ref": entry_ref,
+    }
+
+
+def _forming_geometry(forming, atr, market, quote, p):
+    """Provisional support-style plan on the box that is forming right now (not confirmed yet).
+
+    Same rules as a confirmed box (zone = bottom .. bottom + min(25 % of height, 0.5 ATR), stop =
+    bottom - 0.35 ATR, targets = middle and top); the prices move whenever a new low or high prints,
+    which the card says explicitly.
+    """
+    if not forming:
+        return None
+    top, bottom = _finite(forming.get("top")), _finite(forming.get("bottom"))
+    if top is None or bottom is None or bottom <= 0 or top <= bottom:
+        return None
+    geometry = _support_geometry({"top": top, "bottom": bottom}, atr, market, quote, p)
+    if geometry is None:
+        return None
+    geometry["height_atr"] = round((top - bottom) / atr, 2)
+    geometry["bars_to_confirm"] = _bars_to_confirm(forming)
+    low = geometry["entry"]["low"]
+    geometry["below_zone_pct"] = round((low / quote - 1) * 100, 1) if quote and quote < low * 0.995 else None
+    trigger = round_tick(top + p["break_tol_atr"] * atr, market, "ceil")
+    geometry["trigger"] = {"price": trigger, "pct_from_quote": _pct(trigger, quote), "label": "돌파 확인가(잠정)",
+                           "condition": f"새 박스 상단 {_fmt(top, market)} 위 종가 {p['confirm_closes']}회"}
+    return geometry
+
+
+def _bars_to_confirm(forming):
+    """Fewest additional completed bars before the forming range can be a Darvas box."""
+    if not forming:
+        return None
+    top_age = forming.get("top_age")
+    bottom_age = forming.get("bottom_age")
+    bars = forming.get("bars")
+    if None in (top_age, bottom_age, bars):
+        return None
+    return int(max(0, 3 - top_age, 3 - bottom_age, 5 - bars))
+
+
 def _fmt(value, market):
     value = _finite(value)
     if value is None:
@@ -400,14 +496,54 @@ def _touch_text(touch):
         return "가격 도달 시점은 현재 데이터로 추정할 수 없습니다."
     p5, ph = touch.get("p5") or {}, touch["p_horizon"]
     days = touch.get("days_if_reached")
-    text = (f"변동성만으로 보면 5거래일 안에 닿을 가능성 약 {p5.get('mid', 0)}%, "
-            f"{touch['horizon_days']}거래일 안 약 {ph.get('mid', 0)}%({ph.get('low', 0)}~{ph.get('high', 0)}%)")
-    if days:
-        text += f", 닿는다면 대략 {days[0]}~{days[1]}거래일째"
+
+    def share(value):
+        return "95% 넘게" if value >= 95 else f"약 {value}%"
+
+    if p5.get("mid", 0) >= 90:
+        text = (f"현재가가 그 가격에 매우 가까워 변동성만으로 보면 5거래일 안에 닿을 가능성이 {share(p5.get('mid', 0))}입니다")
+    else:
+        text = (f"변동성만으로 보면 5거래일 안에 닿을 가능성 {share(p5.get('mid', 0))}, "
+                f"{touch['horizon_days']}거래일 안 {share(ph.get('mid', 0))}({ph.get('low', 0)}~{ph.get('high', 0)}%)")
+        if days:
+            text += (f", 닿는다면 대략 {days[0]}거래일째" if days[0] == days[1] else f", 닿는다면 대략 {days[0]}~{days[1]}거래일째")
     return text + ". 방향을 예측한 값이 아니므로 날짜를 정해 매수하지 말고 가격·신호를 확인하세요."
 
 
 # ── main entry ─────────────────────────────────────────────────────────────────
+
+def six_questions(plan):
+    """Which of the six decision questions a plan answers (used by tests and the audit).
+
+    q1 buy now? · q2 which price? · q3 what price/signal to wait for? · q4 how long, or what to
+    check? · q5 stop and profit targets? · q6 when to cancel? A data-side ``unavailable`` plan is
+    complete only if it names the reason and what to check; it never carries stop/targets.
+    """
+    p = plan or {}
+    verdict = p.get("verdict") or {}
+    prices = p.get("prices") or {}
+    entry = prices.get("entry") or {}
+    stop = prices.get("stop") or {}
+    targets = prices.get("targets") or []
+    timing = p.get("timing") or {}
+    data_side = verdict.get("key") == "unavailable"
+
+    def num(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    answers = {
+        "q1_buy_now": bool(verdict.get("key") and verdict.get("headline")),
+        "q2_price": (num(entry.get("low")) and num(entry.get("high"))) or (data_side and bool(prices.get("entry_unavailable"))),
+        "q3_wait_for": bool(p.get("when")) and (num((prices.get("trigger") or {}).get("price"))
+                                                or num(entry.get("low")) or bool(timing.get("confirm_rule"))),
+        "q4_how_long": bool(timing.get("estimate_label")) and (
+            timing.get("touch") is not None or timing.get("confirm_bars") is not None
+            or timing.get("immediate") is True or data_side),
+        "q5_stop_target": (num(stop.get("price")) and any(num(t.get("price")) for t in targets)) or data_side,
+        "q6_cancel": bool(p.get("cancel")) and bool(p.get("invalidation")),
+    }
+    return {"answers": answers, "all": all(answers.values()), "data_side_unavailable": data_side}
+
 
 def build_execution_plan(seq, *, current=None, market="KRX", trend=None, risk=None,
                          now=None, params=None):
@@ -428,7 +564,18 @@ def _build(out, seq, current, market, trend, risk, now, p):
     status = seq.get("status")
     if status in (None, "insufficient_data", "invalid_data"):
         reason = (seq.get("warnings") or ["완료 일봉 부족"])[0]
-        return _unavailable(out, reason, "일봉이 더 쌓이거나 데이터가 복구되면 다시 계산합니다.")
+        have, need_bars = seq.get("bars_available"), seq.get("bars_required")
+        if status == "insufficient_data" and have is not None and need_bars:
+            jump = seq.get("restart_after_jump")
+            reason = (f"{jump.get('date') or '최근'} 하루 {jump.get('change_pct')}% 급변 이후 일봉이 {have}개뿐" if jump
+                      else f"일봉이 {have}개뿐")
+            reason += f"(박스 계산에 최소 {need_bars}개 필요)"
+            return _unavailable(
+                out, reason,
+                f"약 {max(1, need_bars - have)}거래일 뒤 일봉이 쌓이면 계산합니다. "
+                + ("급변 전 가격과 이어 붙이지 않고 새로 시작하기 때문입니다." if jump else "상장 직후·거래 재개 직후 종목은 박스가 아직 형성되지 않았습니다."),
+                review=f"일봉 {max(1, need_bars - have)}개가 더 쌓이면 자동으로 계산")
+        return _unavailable(out, reason, "원본 시세(일봉)의 해당 날짜 고가·저가·종가를 확인하고 데이터가 고쳐지면 다시 조회하세요.")
     last_close = _finite(seq.get("last_close"))
     last_date = seq.get("last_date")
     atr = _finite(seq.get("atr"))
@@ -453,22 +600,8 @@ def _build(out, seq, current, market, trend, risk, now, p):
     reference = seq.get("reference")
     boxes = seq.get("boxes") or []
     if status == "no_box" or not reference:
-        out["verdict"] = _verdict("watch", "확정된 박스 없음")
-        out["stage"] = _stage("not_met")
-        forming = seq.get("forming") or {}
-        f_low, f_high = _finite(forming.get("bottom")), _finite(forming.get("top"))
-        out["action"] = "아직 박스가 확정되지 않아 박스 매매 가격을 만들지 않습니다. 관찰만 하세요."
-        out["when"] = ("고점과 저점이 각각 3개 봉 이상 유지되어 박스가 확정되면 그때 매수 후보를 계산합니다."
-                       + (f" 지금 형성 중인 범위: {_fmt(f_low, market)} ~ {_fmt(f_high, market)}" if f_low and f_high else ""))
-        out["cancel"] = "계획이 없으므로 취소 조건도 없습니다."
-        out["evidence"].append("Darvas 3봉 규칙으로 확정된 박스가 최근 160봉 안에 없음")
-        return out
-    for jump in seq.get("price_jumps") or []:
-        if jump.get("index") is not None and reference.get("start_index") is not None \
-                and jump["index"] >= reference["start_index"]:
-            return _unavailable(out, f"박스 구간 안에 하루 {jump['change_pct']}% 종가 급변({jump.get('date')})",
-                                "수정주가·분할 반영을 확인한 뒤 다시 계산합니다.")
-    out["warnings"].extend(seq.get("warnings") or [])
+        return _no_box_plan(out, seq, quote, market, p, atr)
+    out["warnings"].extend(w for w in (seq.get("warnings") or []) if w not in out["warnings"])
 
     top, bottom = float(reference["top"]), float(reference["bottom"])
     height = top - bottom
@@ -510,7 +643,7 @@ def _build(out, seq, current, market, trend, risk, now, p):
     out["evidence"].extend(_box_evidence(reference, seq, market, atr))
 
     if exit_dir == "down":
-        return _after_breakdown(out, seq, reference, support, quote, market, p)
+        return _after_breakdown(out, seq, reference, support, quote, market, p, atr)
     if exit_dir == "up":
         out = _after_breakout(out, seq, reference, breakout, support, quote, market, p, atr, risk)
     else:
@@ -579,21 +712,201 @@ def _conditions(price_ok, signal_ok, risk_ok, price_detail, signal_detail, risk_
     ]
 
 
-def _prices_block(geometry, add=None):
+def _prices_block(geometry, add=None, holder_stop=None):
     return {
         "entry": geometry.get("entry"),
         "trigger": geometry.get("trigger"),
         "add": add,
         "stop": geometry.get("stop"),
+        "holder_stop": holder_stop,
         "targets": geometry.get("targets") or [],
         "rr": geometry.get("rr"),
         "rr_t1": geometry.get("rr_t1"),
         "entry_ref": geometry.get("entry", {}).get("ref"),
         "overhead": geometry.get("overhead"),
+        "entry_unavailable": None,
     }
 
 
-def _after_breakdown(out, seq, reference, support, quote, market, p):
+def _alt_from(geometry, label, note):
+    """Compact alternative plan block for the details fold."""
+    if not geometry:
+        return None
+    return {"key": (geometry.get("entry") or {}).get("kind") or geometry.get("key"), "label": label,
+            "entry": geometry.get("entry"),
+            "trigger": geometry.get("trigger"), "stop": geometry.get("stop"),
+            "targets": geometry.get("targets") or [], "rr": geometry.get("rr"), "note": note}
+
+
+def _touch_to(quote, level, seq, atr, p):
+    """Touch-model estimate for a price above the quote, or None (level at/below the quote)."""
+    if level is None or quote is None or level <= quote:
+        return None
+    return _timing_touch(quote, level, seq.get("closes_for_sigma"), atr, p["horizon_days"])
+
+
+def _min_bars_text(n):
+    if n is None:
+        return "새 박스가 확정되는 데 필요한 봉 수는 계산할 수 없습니다"
+    if n <= 0:
+        return "새 박스 확정 조건(3봉 유지)에 거의 도달했습니다"
+    return f"새 박스는 최소 {n}거래일 뒤에 확정될 수 있습니다(그 사이 새 고점·새 저점이 나오지 않을 때)"
+
+
+def _box_stub(top, bottom, atr, quote, market, forming=None, label="박스 형성 중(미확정)"):
+    """`out['box']` for states that have no confirmed reference box."""
+    height = top - bottom
+    return {
+        "top": round_tick(top, market, "nearest"), "bottom": round_tick(bottom, market, "nearest"),
+        "mid": round_tick((top + bottom) / 2, market, "nearest"), "height": height,
+        "height_pct": round(height / bottom * 100, 2) if bottom > 0 else None,
+        "height_atr": round(height / atr, 2), "atr": atr, "atr_pct": round(atr / quote * 100, 2),
+        "bars": (forming or {}).get("bars"), "start_date": (forming or {}).get("start_date"),
+        "top_touches": None, "bottom_touches": None, "relation": None, "exit": None,
+        "position_key": "forming", "position_label": label, "forming": True,
+        "timeframe": "일봉",
+    }
+
+
+def _no_box_plan(out, seq, quote, market, p, atr):
+    """No confirmed box yet: show the range that is forming and what must happen to confirm it."""
+    forming = seq.get("forming") or {}
+    out["warnings"].extend(w for w in (seq.get("warnings") or []) if w not in out["warnings"])
+    base = _forming_geometry(forming, atr, market, quote, p)
+    if base is None:
+        return _unavailable(out, "형성 중인 박스 범위를 계산할 수 없음",
+                            "최근 일봉의 고가·저가를 확인하고 다시 조회하세요.")
+    n = base["bars_to_confirm"]
+    f_top, f_bottom = float(forming["top"]), float(forming["bottom"])
+    zone = base["entry"]
+    narrow = base["height_atr"] < p["min_height_atr"]
+    condition = (f"새 고점·새 저점 없이 {n}거래일 유지 → 박스 확정"
+                 + (" · 형성 폭 2.5 ATR 미만이면 매수 대상 아님" if narrow else "") + " · 확정 전 매수 안 함")
+    geometry = _conditional(base, "forming_box", "재진입 후보(조건부) · 형성 중 박스 하단", condition)
+    out["available"] = True
+    out["box"] = _box_stub(f_top, f_bottom, atr, quote, market, forming)
+    out["big_box"] = None
+    out["strategy"] = {"key": "support", "label": "박스 확정 후 하단 지지 매수"}
+    out["verdict"] = _verdict("watch", "박스 미확정 · 형성 중")
+    out["stage"] = _stage("not_met")
+    touch = _timing_touch(quote, zone["high"], seq.get("closes_for_sigma"), atr, p["horizon_days"]) if quote > zone["high"] else None
+    out["action"] = (f"최근 160봉 안에 3봉 규칙(고점·저점이 3봉 이상 유지)을 채운 박스가 없어 지금은 사지 않습니다. "
+                     f"형성 중인 범위 {_fmt(f_bottom, market)}~{_fmt(f_top, market)} 기준으로 박스가 확정되면 "
+                     f"{_fmt(zone['low'], market)}~{_fmt(zone['high'], market)}이 1차 매수 후보입니다.")
+    out["when"] = (_min_bars_text(n) + ". 확정 뒤 가격이 후보 구간까지 내려왔다가 일봉 종가가 하단 위·전일보다 높게 끝나면 매수 조건 충족. "
+                   + (_touch_text(touch) if touch else "현재가가 이미 후보 구간 안·아래라 도달 시점 대신 새 저점 여부를 확인합니다."))
+    out["cancel"] = (f"형성 중 범위를 종가 기준으로 벗어나면(상단 {_fmt(f_top, market)} 위 또는 하단 {_fmt(f_bottom, market)} 아래) "
+                     "이 후보 가격은 폐기하고 박스를 다시 산출합니다. 박스가 확정된 뒤에는 하단 −0.1 ATR 아래 종가에서 계획을 취소하고, "
+                     f"보유 중이면 {_fmt(base['stop']['price'], market)} 아래 종가에서 손절합니다.")
+    out["prices"] = _prices_block(geometry)
+    if geometry.get("below_zone_pct"):
+        out["warnings"].append(
+            f"현재가 {_fmt(quote, market)}가 형성 중 박스 후보 구간 하단보다 {geometry['below_zone_pct']:.1f}% 아래 — "
+            "새 저점이 진행 중이라 후보 가격은 아래로 다시 계산됩니다")
+    out["conditions"] = _conditions(
+        zone["low"] <= quote <= zone["high"], False, (base.get("rr") or 0) >= p["min_reward_risk"] and not narrow,
+        f"후보 구간까지 {_dist(zone['high'], quote)}", f"박스 미확정(최소 {n}거래일 필요)",
+        ("형성 중 폭 2.5 ATR 미만 · " if narrow else "") + f"후보 손익비 {base.get('rr')}:1")
+    out["timing"] = {"immediate": False, "confirm_bars": n, "confirm_rule": f"새 고점·새 저점 없이 {n}봉 유지",
+                     "touch": touch, "note": _min_bars_text(n),
+                     "estimate_label": _min_bars_text(n) + ("." + _touch_text(touch) if touch else "."),
+                     "review": "매 거래일 종가 마감 후 재계산", "expiry_bars": p["horizon_days"]}
+    out["invalidation"] = ["형성 중 범위를 종가로 벗어나면 후보 가격 폐기",
+                           "새 저점·새 고점이 나오면 후보 가격을 새 기준으로 다시 계산",
+                           f"{p['horizon_days']}거래일 안에 박스가 확정되지 않으면 재산출"]
+    out["evidence"].append("Darvas 3봉 규칙으로 확정된 박스가 아직 없음 — 가격은 형성 중인 범위 기준 잠정값")
+    return out
+
+
+def _failure_candidates(seq, reference, quote, market, p, atr):
+    """Re-entry prices after the box failed (broke down, or the breakout failed below the bottom).
+
+    Primary candidate follows the video: wait for a *new* box that stops falling. The failed
+    breakdown reclaim is the alternative (Bulkowski: after a downward break about 58 % of patterns
+    pull back to the break level within 30 days, and about 59 % of those fall again).
+    Returns ``(primary, alternative, base, reclaim)``.
+    """
+    top, bottom = float(reference["top"]), float(reference["bottom"])
+    last_close = float(seq["last_close"])
+    forming = seq.get("forming") or {}
+    base_raw = _forming_geometry(forming, atr, market, quote, p)
+    n = base_raw["bars_to_confirm"] if base_raw else None
+    narrow = bool(base_raw) and base_raw["height_atr"] < p["min_height_atr"]
+    base = _conditional(
+        base_raw, "new_base", "재진입 후보(조건부) · 새 바닥 박스 하단",
+        (f"새 저점·새 고점 없이 {n}거래일 유지 → 박스 확정" if n is not None else "새 박스 확정 필요")
+        + (" · 형성 폭 2.5 ATR 미만이면 매수 대상 아님" if narrow else "")
+        + " · 새 저점이 나오면 가격 갱신")
+    reclaim_raw = _reclaim_geometry({"top": top, "bottom": bottom}, atr, market, quote, p)
+    reclaim = _conditional(
+        reclaim_raw, "reclaim", "이탈 실패 확인 후 재진입 후보(조건부)",
+        (f"종가 {_fmt(reclaim_raw['trigger']['price'], market)} 이상 {p['confirm_closes']}회 후 "
+         f"{_fmt(reclaim_raw['entry']['low'], market)}~{_fmt(reclaim_raw['entry']['high'], market)}까지 눌렸다가 하단 위 마감")
+        if reclaim_raw else "")
+    back_inside = last_close >= bottom or quote >= bottom
+    if back_inside and reclaim:
+        primary, alternative = reclaim, base
+    else:
+        primary, alternative = (base or reclaim), (reclaim if base else None)
+    return primary, alternative, base, reclaim
+
+
+_KIND_WHEN = {"new_base": "새 바닥 박스가 확정되면", "reclaim": "이탈 실패(되돌림)가 확인되면",
+              "forming_box": "박스가 확정되면", "range_support": "하단 지지가 재확인되면",
+              "new_box_above": "위쪽 새 박스가 확정되면"}
+
+
+def _price_summary(geometry, market):
+    """'새 바닥 박스가 확정되면 X~Y(손절 S, 목표 T1 → T2, 손익비 R:1)' — shared by action texts."""
+    if not geometry:
+        return ""
+    entry = geometry["entry"]
+    targets = " → ".join(_fmt(t["price"], market) for t in geometry.get("targets") or [])
+    rr = geometry.get("rr")
+    weak = " — 손익비 1:1 미만이라 이 폭 그대로면 매수 대상 아님" if rr is not None and rr < 1 else ""
+    return (f"{_KIND_WHEN.get(entry.get('kind'), '조건이 충족되면')} {_fmt(entry['low'], market)}~{_fmt(entry['high'], market)}"
+            f"(손절 {_fmt(geometry['stop']['price'], market)}, 목표 {targets}, 손익비 {rr}:1{weak})")
+
+
+def _apply_failure_plan(out, seq, reference, support, quote, market, p, atr, last_close, bottom):
+    """Prices, timing and cancel/holder lines shared by every 'plan failed' state."""
+    primary, alternative, base, reclaim = _failure_candidates(seq, reference, quote, market, p, atr)
+    forming = seq.get("forming") or {}
+    n = _bars_to_confirm(forming)
+    if primary is None:
+        return None
+    trigger_price = (reclaim or {}).get("trigger", {}).get("price")
+    touch = _touch_to(quote, trigger_price, seq, atr, p) if reclaim else None
+    if primary.get("below_zone_pct"):
+        out["warnings"].append(
+            f"현재가 {_fmt(quote, market)}가 재진입 후보 구간 하단보다 {primary['below_zone_pct']:.1f}% 아래 — 새 저점이 진행 중이라 "
+            "후보 가격은 새 저점이 3봉 유지된 뒤 아래로 다시 계산됩니다")
+    out["prices"] = _prices_block(primary, holder_stop=support["stop"])
+    out["alternative"] = _alt_from(
+        alternative, (alternative or {}).get("entry", {}).get("label", ""),
+        (alternative or {}).get("entry", {}).get("condition", "")) if alternative else None
+    out["conditions"] = _conditions(
+        False, False, False, f"재진입 후보 구간 상단까지 {_dist(primary['entry']['high'], quote)}",
+        "새 박스 확정·이탈 실패 종가 확인 전", f"박스 이탈 상태 · 후보 손익비 {primary.get('rr')}:1(조건부)")
+    out["timing"] = {
+        "immediate": False, "confirm_bars": n,
+        "confirm_rule": f"새 저점·새 고점 없이 {n}봉 유지(새 박스 확정)" if n is not None else "새 박스 확정 필요",
+        "touch": touch, "note": _min_bars_text(n),
+        "estimate_label": (_min_bars_text(n) + "." + (" 이탈 실패 확인가 " + _fmt(trigger_price, market) + " 기준 " + _touch_text(touch) if touch else "")),
+        "review": "매 거래일 종가 마감 후 재계산", "expiry_bars": p["horizon_days"]}
+    out["invalidation"] = [
+        f"새 박스가 확정되기 전 새 저점이 나오면 후보 가격을 아래로 다시 계산",
+        (f"이탈 실패 시나리오는 종가가 {_fmt(reclaim['stop']['price'], market)} 아래로 다시 내려가면 폐기" if reclaim else "이탈 실패 시나리오 계산 불가"),
+        f"{p['horizon_days']}거래일 안에 새 박스가 확정되지 않으면 재산출"]
+    out["evidence"].append(
+        "하단 이탈 뒤 이탈선까지 되돌림은 Bulkowski 표본에서 약 58%가 30일 안에 나오지만 되돌린 뒤 약 59%는 다시 하락 — "
+        "그래서 이탈선 회복은 '대안'이고 영상의 '더 이상 빠지지 않는 새 박스'를 1순위 후보로 둠")
+    return {"primary": primary, "alternative": alternative, "base": base, "reclaim": reclaim,
+            "n": n, "touch": touch, "trigger_price": trigger_price}
+
+
+def _after_breakdown(out, seq, reference, support, quote, market, p, atr=None):
+    atr = atr or float(seq.get("atr") or 0)
     bottom = float(reference["bottom"])
     last_close = float(seq["last_close"])
     forming = seq.get("forming") or {}
@@ -601,49 +914,44 @@ def _after_breakdown(out, seq, reference, support, quote, market, p):
     recover = round_tick(bottom, market, "ceil")
     out["strategy"] = {"key": "none", "label": _STRATEGIES["none"]}
     out["box"]["position_key"] = "below" if last_close < bottom else out["box"]["position_key"]
+    plan = _apply_failure_plan(out, seq, reference, support, quote, market, p, atr, last_close, bottom)
+    if plan is None:
+        return _unavailable(out, "재진입 후보 가격을 호가 단위로 만들 수 없음", "최근 일봉의 고가·저가를 확인하고 다시 조회하세요.")
+    primary, base, reclaim = plan["primary"], plan["base"], plan["reclaim"]
+    again = _price_summary(primary, market)
+    other = _price_summary(plan["alternative"], market)
+    wait = _min_bars_text(plan["n"])
     if last_close < bottom <= quote:
         # The completed bar broke down but the live quote is back above the bottom. Only a
         # daily close can confirm the failed breakdown, so this stays a no-buy state.
         out["verdict"] = _verdict("watch", "하단 이탈 후 장중 회복 시도")
         out["stage"] = _stage("signal_wait")
         out["action"] = (f"직전 완료 일봉 종가는 박스 하단 {_fmt(bottom, market)} 아래(이탈)였지만 현재가 {_pj(quote, market, '은')} "
-                         "다시 그 위에 있습니다. 장중 회복은 아직 확인이 아니므로 매수하지 않습니다.")
-        out["when"] = (f"오늘 일봉 종가가 {_fmt(recover, market)} 이상으로 마감하고 {p['confirm_closes']}일 유지되면 이탈 실패(되돌림)로 보고 "
-                       "박스를 다시 산출해 매수 여부를 판단합니다.")
+                         "다시 그 위에 있습니다. 장중 회복은 아직 확인이 아니므로 지금은 사지 않습니다. "
+                         f"다시 산다면 {again}.")
+        out["when"] = (f"오늘 일봉 종가가 {_fmt(recover, market)} 이상으로 마감하고 {p['confirm_closes']}일 유지되면 이탈 실패(되돌림)로 봅니다. "
+                       f"그렇지 않으면 {wait}. " + (f"대안: {other}." if other else ""))
     elif last_close >= bottom:
         out["verdict"] = _verdict("watch", "하단 이탈 후 박스 안으로 복귀")
         out["stage"] = _stage("not_met")
-        out["action"] = (f"하단 {_fmt(bottom, market)} 이탈 뒤 종가가 다시 박스 안으로 돌아왔습니다. "
-                         "이탈 실패(되돌림)인지 새 하락 박스인지 확인될 때까지 매수하지 않습니다.")
-        out["when"] = (f"종가가 {_fmt(recover, market)} 위에서 {p['confirm_closes']}일 유지되고 새 저점이 3봉 이상 깨지지 않으면 "
-                       "박스를 다시 산출해 하단 지지 매수 여부를 판단합니다.")
+        out["action"] = (f"하단 {_fmt(bottom, market)} 이탈 뒤 종가가 다시 박스 안으로 돌아왔습니다. 이탈 실패(되돌림)인지 새 하락 박스인지 "
+                         f"확인될 때까지 사지 않습니다. 다시 산다면 {again}.")
+        out["when"] = (f"종가가 {_fmt(recover, market)} 위에서 {p['confirm_closes']}일 유지돼야 이탈 실패로 확인됩니다. "
+                       f"그렇지 않으면 {wait}. " + (f"대안: {other}." if other else ""))
     else:
         out["verdict"] = _verdict("exclude", "박스 하단 이탈" + (" · 상승 시도 실패" if failed_rise else ""))
         out["stage"] = _stage("cancelled")
         out["action"] = (f"종가가 박스 하단 {_fmt(bottom, market)} 아래로 이탈했습니다. "
                          + ("영상 기준으로 위로 올라가던 박스가 실패해 내려온 자리라 손절 구간입니다. "
                             if failed_rise else "하락 박스 계단이 이어질 수 있어 ")
-                         + "신규 매수는 하지 않습니다.")
-        f_low = _finite(forming.get("bottom"))
-        out["when"] = ("새 박스의 저점이 3봉 이상 깨지지 않고 고점도 3봉 확인되어 박스가 확정된 뒤, "
-                       "그 박스가 더 이상 빠지지 않는지(직전 박스보다 낮지 않은지) 보고 다시 계산합니다."
-                       + (f" 현재 형성 중 저점 {_fmt(f_low, market)}." if f_low else "")
-                       + f" 또는 종가가 이탈한 하단 {_fmt(recover, market)} 위로 회복하면 재평가합니다.")
+                         + f"신규 매수는 하지 않습니다. 다시 산다면 {again}.")
+        out["when"] = (f"{wait}. 새 박스는 직전 박스보다 낮아지지 않아야(더 이상 빠지지 않아야) 영상의 전환 자리입니다. "
+                       + (f"대안: {other}." if other else ""))
     out["cancel"] = ("이미 보유 중이라면 하단 −0.35 ATR "
-                     f"{_fmt(support['stop']['price'], market)} 아래 종가가 손절 기준입니다."
+                     f"{_fmt(support['stop']['price'], market)} 아래 종가가 손절 기준입니다. "
+                     "위 재진입 후보도 새 박스 확정 뒤 그 박스 하단(−0.1 ATR) 아래로 종가가 내려가면 취소합니다."
                      + (f" 오늘 종가가 다시 {_fmt(recover, market)} 아래로 끝나면 매수 제외가 유지됩니다."
                         if last_close < bottom <= quote else ""))
-    out["prices"] = {"entry": None, "trigger": {"price": recover, "pct_from_quote": _pct(recover, quote),
-                                               "label": "하단 회복 기준가",
-                                               "condition": f"종가 {_fmt(recover, market)} 이상 회복 = 이탈 실패 확인 시작"},
-                     "add": None, "stop": support["stop"], "targets": [], "rr": None, "rr_t1": None,
-                     "entry_ref": None, "overhead": None, "entry_unavailable": "조건 미충족 — 매수 가격 산출 안 함"}
-    out["conditions"] = _conditions(False, False, False, "박스 하단 아래", "하단 회복·새 박스 확정 전",
-                                    "박스 이탈로 손절 기준 도달")
-    out["timing"] = {"immediate": False, "confirm_bars": 3, "confirm_rule": "새 박스 저점·고점 각각 3봉 유지",
-                     "touch": None, "estimate_label": "새 박스가 확정되는 시점은 예측하지 않습니다(형성 조건으로 확인).",
-                     "review": "매 거래일 종가 마감 후 재계산", "expiry_bars": p["horizon_days"]}
-    out["invalidation"] = ["하단 이탈 상태가 유지되는 동안 매수 계획 없음"]
     return out
 
 
@@ -671,16 +979,47 @@ def _after_breakout(out, seq, reference, breakout, support, quote, market, p, at
     if last_close < stop:
         out["verdict"] = _verdict("exclude", "돌파 실패 · 손절 기준 아래로 복귀")
         out["stage"] = _stage("cancelled")
-        out["action"] = (f"상단 {_fmt(top, market)} 돌파 뒤 종가가 손절 기준 {_fmt(stop, market)} 아래로 되돌아왔습니다. "
-                         "영상에서 말한 '올라가다 실패해 내려오는' 경우라 매수 계획을 취소합니다.")
-        out["when"] = "새 박스가 확정된 뒤 다시 계산합니다. 그 전에는 매수하지 않습니다."
-        out["cancel"] = f"이미 보유 중이라면 {_fmt(stop, market)} 아래 종가에서 손절합니다."
-        out["prices"]["entry_unavailable"] = "계획 취소 — 매수 가격 산출 안 함"
-        out["conditions"] = _conditions(False, False, False, "돌파 실패", "손절 기준 아래 종가", "계획 취소")
-        out["timing"] = {"immediate": False, "confirm_bars": 3, "confirm_rule": "새 박스 저점·고점 각각 3봉 유지",
-                         "touch": None, "estimate_label": "새 박스 확정 시점은 예측하지 않습니다.",
+        out["strategy"] = {"key": "none", "label": _STRATEGIES["none"]}
+        failed = (f"상단 {_fmt(top, market)} 돌파 뒤 종가가 손절 기준 {_fmt(stop, market)} 아래로 되돌아왔습니다. "
+                  "영상에서 말한 '올라가다 실패해 내려오는' 경우라 돌파 매수 계획은 취소합니다. ")
+        holder = f"이미 보유 중이라면 {_fmt(stop, market)} 아래 종가에서 손절합니다(돌파 실패). "
+        if last_close < bottom:
+            plan = _apply_failure_plan(out, seq, reference, support, quote, market, p, atr, last_close, bottom)
+            if plan is None:
+                return _unavailable(out, "재진입 후보 가격을 호가 단위로 만들 수 없음", "최근 일봉의 고가·저가를 확인하고 다시 조회하세요.")
+            out["action"] = failed + f"종가가 박스 하단 {_fmt(bottom, market)}까지 깨져 신규 매수는 하지 않습니다. 다시 산다면 {_price_summary(plan['primary'], market)}."
+            out["when"] = _min_bars_text(plan["n"]) + ". " + (f"대안: {_price_summary(plan['alternative'], market)}." if plan["alternative"] else "")
+            out["cancel"] = holder + "위 재진입 후보도 새 박스 확정 뒤 그 박스 하단(−0.1 ATR) 아래 종가면 취소합니다."
+            return out
+        # Back inside the old range: the old bottom is the nearest structural support again.
+        forming = seq.get("forming") or {}
+        n = _bars_to_confirm(forming)
+        sup_zone = support["entry"]
+        range_support = _conditional(
+            support, "range_support", "재진입 후보(조건부) · 박스 하단 지지 재확인",
+            f"가격이 {_fmt(sup_zone['low'], market)}~{_fmt(sup_zone['high'], market)}까지 내려온 뒤 일봉 종가가 하단 위·전일보다 높게 마감")
+        touch = _timing_touch(quote, sup_zone["high"], seq.get("closes_for_sigma"), atr, p["horizon_days"]) if quote > sup_zone["high"] else None
+        out["prices"] = _prices_block(range_support, holder_stop=support["stop"])
+        base_alt = _conditional(_forming_geometry(forming, atr, market, quote, p), "new_base",
+                                "재진입 후보(조건부) · 새 박스 하단", "새 저점·새 고점 없이 3봉 유지되면 새 박스 확정")
+        out["alternative"] = _alt_from(base_alt, "새 박스가 확정될 때", (base_alt or {}).get("entry", {}).get("condition", "")) if base_alt else None
+        narrow = (top - bottom) < p["min_height_atr"] * atr
+        out["action"] = (failed + f"종가는 아직 이전 박스 안이라 하단 지지를 다시 시험할 수 있습니다. 신규 매수는 하지 않고, 다시 산다면 "
+                         f"{_price_summary(range_support, market)}.")
+        out["when"] = (f"가격이 {_fmt(sup_zone['low'], market)}~{_fmt(sup_zone['high'], market)}까지 내려온 뒤 일봉 종가가 하단 위·전일보다 높게 끝나면 지지 재확인. "
+                       + (_touch_text(touch) + " " if touch else "")
+                       + ("하단 아래로 깨지면 " + (_min_bars_text(n) if n is not None else "새 박스를 다시 계산합니다") + "."))
+        out["cancel"] = holder + f"재진입 후보는 종가가 하단 {_pj(bottom, market, '을')} −0.1 ATR 넘게 깨면 취소합니다."
+        out["conditions"] = _conditions(
+            sup_zone["low"] <= quote <= sup_zone["high"], False, (support.get("rr") or 0) >= p["min_reward_risk"] and not narrow,
+            f"후보 구간 상단까지 {_dist(sup_zone['high'], quote)}", "지지 재확인 봉 미발생",
+            ("박스 폭 2.5 ATR 미만 · " if narrow else "") + f"후보 손익비 {support.get('rr')}:1(조건부)")
+        out["timing"] = {"immediate": False, "confirm_bars": 1, "confirm_rule": "가격 도달 후 일봉 종가 하단 위 + 전일 대비 상승",
+                         "touch": touch, "estimate_label": (_touch_text(touch) if touch else "후보 구간 안·아래라 종가 확인(1봉)만 남았습니다."),
                          "review": "매 거래일 종가 마감 후 재계산", "expiry_bars": p["horizon_days"]}
-        out["invalidation"] = [f"종가 {_fmt(stop, market)} 아래 = 돌파 실패(손절)"]
+        out["invalidation"] = [f"종가 {_fmt(stop, market)} 아래 = 돌파 실패(이미 발생)",
+                               f"종가가 하단 {_fmt(bottom, market)} − 0.1 ATR 아래면 재진입 후보 취소",
+                               f"{p['horizon_days']}거래일 안에 지지 재확인이 없으면 재산출"]
         return out
     above = 0
     for c in reversed(closes):  # consecutive completed closes above the broken top
@@ -741,19 +1080,32 @@ def _after_breakout(out, seq, reference, breakout, support, quote, market, p, at
     if quote >= measured:
         out["verdict"] = _verdict("watch", "측정 목표 도달 · 재확인 기회 지남")
         out["stage"] = _stage("not_met")
+        forming = seq.get("forming") or {}
+        n = _bars_to_confirm(forming)
+        upper_box = _conditional(
+            _forming_geometry(forming, atr, market, quote, p), "new_box_above", "재진입 후보(조건부) · 위쪽 새 박스 하단",
+            (f"새 고점·새 저점 없이 {n}거래일 유지 → 새 박스 확정" if n is not None else "새 박스 확정 필요")
+            + " · 새 고점·저점이 나오면 가격 갱신")
         out["action"] = (f"돌파 후 재확인 없이 측정 목표 {_pj(measured, market, '을')} 넘었습니다. 지금 사는 것은 추격 매수입니다. "
-                         "새 박스가 위에서 확정될 때까지 기다립니다.")
-        out["when"] = "위쪽에서 새 박스(3봉 고점·저점)가 확정되면 그 박스 기준으로 다시 계산합니다."
+                         "새 박스가 위에서 확정될 때까지 기다립니다."
+                         + (f" 다시 산다면 {_price_summary(upper_box, market)}." if upper_box else ""))
+        out["when"] = (_min_bars_text(n) + ". 확정 뒤 가격이 새 박스 하단 구간까지 내려왔다가 하단 위·전일보다 높게 마감하면 매수 조건 충족."
+                       + (f" 위쪽 박스 확정 전에 종가가 {_fmt(top, market)} 아래로 돌아오면 돌파 실패로 계획을 취소합니다."))
+        if upper_box:
+            out["prices"] = _prices_block(upper_box, holder_stop=breakout["stop"])
         out["conditions"] = _conditions(False, True, False, "재확인 구간보다 너무 높음", "돌파 확인 완료",
                                         "추격 시 손익비 불리")
-        out["timing"] = {"immediate": False, "confirm_bars": 3, "confirm_rule": "새 박스 고점·저점 각각 3봉 유지",
-                         "touch": None, "estimate_label": "새 박스 확정 시점은 예측하지 않습니다.",
+        out["timing"] = {"immediate": False, "confirm_bars": n if n is not None else 3,
+                         "confirm_rule": "새 박스 고점·저점 각각 3봉 유지", "touch": None,
+                         "estimate_label": _min_bars_text(n) + ".",
                          "review": "매 거래일 종가 마감 후 재계산", "expiry_bars": p["horizon_days"]}
         return out
     latest_low = lows[-1] if lows else None
     retest_bar = (latest_low is not None and latest_low <= zone["high"] and last_close >= top
                   and above >= 1 and len(closes) > p["confirm_closes"]) or not p["require_signal"]
-    in_zone = stop < quote <= zone["high"]
+    # Display state only (the buy test above still needs quote <= zone top): a quote within 0.05 ATR
+    # of the top is "at the zone", not "waiting for price".
+    in_zone = stop < quote <= zone["high"] + max(tick_size(quote, market), 0.05 * atr)
     checks_ok = rr_ok and not risk_notes
     if retest_bar and quote <= zone["high"] and quote >= stop:
         key = "buy" if checks_ok else "conditional"

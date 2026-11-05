@@ -21221,6 +21221,7 @@ input::placeholder{color:#484f58}
 .bxp-v{font-size:12px;color:#e6edf3;font-weight:700;overflow-wrap:anywhere;line-height:1.4}
 .bxp-sub{display:block;font-size:9.5px;color:#8b949e;font-weight:400;margin-top:2px;line-height:1.45;word-break:keep-all}
 .bxp-na{color:#8b949e;font-weight:600}
+.bxp-cond{font-size:9px;font-weight:800;color:#d29922;border:1px solid #d2992266;border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:middle;white-space:nowrap}
 .bxp-checks{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
 .bxp-check{font-size:10px;font-weight:700;border-radius:6px;padding:4px 8px;border:1px solid #30363d;background:#161b22;color:#cdd9e5}
 .bxp-check.ok{border-color:#3fb95066;color:#3fb950}
@@ -21239,7 +21240,6 @@ input::placeholder{color:#484f58}
 .bxp-boxes{width:100%;border-collapse:collapse;font-size:10px;margin:6px 0}
 .bxp-boxes th,.bxp-boxes td{padding:3px 5px;border-bottom:1px solid #21262d;text-align:left;color:#cdd9e5;white-space:nowrap}
 .bxp-boxes th{color:#6e7681;font-weight:600}
-.box-tactics-embedded{margin:8px 0 0;background:#0d111799}
 @media(max-width:900px){.bxp-table{grid-template-columns:1fr}.bxp-qa-grid{grid-template-columns:1fr}}
 @media(max-width:480px){.bxp-row{grid-template-columns:88px minmax(0,1fr)}.bxp-boxes{display:block;overflow-x:auto}.bxp-headline{font-size:13px}}
 @media(max-width:480px){
@@ -26313,7 +26313,7 @@ function renderForecast(d, isKrx) {
 function renderBoxExecutionPlan(d, isKrx) {
   const ep = d.box_range && d.box_range.execution_plan;
   if (ep && ep.verdict) return renderBoxDecisionPlan(d, ep, isKrx);
-  return renderBoxTacticsLegacy(d, isKrx, false);
+  return '';  // execution_plan 이 없는 응답에는 예전 중간선 자석·압력·속도 카드를 그리지 않는다
 }
 
 // 🧭 박스 실행 플랜 — 결론(판단·가격·대기·손절·취소)을 먼저, 근거는 접어서 보여준다.
@@ -26338,14 +26338,16 @@ function renderBoxDecisionPlan(d, ep, isKrx) {
     left.push(row('현재가', `<b>${px(q.price)}</b>`, `${q.source === 'realtime' ? '실시간 시세' : '마지막 종가'} · 박스는 ${esc(q.last_date || '-')} 완료 일봉 기준`));
   }
   if (bx) {
-    left.push(row('박스 하단', px(bx.bottom), `중간 ${px(bx.mid)} · 하단 접촉 ${esc(bx.bottom_touches ?? '-')}회`));
-    left.push(row('박스 상단', px(bx.top), `높이 ${esc(bx.height_pct ?? '-')}% (${esc(bx.height_atr ?? '-')} ATR) · ${esc(bx.start_date || '-')}부터 ${esc(bx.bars ?? '-')}봉 · 상단 접촉 ${esc(bx.top_touches ?? '-')}회`));
+    const tentative = bx.forming ? '(형성 중·잠정)' : '';
+    left.push(row('박스 하단' + tentative, px(bx.bottom), bx.forming ? `중간 ${px(bx.mid)} · 고점·저점이 3봉 이상 유지돼야 확정` : `중간 ${px(bx.mid)} · 하단 접촉 ${esc(bx.bottom_touches ?? '-')}회`));
+    left.push(row('박스 상단' + tentative, px(bx.top), `높이 ${esc(bx.height_pct ?? '-')}% (${esc(bx.height_atr ?? '-')} ATR) · ${esc(bx.start_date || '-')}부터 ${esc(bx.bars ?? '-')}봉${bx.forming ? '' : ` · 상단 접촉 ${esc(bx.top_touches ?? '-')}회`}`));
     left.push(row('현재 위치', esc(bx.position_label || '-'), esc((ep.staircase || {}).label || '')));
   }
   const entry = pr.entry || null;
+  const condTag = entry && (entry.conditional || v.key !== 'buy') ? '<span class="bxp-cond">조건부</span>' : '';
   left.push(row(esc((entry && entry.label) || '1차 매수 후보'),
-    entry ? `<b style="color:${tone}">${fmtRange(entry.low, entry.high, isKrx)}</b>` : `<span class="bxp-na">${esc(pr.entry_unavailable || '산출 불가 — 조건 미충족')}</span>`,
-    entry ? `현재가 대비 ${signed(vsQuote(entry.high))} · ${esc(entry.basis || '')}` : ''));
+    entry ? `<b style="color:${tone}">${fmtRange(entry.low, entry.high, isKrx)}</b>${condTag}` : `<span class="bxp-na">${esc(pr.entry_unavailable || '가격 근거를 만들지 못했습니다(원인 미상 — 다시 조회)')}</span>`,
+    entry ? `현재가 대비 ${signed(vsQuote(entry.high))} · ${esc(entry.basis || '')}${entry.condition ? `<br>▶ ${esc(entry.condition)}` : ''}` : ''));
   if (pr.add && pr.add.condition) {
     left.push(row('추가 매수', (pr.add.low != null && pr.add.high != null) ? fmtRange(pr.add.low, pr.add.high, isKrx) : '<span class="bxp-na">새 박스 확정 후 산출</span>', esc(pr.add.condition)));
   }
@@ -26358,11 +26360,15 @@ function renderBoxDecisionPlan(d, ep, isKrx) {
   const touch = tm.touch || null;
   const waitText = touch && touch.p_horizon
     ? `5거래일 내 약 ${esc((touch.p5 || {}).mid ?? '-')}% · ${esc(touch.horizon_days)}거래일 내 약 ${esc(touch.p_horizon.mid)}%` + (Array.isArray(touch.days_if_reached) ? ` · 닿으면 ${esc(touch.days_if_reached[0])}~${esc(touch.days_if_reached[1])}거래일째` : '')
-    : (tm.immediate ? '대기 없음' : '가격 도달 시점 예측 불가');
-  right.push(row('예상 대기 기간', esc(waitText), touch ? `기준가 ${px(touch.level)} · 무추세 변동성 추정(방향 예측 아님)` : esc(tm.estimate_label || '')));
+    : (tm.immediate ? '대기 없음' : (_isFiniteNumber(tm.confirm_bars) && Number(tm.confirm_bars) > 0 ? `최소 ${esc(tm.confirm_bars)}거래일(일봉 마감 확인 기준)` : '가격 도달 시점 예측 불가'));
+  right.push(row('예상 대기 기간', esc(waitText), touch ? `기준가 ${px(touch.level)} · 무추세 변동성 추정(방향 예측 아님)${tm.note ? ' · ' + esc(tm.note) : ''}` : esc(tm.estimate_label || '')));
   if (pr.stop && _isFiniteNumber(pr.stop.price)) {
     const stopVsQuote = _isFiniteNumber(pr.stop.pct_from_quote) && Number(pr.stop.pct_from_quote) < 0 ? ` · 현재가 대비 ${signed(pr.stop.pct_from_quote)}` : '';
-    right.push(row('손절 기준', `<b style="color:#f85149">${px(pr.stop.price)}</b>`, `${pr.entry ? '진입 기준 ' + signed(pr.stop.pct_from_entry) : '보유 중일 때'}${stopVsQuote} · ${esc(pr.stop.basis || '')}`));
+    right.push(row('손절 기준' + (entry && entry.conditional ? '(후보 진입 시)' : ''), `<b style="color:#f85149">${px(pr.stop.price)}</b>`, `${pr.entry ? '진입 기준 ' + signed(pr.stop.pct_from_entry) : '보유 중일 때'}${stopVsQuote} · ${esc(pr.stop.basis || '')}`));
+  }
+  if (pr.holder_stop && _isFiniteNumber(pr.holder_stop.price)) {
+    const breached = _isFiniteNumber(q.price) && Number(q.price) < Number(pr.holder_stop.price);
+    right.push(row('이미 보유 중이라면', `<b style="color:#f85149">${px(pr.holder_stop.price)}</b>`, `${esc(pr.holder_stop.basis || '')} · ${breached ? '현재가가 이미 이 아래 — 종가 기준 손절 기준 도달' : '이 가격 아래 종가면 손절'}`));
   }
   (pr.targets || []).forEach(t => {
     right.push(row(esc(t.label || '목표'), `<b style="color:#3fb950">${px(t.price)}</b>`, `진입 기준 ${signed(t.pct_from_entry)}${_isFiniteNumber(t.rr) ? ` · ${esc(t.rr)}R` : ''} · ${esc(t.basis || '')}`));
@@ -26387,7 +26393,6 @@ function renderBoxDecisionPlan(d, ep, isKrx) {
   const altHtml = alt ? `<div class="bxp-alt"><b>대안 — ${esc(alt.label || '')}</b>: ${esc(alt.note || '')}${alt.stop && _isFiniteNumber(alt.stop.price) ? ` · 손절 ${px(alt.stop.price)}` : ''}${(alt.targets || []).length ? ` · 목표 ${(alt.targets || []).map(t => px(t.price)).join(' → ')}` : ''}${_isFiniteNumber(alt.rr) ? ` · 손익비 ${esc(alt.rr)}:1` : ''}</div>` : '';
   const big = ep.big_box || {};
   const src = (ep.sources || {}).video || {};
-  const legacy = renderBoxTacticsLegacy(d, isKrx, true);
   return `<div class="box-tactics bxp" style="border-color:${tone}66">
     <div class="bxp-head">
       <div class="box-tactics-title">🧭 박스 실행 플랜</div>
@@ -26406,107 +26411,8 @@ function renderBoxDecisionPlan(d, ep, isKrx) {
       ${altHtml}
       ${boxRows ? `<table class="bxp-boxes"><thead><tr><th>박스 기간</th><th>하단~상단</th><th>직전 대비</th><th>결과</th></tr></thead><tbody>${boxRows}</tbody></table>` : ''}
       <div class="bxp-note"><b>영상에서 확인한 원칙</b> (${esc(src.reviewed_on || '')} · ${esc(src.method || '')})<ul>${(src.stated || []).map(s => `<li>${esc(s)}</li>`).join('')}</ul>영상에 없는 것: ${esc((src.not_stated || []).join(' · '))}<br>보완 규칙: ${esc(((ep.sources || {}).supplements || []).join(' / '))}</div>
-      ${legacy}
     </details>
     <div class="box-tactics-foot">일봉 규칙 기반 판단이며 수익·도달을 보장하지 않습니다. 가격은 호가 단위로 맞춘 값이고 손익비는 수수료·세금 전입니다. 매 거래일 종가 마감 후 다시 계산됩니다.</div>
-  </div>`;
-}
-
-function renderBoxTacticsLegacy(d, isKrx, embedded) {
-  const bt = (d.box_range && d.box_range.tactics) || null;
-  if (!bt || !bt.regime) return '';
-  const rg = bt.regime || {};
-  const md = bt.midline || {};
-  const sp = bt.speed || {};
-  const pr = bt.pressure || {};
-  const supP = pr.support || {};
-  const resP = pr.resistance || {};
-  const vol = bt.volume || {};
-  const plan = bt.plan || {};
-  const rv = bt.reversal || {};
-  const dq = bt.data_quality || {};
-  const pyr = plan.pyramid || null;
-  const executionReady = plan.status === 'ready' && plan.tradeable !== false;
-  const tone = executionReady ? '#3fb950' : plan.status === 'wait' ? '#d29922'
-    : ['breakout_watch', 'breakout_unconfirmed', 'range_wait'].includes(rg.key) ? '#d29922' : '#f85149';
-  const pctText = v => _isFiniteNumber(v) ? `${Math.round(Number(v) * 100)}%` : '—';
-  const ratioText = v => _isFiniteNumber(v) ? `${Number(v).toFixed(2)}x` : '—';
-  const chip = (label, value, ok) => `<div class="box-tactics-chip"><span class="bt-k">${label}</span><span class="bt-v" style="color:${ok ? '#3fb950' : '#d29922'}">${_escPrediction(String(value || '확인 불가'))}</span></div>`;
-  const entry = plan.entry || null;
-  const stop = plan.stop || null;
-  const targets = Array.isArray(plan.targets) ? plan.targets : [];
-  const targetRow = t => {
-    if (!t) return '';
-    const range = (t.low != null && t.high != null) ? (t.low === t.high ? fmt(t.price, isKrx) : fmtRange(t.low, t.high, isKrx)) : (t.price != null ? fmt(t.price, isKrx) : '—');
-    return `<div class="box-tactics-row"><span class="bt-k">${_escPrediction(t.label || '목표')} · ${Number(t.pct || 0)}%</span><span class="bt-v">${range}</span></div>`;
-  };
-  const planRows = [];
-  if (entry) planRows.push(`<div class="box-tactics-row"><span class="bt-k">진입 구간</span><span class="bt-v" style="color:${tone}">${fmtRange(entry.low, entry.high, isKrx)}</span></div>`);
-  if (Array.isArray(plan.entry_checks) && plan.entry_checks.length) {
-    const checks = plan.entry_checks.map(c => `${c.ok ? '✓' : '△'} ${_escPrediction(c.label || c.key)}`).join(' · ');
-    planRows.push(`<div class="box-tactics-row"><span class="bt-k">진입 확인 조건</span><span class="bt-v">${checks}</span></div>`);
-  }
-  if (stop) planRows.push(`<div class="box-tactics-row"><span class="bt-k">손절</span><span class="bt-v" style="color:#f85149">${fmt(stop.price, isKrx)}</span></div>`);
-  if (targets.length) planRows.push(targets.map(targetRow).join(''));
-  const geo = plan.geometry || null;
-  if (geo && _isFiniteNumber(geo.breakeven_rate)) {
-    const okGeo = geo.ok === true;
-    const measuredText = _isFiniteNumber(geo.measured_rate) ? ` · 감사 ${pctText(geo.measured_rate)}` : '';
-    planRows.push(`<div class="box-tactics-row" style="border-left:2px solid ${okGeo ? '#3fb950' : '#f85149'};padding-left:6px"><span class="bt-k">손익분기</span><span class="bt-v" style="color:${okGeo ? '#3fb950' : '#f85149'}">1차 ${Number(geo.first_target_rr).toFixed(2)}R · 필요 ${pctText(geo.breakeven_rate)}${measuredText} · ${okGeo ? '구조 통과' : geo.ok === false ? '미달 주의(참고)' : '비교 자료 부족'}</span></div>`);
-  }
-  if (pyr) {
-    const pc = (pyr.checks || []).map(c => `${c.ok ? '✓' : '✗'}${c.label}`).join(' ');
-    planRows.push(`<div class="box-tactics-row"><span class="bt-k">불타기 추가</span><span class="bt-v" style="color:${pyr.ready ? '#3fb950' : '#d29922'}">${pyr.ready ? '준비됨' : '대기'} · ${_escPrediction(pc || pyr.condition || '')}</span></div>`);
-  }
-  if (rv.available && rv.state !== 'none') {
-    const rvTone = rv.state === 'confirmed' ? '#f85149' : '#d29922';
-    planRows.push(`<div class="box-tactics-row" style="border-left:2px solid ${rvTone};padding-left:6px"><span class="bt-k">하락 시나리오</span><span class="bt-v" style="color:${rvTone}">${_escPrediction(rv.label || '')} — ${_escPrediction(rv.reason || '')}</span></div>`);
-    if (rv.state === 'confirmed' && rv.targets && rv.targets.length) {
-      planRows.push(`<div class="box-tactics-row"><span class="bt-k">하락 시 참고</span><span class="bt-v">${rv.targets.map(t => `${Number(t.pct || 0)}% ${fmt(t.price, isKrx)}`).join(' → ')}</span></div>`);
-    }
-  }
-  const checklist = (bt.checklist || []).slice(0, 6).map(it => `<li style="color:${it.ok ? '#8b949e' : '#d29922'}">${it.ok ? '✓' : '△'} ${_escPrediction(it.label || it.key)}: ${_escPrediction(String(it.value || '—'))}${it.detail ? ` — ${_escPrediction(it.detail)}` : ''}</li>`).join('');
-  const why = (rg.why || []).map(w => `<li>${_escPrediction(w)}</li>`).join('');
-  const watch = (rg.watch || []).map(w => `<li>${_escPrediction(w)}</li>`).join('');
-  const rc = bt.rule_check || {};
-  const rcText = rc.available
-    ? `같은 박스 규칙 점검: 지지 접촉 ${rc.support_touches || 0}회 중 중간선 선도달 ${rc.midline_first || 0}회 · 손절 선도달 ${rc.stop_first || 0}회${rc.ambiguous ? ` · 동시 ${rc.ambiguous}회` : ''} (${rc.horizon_bars || 0}봉 이내, 표본 적음)`
-    : '';
-  const au = bt.audit || {};
-  const auMag = au.by_magnet || {};
-  const auRate = st => _isFiniteNumber((auMag[st] || {}).rate) ? pctText(auMag[st].rate) : '—';
-  const auditText = _isFiniteNumber((au.overall || {}).rate)
-    ? `감사(${_escPrediction(au.measured_on || '')} · 지지 ${(au.overall || {}).samples || 0}건): 중간선 선도달 ${pctText(au.overall.rate)} · 강한 자석 ${auRate('strong')} / 보통 ${auRate('normal')} / 약한 자석 ${auRate('weak')} → 영상의 강한 자석 우위는 재현되지 않음. 도달 순서 비율이며 확률 아님`
-    : '';
-  const flow = bt.flow || {};
-  const flowText = flow.available
-    ? `수급 보조: ${flow.label || ''} (외국인 ${flow.foreign > 0 ? '+' : ''}${flow.foreign || 0} · 기관 ${flow.institution > 0 ? '+' : ''}${flow.institution || 0})`
-    : '';
-  const legacyTitle = embedded ? '📎 참고: 중간선 자석·압력·속도 규칙(영상 OlMBqW3FBes · 2026-10-25 감사에서 우위 미확인)' : '🧭 박스 실행 플랜';
-  return `<div class="box-tactics${embedded ? ' box-tactics-embedded' : ''}" style="border-color:${tone}55">
-    <div class="box-tactics-head">
-      <div class="box-tactics-title">${legacyTitle} <span class="box-tactics-badge" style="color:${tone};background:${tone}1a;border:1px solid ${tone}55">${_escPrediction(executionReady ? (rg.label || '조건 충족') : '진입 대기')}</span></div>
-      <div style="font-size:10px;color:#8b949e">중간선 자석 · 압력 · 속도</div>
-      <div class="box-tactics-summary">${_escPrediction(bt.summary || '')}</div>
-    </div>
-    <div class="box-tactics-chips">
-      ${chip('중간선 자석', `${md.strength_label || '확인 불가'}${md.available ? ' · 중간 거래량 ' + pctText(md.volume_share) : ''}`, md.state === 'strong' || md.state === 'normal')}
-      ${chip('속도', `${sp.label || '확인 불가'}${sp.available ? ' · ' + ratioText(sp.ratio) : ''}`, sp.state === 'fast' || sp.state === 'normal')}
-      ${chip('지지 압력(프록시)', supP.label || '확인 불가', supP.verdict === 'buy')}
-      ${chip('저항 압력(프록시)', resP.label || '확인 불가', resP.verdict === 'sell')}
-      ${chip('거래량', vol.ratio != null ? ratioText(vol.ratio) + ' · ' + (vol.label || '') : '확인 불가', vol.ratio != null && vol.ratio >= 1)}
-    </div>
-    <div class="box-tactics-plan">
-      ${planRows.join('') || `<div class="box-tactics-row"><span class="bt-k">실행</span><span class="bt-v" style="color:${tone}">${_escPrediction((rg.why || ['진입 없음'])[0])}</span></div>`}
-    </div>
-    ${why ? `<ul class="box-tactics-list">${why}</ul>` : ''}
-    ${watch ? `<ul class="box-tactics-list" style="color:#d29922">${watch}</ul>` : ''}
-    ${checklist ? `<ul class="box-tactics-list">${checklist}</ul>` : ''}
-    ${rcText ? `<div class="box-tactics-foot">${_escPrediction(rcText)}</div>` : ''}
-    ${auditText ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">${auditText}</div>` : ''}
-    ${flowText ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">${_escPrediction(flowText)}</div>` : ''}
-    ${dq.repaired_rows ? `<div class="box-tactics-foot" style="border-top:0;padding-top:2px">데이터 품질: 최근 ${dq.validated_rows || 0}봉 중 OHLC 외피 ${dq.repaired_rows}행 보정(종가 불변, 1e-6 이하 부동소수만). 창 안의 큰 불일치는 보정하지 않고 계산을 중단합니다.</div>` : ''}
-    <div class="box-tactics-foot">압력은 일봉 OHLCV 프록시이며 실제 호가창이 아닙니다. 중간선 50%·반대편 50%는 영상 사례의 청산 규칙이고, 돌파 1:3 손익비는 조건부 참고입니다. ${_escPrediction(bt.limits || '')}</div>
   </div>`;
 }
 
