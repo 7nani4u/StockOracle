@@ -79,8 +79,8 @@ except Exception:
     run_technical_filters = classify_candidate = rank_candidate = None
     check_anti_chase = check_pullback_continuation = None
     calculate_position_size = None
-    SCAN_US_MAX_PRICE = 70.0
-    SCAN_COLLECT_CAP_US_FULL = 120
+    SCAN_US_MAX_PRICE = 23.0
+    SCAN_COLLECT_CAP_US_FULL = 130
     SCAN_COLLECT_CAP_US_LITE = 48
     is_scan_price_eligible = None
     apply_leader_promotion = None

@@ -79,17 +79,17 @@ TIER_MULTIPLIER = {
 }
 
 # ── 시장별 가격 상한 (출력 필터) ─────────────────────────────────────────────
-# 미국 스캔은 $70 초과 종목을 출력에서 제외한다 (수집 후 실측가 기준).
-SCAN_US_MAX_PRICE = 70.0
+# 미국 스캔은 $23 초과 종목을 출력에서 제외한다 (수집 후 실측가 기준, 정확히 $23.00은 포함).
+SCAN_US_MAX_PRICE = 23.0
 
 # ── 시장별 수집 상한 (Vercel 60s 타임아웃 방지 + 시간 예산 하드가드 병행) ──
-# 미국은 전수 검토를 위해 유니버스 전체를 수집 대상으로 둔다.
-SCAN_COLLECT_CAP_US_FULL = 120
+# 미국은 전수 검토를 위해 유니버스 전체를 수집 대상으로 둔다(현재 122종목).
+SCAN_COLLECT_CAP_US_FULL = 130
 SCAN_COLLECT_CAP_US_LITE = 48
 
 
 def is_scan_price_eligible(market: str, price: Any) -> bool:
-    """스캔 출력 가격 상한 판정. US는 $70 초과 제외, KRX는 제한 없음."""
+    """스캔 출력 가격 상한 판정. US는 $23 초과 제외, KRX는 제한 없음."""
     if str(market or "").upper() != "US":
         return True
     try:

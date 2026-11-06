@@ -730,7 +730,7 @@ def fetch_annual_income_statement(symbol: str):
 # "수집 상한"과 "출력 개수"를 상수화하고 양 시장에 동일 적용한다.
 SCAN_COLLECT_CAP_FULL = 48   # FULL 수집 상한 — 대형+중형+중소형 풀 커버(다양성+15개 확보)
 SCAN_COLLECT_CAP_LITE = 24   # CORE_LITE 수집 상한
-SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 (양 시장 공통, 목표=정확히 15)
+SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 상한 (양 시장 공통; 박스 플랜 완성 종목이 더 적으면 그만큼만)
 
 # 병렬 수집 — 워커 수 / 월클럭 예산 (Vercel 60s 내 안전 마진)
 SCAN_COLLECT_WORKERS  = 16
@@ -19742,6 +19742,7 @@ def route(path: str, params: Dict) -> Dict:
                 is_scan_price_eligible, apply_leader_promotion,
                 apply_momentum_promotion, apply_vcp_promotion,
             )
+            from market_briefing.scan_box_plan import attach_box_plans, INCOMPLETE_REASONS
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
             from market_briefing.dual_score_v2 import REGIME_BULLISH, REGIME_BEARISH, REGIME_SIDEWAYS, VOL_NORMAL
@@ -19861,71 +19862,75 @@ def route(path: str, params: Dict) -> Dict:
                 ("240810.KQ", "원익IPS", "SMALL"),        ("178320.KQ", "서진시스템", "SMALL"),
             ]
             _SCAN_US_UNIVERSE = [
+                # 미국 스캔은 현재가 $23 이하(SCAN_US_MAX_PRICE)만 출력한다. 출력 불가능한 종목을 수집하지 않도록
+                # 2026-11-06 종가 기준 $69(상한의 3배)를 넘는 종목(AAPL·NVDA 등 67개)과 거래 종료·합병 종목(PARA·WBD·EA)은 뺐고,
+                # 거래대금이 큰 $30 이하 종목을 보강했다. 상한을 다시 올리면 git 이력(ef50cc1)의 이전 목록을 복원한다.
+                # 티어는 정적 힌트일 뿐이며 실측 시가총액(info.marketCap)이 있으면 그 값이 우선한다.
                 # ── 대형주 (LARGE) ──
-                ("AAPL", "Apple", "LARGE"),       ("NVDA", "NVIDIA", "LARGE"),
-                ("MSFT", "Microsoft", "LARGE"),   ("GOOGL", "Alphabet", "LARGE"),
-                ("AMZN", "Amazon", "LARGE"),      ("META", "Meta", "LARGE"),
-                ("TSLA", "Tesla", "LARGE"),       ("AVGO", "Broadcom", "LARGE"),
-                ("LLY", "Eli Lilly", "LARGE"),    ("JPM", "JPMorgan", "LARGE"),
-                ("V", "Visa", "LARGE"),           ("UNH", "UnitedHealth", "LARGE"),
-                ("XOM", "Exxon Mobil", "LARGE"),  ("MA", "Mastercard", "LARGE"),
-                ("JNJ", "Johnson & Johnson", "LARGE"), ("COST", "Costco", "LARGE"),
-                ("NFLX", "Netflix", "LARGE"),     ("AMD", "AMD", "LARGE"),
-                ("ORCL", "Oracle", "LARGE"),      ("CRM", "Salesforce", "LARGE"),
+                ("NFLX", "Netflix", "LARGE"), ("BBD", "Banco Bradesco", "LARGE"),
+                ("ABEV", "Ambev", "LARGE"), ("GRAB", "Grab", "LARGE"),
+                ("ITUB", "Itau Unibanco", "LARGE"), ("AGNC", "AGNC Investment", "LARGE"),
+                ("TME", "Tencent Music", "LARGE"), ("ERIC", "Ericsson", "LARGE"),
+                ("VALE", "Vale", "LARGE"), ("UMC", "United Microelectronics", "LARGE"),
+                ("CDE", "Coeur Mining", "LARGE"), ("HBAN", "Huntington Bancshares", "LARGE"),
+                ("IAG", "IAMGOLD", "LARGE"), ("PBR", "Petrobras", "LARGE"),
+                ("NLY", "Annaly Capital", "LARGE"), ("VTRS", "Viatris", "LARGE"),
+                ("ARCC", "Ares Capital", "LARGE"), ("KEY", "KeyCorp", "LARGE"),
+                ("KGC", "Kinross Gold", "LARGE"),
                 # ── 중형주 (MID) ──
-                ("ABBV", "AbbVie", "MID"),        ("MRK", "Merck", "MID"),
-                ("ADBE", "Adobe", "MID"),         ("CVX", "Chevron", "MID"),
-                ("PEP", "PepsiCo", "MID"),        ("KO", "Coca-Cola", "MID"),
-                ("BAC", "Bank of America", "MID"),("HD", "Home Depot", "MID"),
-                ("PG", "Procter & Gamble", "MID"),("MCD", "McDonald's", "MID"),
-                ("RBLX", "Roblox", "MID"),        ("DKNG", "DraftKings", "MID"),
-                ("HOOD", "Robinhood", "MID"),     ("NET", "Cloudflare", "MID"),
-                ("DDOG", "Datadog", "MID"),       ("ROKU", "Roku", "MID"),
+                ("BAC", "Bank of America", "MID"), ("RBLX", "Roblox", "MID"),
+                ("DKNG", "DraftKings", "MID"), ("INTC", "Intel", "MID"),
+                ("PFE", "Pfizer", "MID"), ("F", "Ford", "MID"),
+                ("T", "AT&T", "MID"), ("VZ", "Verizon", "MID"),
+                ("KMI", "Kinder Morgan", "MID"), ("HAL", "Halliburton", "MID"),
+                ("FCX", "Freeport", "MID"), ("NIO", "NIO", "MID"),
+                ("LUMN", "Lumen", "MID"), ("QS", "QuantumScape", "MID"),
+                ("ACHR", "Archer Aviation", "MID"), ("GGB", "Gerdau", "MID"),
+                ("SMR", "NuScale Power", "MID"), ("RIG", "Transocean", "MID"),
+                ("BTG", "B2Gold", "MID"), ("UAA", "Under Armour", "MID"),
+                ("PTON", "Peloton", "MID"), ("CIFR", "Cipher Mining", "MID"),
+                ("UEC", "Uranium Energy", "MID"), ("EXK", "Endeavour Silver", "MID"),
+                ("NXE", "NexGen Energy", "MID"), ("QBTS", "D-Wave Quantum", "MID"),
+                ("XPEV", "XPeng", "MID"), ("WULF", "TeraWulf", "MID"),
+                ("FLG", "Flagstar Financial", "MID"), ("DX", "Dynex Capital", "MID"),
+                ("RGTI", "Rigetti", "MID"), ("CLF", "Cleveland-Cliffs", "MID"),
+                ("PL", "Planet Labs", "MID"), ("STWD", "Starwood Property", "MID"),
+                ("PATH", "UiPath", "MID"), ("HL", "Hecla Mining", "MID"),
+                ("BILI", "Bilibili", "MID"), ("AG", "First Majestic Silver", "MID"),
+                ("LYFT", "Lyft", "MID"), ("PENN", "PENN Entertainment", "MID"),
+                ("NOV", "NOV", "MID"), ("AEO", "American Eagle", "MID"),
+                ("VFC", "VF Corp", "MID"), ("IREN", "IREN", "MID"),
+                ("BBWI", "Bath & Body Works", "MID"), ("UPST", "Upstart", "MID"),
+                ("CHWY", "Chewy", "MID"), ("OKLO", "Oklo", "MID"),
+                ("LEVI", "Levi Strauss", "MID"), ("KSS", "Kohl's", "MID"),
+                ("MAC", "Macerich", "MID"),
                 # ── 중소형주 (SMALL) ──
-                ("RIVN", "Rivian", "SMALL"),      ("AFRM", "Affirm", "SMALL"),
-                ("U", "Unity", "SMALL"),          ("PINS", "Pinterest", "SMALL"),
-                ("IONQ", "IonQ", "SMALL"),        ("RKLB", "Rocket Lab", "SMALL"),
-                ("SOFI", "SoFi", "SMALL"),        ("LMND", "Lemonade", "SMALL"),
+                ("RIVN", "Rivian", "SMALL"), ("AFRM", "Affirm", "SMALL"),
+                ("U", "Unity", "SMALL"), ("PINS", "Pinterest", "SMALL"),
+                ("IONQ", "IonQ", "SMALL"), ("RKLB", "Rocket Lab", "SMALL"),
+                ("SOFI", "SoFi", "SMALL"), ("LMND", "Lemonade", "SMALL"),
                 ("CHPT", "ChargePoint", "SMALL"), ("FUBO", "fuboTV", "SMALL"),
-                # ── $70 이하 중·소형 보강 (미국 가격 상한 대응) ──
-                ("INTC", "Intel", "MID"),         ("PFE", "Pfizer", "MID"),
-                ("F", "Ford", "MID"),             ("T", "AT&T", "MID"),
-                ("VZ", "Verizon", "MID"),         ("KMI", "Kinder Morgan", "MID"),
-                ("HAL", "Halliburton", "MID"),
                 ("HPE", "Hewlett Packard", "SMALL"), ("HPQ", "HP", "SMALL"),
-                ("WBD", "Warner Bros", "SMALL"),  ("SNAP", "Snap", "SMALL"),
-                ("AAL", "American Airlines", "SMALL"), ("CCL", "Carnival", "SMALL"),
-                ("LVS", "Las Vegas Sands", "SMALL"), ("MGM", "MGM Resorts", "SMALL"),
-                ("BAX", "Baxter", "SMALL"),
-                ("PARA", "Paramount", "SMALL"),
-                # ── 대형주 추가 (전수 검토 — $70 초과는 수집 후 출력 제외) ──
-                ("WMT", "Walmart", "LARGE"),      ("CAT", "Caterpillar", "LARGE"),
-                ("HON", "Honeywell", "LARGE"),    ("LIN", "Linde", "LARGE"),
-                ("RTX", "RTX", "LARGE"),          ("GE", "GE Aerospace", "LARGE"),
-                ("IBM", "IBM", "LARGE"),          ("INTU", "Intuit", "LARGE"),
-                ("NOW", "ServiceNow", "LARGE"),   ("PLTR", "Palantir", "LARGE"),
-                ("GS", "Goldman Sachs", "LARGE"), ("MS", "Morgan Stanley", "LARGE"),
-                ("AXP", "American Express", "LARGE"), ("DIS", "Disney", "LARGE"),
-                ("ABNB", "Airbnb", "LARGE"),
-                # ── 중형주 추가 ──
-                ("DELL", "Dell", "MID"),          ("MU", "Micron", "MID"),
-                ("WDC", "Western Digital", "MID"),("STX", "Seagate", "MID"),
-                ("EA", "Electronic Arts", "MID"), ("TTWO", "Take-Two", "MID"),
-                ("VEEV", "Veeva", "MID"),         ("ZM", "Zoom", "MID"),
-                ("DOCU", "DocuSign", "MID"),      ("OKTA", "Okta", "MID"),
-                ("DAL", "Delta Air", "MID"),      ("UAL", "United Airlines", "MID"),
-                ("GM", "General Motors", "MID"),  ("DHI", "D.R. Horton", "MID"),
-                ("LEN", "Lennar", "MID"),         ("NUE", "Nucor", "MID"),
-                ("FCX", "Freeport", "MID"),       ("EOG", "EOG Resources", "MID"),
-                # ── 중소형주 추가 ──
+                ("SNAP", "Snap", "SMALL"), ("AAL", "American Airlines", "SMALL"),
+                ("CCL", "Carnival", "SMALL"), ("LVS", "Las Vegas Sands", "SMALL"),
+                ("MGM", "MGM Resorts", "SMALL"), ("BAX", "Baxter", "SMALL"),
                 ("NCLH", "Norwegian Cruise", "SMALL"), ("SIRI", "Sirius XM", "SMALL"),
-                ("RIOT", "Riot", "SMALL"),        ("MARA", "MARA", "SMALL"),
-                ("GME", "GameStop", "SMALL"),     ("AMC", "AMC", "SMALL"),
-                ("NOK", "Nokia", "SMALL"),        ("BB", "BlackBerry", "SMALL"),
-                ("SOUN", "SoundHound", "SMALL"),  ("JOBY", "Joby Aviation", "SMALL"),
-                ("LCID", "Lucid", "SMALL"),       ("ANF", "Abercrombie", "SMALL"),
-                ("URBN", "Urban Outfitters", "SMALL"), ("GAP", "Gap", "SMALL"),
-                ("M", "Macy's", "SMALL"),         ("KR", "Kroger", "SMALL"),
+                ("RIOT", "Riot", "SMALL"), ("MARA", "MARA", "SMALL"),
+                ("GME", "GameStop", "SMALL"), ("AMC", "AMC", "SMALL"),
+                ("NOK", "Nokia", "SMALL"), ("BB", "BlackBerry", "SMALL"),
+                ("SOUN", "SoundHound", "SMALL"), ("JOBY", "Joby Aviation", "SMALL"),
+                ("LCID", "Lucid", "SMALL"), ("GAP", "Gap", "SMALL"),
+                ("M", "Macy's", "SMALL"), ("KR", "Kroger", "SMALL"),
+                ("PLUG", "Plug Power", "SMALL"), ("OPEN", "Opendoor", "SMALL"),
+                ("DNN", "Denison Mines", "SMALL"), ("KOS", "Kosmos Energy", "SMALL"),
+                ("JBLU", "JetBlue", "SMALL"), ("GENI", "Genius Sports", "SMALL"),
+                ("CLSK", "CleanSpark", "SMALL"), ("QUBT", "Quantum Computing", "SMALL"),
+                ("BMBL", "Bumble", "SMALL"), ("UUUU", "Energy Fuels", "SMALL"),
+                ("RDW", "Redwire", "SMALL"), ("WEN", "Wendy's", "SMALL"),
+                ("FCEL", "FuelCell Energy", "SMALL"), ("LUNR", "Intuitive Machines", "SMALL"),
+                ("NVAX", "Novavax", "SMALL"), ("BXMT", "Blackstone Mortgage", "SMALL"),
+                ("AI", "C3.ai", "SMALL"), ("SG", "Sweetgreen", "SMALL"),
+                ("RSI", "Rush Street Interactive", "SMALL"), ("BTU", "Peabody Energy", "SMALL"),
             ]
 
             # 종목 목록 파싱 — tickers 파라미터 우선, 없으면 시장별 확장 유니버스
@@ -19940,7 +19945,7 @@ def route(path: str, params: Dict) -> Dict:
                 cap_hint  = {t: (tier or "MID").upper() for t, _, tier in triples}
                 # 티어 라운드로빈 인터리브(LARGE→MID→SMALL→…) — 수집 상한 truncation
                 # 시에도 대형/중형/중소형이 고르게 수집되도록 한다.
-                # 단, 미국은 $70 가격 상한으로 대형주가 수집 후 제외되므로
+                # 단, 미국은 $23 가격 상한으로 대형주가 수집 후 제외되므로
                 # SMALL→MID→LARGE 순으로 모아 상한 내 후보 풀을 우선 확보한다.
                 _by_tier = {"LARGE": [], "MID": [], "SMALL": []}
                 for t, _, tier in triples:
@@ -19956,7 +19961,7 @@ def route(path: str, params: Dict) -> Dict:
 
             # 스캔 모드별 수집 상한 — 한국/미국 동일 적용 (Vercel 60s 타임아웃 방지)
             #   상수: SCAN_COLLECT_CAP_FULL(48) / SCAN_COLLECT_CAP_LITE(24)
-            #   미국은 전수 검토를 위해 별도 상한(US_FULL 120 / US_LITE 48)을 둔다.
+            #   미국은 전수 검토를 위해 별도 상한(US_FULL 130 / US_LITE 48)을 둔다.
             #   인터리브된 raw_list이므로 truncation 후에도 티어가 고르게 남는다.
             if market_p == "US":
                 _scan_cap = SCAN_COLLECT_CAP_US_FULL if mode_p == "FULL" else SCAN_COLLECT_CAP_US_LITE
@@ -19971,7 +19976,7 @@ def route(path: str, params: Dict) -> Dict:
             _momentum_on, _vcp_on = _scan_signal_options(params)
             from market_briefing.technique_prune import rules_cache_token
             _prune_cache_token = rules_cache_token()
-            _cache_key = f"scan|v6|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
+            _cache_key = f"scan|v7|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -20051,6 +20056,7 @@ def route(path: str, params: Dict) -> Dict:
             # 실패 시 Phase B에서 기존 개별 수집으로 폴백한다.
             _bulk_ohlcv: dict = {}
             _scan_bar_dates: dict = {}
+            _scan_dates_map: dict = {}   # ticker → 일봉 날짜 목록 (박스 플랜의 지연·박스 기간 표기용)
             try:
                 _bd = yf.download(" ".join(raw_list), period="1y", group_by="ticker",
                                   threads=True, progress=False, timeout=25)
@@ -20083,6 +20089,9 @@ def route(path: str, params: Dict) -> Dict:
                                 continue
                             _scan_bar_dates[_t] = _scan_last_bar_date(_sub)
                             _bulk_ohlcv[_t] = (_cl[:_n], _hi[:_n], _lo[:_n], _vo[:_n], _op[:_n])
+                            _scan_dates_map[_t] = [
+                                (_ix.date().isoformat() if hasattr(_ix, "date") else str(_ix)[:10])
+                                for _ix in _sub.index][:_n]
                         except Exception:
                             continue
                 print(f"[scan] bulk history: {len(_bulk_ohlcv)}/{len(raw_list)} tickers")
@@ -20125,6 +20134,10 @@ def route(path: str, params: Dict) -> Dict:
                         if ohlcv is None:
                             return None
                         closes, highs, lows, volumes, opens = ohlcv
+                        # _hist_to_lists 는 결측·중복 행이 있으면 None 이므로 여기서는 행이 1:1 대응한다.
+                        _scan_dates_map[tkr] = [
+                            (_ix.date().isoformat() if hasattr(_ix, "date") else str(_ix)[:10])
+                            for _ix in hist.index][:len(closes)]
                     snap = build_snapshot_from_ohlcv(
                         ticker=tkr, closes=closes, highs=highs,
                         lows=lows, volumes=volumes, opens=opens,
@@ -20181,7 +20194,7 @@ def route(path: str, params: Dict) -> Dict:
             # 병렬 수집 — 수집 전체 시간 예산(SCAN_COLLECT_BUDGET_S) 내 도착분만으로 진행.
             #   bulk 소요 시간을 제외한 잔여 예산을 B1/B2에 나눠 Vercel 60s를 넘지 않게 한다.
             #   B2(info)는 워커를 6개로 제한해 야후 401 레이트리밋을 회피한다.
-            # ── 미국 가격 상한 ($70 초과 수집분 제외, 실측가 기준) ──
+            # ── 미국 가격 상한 ($23 초과 수집분 제외, 실측가 기준 — SCAN_US_MAX_PRICE) ──
             _price_capped_out: list = []
             _hist_hold: dict = {}
 
@@ -20476,7 +20489,7 @@ def route(path: str, params: Dict) -> Dict:
                               and cd.get("status") in ("WATCH", "WAIT_PULLBACK"))
             _post_far = sum(1 for cd in cands if cd.get("status") == "FAR")
 
-            # ── 출력 선정: 정확히 15개 보장 + 품질 우선 단계적 보강 (한국/미국 동일) ──
+            # ── 출력 선정: 박스 플랜 완성 종목 중 최대 15개 + 품질 우선 단계적 보강 (한국/미국 동일) ──
             #   모든 후보에 종합점수 부여 후, '품질 등급(tier)'을 순서대로 채운다.
             #     · 등급1(최우선): 기술필터 통과 + 진입 가능권(READY/WATCH/눌림목)
             #     · 등급2(보강) : 기술필터 통과 + 그 외(주로 FAR — 추세 양호, 진입가만 먼 종목)
@@ -20502,9 +20515,17 @@ def route(path: str, params: Dict) -> Dict:
             def _by_score(lst):
                 return sorted(lst, key=lambda cd: (-cd["composite_score"], -scan_ncs_score(cd)))
 
-            tier1 = _by_score([cd for cd in cands if _is_tier1(cd)])
-            tier2 = _by_score([cd for cd in cands if _is_tier2(cd)])
-            tier3 = _by_score([cd for cd in cands if _is_tier3(cd)])
+            # ── 🧭 박스 실행 플랜: 모든 후보에 붙이고 다섯 항목(1차 목표·2차 목표·손절 기준·
+            #    재진입 후보·예상 대기 시간)이 모두 산출되는 종목만 출력 대상으로 삼는다.
+            #    순서(종합점수·등급·분산)는 그대로이고 플랜 완성 여부는 순위에 점수로 반영하지 않는다.
+            _plan_stats = attach_box_plans(
+                cands, snap_map, market=market_p, dates_map=_scan_dates_map,
+                in_progress=lambda _t: _bar_in_progress(market_p, _scan_bar_dates.get(_t, "")))
+            _plan_pool = [cd for cd in cands if (cd.get("box_plan") or {}).get("complete")]
+
+            tier1 = _by_score([cd for cd in _plan_pool if _is_tier1(cd)])
+            tier2 = _by_score([cd for cd in _plan_pool if _is_tier2(cd)])
+            tier3 = _by_score([cd for cd in _plan_pool if _is_tier3(cd)])
 
             # 등급 순차 보강 — 분산 카운터를 공유해 등급을 넘어 다양성 유지
             _sector_cnt: dict = {}
@@ -20547,8 +20568,17 @@ def route(path: str, params: Dict) -> Dict:
                 "display_cap":     SCAN_DISPLAY_CAP,
                 "tier_distribution":   _tier_dist,
                 "sector_distribution": _sector_dist,
-                "filter_desc":     "진입 가능권 우선 + 품질 등급 단계 보강(정확히 15개) + 시총·섹터 분산(MMR)"
-                                   + (" + 미국 $70 이하" if market_p == "US" else "")
+                "plan_stats":      {
+                    "version":   _plan_stats["version"],
+                    "evaluated": _plan_stats["evaluated"],
+                    "complete":  _plan_stats["complete"],
+                    "displayed": len(selected),
+                    "excluded":  [{"key": _k, "label": INCOMPLETE_REASONS.get(_k, _k), "count": _n}
+                                  for _k, _n in sorted(_plan_stats["excluded"].items(),
+                                                       key=lambda kv: -kv[1])],
+                },
+                "filter_desc":     "박스 실행 플랜 5개 항목이 모두 산출되는 종목만 + 진입 가능권 우선 + 품질 등급 단계 보강(최대 15개) + 시총·섹터 분산(MMR)"
+                                   + (f" + 미국 ${SCAN_US_MAX_PRICE:g} 이하" if market_p == "US" else "")
                                    + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else "")
                                    + (" + 모멘텀 지속 진입준비 승격" if _momentum_on and _momentum_promoted else "")
                                    + (" + VCP 돌파 진입준비 승격" if _vcp_on and _vcp_promoted else ""),
@@ -20575,7 +20605,7 @@ def route(path: str, params: Dict) -> Dict:
                     "filtered_out": len(_price_capped_out),
                     "excluded": sorted(
                         _price_capped_out, key=lambda x: -x["price"])[:15],
-                    "note": f"미국 종목은 ${SCAN_US_MAX_PRICE:.0f} 초과 시 출력에서 제외됩니다",
+                    "note": f"미국 종목은 ${SCAN_US_MAX_PRICE:g} 초과 시 출력에서 제외됩니다",
                 } if market_p == "US" else None),
                 "leader_reversal_counts": ({
                     stage: sum(1 for cd in selected
@@ -22527,7 +22557,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px;flex-wrap:wrap;gap:18px">
       <div style="margin-right:auto">
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🔬 7단계 스캔 엔진</h2>
-        <p style="font-size:12px;color:#8b949e">BQS·FWS·NCS 복합 점수 기반 후보 종목 발굴</p>
+        <p style="font-size:12px;color:#8b949e">🧭 박스 실행 플랜(1·2차 목표, 손절 기준, 재진입 후보, 예상 대기 시간)이 모두 산출되는 후보 종목 발굴</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap">
         <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px;flex:1 1 0;min-width:0">
@@ -22549,7 +22579,7 @@ input::placeholder{color:#484f58}
     <div id="scan-intro" class="home-section" style="text-align:center;padding:32px 20px;color:#484f58">
       <div style="font-size:36px;margin-bottom:12px">🔬</div>
       <div style="font-size:14px;font-weight:600;color:#8b949e;margin-bottom:8px">7단계 스캔 엔진 준비 완료</div>
-      <div style="font-size:12px;line-height:1.7">종목 유니버스 → 기술필터 → 상태분류 → BQS 랭킹 → 리스크 게이트 → 추격 방지 → 포지션 사이징</div>
+      <div style="font-size:12px;line-height:1.7">종목 유니버스 → 기술필터 → 상태분류 → BQS 랭킹 → 리스크 게이트 → 추격 방지 → 포지션 사이징 → 🧭 박스 실행 플랜</div>
       <div style="font-size:11px;color:#484f58;margin-top:8px">⚠️ 실시간 데이터 수집으로 10~30초 소요될 수 있습니다</div>
     </div>
     <!-- 로딩 -->
@@ -22572,16 +22602,15 @@ input::placeholder{color:#484f58}
           <thead><tr>
             <th>#</th>
             <th>종목</th>
-            <th style="text-align:center">상태</th>
             <th style="text-align:right">현재가</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 1차 목표 — 박스 상·하단의 중간값(되돌림 1차 매물)">1차 목표(박스 중간)</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 2차 목표 — 박스 상단 저항(3봉 확인 고점)">2차 목표(박스 상단)</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 손절 기준 — 이 가격 아래로 종가가 마감하면 계획 취소">손절 기준</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 재진입 후보 구간 — 조건부 후보는 조건이 충족된 뒤에만 유효합니다">재진입 후보</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 예상 대기 시간 — 최소 대기는 박스 확정·종가 확인에 필요한 거래일 수, 도달 시점은 변동성만으로 본 추정(방향 예측 아님)">예상 대기 시간</th>
             <th style="text-align:right">진입 트리거</th>
             <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 신뢰도</th>
-            <th style="text-align:center">치명적 약점</th>
-            <th style="text-align:center">순복합 점수</th>
             <th>카테고리</th>
-            <th style="text-align:center" title="상대강도 리더 중 하락을 먼저 멈춘 종목의 반전 신호 — 🔥 돌파(4조건 충족) · 👀 대기(돌파 직전) · 🧱 바닥(조정 중) · —(해당 없음). 점수 미반영 보조 지표">리더 반전</th>
-            <th style="text-align:center" title="하루 +20% 급등 후 3일 절반수성 신호 — ⚡ 통과(3일 수성) · 👀 관찰(1-2일차) · 🚀 급등당일 · ✖ 이탈 · —(해당 없음). 점수 미반영 보조 지표">모멘텀 지속</th>
-            <th style="text-align:center" title="변동성 수축 패턴 — 📐 돌파(피벗 종가 돌파) · 🌀 수축중(피벗 대기) · —(해당 없음). 약세장·거래량 미동반 등 가짜돌파 위험은 승격에서 제외. 점수 미반영 보조 지표">VCP 수축</th>
           </tr></thead>
           <tbody id="scan-tbody"></tbody>
         </table>
@@ -29832,6 +29861,19 @@ function renderScanResult(d, market) {
   };
   function _toKoSector(s) { return _sectorKo[s] || s || '—'; }
 
+  // 속성(title)·본문에 서버 문자열을 넣을 때 쓰는 이스케이프
+  function _scanEsc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch) {
+      return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch];
+    });
+  }
+  // 박스 플랜을 만들지 못해 목록에서 빠진 종목의 사유 요약(툴팁)
+  function planExcludedTip(ps) {
+    var ex = (ps && ps.excluded) || [];
+    if (!ex.length) return '평가한 종목 모두 박스 실행 플랜 5개 항목이 산출되었습니다';
+    return '목록에서 빠진 종목 사유: ' + ex.map(function(e) { return e.label + ' ' + e.count + '종목'; }).join(' · ');
+  }
+
   // ── 레짐 한글 변환 ────────────────────────────────────────────────────────
   var _regimeKo  = { 'BULLISH': '상승장', 'BEARISH': '하락장', 'SIDEWAYS': '횡보장' };
   var _volKo     = { 'HIGH_VOL': '고변동성', 'LOW_VOL': '저변동성', 'NORMAL_VOL': '보통' };
@@ -29845,6 +29887,7 @@ function renderScanResult(d, market) {
       { val: d.passed_filters, label: '필터 통과',  color: '#58a6ff' },
       { val: d.ready_count,    label: '진입 준비',  color: '#3fb950' },
       { val: d.watch_count,    label: '관찰 대기',  color: '#d29922' },
+      { val: (d.plan_stats ? d.plan_stats.complete : null), label: '박스 플랜 완성', color: '#3fb950' },
       { val: (d.good_count != null ? d.good_count : (d.candidates||[]).length), label: '선정 종목', color: '#3fb950' },
     ];
     sumEl.innerHTML = cards.map(function(c) {
@@ -29879,10 +29922,10 @@ function renderScanResult(d, market) {
         ? '<span style="font-size:10px;color:#58a6ff;border:1px solid #58a6ff55;border-radius:3px;padding:0 5px;margin-left:6px">$' + d.price_cap.max_price + ' 이하만 표시' +
           (d.price_cap.filtered_out ? ' · ' + d.price_cap.filtered_out + '종목 제외' : '') + '</span>'
         : '') +
-      (d.leader_reversal_counts && (d.leader_reversal_counts.BREAKOUT || d.leader_reversal_counts.WAIT_BREAKOUT)
-        ? '<span style="color:#484f58;font-size:11px;margin-left:16px">리더 반전</span>' +
-          '<span style="font-weight:700;color:#3fb950">🔥 ' + (d.leader_reversal_counts.BREAKOUT || 0) + '</span>' +
-          '<span style="font-weight:700;color:#d29922;margin-left:6px">👀 ' + (d.leader_reversal_counts.WAIT_BREAKOUT || 0) + '</span>'
+      (d.plan_stats
+        ? '<span style="color:#484f58;font-size:11px;margin-left:16px" title="' + _scanEsc(planExcludedTip(d.plan_stats)) + '">🧭 박스 플랜 완성</span>' +
+          '<span style="font-weight:700;color:' + (d.plan_stats.complete ? '#3fb950' : '#f85149') + '">' +
+          (d.plan_stats.complete || 0) + '/' + (d.plan_stats.evaluated || 0) + '</span>'
         : '') +
       (d.coverage
         ? '<span style="color:#484f58;font-size:11px;margin-left:16px">검토 범위</span>' +
@@ -29891,14 +29934,7 @@ function renderScanResult(d, market) {
             ? '<span style="font-size:10px;color:#3fb950;margin-left:6px">전수 검토</span>'
             : '<span style="font-size:10px;color:#d29922;border:1px solid #d2992255;border-radius:3px;padding:0 5px;margin-left:6px">시간 초과로 ' + (d.coverage.unresolved || 0) + '종목 미검토</span>')
         : '') +
-      (!isKrx
-        ? '<span style="flex-basis:100%;font-size:10px;color:#6e7681;line-height:1.7">리더 반전 읽는 법<br>' +
-          '<b style="color:#3fb950">🔥 돌파</b>=4조건 충족(상승기 시장 초과 +10%p 이상 · 고점 대비 −30% 이상 조정 · 신저가 중단 · 횡보 상단 돌파)<br>' +
-          '<b style="color:#d29922">👀 대기</b>=돌파 직전<br>' +
-          '<b style="color:#8b949e">🧱 바닥</b>=조정 진행 중 · —=해당 없음<br>' +
-          '배지는 단계만 나타내는 점수 미반영 보조 지표이며 매수 권유가 아닙니다.</span>'
-        : '') +
-      (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
+      (ts ?'<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
   // 후보 테이블
@@ -29906,21 +29942,10 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 현재 진입 가능권(상태)에 든 종목이 없습니다</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 박스 실행 플랜(1·2차 목표, 손절 기준, 재진입 후보, 예상 대기 시간)이 모두 산출되는 종목이 없습니다' +
+      (d.plan_stats ? '<div style="font-size:11px;margin-top:6px;color:#6e7681">' + _scanEsc(planExcludedTip(d.plan_stats)) + '</div>' : '') + '</td></tr>';
     return;
   }
-
-  var statusBadge = function(s) {
-    var map = {
-      'READY':         '<span class="scan-status-ready">진입 준비</span>',
-      'WATCH':         '<span class="scan-status-watch">관찰 중</span>',
-      'WAIT_PULLBACK': '<span class="scan-status-pullback">눌림목</span>',
-      'FAR':           '<span class="scan-status-far">원거리</span>',
-      'EARNINGS_BLOCK':'<span class="scan-status-block">실적 대기</span>',
-      'COOLDOWN':      '<span class="scan-status-block">쿨다운</span>',
-    };
-    return map[s] || '<span class="scan-status-far">' + s + '</span>';
-  };
 
   var scoreBar = function(v, color) {
     var pct = Math.min(100, Math.max(0, v));
@@ -29929,9 +29954,61 @@ function renderScanResult(d, market) {
            '<div style="height:100%;width:' + pct + '%;background:' + color + ';border-radius:2px"></div></div>';
   };
 
+  // ── 🧭 박스 실행 플랜 셀 (서버 box_plan 요약 — market_briefing/scan_box_plan.py) ──────────
+  // 값은 예측 탭의 박스 실행 플랜과 같은 계산 결과이고, 가격 아래 %는 현재가 대비 거리다.
+  var NA = '<span style="font-size:11px;color:#484f58">—</span>';
+  var pctTxt = function(v) {
+    if (v == null || !isFinite(v)) return '';
+    return (v > 0 ? '+' : '') + Number(v).toFixed(1) + '%';
+  };
+  var pctColor = function(v) { return v == null ? '#6e7681' : (v >= 0 ? '#3fb950' : '#f85149'); };
+  var subLine = function(txt, color, tip) {
+    if (!txt) return '';
+    return '<div' + (tip ? ' title="' + _scanEsc(tip) + '"' : '') +
+           ' style="font-size:10px;color:' + (color || '#6e7681') + ';margin-top:2px;white-space:nowrap">' + _scanEsc(txt) + '</div>';
+  };
+  var labelTail = function(label) {
+    var parts = String(label || '').split('·');
+    return parts[parts.length - 1].trim();
+  };
+  var targetCell = function(t, defaultTail) {
+    if (!t || t.price == null) return NA;
+    var tail = labelTail(t.label);
+    var tip = (t.label || '') + (t.basis ? ' — ' + t.basis : '') +
+              (t.rr != null ? ' · 재진입 기준 ' + t.rr + 'R' : '');
+    return '<div title="' + _scanEsc(tip) + '" style="font-size:13px;font-weight:700;color:#3fb950">' + fmtP(t.price) + '</div>' +
+           subLine(t.pct_from_quote != null ? '현재가 ' + pctTxt(t.pct_from_quote) : '', pctColor(t.pct_from_quote)) +
+           (tail && tail !== defaultTail ? subLine(tail, '#8b949e') : '');
+  };
+  var stopCell = function(s, conditional) {
+    if (!s || s.price == null) return NA;
+    var tip = (s.basis || '') + ' — 종가가 이 가격 아래로 마감하면 계획 취소';
+    return '<div title="' + _scanEsc(tip) + '" style="font-size:13px;font-weight:700;color:#f85149">' + fmtP(s.price) + '</div>' +
+           subLine(s.pct_from_quote != null ? '현재가 ' + pctTxt(s.pct_from_quote) : '', pctColor(s.pct_from_quote)) +
+           (conditional ? subLine('후보 진입 기준', '#8b949e') : '');
+  };
+  var reentryCell = function(e, verdict) {
+    if (!e || e.low == null || e.high == null) return NA;
+    var tip = (verdict && verdict.headline ? '박스 플랜 판단: ' + verdict.headline + '\n' : '') +
+              (e.condition || e.basis || e.label || '');
+    return '<div title="' + _scanEsc(tip) + '" style="font-size:13px;font-weight:700;color:#58a6ff">' +
+             fmtP(e.low) + ' ~ ' + fmtP(e.high) + '</div>' +
+           subLine((e.caption || '') + (e.conditional ? ' · 조건부' : ''), e.conditional ? '#d29922' : '#8b949e') +
+           subLine(e.pct_from_quote != null ? '현재가 ' + pctTxt(e.pct_from_quote) : '', pctColor(e.pct_from_quote));
+  };
+  var waitCell = function(w) {
+    if (!w || !w.text) return NA;
+    return '<div title="' + _scanEsc(w.detail || '') + '" style="font-size:12px;font-weight:600;color:#e6edf3">' + _scanEsc(w.text) + '</div>' +
+           subLine(w.sub || '', '#8b949e');
+  };
+  // 진입 트리거가 보조 신호 승격으로 바뀐 행은 출처를 툴팁으로만 남긴다(해당 열은 화면에서 삭제).
+  var triggerTip = function(c) {
+    var src = {leader_reversal: '리더 반전 돌파', momentum_persistence: '모멘텀 지속 통과', vcp: 'VCP 피벗 돌파'}[c.status_source];
+    if (!src || c.status !== 'READY') return '';
+    return '진입 트리거 출처: ' + src + (c.orig_entry_trigger != null ? ' (스캔 기본 트리거 ' + fmtP(c.orig_entry_trigger) + ')' : '');
+  };
+
   var rows = cands.slice(0, d.display_cap || 15).map(function(c, i) {
-    var ncsColor = c.ncs >= 70 ? '#3fb950' : c.ncs >= 50 ? '#58a6ff' : c.ncs >= 35 ? '#d29922' : '#f85149';
-    var fwsColor = c.fws <= 30 ? '#3fb950' : c.fws <= 50 ? '#d29922' : c.fws <= 65 ? '#f97316' : '#f85149';
     var bqsColor = c.bqs >= 65 ? '#3fb950' : c.bqs >= 45 ? '#58a6ff' : '#8b949e';
 
     var cat = _toKoSector(c.category || c.sector || '');
@@ -29947,85 +30024,26 @@ function renderScanResult(d, market) {
     var capBadge = '<span style="font-size:9px;font-weight:700;color:' + capClr +
                    ';border:1px solid ' + capClr + '55;border-radius:3px;padding:0 4px;margin-left:5px">' + capKo + '</span>';
 
-    // 승격 표시 — 보조 신호로 진입 준비가 된 행은 상태 배지 옆에 표식
-    // (리더 🔥 → 모멘텀 ⚡ → VCP 📐 순으로 먼저 승격된 것만 표시, 점수 미반영)
-    var promotedMark = (c.status_source === 'leader_reversal' && c.status === 'READY')
-      ? '<div title="리더 반전 돌파로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#3fb950;margin-top:2px;white-space:nowrap">🔥 리더 돌파</div>'
-      : (c.status_source === 'momentum_persistence' && c.status === 'READY')
-      ? '<div title="모멘텀 지속 통과로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#58a6ff;margin-top:2px;white-space:nowrap">⚡ 모멘텀 통과</div>'
-      : (c.status_source === 'vcp' && c.status === 'READY')
-      ? '<div title="VCP 피벗 돌파로 진입 준비 승격 (원 상태: ' + (c.orig_status || '?') + ')" style="font-size:9px;color:#d29922;margin-top:2px;white-space:nowrap">📐 VCP 돌파</div>'
-      : '';
-    // 리더주 반전 신호 셀: 계산용 세부 수치·진입/손절가는 API에만 유지하고
-    // 스캔 표에는 단계 배지만 노출한다.
-    var lr = c.leader_reversal || {};
-    var lrStage = lr.stage || 'NONE';
-    var lrCell = (function() {
-      var tip = '리더 반전 보조 신호 · 점수 미반영';
-      if (lrStage === 'BREAKOUT' || lrStage === 'WAIT_BREAKOUT' || lrStage === 'BASE_BUILDING') {
-        var badge = lrStage === 'BREAKOUT'
-          ? '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 8px;white-space:nowrap">🔥 돌파</span>'
-          : lrStage === 'WAIT_BREAKOUT'
-          ? '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 대기</span>'
-          : '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🧱 바닥</span>';
-        return badge;
-      }
-      return '<span style="font-size:11px;color:#484f58">—</span>';
-    })();
+    var bp = c.box_plan || {};
+    var trigTip = triggerTip(c);
 
-    // 모멘텀 지속 신호 셀: 점수 미반영 보조 지표, 단계 배지만 노출한다.
-    var mo = c.momentum_persistence || {};
-    var moStage = mo.stage || 'NONE';
-    var moCell = (function() {
-      var tip = '모멘텀 지속 보조 신호 · 점수 미반영';
-      if (moStage === 'PASS' || moStage === 'WAIT' || moStage === 'SURGE' || moStage === 'FAIL') {
-        var badge = moStage === 'PASS'
-          ? '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#58a6ff;border:1px solid #58a6ff55;border-radius:999px;padding:2px 8px;white-space:nowrap">⚡ 통과</span>'
-          : moStage === 'WAIT'
-          ? '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">👀 관찰</span>'
-          : moStage === 'SURGE'
-          ? '<span title="' + tip + '" style="font-size:11px;color:#e6edf3;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">🚀 급등</span>'
-          : '<span title="' + tip + '" style="font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:999px;padding:2px 8px;white-space:nowrap">✖ 이탈</span>';
-        return badge;
-      }
-      return '<span style="font-size:11px;color:#484f58">—</span>';
-    })();
-
-    // VCP 수축 신호 셀: 점수 미반영 보조 지표, 단계 배지만 노출한다.
-    // 가짜돌파 위험 종목은 통과라도 승격 없이 주의 배지로만 표시한다.
-    var vc = c.vcp || {};
-    var vcStage = vc.stage || 'NONE';
-    var vcRisky = !!vc.false_breakout_risk;
-    var vcCell = (function() {
-      var tip = 'VCP 수축 보조 신호 · 점수 미반영';
-      if (vcStage === 'PASS') {
-        return vcRisky
-          ? '<span title="' + tip + ' · 가짜돌파 위험(' + ((vc.risk_reasons || []).join(', ') || '주의') + ') — 승격 제외" style="font-size:11px;font-weight:700;color:#d29922;border:1px solid #d2992255;border-radius:999px;padding:2px 8px;white-space:nowrap">📐 통과·주의</span>'
-          : '<span title="' + tip + '" style="font-size:11px;font-weight:800;color:#3fb950;border:1px solid #3fb95055;border-radius:999px;padding:2px 8px;white-space:nowrap">📐 돌파</span>';
-      }
-      if (vcStage === 'CONTRACTING') {
-        return '<span title="' + tip + '" style="font-size:11px;font-weight:700;color:#58a6ff;border:1px solid #58a6ff55;border-radius:999px;padding:2px 8px;white-space:nowrap">🌀 수축중</span>';
-      }
-      return '<span style="font-size:11px;color:#484f58">—</span>';
-    })();
-
-    // 열 순서: 식별(종목) → 액션(상태·현재가·진입 트리거) → 근거(신뢰·약점·순복합)
-    // → 맥락(카테고리) → 보조신호(리더·모멘텀·VCP). 등락률·외부신호·퀀트점수는
-    // 판단 중복이라 표에서 제외한다(API 응답에는 그대로 유지).
+    // 열 순서: 식별(종목)·현재가 → 🧭 박스 실행 플랜(1차 목표·2차 목표·손절 기준·재진입 후보·
+    // 예상 대기 시간) → 보조(진입 트리거·돌파 신뢰도·카테고리).
+    // 상태·치명적 약점·순복합 점수·리더 반전·모멘텀 지속·VCP 수축 열은 화면에서 삭제했다
+    // (API 응답에는 그대로 유지).
     return '<tr onclick="openStockDetail(\'' + c.ticker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
       '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
            (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
-      '<td style="text-align:center">' + statusBadge(c.status) + promotedMark + '</td>' +
       '<td style="text-align:right;font-size:13px;font-weight:600">' + fmtP(c.price) + '</td>' +
-      '<td style="text-align:right;font-size:12px;color:#58a6ff">' + fmtP(c.entry_trigger) + '</td>' +
+      '<td style="text-align:right;min-width:110px">' + targetCell(bp.target1, '박스 중간') + '</td>' +
+      '<td style="text-align:right;min-width:110px">' + targetCell(bp.target2, '박스 상단') + '</td>' +
+      '<td style="text-align:right;min-width:100px">' + stopCell(bp.stop, bp.reentry && bp.reentry.conditional) + '</td>' +
+      '<td style="text-align:right;min-width:150px">' + reentryCell(bp.reentry, bp.verdict) + '</td>' +
+      '<td style="text-align:right;min-width:150px">' + waitCell(bp.wait) + '</td>' +
+      '<td style="text-align:right;font-size:12px;color:#58a6ff"' + (trigTip ? ' title="' + _scanEsc(trigTip) + '"' : '') + '>' + fmtP(c.entry_trigger) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
-      '<td style="min-width:60px">' + scoreBar(c.fws, fwsColor) + '</td>' +
-      '<td style="min-width:60px">' + scoreBar(c.ncs, ncsColor) + '</td>' +
       '<td><span class="cat-badge">' + cat + '</span></td>' +
-      '<td style="text-align:center;min-width:110px">' + lrCell + '</td>' +
-      '<td style="text-align:center;min-width:110px">' + moCell + '</td>' +
-      '<td style="text-align:center;min-width:110px">' + vcCell + '</td>' +
     '</tr>';
   }).join('');
 

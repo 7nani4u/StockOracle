@@ -244,15 +244,21 @@ def _unavailable(out, reason, need, review="데이터가 바뀌면 다음 조회
 # ── geometry builders ──────────────────────────────────────────────────────────
 
 def _targets(entry_ref, stop, levels, market, base):
+    """Target ladder above the entry. A level is ``(price, label, basis[, role])``.
+
+    ``role`` is the machine-readable meaning of the level (``box_mid`` / ``box_top`` /
+    ``measured_50`` / ``measured_100``) so callers such as the scan table never have to parse the
+    Korean label to know whether a target is a box level or a measured move.
+    """
     risk = entry_ref - stop
     out = []
-    for price, label, basis in levels:
+    for price, label, basis, *rest in levels:
         p = round_tick(price, market, "floor")
         if p is None or p <= entry_ref:
             continue
         if out and p <= out[-1]["price"]:
             continue
-        out.append({"price": p, "label": label, "basis": basis,
+        out.append({"price": p, "label": label, "basis": basis, "role": rest[0] if rest else None,
                     "pct_from_entry": _pct(p, entry_ref), "pct_from_quote": _pct(p, base),
                     "rr": round((p - entry_ref) / risk, 2) if risk > 0 else None})
     return out
@@ -283,8 +289,8 @@ def _support_geometry(box, atr, market, quote, p):
     if stop is None or stop >= zone[0]:
         stop = round_tick(zone[0] - tick_size(zone[0], market), market, "floor")
     targets = _targets(entry_ref, stop, [
-        ((top + bottom) / 2, "1차 목표 · 박스 중간", "박스 상·하단의 중간값(되돌림 1차 매물)"),
-        (top, "2차 목표 · 박스 상단", "박스 상단 저항(3봉 확인 고점)"),
+        ((top + bottom) / 2, "1차 목표 · 박스 중간", "박스 상·하단의 중간값(되돌림 1차 매물)", "box_mid"),
+        (top, "2차 목표 · 박스 상단", "박스 상단 저항(3봉 확인 고점)", "box_top"),
     ], market, quote)
     risk = entry_ref - stop
     final = targets[-1] if targets else None
@@ -318,8 +324,8 @@ def _breakout_geometry(box, atr, market, quote, p, boxes):
     # reported as a warning, not used as a target: on 2026-11-05 live data it produced a
     # first target 0.36R above the entry, too close to pay for half the position.
     overhead = _overhead(boxes, box, entry_ref + 0.25 * atr, measured)
-    levels = [(half, "1차 목표 · 측정 이동 50%", "박스 상단 + 박스 높이의 절반"),
-              (measured, "2차 목표 · 측정 이동 100%", "박스 상단 + 박스 높이(측정 이동)")]
+    levels = [(half, "1차 목표 · 측정 이동 50%", "박스 상단 + 박스 높이의 절반", "measured_50"),
+              (measured, "2차 목표 · 측정 이동 100%", "박스 상단 + 박스 높이(측정 이동)", "measured_100")]
     targets = _targets(entry_ref, stop, levels, market, quote)
     final = targets[-1] if targets else None
     return {
@@ -367,8 +373,8 @@ def _reclaim_geometry(box, atr, market, quote, p):
         return None
     entry_ref = (zone[0] + zone[1]) / 2
     targets = _targets(entry_ref, stop, [
-        ((top + bottom) / 2, "1차 목표 · 이전 박스 중간", "이탈 전 박스의 중간값(되돌림 1차 매물)"),
-        (top, "2차 목표 · 이전 박스 상단", "이탈 전 박스 상단(전체 복귀)"),
+        ((top + bottom) / 2, "1차 목표 · 이전 박스 중간", "이탈 전 박스의 중간값(되돌림 1차 매물)", "box_mid"),
+        (top, "2차 목표 · 이전 박스 상단", "이탈 전 박스 상단(전체 복귀)", "box_top"),
     ], market, quote)
     if not targets:
         return None
