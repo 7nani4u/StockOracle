@@ -15,6 +15,26 @@ Plans built after a breakout (``measured_50``/``measured_100`` targets) put both
 box top, so "1st target = box middle" and "2nd target = box top" would be false for them.  Those stocks
 are counted as excluded instead of being shown under a wrong heading.
 
+Why the targets must sit above the current price
+-----------------------------------------------
+The plan's box levels are anchored to a *pull-back entry* near the box bottom: ``box_plan._targets``
+keeps every level above the planned entry, not above the live quote.  Next to a 현재가 column that
+reads as a target the stock has already passed.  2026-11-07 live scan, plans that were otherwise
+complete: KRX 13 of 28 and US 37 of 74 had the 1st target (box middle) at or below the current price,
+by three routes:
+
+* ``new_base`` (box broke down, a new range is forming): in a down leg the forming range is
+  [lowest low, highest high since that low] (``box_sequence.scan_boxes``), so a stock that has
+  bounced more than half-way sits above the range middle by construction;
+* ``reclaim`` (broken-down box, price back inside or above the old box): the old middle/top are
+  levels the price has already crossed;
+* ``range_support`` / ``new_box_above`` (failed breakout, upper new box): same effect.
+
+A level at or below the current price is not a target, so a stock is "complete" only when both box
+targets are strictly above the price shown in the table.  The prediction tab keeps the full plan
+(entry zone first, targets measured from that entry); this is a scan-table listing rule, not a
+change of the plan's numbers, ranking or probabilities.
+
 The module is pure Python and never raises: a failure becomes an incomplete summary with a reason.
 """
 from __future__ import annotations
@@ -24,7 +44,7 @@ import math
 from .box_plan import build_execution_plan
 from .box_sequence import analyze_box_sequence
 
-SCAN_PLAN_VERSION = "2026-11-07.scan-box-plan-v1"
+SCAN_PLAN_VERSION = "2026-11-07.scan-box-plan-v2"
 
 BOX_ROLES = ("box_mid", "box_top")
 
@@ -42,6 +62,9 @@ INCOMPLETE_REASONS = {
     "measured_targets": "돌파 이후 구간이라 목표가 박스 중간·상단이 아님(측정 이동)",
     "target_mid": "1차 목표(박스 중간) 없음",
     "target_top": "2차 목표(박스 상단) 없음",
+    "target_mid_passed": "1차 목표(박스 중간)가 현재가 이하 — 이미 지나간 가격",
+    "target_top_passed": "2차 목표(박스 상단)가 현재가 이하 — 이미 박스 상단 위",
+    "quote": "현재가를 알 수 없어 목표가 현재가 위인지 확인 불가",
     "stop": "손절 기준 없음",
     "reentry": "재진입 후보 가격 없음",
     "wait": "예상 기간 산출 불가",
@@ -79,6 +102,25 @@ def _target_view(item, quote):
     return {"price": _num(item.get("price")), "pct_from_quote": _pct(item.get("price"), quote),
             "pct_from_entry": item.get("pct_from_entry"), "rr": item.get("rr"),
             "label": item.get("label"), "basis": item.get("basis")}
+
+
+def _targets_not_above_quote(target1, target2, quote):
+    """Missing-reason keys when a box target is not strictly above the current price.
+
+    Only one key is returned: a box top at or below the price already implies the middle is too, so
+    the more informative ``target_top_passed`` wins.  Nothing is checked when no target exists (the
+    ``target_mid`` / ``target_top`` keys already say so).  A tick-rounded target equal to the quote is
+    "not above" — the target would be reached the moment the plan is read.
+    """
+    if not (target1 or target2):
+        return []
+    if quote is None:
+        return ["quote"]
+    if target2 and target2["price"] <= quote:
+        return ["target_top_passed"]
+    if target1 and target1["price"] <= quote:
+        return ["target_mid_passed"]
+    return []
 
 
 def summarize_wait(timing):
@@ -204,7 +246,10 @@ def _entry_view(entry, quote):
 
 
 def summarize_plan(plan, quote):
-    """Reduce one execution plan to the five scan fields and say whether all five exist."""
+    """Reduce one execution plan to the five scan fields and say whether all five exist.
+
+    "Complete" also requires both box targets to be above ``quote`` (see the module docstring).
+    """
     plan = plan if isinstance(plan, dict) else {}
     verdict = plan.get("verdict") or {}
     prices = plan.get("prices") or {}
@@ -248,6 +293,7 @@ def summarize_plan(plan, quote):
             missing.append("target_mid")
         if out["target2"] is None:
             missing.append("target_top")
+        missing.extend(_targets_not_above_quote(out["target1"], out["target2"], _num(quote)))
     if out["stop"] is None:
         missing.append("stop")
     if out["reentry"] is None:

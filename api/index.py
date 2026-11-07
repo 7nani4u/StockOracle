@@ -19976,7 +19976,7 @@ def route(path: str, params: Dict) -> Dict:
             _momentum_on, _vcp_on = _scan_signal_options(params)
             from market_briefing.technique_prune import rules_cache_token
             _prune_cache_token = rules_cache_token()
-            _cache_key = f"scan|v7|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
+            _cache_key = f"scan|v8|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -20577,7 +20577,7 @@ def route(path: str, params: Dict) -> Dict:
                                   for _k, _n in sorted(_plan_stats["excluded"].items(),
                                                        key=lambda kv: -kv[1])],
                 },
-                "filter_desc":     "박스 실행 플랜 5개 항목이 모두 산출되는 종목만 + 진입 가능권 우선 + 품질 등급 단계 보강(최대 15개) + 시총·섹터 분산(MMR)"
+                "filter_desc":     "박스 실행 플랜 5개 항목이 모두 산출되고 1·2차 목표가 현재가보다 높은 종목만 + 진입 가능권 우선 + 품질 등급 단계 보강(최대 15개) + 시총·섹터 분산(MMR)"
                                    + (f" + 미국 ${SCAN_US_MAX_PRICE:g} 이하" if market_p == "US" else "")
                                    + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else "")
                                    + (" + 모멘텀 지속 진입준비 승격" if _momentum_on and _momentum_promoted else "")
@@ -22604,10 +22604,9 @@ input::placeholder{color:#484f58}
             <th>종목</th>
             <th>카테고리</th>
             <th style="text-align:right">현재가</th>
-            <th style="text-align:right">진입 트리거</th>
             <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 신뢰도</th>
-            <th style="text-align:right" title="🧭 박스 실행 플랜의 1차 목표 — 박스 상·하단의 중간값(되돌림 1차 매물)">1차 목표(박스 중간)</th>
-            <th style="text-align:right" title="🧭 박스 실행 플랜의 2차 목표 — 박스 상단 저항(3봉 확인 고점)">2차 목표(박스 상단)</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 1차 목표 — 박스 상·하단의 중간값(되돌림 1차 매물). 현재가보다 높은 종목만 표시합니다">1차 목표(박스 중간)</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 2차 목표 — 박스 상단 저항(3봉 확인 고점). 현재가보다 높은 종목만 표시합니다">2차 목표(박스 상단)</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 손절 기준 — 이 가격 아래로 종가가 마감하면 계획 취소">손절 기준</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 재진입 후보 구간 — 조건부 후보는 조건이 충족된 뒤에만 유효합니다">재진입 후보</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 예상 기간(거래일 기준) — 도달 기준가에 닿는 경우의 첫 도달일 25~75백분위. 변동성만으로 본 추정이며 방향 예측이 아닙니다. 도달 기간이 없으면 박스 확정·종가 확인에 필요한 최소 거래일을 표시합니다">예상 기간</th>
@@ -29943,7 +29942,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 박스 실행 플랜(1·2차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되는 종목이 없습니다' +
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 박스 실행 플랜(1·2차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되고 1·2차 목표가 현재가보다 높은 종목이 없습니다' +
       (d.plan_stats ? '<div style="font-size:11px;margin-top:6px;color:#6e7681">' + _scanEsc(planExcludedTip(d.plan_stats)) + '</div>' : '') + '</td></tr>';
     return;
   }
@@ -30009,7 +30008,7 @@ function renderScanResult(d, market) {
               '닿을 가능성 — 변동성 추정 오차를 반영한 최소~최대 범위(방향 예측 아님, 1차 목표 도달 확률 아님)';
     return '<div title="' + _scanEsc(tip) + '" style="font-size:13px;font-weight:600;color:#e6edf3;font-variant-numeric:tabular-nums">' + _scanEsc(p.text) + '</div>';
   };
-  // 진입 트리거가 보조 신호 승격으로 바뀐 행은 출처를 툴팁으로만 남긴다(해당 열은 화면에서 삭제).
+  // 진입 트리거가 보조 신호 승격으로 바뀐 행은 출처를 종목 칸 툴팁으로만 남긴다(진입 트리거 열은 화면에서 삭제).
   var triggerTip = function(c) {
     var src = {leader_reversal: '리더 반전 돌파', momentum_persistence: '모멘텀 지속 통과', vcp: 'VCP 피벗 돌파'}[c.status_source];
     if (!src || c.status !== 'READY') return '';
@@ -30035,18 +30034,17 @@ function renderScanResult(d, market) {
     var bp = c.box_plan || {};
     var trigTip = triggerTip(c);
 
-    // 열 순서(판단 흐름): # → 기본 정보(종목·카테고리·현재가) → 진입 조건(진입 트리거·돌파 신뢰도)
+    // 열 순서(판단 흐름): # → 기본 정보(종목·카테고리·현재가) → 진입 조건(돌파 신뢰도)
     // → 목표(1차·2차) → 위험 관리(손절 기준·재진입 후보) → 예상 기간·도달 확률.
-    // 열 머리글(#page-scan thead)과 순서·개수가 같아야 한다(12칸, 빈 목록 메시지 colspan 도 12).
-    // 상태·치명적 약점·순복합 점수·리더 반전·모멘텀 지속·VCP 수축 열은 화면에서 삭제했다
+    // 열 머리글(#page-scan thead)과 순서·개수가 같아야 한다(11칸, 빈 목록 메시지 colspan 도 11).
+    // 상태·치명적 약점·순복합 점수·리더 반전·모멘텀 지속·VCP 수축·진입 트리거 열은 화면에서 삭제했다
     // (API 응답에는 그대로 유지).
     return '<tr onclick="openStockDetail(\'' + c.ticker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
-      '<td><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
+      '<td' + (trigTip ? ' title="' + _scanEsc(trigTip) + '"' : '') + '><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
            (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
       '<td><span class="cat-badge">' + cat + '</span></td>' +
       '<td style="text-align:right;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums">' + fmtP(c.price) + '</td>' +
-      '<td style="text-align:right;font-size:12px;color:#58a6ff;font-variant-numeric:tabular-nums"' + (trigTip ? ' title="' + _scanEsc(trigTip) + '"' : '') + '>' + fmtP(c.entry_trigger) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + targetCell(bp.target1, '박스 중간') + '</td>' +
       '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + targetCell(bp.target2, '박스 상단') + '</td>' +
