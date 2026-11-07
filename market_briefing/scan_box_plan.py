@@ -44,7 +44,7 @@ INCOMPLETE_REASONS = {
     "target_top": "2차 목표(박스 상단) 없음",
     "stop": "손절 기준 없음",
     "reentry": "재진입 후보 가격 없음",
-    "wait": "예상 대기 시간 산출 불가",
+    "wait": "예상 기간 산출 불가",
     "error": "박스 실행 플랜 계산 실패",
 }
 
@@ -121,7 +121,72 @@ def summarize_wait(timing):
         "horizon_days": None if not horizon else int(horizon),
         "detail": (str(timing.get("estimate_label") or "").strip()
                    + " 방향을 예측한 값이 아니라 변동성만으로 본 추정입니다.").strip(),
+        # Table cells: the same engine numbers, split into two short columns (예상 기간 · 도달 확률).
+        "period": _period_view(timing, bars, days),
+        "probability": _probability_view(touch, horizon),
     }
+
+
+def _period_view(timing, bars, days):
+    """Short text for the 예상 기간 column, from numbers the engine already computed.
+
+    ``min~max일`` is the first-touch day window (25~75th percentile of the driftless model); when no
+    window exists the only real values left are the engine's own minimum wait (completed bars needed)
+    or "대기 없음".  Nothing is invented: no window, no range.  Days are trading days.
+    """
+    if isinstance(days, (list, tuple)) and len(days) == 2 and None not in days:
+        low, high = int(days[0]), int(days[1])
+        return {"text": f"{low}일" if low == high else f"{low}~{high}일", "kind": "window",
+                "min_days": low, "max_days": high}
+    if timing.get("immediate") is True:
+        return {"text": "대기 없음", "kind": "immediate", "min_days": 0, "max_days": 0}
+    if bars is not None:
+        if bars <= 0:
+            return {"text": "다음 봉 마감", "kind": "next_bar", "min_days": 0, "max_days": None}
+        return {"text": f"최소 {int(bars)}일", "kind": "min_bars", "min_days": int(bars), "max_days": None}
+    return None
+
+
+def _probability_view(touch, horizon):
+    """``low~high%`` (one decimal) for the 도달 확률 column, or ``None`` when the model gave none.
+
+    The range is the engine's own volatility-error band around the touch probability
+    (``touch_probability_range``); a collapsed band (low == high, e.g. certain touch) shows the single
+    value.  ``level`` is the price the probability refers to; ``level_label`` (set by
+    ``summarize_plan``) names it.  It is the touch price of the plan's timing, not the 1st target.
+    """
+    if not touch:
+        return None
+    band = touch.get("p_horizon_exact") or touch.get("p_horizon")
+    if not isinstance(band, dict):
+        return None
+    mid = _num(band.get("mid"))
+    low = _num(band.get("low")) if _num(band.get("low")) is not None else mid
+    high = _num(band.get("high")) if _num(band.get("high")) is not None else mid
+    if low is None or high is None:
+        return None
+    low, high = min(low, high), max(low, high)
+    text = f"{low:.1f}%" if round(low, 1) == round(high, 1) else f"{low:.1f}~{high:.1f}%"
+    return {"text": text, "low": low, "mid": mid, "high": high,
+            "horizon_days": None if not horizon else int(horizon), "level": _num(touch.get("level")),
+            "level_label": None}
+
+
+def _level_label(plan, level):
+    """Name the price the touch probability refers to (entry-zone top, a trigger price …)."""
+    level = _num(level)
+    if level is None:
+        return None
+    prices = plan.get("prices") or {}
+    candidates = [((prices.get("entry") or {}).get("high"), "재진입 후보 구간 상단"),
+                  ((prices.get("trigger") or {}).get("price"), (prices.get("trigger") or {}).get("label")),
+                  (((plan.get("alternative") or {}).get("trigger") or {}).get("price"),
+                   ((plan.get("alternative") or {}).get("trigger") or {}).get("label"))]
+    for price, label in candidates:
+        price = _num(price)
+        if price is not None and label and abs(price - level) <= max(abs(level) * 1e-9, 1e-12):
+            return label
+    return "기준가"
 
 
 def _entry_view(entry, quote):
@@ -172,6 +237,9 @@ def summarize_plan(plan, quote):
                        "pct_from_entry": stop.get("pct_from_entry"), "basis": stop.get("basis")}
     out["reentry"] = _entry_view(prices.get("entry"), quote)
     out["wait"] = summarize_wait(plan.get("timing"))
+    if out["wait"] and out["wait"].get("probability"):
+        prob = out["wait"]["probability"]
+        prob["level_label"] = _level_label(plan, prob.get("level"))
     missing = []
     if out["target_basis"] == "measured":
         missing.append("measured_targets")

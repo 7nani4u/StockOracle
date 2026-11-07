@@ -485,11 +485,18 @@ def _timing_touch(quote, level, closes, atr, horizon):
     def pct(r):
         return None if r is None else {k: round(v * 100) for k, v in r.items()}
 
+    def pct1(r):
+        # Same probabilities, one decimal: ``p5``/``p_horizon`` keep their integer rounding for the
+        # prediction card; the scan table shows ``low~high`` to one decimal without recomputing.
+        return None if r is None else {k: round(v * 100, 1) for k, v in r.items()}
+
     return {
         "level": level,
         "distance_pct": _pct(level, quote),
         "p5": pct(p5),
         "p_horizon": pct(p20),
+        "p5_exact": pct1(p5),
+        "p_horizon_exact": pct1(p20),
         "horizon_days": horizon,
         "days_if_reached": window.get("days") if window.get("within_horizon") else None,
         "sigma_daily_pct": round(sigma * 100, 2),
