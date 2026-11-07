@@ -736,6 +736,7 @@ SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 상한 (양 시장 공�
 SCAN_COLLECT_WORKERS  = 16
 SCAN_INFO_WORKERS     = 6    # info 전용 (야후 401 레이트리밋 회피용 소수 워커)
 SCAN_COLLECT_BUDGET_S = 42.0   # 이 시간 내 도착한 종목만으로 진행 (타임아웃 하드가드)
+SCAN_TARGET3_BUDGET_S = 52.0   # Vercel 에서만: 수집 시작 후 이 시간이 지나면 3차 목표 계산을 건너뛴다(함수 제한 60초 보호). 로컬은 제한 없음
 
 # 출력 선정 게이트 — 진입 가능권(상태)만 노출 (신호 조건 제거)
 SCAN_GOOD_STATES = ("READY", "WATCH", "WAIT_PULLBACK")
@@ -878,6 +879,58 @@ def scan_diversified_fill(
 def scan_diversified_select(cands: list, target: int) -> list:
     """단일 풀 분산 선정 (하위호환 래퍼) — 빈 누적 카운터로 fill 호출."""
     return scan_diversified_fill(list(cands), target, {}, {})
+
+
+def _scan_attach_target3(selected: list, snap_map: dict, market: str, dates_map: dict | None = None,
+                         deadline: float | None = None) -> int:
+    """종목마다 3차 목표(예측 탭 ⚖️ 중립적 카드 TP2 의 가장 높은 목표 가격)를 box_plan.target3 에 붙인다.
+
+    예측 탭과 같은 add_indicators → calc_risk 를 스캔 스냅샷(일봉 OHLCV)으로 돌린다. 호출 쪽은 선정 전에 플랜이
+    완성된 후보 전체를 종합점수 순으로 넘기고, 이어서 scan_box_plan.apply_target3_gate 가 3차 목표가 2차 목표
+    이하이거나 없는 종목을 목록에서 뺀다(순위에는 쓰지 않는다).
+    스캔은 뉴스·공시 이벤트 위험과 차트 패턴 병합을 수집하지 않으므로 넣지 않는다 — 예측 탭 값과 현재가·이벤트
+    위험에 따라 몇 % 어긋날 수 있다. 계산에 실패한 종목은 target3=None(→ 게이트가 제외). 성공 수를 돌려준다.
+    ``deadline``(time.time() 기준)을 넘기면 남은 종목은 계산하지 않고 ``target3_unchecked`` 로 표시한다 — 게이트는
+    이런 종목을 제외하지 않고(확인 못 했을 뿐이라 빈 목록이 되지 않게) 목록에 남기며 화면에는 '산출 불가'로 나온다.
+    점수 순으로 처리하므로 시간이 모자라면 낮은 순위가 미확인으로 남는다. 지표는 calc_risk 가 읽는 열만 계산해
+    (core_only) 종목당 약 0.12초.
+    """
+    from market_briefing.scan_box_plan import summarize_target3
+    try:
+        learning = calc_learning_adjustment(market)
+    except Exception:
+        learning = None
+    done = 0
+    for cd in selected or []:
+        plan = cd.get("box_plan")
+        if not isinstance(plan, dict):
+            continue
+        plan["target3"] = None
+        plan.pop("target3_unchecked", None)
+        if deadline is not None and time.time() > deadline:
+            plan["target3_unchecked"] = True   # 시간 예산 초과 — 못 구한 것이지 2차 이하로 확인된 것이 아니다
+            continue
+        snap = (snap_map or {}).get(cd.get("ticker"))
+        try:
+            if snap is None or snap.opens is None:
+                continue
+            n = len(snap.closes)
+            frame = pd.DataFrame({
+                "Open": list(snap.opens)[:n], "High": list(snap.highs)[:n], "Low": list(snap.lows)[:n],
+                "Close": list(snap.closes)[:n], "Volume": list(snap.volumes)[:n]})
+            dates = (dates_map or {}).get(cd.get("ticker"))
+            if dates is not None and len(dates) == n:
+                frame["Date"] = [str(x)[:10] for x in dates]
+            frame = add_indicators(frame, market=market, core_only=True)
+            dd = frame.where(pd.notna(frame), other=None).to_dict(orient="list")
+            last = float(snap.closes[-1])
+            risk = calc_risk(last, dd["ATR"][-1], market, dd, None, learning, None, None)
+            plan["target3"] = summarize_target3(
+                (risk or {}).get("balanced"), plan.get("quote"), (plan.get("target2") or {}).get("price"))
+            done += 1 if plan["target3"] else 0
+        except Exception as exc:  # 한 종목의 실패가 스캔 응답을 깨지 않는다
+            print(f"[scan] target3 failed {cd.get('ticker')} ({type(exc).__name__}: {exc})")
+    return done
 
 
 # 스캔 응답 캐시 — warm 인스턴스 재사용 시 yfinance 재호출/재계산 방지
@@ -2214,7 +2267,12 @@ def search_stock_suggestions(q: str, limit: int = 12) -> List[Dict]:
 # =============================================================================
 # 지표 계산
 # =============================================================================
-def add_indicators(df: pd.DataFrame, market: str = "US") -> pd.DataFrame:
+def add_indicators(df: pd.DataFrame, market: str = "US", core_only: bool = False) -> pd.DataFrame:
+    """일봉 OHLCV 에 기술지표 열을 더한다.
+
+    ``core_only=True`` 는 MA·BB·MACD·RSI·ATR·ADX/DI 까지만 계산한다(스캔의 3차 목표용 — ``calc_risk`` 가 읽는
+    열이 여기까지다). 공통 열은 같은 식이라 값이 같고, OBV·Aroon·PSAR·TRIX·동적 RSI 는 건너뛰어 종목당 시간이 준다.
+    """
     c = df["Close"]
     
     # 핵심 추세 지표
@@ -2264,6 +2322,8 @@ def add_indicators(df: pd.DataFrame, market: str = "US") -> pd.DataFrame:
     df["DI_Minus"] = 100 * dm_m14 / tr14.replace(0, np.nan)
     dx = (df["DI_Plus"] - df["DI_Minus"]).abs() / (df["DI_Plus"] + df["DI_Minus"]).replace(0, np.nan) * 100
     df["ADX"] = dx.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    if core_only:
+        return df
 
     # OBV (On-Balance Volume) — 거래량 기반 추세 확인
     _obv_dir = np.sign(c.diff()).fillna(0)
@@ -19742,7 +19802,7 @@ def route(path: str, params: Dict) -> Dict:
                 is_scan_price_eligible, apply_leader_promotion,
                 apply_momentum_promotion, apply_vcp_promotion,
             )
-            from market_briefing.scan_box_plan import attach_box_plans, INCOMPLETE_REASONS
+            from market_briefing.scan_box_plan import attach_box_plans, apply_target3_gate, INCOMPLETE_REASONS
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
             from market_briefing.dual_score_v2 import REGIME_BULLISH, REGIME_BEARISH, REGIME_SIDEWAYS, VOL_NORMAL
@@ -19976,7 +20036,7 @@ def route(path: str, params: Dict) -> Dict:
             _momentum_on, _vcp_on = _scan_signal_options(params)
             from market_briefing.technique_prune import rules_cache_token
             _prune_cache_token = rules_cache_token()
-            _cache_key = f"scan|v8|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
+            _cache_key = f"scan|v10|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -20523,6 +20583,15 @@ def route(path: str, params: Dict) -> Dict:
                 in_progress=lambda _t: _bar_in_progress(market_p, _scan_bar_dates.get(_t, "")))
             _plan_pool = [cd for cd in cands if (cd.get("box_plan") or {}).get("complete")]
 
+            # ── 3차 목표(예측 탭 ⚖️ 중립적 TP2 의 가장 높은 가격): 1차<2차<3차 로 오르지 않는 종목은 제외 ──
+            #    플랜 완성 후보 전체에 종합점수 순으로 계산하고(시간이 모자라면 낮은 순위부터 건너뜀) 게이트를 건다.
+            #    순위에는 쓰지 않고 목록에서 거르기만 한다.
+            _scan_attach_target3(sorted(_plan_pool, key=lambda cd: -cd["composite_score"]), snap_map, market_p,
+                                 dates_map=_scan_dates_map,
+                                 deadline=(_collect_start + SCAN_TARGET3_BUDGET_S) if os.getenv("VERCEL") else None)
+            apply_target3_gate(cands, _plan_stats)
+            _plan_pool = [cd for cd in _plan_pool if (cd.get("box_plan") or {}).get("complete")]
+
             tier1 = _by_score([cd for cd in _plan_pool if _is_tier1(cd)])
             tier2 = _by_score([cd for cd in _plan_pool if _is_tier2(cd)])
             tier3 = _by_score([cd for cd in _plan_pool if _is_tier3(cd)])
@@ -20573,11 +20642,12 @@ def route(path: str, params: Dict) -> Dict:
                     "evaluated": _plan_stats["evaluated"],
                     "complete":  _plan_stats["complete"],
                     "displayed": len(selected),
+                    "target3_unchecked": _plan_stats.get("target3_unchecked", 0),   # 시간 예산 초과로 3차 목표를 못 구해 걸러지지 않은 종목
                     "excluded":  [{"key": _k, "label": INCOMPLETE_REASONS.get(_k, _k), "count": _n}
                                   for _k, _n in sorted(_plan_stats["excluded"].items(),
                                                        key=lambda kv: -kv[1])],
                 },
-                "filter_desc":     "박스 실행 플랜 5개 항목이 모두 산출되고 1·2차 목표가 현재가보다 높은 종목만 + 진입 가능권 우선 + 품질 등급 단계 보강(최대 15개) + 시총·섹터 분산(MMR)"
+                "filter_desc":     "박스 실행 플랜 5개 항목이 모두 산출되고 현재가 < 1차 < 2차 < 3차 목표인 종목만 + 진입 가능권 우선 + 품질 등급 단계 보강(최대 15개) + 시총·섹터 분산(MMR)"
                                    + (f" + 미국 ${SCAN_US_MAX_PRICE:g} 이하" if market_p == "US" else "")
                                    + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else "")
                                    + (" + 모멘텀 지속 진입준비 승격" if _momentum_on and _momentum_promoted else "")
@@ -22557,7 +22627,7 @@ input::placeholder{color:#484f58}
     <div class="screener-header" style="margin-bottom:16px;flex-wrap:wrap;gap:18px">
       <div style="margin-right:auto">
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🔬 7단계 스캔 엔진</h2>
-        <p style="font-size:12px;color:#8b949e">🧭 박스 실행 플랜(1·2차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되는 후보 종목 발굴</p>
+        <p style="font-size:12px;color:#8b949e">🧭 박스 실행 플랜(1·2·3차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되는 후보 종목(현재가 &lt; 1차 &lt; 2차 &lt; 3차 목표) 발굴</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap">
         <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px;flex:1 1 0;min-width:0">
@@ -22605,8 +22675,9 @@ input::placeholder{color:#484f58}
             <th>카테고리</th>
             <th style="text-align:right">현재가</th>
             <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 신뢰도</th>
-            <th style="text-align:right" title="🧭 박스 실행 플랜의 1차 목표 — 박스 상·하단의 중간값(되돌림 1차 매물). 현재가보다 높은 종목만 표시합니다">1차 목표(박스 중간)</th>
-            <th style="text-align:right" title="🧭 박스 실행 플랜의 2차 목표 — 박스 상단 저항(3봉 확인 고점). 현재가보다 높은 종목만 표시합니다">2차 목표(박스 상단)</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 1차 목표(박스 중간) — 박스 상·하단의 중간값(되돌림 1차 매물). 현재가보다 높은 종목만 표시합니다">1차 목표</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 2차 목표(박스 상단) — 박스 상단 저항(3봉 확인 고점). 현재가보다 높은 종목만 표시합니다">2차 목표</th>
+            <th style="text-align:right" title="🔮 예측 탭 › 🛡️ 리스크 관리와 목표 청산 › ⚖️ 중립적 카드 TP2 의 목표 가격 범위 중 가장 높은 가격. ATR·피보나치 기반 모델이라 박스 구조의 2차 목표 이하로 나오는 종목은 목록에서 제외합니다(현재가 < 1차 < 2차 < 3차). 순위에는 쓰지 않습니다">3차 목표</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 손절 기준 — 이 가격 아래로 종가가 마감하면 계획 취소">손절 기준</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 재진입 후보 구간 — 조건부 후보는 조건이 충족된 뒤에만 유효합니다">재진입 후보</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 예상 기간(거래일 기준) — 도달 기준가에 닿는 경우의 첫 도달일 25~75백분위. 변동성만으로 본 추정이며 방향 예측이 아닙니다. 도달 기간이 없으면 박스 확정·종가 확인에 필요한 최소 거래일을 표시합니다">예상 기간</th>
@@ -29870,8 +29941,10 @@ function renderScanResult(d, market) {
   // 박스 플랜을 만들지 못해 목록에서 빠진 종목의 사유 요약(툴팁)
   function planExcludedTip(ps) {
     var ex = (ps && ps.excluded) || [];
-    if (!ex.length) return '평가한 종목 모두 박스 실행 플랜 5개 항목이 산출되었습니다';
-    return '목록에서 빠진 종목 사유: ' + ex.map(function(e) { return e.label + ' ' + e.count + '종목'; }).join(' · ');
+    if (!ex.length) return '평가한 종목 모두 박스 실행 플랜 5개 항목이 산출되었습니다' +
+      (ps && ps.target3_unchecked ? ' (시간 예산 초과로 3차 목표를 확인하지 못한 ' + ps.target3_unchecked + '종목 포함)' : '');
+    return '목록에서 빠진 종목 사유: ' + ex.map(function(e) { return e.label + ' ' + e.count + '종목'; }).join(' · ') +
+           (ps.target3_unchecked ? ' · 시간 예산 초과로 3차 목표를 확인하지 못한 ' + ps.target3_unchecked + '종목은 걸러지지 않고 남았습니다' : '');
   }
 
   // ── 레짐 한글 변환 ────────────────────────────────────────────────────────
@@ -29942,7 +30015,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 박스 실행 플랜(1·2차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되고 1·2차 목표가 현재가보다 높은 종목이 없습니다' +
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 박스 실행 플랜(1·2·3차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되고 현재가 < 1차 < 2차 < 3차 목표인 종목이 없습니다' +
       (d.plan_stats ? '<div style="font-size:11px;margin-top:6px;color:#6e7681">' + _scanEsc(planExcludedTip(d.plan_stats)) + '</div>' : '') + '</td></tr>';
     return;
   }
@@ -29977,6 +30050,14 @@ function renderScanResult(d, market) {
               (t.rr != null ? ' · 재진입 기준 ' + t.rr + 'R' : '');
     return '<div title="' + _scanEsc(tip) + '" style="font-size:13px;font-weight:700;color:#3fb950">' + fmtP(t.price) + '</div>' +
            (tail && tail !== defaultTail ? subLine(tail, '#8b949e') : '');
+  };
+  // 3차 목표 — 예측 탭 ⚖️ 중립적 TP2 목표 가격 범위 중 가장 높은 가격(서버 box_plan.target3). 2차 목표(박스 상단) 이하이거나
+  // 계산하지 못한 종목은 서버가 목록에서 빼므로 여기서는 항상 값이 있다(구버전 응답 방어로만 '산출 불가').
+  var target3Cell = function(t) {
+    if (!t || t.price == null) return noCalc('예측 탭 중립적 카드의 TP2 목표 가격을 계산하지 못했습니다(시간 예산 초과로 건너뛴 경우 포함)');
+    var tip = '예측 탭 › 🛡️ 리스크 관리와 목표 청산 › ⚖️ 중립적 TP2 목표 가격 범위 ' + fmtP(t.low) + ' ~ ' + fmtP(t.high) +
+              ' 중 가장 높은 가격' + (t.return_pct != null ? ' · 수익률 +' + t.return_pct + '%' : '');
+    return '<div title="' + _scanEsc(tip) + '" style="font-size:13px;font-weight:700;color:#3fb950">' + fmtP(t.price) + '</div>';
   };
   var stopCell = function(s, conditional) {
     if (!s || s.price == null) return NA;
@@ -30035,8 +30116,8 @@ function renderScanResult(d, market) {
     var trigTip = triggerTip(c);
 
     // 열 순서(판단 흐름): # → 기본 정보(종목·카테고리·현재가) → 진입 조건(돌파 신뢰도)
-    // → 목표(1차·2차) → 위험 관리(손절 기준·재진입 후보) → 예상 기간·도달 확률.
-    // 열 머리글(#page-scan thead)과 순서·개수가 같아야 한다(11칸, 빈 목록 메시지 colspan 도 11).
+    // → 목표(1차·2차·3차) → 위험 관리(손절 기준·재진입 후보) → 예상 기간·도달 확률.
+    // 열 머리글(#page-scan thead)과 순서·개수가 같아야 한다(12칸, 빈 목록 메시지 colspan 도 12).
     // 상태·치명적 약점·순복합 점수·리더 반전·모멘텀 지속·VCP 수축·진입 트리거 열은 화면에서 삭제했다
     // (API 응답에는 그대로 유지).
     return '<tr onclick="openStockDetail(\'' + c.ticker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
@@ -30048,6 +30129,7 @@ function renderScanResult(d, market) {
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + targetCell(bp.target1, '박스 중간') + '</td>' +
       '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + targetCell(bp.target2, '박스 상단') + '</td>' +
+      '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + target3Cell(bp.target3) + '</td>' +
       '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + stopCell(bp.stop, bp.reentry && bp.reentry.conditional) + '</td>' +
       '<td style="text-align:right;min-width:150px;font-variant-numeric:tabular-nums">' + reentryCell(bp.reentry, bp.verdict) + '</td>' +
       '<td style="text-align:right;min-width:80px">' + periodCell(bp.wait) + '</td>' +

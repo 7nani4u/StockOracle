@@ -35,6 +35,16 @@ targets are strictly above the price shown in the table.  The prediction tab kee
 (entry zone first, targets measured from that entry); this is a scan-table listing rule, not a
 change of the plan's numbers, ranking or probabilities.
 
+3rd target (2026-11-07)
+-----------------------
+The table also shows a 3rd target: the highest price of the prediction tab's ⚖️ 중립적 TP2 range
+(``summarize_target3``), computed by ``api.index._scan_attach_target3``.  The two targets come from
+different models (box structure vs the ATR/Fibonacci TP ladder), and for about a third of the stocks
+the TP2 high is at or below the box top.  A "3rd target" under the 2nd one is not a ladder, so
+``apply_target3_gate`` removes those stocks (and stocks whose 3rd target cannot be computed) from the
+listing: complete now means current price < 1st < 2nd < 3rd target.  The 3rd target only filters; it
+never changes ranking or any other number.
+
 The module is pure Python and never raises: a failure becomes an incomplete summary with a reason.
 """
 from __future__ import annotations
@@ -44,7 +54,7 @@ import math
 from .box_plan import build_execution_plan
 from .box_sequence import analyze_box_sequence
 
-SCAN_PLAN_VERSION = "2026-11-07.scan-box-plan-v2"
+SCAN_PLAN_VERSION = "2026-11-07.scan-box-plan-v4"
 
 BOX_ROLES = ("box_mid", "box_top")
 
@@ -65,6 +75,8 @@ INCOMPLETE_REASONS = {
     "target_mid_passed": "1차 목표(박스 중간)가 현재가 이하 — 이미 지나간 가격",
     "target_top_passed": "2차 목표(박스 상단)가 현재가 이하 — 이미 박스 상단 위",
     "quote": "현재가를 알 수 없어 목표가 현재가 위인지 확인 불가",
+    "target3": "3차 목표(중립적 TP2)를 산출하지 못함",
+    "target3_passed": "3차 목표(중립적 TP2)가 2차 목표 이하 — 1·2·3차가 오르는 순서가 아님",
     "stop": "손절 기준 없음",
     "reentry": "재진입 후보 가격 없음",
     "wait": "예상 기간 산출 불가",
@@ -102,6 +114,88 @@ def _target_view(item, quote):
     return {"price": _num(item.get("price")), "pct_from_quote": _pct(item.get("price"), quote),
             "pct_from_entry": item.get("pct_from_entry"), "rr": item.get("rr"),
             "label": item.get("label"), "basis": item.get("basis")}
+
+
+def summarize_target3(balanced, quote, target2_price=None):
+    """3차 목표 = 예측 탭 🛡️ 리스크 관리와 목표 청산 › ⚖️ 중립적 카드 TP2 의 가장 높은 목표 가격.
+
+    ``balanced`` is ``calc_risk(...)["balanced"]``.  The TP2 row prints a *range* ("목표 가격 범위");
+    the 3rd target is its highest price (``max`` of the two bounds), per the 2026-11-07 request.  It is
+    a listing filter only (``apply_target3_gate``); it never ranks stocks.
+
+    ``not_above_target2`` is True when the price is at or below the 2nd target (box top).  The two
+    numbers come from different models (box structure vs the ATR/Fibonacci TP ladder), so the ladder
+    1st < 2nd < 3rd does not always hold; ``apply_target3_gate`` then drops the stock from the listing.
+    Returns ``None`` when the card has no usable TP2 (the stock is dropped too).  Never raises.
+    """
+    try:
+        levels = balanced.get("tp_levels") if isinstance(balanced, dict) else None
+        if not isinstance(levels, (list, tuple)) or len(levels) < 2 or not isinstance(levels[1], dict):
+            return None
+        level = levels[1]
+        rng = level.get("price_range")
+        bounds = [b for b in (_num(x) for x in (rng if isinstance(rng, (list, tuple)) else [])) if b is not None]
+        if not bounds:
+            single = _num(level.get("price"))
+            bounds = [single] if single is not None else []
+        if not bounds:
+            return None
+        low, high = min(bounds), max(bounds)
+        quote, t2 = _num(quote), _num(target2_price)
+        return {
+            "price": high, "low": low, "high": high, "level": "TP2", "scenario": "중립적",
+            "pct_from_quote": _pct(high, quote),
+            "return_pct": _num(level.get("return_pct")),
+            "prob_pct": _num(level.get("prob_pct")),
+            "days": ([level.get("days_min"), level.get("days_max")]
+                     if level.get("days_min") is not None and level.get("days_max") is not None else None),
+            "not_above_target2": bool(t2 is not None and high <= t2),
+            "label": "3차 목표 · 중립적 TP2", "basis": "예측 탭 중립적 카드 TP2 목표 가격 범위 중 가장 높은 가격",
+        }
+    except Exception:
+        return None
+
+
+def apply_target3_gate(cands, stats=None):
+    """Drop plan-complete candidates whose 3rd target is missing or not above the 2nd target.
+
+    Run after ``attach_box_plans`` and after ``box_plan["target3"]`` was filled for the plan-complete
+    candidates.  A dropped candidate gets ``complete=False`` with ``missing=["target3"]`` or
+    ``["target3_passed"]`` (the table never shows it), and ``stats`` (the ``attach_box_plans`` result)
+    is kept consistent: complete − 1, incomplete + 1, ``excluded[key] + 1``.  Candidates that were
+    already incomplete are left alone.  Returns the number dropped.
+
+    A candidate flagged ``target3_unchecked`` was skipped because the scan ran out of time budget: it
+    could not be verified, which is not the same as "not above the 2nd target".  It stays listed (the
+    table prints 산출 불가 for its 3rd target) instead of emptying the whole list on a slow run, and is
+    counted in ``stats["target3_unchecked"]`` so the page can say so.
+    """
+    dropped = 0
+    for cd in cands or []:
+        plan = cd.get("box_plan") if isinstance(cd, dict) else None
+        if not isinstance(plan, dict) or not plan.get("complete"):
+            continue
+        target3 = plan.get("target3")
+        if not isinstance(target3, dict) or _num(target3.get("price")) is None:
+            if plan.get("target3_unchecked"):
+                if isinstance(stats, dict):
+                    stats["target3_unchecked"] = int(stats.get("target3_unchecked", 0)) + 1
+                continue
+            key = "target3"
+        elif target3.get("not_above_target2"):
+            key = "target3_passed"
+        else:
+            continue
+        plan["complete"] = False
+        plan["missing"] = [key]
+        plan["reason"] = INCOMPLETE_REASONS[key]
+        dropped += 1
+        if isinstance(stats, dict):
+            stats["complete"] = max(0, int(stats.get("complete", 0)) - 1)
+            stats["incomplete"] = int(stats.get("incomplete", 0)) + 1
+            excluded = stats.setdefault("excluded", {})
+            excluded[key] = excluded.get(key, 0) + 1
+    return dropped
 
 
 def _targets_not_above_quote(target1, target2, quote):
@@ -265,7 +359,7 @@ def summarize_plan(plan, quote):
                  "position_label": box.get("position_label"), "forming": bool(box.get("forming"))}
                 if isinstance(box, dict) else None),
         "target_basis": None,
-        "target1": None, "target2": None, "stop": None, "reentry": None, "wait": None,
+        "target1": None, "target2": None, "target3": None, "stop": None, "reentry": None, "wait": None,
     }
     if not plan.get("available") or verdict.get("key") in (None, "unavailable"):
         out["missing"] = ["no_data"]
@@ -309,7 +403,7 @@ def summarize_plan(plan, quote):
 def _incomplete(key, detail=""):
     return {"version": SCAN_PLAN_VERSION, "complete": False, "missing": [key],
             "reason": INCOMPLETE_REASONS[key] + (f" ({detail})" if detail else ""),
-            "verdict": {}, "target1": None, "target2": None, "stop": None, "reentry": None,
+            "verdict": {}, "target1": None, "target2": None, "target3": None, "stop": None, "reentry": None,
             "wait": None, "box": None, "target_basis": None}
 
 
