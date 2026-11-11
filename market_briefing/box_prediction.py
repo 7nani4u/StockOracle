@@ -22,7 +22,7 @@ def _valid_range(value):
 def _slim_sequence(seq):
     """Box-sequence fields the UI/debugging needs (drops the raw price arrays)."""
     keep = ("version", "status", "boxes", "reference", "forming", "staircase", "atr",
-            "last_date", "last_close", "volume_ratio", "warnings", "price_jumps", "config",
+            "last_date", "last_close", "volume_ratio", "volume_evidence", "warnings", "price_jumps", "config",
             "bars_available", "bars_required", "restart_after_jump", "data_quality")
     return {key: seq.get(key) for key in keep}
 

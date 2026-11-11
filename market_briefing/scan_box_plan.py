@@ -54,7 +54,7 @@ import math
 from .box_plan import build_execution_plan
 from .box_sequence import analyze_box_sequence
 
-SCAN_PLAN_VERSION = "2026-11-07.scan-box-plan-v4"
+SCAN_PLAN_VERSION = "2026-11-11.scan-box-plan-v5-volume"
 
 BOX_ROLES = ("box_mid", "box_top")
 
@@ -354,6 +354,7 @@ def summarize_plan(plan, quote):
                     "headline": verdict.get("headline")},
         "stage": (plan.get("stage") or {}).get("label"),
         "strategy": (plan.get("strategy") or {}).get("label"),
+        "volume_confirmation": plan.get("volume_confirmation"),
         "quote": quote,
         "box": ({"top": box.get("top"), "bottom": box.get("bottom"), "mid": box.get("mid"),
                  "position_label": box.get("position_label"), "forming": bool(box.get("forming"))}

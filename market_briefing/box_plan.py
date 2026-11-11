@@ -30,8 +30,9 @@ import math
 from datetime import date, datetime
 
 from .forecast_model import blended_daily_sigma, touch_probability_range, touch_time_window
+from .box_volume import assess_box_volume, allows_box_entry
 
-VERSION = "2026-11-05.box-plan-v1"
+VERSION = "2026-11-11.box-plan-v2-volume"
 
 PLAN_PARAMS = {
     "support_zone_atr": 0.5,       # support buy zone: bottom .. bottom + min(0.25 height, 0.5 ATR)
@@ -50,6 +51,7 @@ PLAN_PARAMS = {
     # service behaviour.
     "block_descending_support": True,  # video: a falling box's bottom is not a buy point
     "require_signal": True,            # a completed-bar confirmation is required before "매수"
+    "volume_policy": "breakout",      # support volume remains evidence, not a hard gate
 }
 
 VIDEO_SOURCE = {
@@ -563,11 +565,53 @@ def build_execution_plan(seq, *, current=None, market="KRX", trend=None, risk=No
     """Turn ``box_sequence.analyze_box_sequence`` output into the execution plan."""
     out = _skeleton()
     try:
-        return _build(out, seq, current, str(market or "KRX").upper(), trend, risk or {},
-                      now, {**PLAN_PARAMS, **(params or {})})
+        p={**PLAN_PARAMS, **(params or {})}
+        plan=_build(out, seq, current, str(market or "KRX").upper(), trend, risk or {}, now, p)
+        return _volume_confirmation(plan,seq,p)
     except Exception as exc:  # never break the prediction response
         return _unavailable(out, f"박스 실행 플랜 계산 실패({type(exc).__name__})",
                             "다음 조회에서 다시 계산합니다.")
+
+
+def _volume_confirmation(out,seq,p):
+    """Confirm the original breakout event; preserve all existing price geometry."""
+    if not out.get("available"):
+        return out
+    profile=seq.get("volume_evidence") if isinstance(seq,dict) else None
+    result=assess_box_volume(profile,(out.get("strategy") or {}).get("key"),p["volume_policy"])
+    out["volume_confirmation"]={**result,"evidence":profile}
+    if result["status"] in ("disabled","not_supplied"):
+        return out
+    out["evidence"].append("거래량 확인: "+result["reason"])
+    if profile and profile.get("money_flow_5") is not None:
+        out["evidence"].append(f"최근 5봉 거래량 가중 종가 위치 {profile['money_flow_5']:+.2f} (일봉 가격·거래량 지표)")
+    # Ordinary support-volume thresholds failed chronological validation. They
+    # remain evidence only; the default gate applies to the actual breakout.
+    if result["status"]=="not_applicable":
+        return out
+    out["conditions"].append({"key":"volume","label":"돌파 거래량 확인" if profile and profile.get("available") else "거래량 데이터 확인",
+                              "ok":result["passed"],"detail":result["reason"]})
+    if allows_box_entry(result) or out["verdict"]["key"]!="buy":
+        return out
+    out["verdict"]=_verdict("conditional","가격 확인 · 거래량 추가 확인 필요")
+    out["stage"]=_stage("signal_wait")
+    prices=dict(out.get("prices") or {})
+    entry=dict(prices.get("entry") or {})
+    condition=("평균 이상 거래량을 동반한 새로운 박스 돌파·재확인 후 재검토" if result["status"]=="weak" else
+               "유효한 완료 거래량이 확보된 뒤 가격·신호 재확인")
+    entry.update(conditional=True,condition=condition)
+    prices["entry"]=entry
+    out["prices"]=prices
+    out["action"]=("가격 조건은 충족했지만 "+result["reason"]+". 거래량 확인 전에는 매수를 보류합니다. "
+                   "기존 진입 후보·손절·목표 가격은 유지하며 새로운 확인 신호를 기다립니다.")
+    out["when"]=condition+". 거래량 조건이 충족될 날짜는 예측하지 않습니다."
+    for check in out["conditions"]:
+        if check["key"]=="signal":
+            check["ok"]=False
+            check["detail"] += " · 거래량 추가 확인 필요"
+    out["timing"]={**(out.get("timing") or {}),"immediate":False,"confirm_bars":1,
+        "confirm_rule":condition,"estimate_label":"최소 다음 완료 일봉부터 재점검 · 거래량 확인까지의 기간은 미정"}
+    return out
 
 
 def _build(out, seq, current, market, trend, risk, now, p):

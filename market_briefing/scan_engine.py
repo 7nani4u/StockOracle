@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -38,7 +38,6 @@ from .dual_score_v2 import (
 )
 from .quality_filter import QualityFilterResult, score_quality
 from .session_bars import completed_volume_ratio
-from .scan_execution import finite, liquidity_profile, validate_ohlcv
 from .hybrid_signals import (
     compute_hybrid_score, compute_regime, detect_vol_regime,
     adaptive_atr_buffer, anti_chase_guard,
@@ -102,13 +101,6 @@ def is_scan_price_eligible(market: str, price: Any) -> bool:
     return value <= SCAN_US_MAX_PRICE
 
 
-def _promotion_hard_blocked(cd: Dict) -> bool:
-    """A supplementary signal must not override an evaluated hard gate."""
-    return (cd.get("status") in ("EARNINGS_BLOCK", "RISK_BLOCK", "DATA_BLOCK", "LIQUIDITY_BLOCK")
-            or cd.get("passes_risk_gates") is False
-            or bool(cd.get("execution_blockers")))
-
-
 def apply_leader_promotion(
     cands: List[Dict],
     leader_map: Dict[str, Dict] | None,
@@ -134,7 +126,7 @@ def apply_leader_promotion(
             try:
                 if not isinstance(cd, dict):
                     continue
-                if _promotion_hard_blocked(cd):
+                if cd.get("status") == "EARNINGS_BLOCK":
                     continue
                 lr = ((leader_map or {}).get(cd.get("ticker")) or {})
                 if not isinstance(lr, dict) or lr.get("stage") != "BREAKOUT":
@@ -211,7 +203,7 @@ def apply_momentum_promotion(
             try:
                 if not isinstance(cd, dict):
                     continue
-                if _promotion_hard_blocked(cd):
+                if cd.get("status") == "EARNINGS_BLOCK":
                     continue
                 if cd.get("status_source") == "leader_reversal":
                     continue  # 리더 승격 우선, 덮어쓰지 않음
@@ -295,7 +287,7 @@ def apply_vcp_promotion(
             try:
                 if not isinstance(cd, dict):
                     continue
-                if _promotion_hard_blocked(cd):
+                if cd.get("status") == "EARNINGS_BLOCK":
                     continue
                 if cd.get("status_source") in ("leader_reversal", "momentum_persistence"):
                     continue  # 선순위 승격 우선, 덮어쓰지 않음
@@ -383,8 +375,6 @@ class TechnicalSnapshot:
     atr_spiking:    bool  = False
     atr_collapsing: bool  = False
     hybrid_signal: Dict[str, Any] = field(default_factory=dict)
-    volume_in_progress: bool = False
-    data_issues: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -453,9 +443,6 @@ class ScanCandidate:
     risk_amount: Optional[float] = None
     risk_pct:    Optional[float] = None
     total_cost:  Optional[float] = None
-    entry_eligible: bool = False
-    execution_blockers: List[str] = field(default_factory=list)
-    liquidity: Dict[str, Any] = field(default_factory=dict)
 
     hurst_exponent: Optional[float] = None
     hurst_warn:     bool = False
@@ -477,8 +464,7 @@ class ScanResult:
     passed_risk:    int = 0
     passed_anti_chase: int = 0
     scan_mode:      str = "FULL"
-    exclusions:     List[Dict[str, Any]] = field(default_factory=list)
-    generated_at:   str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    generated_at:   str = field(default_factory=lambda: datetime.now().isoformat())
 
 
 # ── Stage 2: 기술적 필터 ──────────────────────────────────────────────────────
@@ -507,10 +493,8 @@ def run_technical_filters(
         "price_above_ma200":    price > snap.ma200 if snap.ma200 > 0 else False,
         "adx_above_20":         snap.adx >= 20.0,
         "plus_di_above_minus":  snap.plus_di > snap.minus_di,
-        "atr_pct_below_cap":    0 < snap.atr_pct < atr_cap,
-        "data_quality":         not snap.data_issues and all(
-            finite(v) is not None and v > 0 for v in
-            (price, snap.ma200, snap.adx, snap.atr, snap.high_20d)),
+        "atr_pct_below_cap":    snap.atr_pct < atr_cap,
+        "data_quality":         snap.ma200 > 0 and snap.adx > 0,
         "efficiency_above_30":  snap.efficiency >= 30.0,
     }
 
@@ -539,7 +523,7 @@ def classify_candidate(price: float, entry_trigger: float) -> str:
     ≤ 3%: WATCH
     > 3%: FAR
     """
-    if any(finite(v) is None or v <= 0 for v in (price, entry_trigger)):
+    if entry_trigger <= 0:
         return "FAR"
     distance = ((entry_trigger - price) / price) * 100
     if distance <= 2.0:
@@ -596,20 +580,11 @@ def validate_risk_gates(
       2. 섹터 집중도 한도
       3. 클러스터 집중도 한도
       4. 전체 오픈 리스크 한도
-      5. 기존 투자액 + 신규 투자액의 자본 한도
+      5. 포지션 수 한도
 
     Returns:
         게이트별 결과 리스트 [{"name", "passed", "reason"}]
     """
-    values = (total_cost, risk_dollars, portfolio_equity)
-    if (any(finite(v) is None for v in values) or portfolio_equity <= 0
-            or total_cost <= 0 or risk_dollars <= 0):
-        return [{"name": "valid_sizing", "passed": False, "reason": "유효한 자본·양수 수량·리스크 필요"}]
-    if any(p.get("currency", candidate.currency) != candidate.currency for p in existing_positions):
-        return [{"name": "currency", "passed": False, "reason": "포지션과 자본의 통화를 통일해야 합니다"}]
-    if any(finite(p.get(key, 0)) is None or float(p.get(key, 0)) < 0
-           for p in existing_positions for key in ("value", "risk_dollars")):
-        return [{"name": "position_data", "passed": False, "reason": "기존 포지션 금액·리스크 오류"}]
     results = []
 
     # 슬리브별 단일 포지션 최대 비중
@@ -620,9 +595,7 @@ def validate_risk_gates(
         "HEDGE":     10.0,
     }.get(candidate.sleeve, 15.0)
 
-    same_value = sum(float(p.get("value", 0)) for p in existing_positions
-                     if p.get("ticker") == candidate.ticker)
-    pos_pct = (same_value + total_cost) / portfolio_equity * 100
+    pos_pct = (total_cost / portfolio_equity * 100) if portfolio_equity > 0 else 0
     results.append({
         "name":   "position_size_cap",
         "passed": pos_pct <= max_position_pct,
@@ -631,7 +604,7 @@ def validate_risk_gates(
 
     # 섹터 집중도 (동일 섹터 기존 포지션)
     sector_val = sum(
-        float(p.get("value", 0)) for p in existing_positions
+        p.get("value", 0) for p in existing_positions
         if p.get("sector") == candidate.sector
     )
     sector_pct = ((sector_val + total_cost) / portfolio_equity * 100) if portfolio_equity > 0 else 0
@@ -641,20 +614,8 @@ def validate_risk_gates(
         "reason": f"섹터 집중도 {sector_pct:.1f}% / 상한 40%",
     })
 
-    for name, key, exposure, limit in (
-        ("cluster_concentration", "cluster", candidate.cluster_exposure_pct, candidate.max_cluster_pct),
-        ("super_cluster_concentration", "super_cluster", candidate.super_cluster_exposure_pct, candidate.max_super_cluster_pct),
-    ):
-        group = getattr(candidate, key)
-        known = sum(float(p.get("value", 0)) for p in existing_positions if group and p.get(key) == group)
-        pct = max(float(exposure), known / portfolio_equity * 100) + total_cost / portfolio_equity * 100
-        results.append({"name": name, "passed": pct <= limit,
-                        "reason": f"{key} 집중도 {pct:.1f}% / 상한 {limit:g}%"})
-    results.append({"name": "capital_available",
-                    "passed": sum(float(p.get("value", 0)) for p in existing_positions) + total_cost <= portfolio_equity + 1e-8,
-                    "reason": "기존 투자액 + 신규 투자액 ≤ 자본"})
-    # 전체 오픈 리스크 한도 (자본 대비 6%)
-    total_open_risk = sum(float(p.get("risk_dollars", 0)) for p in existing_positions) + risk_dollars
+    # 전체 오픈 리스크 한도 (자본 대비 2%)
+    total_open_risk = sum(p.get("risk_dollars", 0) for p in existing_positions) + risk_dollars
     open_risk_pct = (total_open_risk / portfolio_equity * 100) if portfolio_equity > 0 else 0
     results.append({
         "name":   "open_risk_cap",
@@ -678,8 +639,8 @@ def check_anti_chase(
     ext_ATR = (price - entry_trigger) / ATR
     > 0.8 → WAIT_PULLBACK 강제
     """
-    if any(finite(v) is None or v <= 0 for v in (price, entry_trigger, atr)):
-        return {"passed": False, "reason": "유효 가격·진입가·ATR 없음", "ext_atr": None}
+    if atr <= 0:
+        return {"passed": True, "reason": "ATR 데이터 없음", "ext_atr": 0.0}
 
     ext_atr = (price - entry_trigger) / atr
 
@@ -765,8 +726,7 @@ def calculate_position_size(
 
     shares = (equity × risk_pct%) / (entry - stop)
     """
-    if (any(finite(v) is None or v <= 0 for v in (equity, entry_price, stop_price, risk_pct))
-            or stop_price >= entry_price or risk_pct > 100):
+    if entry_price <= 0 or stop_price >= entry_price:
         return {"shares": 0, "risk_amount": 0, "risk_pct": 0, "total_cost": 0}
 
     risk_per_share = entry_price - stop_price
@@ -794,112 +754,6 @@ def calculate_position_size(
         "risk_pct":    round(risk_amount / equity * 100, 3) if equity > 0 else 0,
         "total_cost":  round(total_cost, 2),
     }
-
-
-def finalize_scan_safety(cands, universe, snap_map, equity, risk_pct=1.0, *,
-                         existing_positions=None, participation_rate=0.01, exit_days=1,
-                         is_monday=False):
-    """Recheck the *final* entry/stop after every promotion and pullback change.
-
-    Ordinary share sizing is capped by completed-volume capacity and floored.
-    Failed hard gates cannot enter the display pool through tier-3 backfilling.
-    """
-    stocks = {s.ticker: s for s in universe}
-    blocked = 0
-    for cd in cands:
-        snap, stock = snap_map.get(cd.get("ticker")), stocks.get(cd.get("ticker"))
-        reasons = []
-        entry, stop, quote = (finite(cd.get(k)) for k in ("entry_trigger", "stop_price", "price"))
-        if snap is None or stock is None or snap.data_issues:
-            reasons.append("유효 스냅샷 없음 또는 데이터 품질 오류")
-        # These are prospective orders. A quote below a future stop is not an
-        # invalid order geometry; entry_eligible stays false until the trigger.
-        if not (entry and stop and quote and quote > 0 and 0 < stop < entry):
-            reasons.append("진입·손절 구조 무효")
-        if cd.get("status") == "EARNINGS_BLOCK" or (stock and stock.days_to_earnings is not None
-                                                    and 0 <= stock.days_to_earnings <= 2):
-            reasons.append("실적 발표 대기")
-        sizing = calculate_position_size(equity, entry or 0, stop or 0,
-                                         cd.get("sleeve") or "CORE", risk_pct)
-        liquidity = liquidity_profile(snap.closes, snap.volumes,
-            in_progress=snap.volume_in_progress, shares=sizing["shares"],
-            participation_rate=participation_rate, exit_days=exit_days) if snap else {}
-        capacity = liquidity.get("capacity_shares")
-        if capacity is None or capacity < 1:
-            reasons.append("확정 거래량으로 청산 여력을 확인할 수 없음")
-        count = math.floor(min(sizing["shares"], capacity if capacity is not None else 0))
-        if count < 1:
-            reasons.append("리스크·자본·유동성 한도 내 1주 매수 불가")
-        cost = count * (entry or 0)
-        risk = count * max(0, (entry or 0) - (stop or 0))
-        gates = validate_risk_gates(stock, cost, risk, equity, existing_positions or []) if stock else []
-        risk_ok = bool(gates) and all(g["passed"] for g in gates)
-        if not risk_ok:
-            reasons.extend(g["reason"] for g in gates if not g["passed"])
-        chase = check_anti_chase(quote or 0, entry or 0, snap.atr if snap else 0, is_monday)
-        cd["passes_anti_chase"] = chase["passed"]
-        cd["anti_chase_reason"] = chase["reason"]
-        cd["passes_risk_gates"] = risk_ok and not reasons
-        cd.setdefault("filter_detail", {})["risk_gates"] = gates
-        cd["liquidity"] = liquidity
-        cd["execution_blockers"] = list(dict.fromkeys(reasons))
-        cd["entry_eligible"] = bool(not reasons and chase["passed"]
-                                    and cd.get("passes_tech_filters") and cd.get("status") == "READY"
-                                    and quote >= entry)
-        if reasons:
-            cd["status"] = "EARNINGS_BLOCK" if "실적 발표 대기" in reasons else "RISK_BLOCK"
-            count = cost = risk = 0
-            blocked += 1
-        elif not chase["passed"] and cd.get("status") == "READY":
-            cd["status"] = "WAIT_PULLBACK"
-        cd.update(shares=count, total_cost=round(cost, 2), risk_amount=round(risk, 2),
-                  risk_pct=round(risk / equity * 100, 3) if equity > 0 else 0)
-        if liquidity:
-            liquidity["suggested_shares"] = count
-            liquidity["sizing_capped"] = count < math.floor(sizing["shares"])
-    return {"blocked": blocked, "entry_eligible": sum(bool(c.get("entry_eligible")) for c in cands)}
-
-
-def finalize_box_execution(cands, universe, snap_map, equity, risk_pct=1.0, *,
-                            participation_rate=.01, exit_days=1):
-    """Displayed box plans have different entry/stops: size and check them separately."""
-    rows, owners = [], []
-    for cd in cands:
-        plan = cd.get("box_plan") or {}
-        cd.setdefault("scan_entry_eligible", bool(cd.get("entry_eligible")))
-        cd["display_eligible"] = False
-        if not plan.get("complete"):
-            cd["entry_eligible"] = False
-            continue
-        entry = plan.get("reentry") or {}
-        rows.append({"ticker": cd["ticker"], "sleeve": cd.get("sleeve"), "price": cd.get("price"),
-                     "entry_trigger": entry.get("high"), "stop_price": (plan.get("stop") or {}).get("price"),
-                     "status": "READY", "passes_tech_filters": cd.get("passes_tech_filters"),
-                     "filter_detail": {}})
-        owners.append(cd)
-    finalize_scan_safety(rows, universe, snap_map, equity, risk_pct,
-                         participation_rate=participation_rate, exit_days=exit_days)
-    for cd, row in zip(owners, rows):
-        entry = cd["box_plan"].get("reentry") or {}
-        within_entry = (finite(entry.get("low")) is not None and finite(entry.get("high")) is not None
-                        and entry["low"] <= cd["price"] <= entry["high"])
-        cd["display_eligible"] = bool(cd.get("passes_risk_gates") and row["passes_risk_gates"]
-                                      and not cd.get("execution_blockers"))
-        # A box range entry is a different strategy from the breakout trigger.
-        # It may fill anywhere inside the range, not only exactly at its high.
-        cd["entry_eligible"] = bool(cd.get("passes_tech_filters") and row["passes_anti_chase"]
-                                    and within_entry and not entry.get("conditional")
-                                    and cd["display_eligible"])
-        cd["entry_eligible_basis"] = "box_plan"
-        cd["box_execution"] = {"entry_price": row["entry_trigger"], "stop_price": row["stop_price"],
-            "shares": row["shares"], "total_cost": row["total_cost"], "risk_amount": row["risk_amount"],
-            "risk_pct": row["risk_pct"], "liquidity": row["liquidity"],
-            "passes_risk_gates": row["passes_risk_gates"], "execution_blockers": row["execution_blockers"],
-            "entry_eligible": cd["entry_eligible"], "conditional": bool(entry.get("conditional")),
-            "basis": "표시된 박스 재진입 구간 상단·손절 기준, 스캔 기본 돌파 사이징과 별도"}
-    return {"blocked": sum(bool((c.get("box_plan") or {}).get("complete")) and
-                            not c.get("display_eligible") for c in cands),
-            "entry_eligible": sum(bool(c.get("entry_eligible")) for c in cands)}
 
 
 # ── 적응형 ATR 버퍼 (hybrid_signals.py 래핑) ─────────────────────────────────
@@ -1006,14 +860,11 @@ def run_full_scan(
     vol_regime:         str  = VOL_NORMAL,
     regime_stable:      bool = True,
     dual_aligned:       bool = False,
-    portfolio_equity:   float | None = None,
+    portfolio_equity:   float = 10_000_000.0,
     existing_positions: List[Dict] = None,
     risk_pct_per_trade: float = 1.0,
     scan_mode:          str  = "FULL",
     is_monday:          bool = False,
-    participation_rate: float = 0.01,
-    exit_days:          int = 1,
-    equity_currency:    str | None = None,
 ) -> ScanResult:
     """7단계 종목 스캔 파이프라인.
 
@@ -1025,7 +876,7 @@ def run_full_scan(
         vol_regime:         변동성 레짐 (LOW_VOL/NORMAL_VOL/HIGH_VOL)
         regime_stable:      레짐 안정 여부
         dual_aligned:       SPY + VWRL 양쪽 강세 정렬 여부
-        portfolio_equity:   종목 호가 통화 기준 자본 (USD 기본 10,000 / KRW 기본 10,000,000)
+        portfolio_equity:   포트폴리오 자본 (원화)
         existing_positions: 기존 오픈 포지션 리스트
         risk_pct_per_trade: 거래당 리스크 비율 (%, 기본 1%)
         scan_mode:          FULL / CORE_LITE
@@ -1036,37 +887,25 @@ def run_full_scan(
     """
     if existing_positions is None:
         existing_positions = []
-    currencies = {s.currency for s in universe}
-    if len(currencies) > 1 or (equity_currency and currencies and currencies != {equity_currency}):
-        raise ValueError("스캔 종목·기존 포지션·자본의 통화를 통일해야 합니다")
-    if portfolio_equity is None:
-        portfolio_equity = 10_000.0 if currencies == {"USD"} else 10_000_000.0
-    if finite(portfolio_equity) is None or portfolio_equity <= 0:
-        raise ValueError("양수의 유한한 포트폴리오 자본이 필요합니다")
 
     is_core_lite = scan_mode == "CORE_LITE"
     candidates: List[ScanCandidate] = []
-    exclusions = []
 
     for stock in universe:
         ticker = stock.ticker
         snap   = snap_map.get(ticker)
         if snap is None:
             logger.warning("[Scan] %s: 스냅샷 없음 — 건너뜀", ticker)
-            exclusions.append({"ticker": ticker, "stage": 1, "reason": "스냅샷 없음"})
             continue
 
         price = snap.current_price
-        if finite(price) is None or price <= 0 or snap.data_issues:
-            exclusions.append({"ticker": ticker, "stage": 2,
-                               "reason": " · ".join(snap.data_issues) or "유효 현재가 없음"})
+        if price <= 0:
             continue
 
         # ── Stage 1: QMJ 품질 필터 ──────────────────────────────────────────
         qmj = quality_map.get(ticker)
         if qmj and not qmj.pass_filter:
             logger.info("[Scan] %s: QMJ 탈락 (%s)", ticker, qmj.quality_tier)
-            exclusions.append({"ticker": ticker, "stage": 1, "reason": f"QMJ 품질 필터 탈락: {qmj.quality_tier}"})
             continue
 
         quality_tier = qmj.quality_tier if qmj else "unknown"
@@ -1097,7 +936,7 @@ def run_full_scan(
             status = "WATCH"
 
         # 실적 블록
-        if stock.days_to_earnings is not None and 0 <= stock.days_to_earnings <= 2:
+        if not is_core_lite and stock.days_to_earnings is not None and stock.days_to_earnings <= 2:
             status = "EARNINGS_BLOCK"
             passes_tech = False
 
@@ -1227,17 +1066,6 @@ def run_full_scan(
         )
         candidates.append(candidate)
 
-    safety_rows = [asdict(c) for c in candidates]
-    finalize_scan_safety(safety_rows, universe, snap_map, portfolio_equity, risk_pct_per_trade,
-                         existing_positions=existing_positions, participation_rate=participation_rate,
-                         exit_days=exit_days, is_monday=is_monday)
-    for c, row in zip(candidates, safety_rows):
-        for key in ("status", "passes_risk_gates", "passes_anti_chase", "anti_chase_reason",
-                    "entry_eligible", "execution_blockers", "liquidity", "filter_detail",
-                    "shares", "total_cost", "risk_amount", "risk_pct"):
-            setattr(c, key, row[key])
-        c.rank_score = rank_candidate(c.sleeve, snap_map[c.ticker], c.status, c.bqs)
-
     # ── 최종 정렬: AdjustedNCS 기반 (READY → WATCH → FAR 순서 유지) ─────────
     status_order = {
         "READY": 0, "WATCH": 1, "WAIT_PULLBACK": 1,
@@ -1246,7 +1074,7 @@ def run_full_scan(
 
     def _sort_key(c: ScanCandidate):
         # 이미 트리거된 것(price >= entry) 최우선
-        triggered = 1 if c.entry_eligible and c.price >= c.entry_trigger else 0
+        triggered = 1 if c.passes_tech_filters and c.price >= c.entry_trigger else 0
         return (-triggered, status_order.get(c.status, 3), -c.adjusted_ncs, -c.rank_score)
 
     candidates.sort(key=_sort_key)
@@ -1257,7 +1085,7 @@ def run_full_scan(
         regime          = regime,
         vol_regime      = vol_regime,
         candidates      = candidates,
-        ready_count     = sum(1 for c in passed if c.entry_eligible),
+        ready_count     = sum(1 for c in passed if c.status == "READY"),
         watch_count     = sum(1 for c in passed if c.status in ("WATCH", "WAIT_PULLBACK")),
         far_count       = sum(1 for c in candidates if c.status == "FAR"),
         total_scanned   = len(universe),
@@ -1265,7 +1093,6 @@ def run_full_scan(
         passed_risk     = sum(1 for c in passed if c.passes_risk_gates),
         passed_anti_chase = sum(1 for c in passed if c.passes_anti_chase),
         scan_mode       = scan_mode,
-        exclusions      = exclusions,
     )
 
 
@@ -1301,11 +1128,6 @@ def build_snapshot_from_ohlcv(
         TechnicalSnapshot
     """
     n = len(closes)
-    issues = validate_ohlcv(opens, highs, lows, closes, volumes)
-    if issues:
-        return TechnicalSnapshot(ticker=ticker, closes=closes, highs=highs, lows=lows,
-                                 volumes=volumes, opens=opens, data_issues=issues,
-                                 volume_in_progress=volume_in_progress)
     if n < 20:
         logger.warning("[Snapshot] %s: 데이터 부족 (%d봉)", ticker, n)
         return TechnicalSnapshot(ticker=ticker, closes=closes, highs=highs, lows=lows, volumes=volumes)
@@ -1353,9 +1175,8 @@ def build_snapshot_from_ohlcv(
     # RS vs 벤치마크
     rs = 0.0
     if bench_closes and len(bench_closes) >= 2 and n >= 2:
-        common = min(n, len(bench_closes))
-        t_ret = (closes[-1] / closes[-common] - 1) * 100 if closes[-common] > 0 else 0
-        b_ret = (bench_closes[-1] / bench_closes[-common] - 1) * 100 if bench_closes[-common] > 0 else 0
+        t_ret = (closes[-1] / closes[0] - 1) * 100 if closes[0] > 0 else 0
+        b_ret = (bench_closes[-1] / bench_closes[0] - 1) * 100 if bench_closes[0] > 0 else 0
         rs = round(t_ret - b_ret, 2)
 
     # Hurst 지수 (50봉 이상 필요)
@@ -1367,10 +1188,10 @@ def build_snapshot_from_ohlcv(
     if opens and len(opens) >= 1 and len(volumes) >= 10 - bis_vol_idx:
         avg_vol_10 = float(np.mean(volumes[bis_vol_idx - 10:bis_vol_idx]))
         bis = float(compute_bis_from_candle(
-            open_p   = opens[bis_vol_idx],
-            high_p   = highs[bis_vol_idx],
-            low_p    = lows[bis_vol_idx],
-            close_p  = closes[bis_vol_idx],
+            open_p   = opens[-1],
+            high_p   = highs[-1],
+            low_p    = lows[-1],
+            close_p  = closes[-1],
             volume   = volumes[bis_vol_idx],
             avg_vol_10d = avg_vol_10,
         ))
@@ -1395,7 +1216,6 @@ def build_snapshot_from_ohlcv(
         lows            = lows,
         volumes         = volumes,
         opens           = opens,
-        volume_in_progress = volume_in_progress,
         current_price   = current_price,
         ma200           = ma200,
         adx             = adx,

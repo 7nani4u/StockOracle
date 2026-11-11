@@ -30,8 +30,9 @@ import math
 from dataclasses import asdict, dataclass
 
 from .ohlcv import FLOAT_NOISE_TOL, extract as extract_ohlcv, load as load_ohlcv
+from .box_volume import build_volume_evidence
 
-VERSION = "2026-11-06.box-sequence-v2"
+VERSION = "2026-11-11.box-sequence-v3-volume"
 
 # An OHLC row whose high/low disagree with its open/close by more than float noise but less
 # than this share of price is almost always a partial dividend adjustment (seen on 47 rows of
@@ -339,6 +340,8 @@ def analyze_box_sequence(dd, config=None):
     result["closes_for_sigma"] = cl[max(0, n - 260):]
     result["boxes"] = [stamp(b) for b in boxes[-6:]]
     result["reference"] = result["boxes"][-1] if result["boxes"] else None
+    result["volume_evidence"] = build_volume_evidence(
+        op, hi, lo, cl, vol, result["reference"], dates=dates, origin=atr_origin)
     if boxes and boxes[-1].get("exit_index") is not None:
         k = boxes[-1]["exit_index"]
         # Bars from the exit bar to the latest completed bar: used to count confirmation
