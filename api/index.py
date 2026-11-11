@@ -780,64 +780,9 @@ def _scan_num(v, default: float = 0.0) -> float:
     try:
         if v is None:
             return default
-        value = float(v)
-        return value if math.isfinite(value) else default
+        return float(v)
     except (TypeError, ValueError):
         return default
-
-
-def _scan_history_frame(hist, min_bars=60):
-    """Trim only empty union-index edges; never compress an internal missing day."""
-    from market_briefing.scan_execution import aligned_history_frame
-    return aligned_history_frame(hist, min_bars)
-
-
-def _scan_freshness(market, dates, now=None):
-    """Calendar-aware stale/future/missing-session evidence without network calls."""
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo("America/New_York" if market == "US" else "Asia/Seoul")
-    local = now or dt.now(zone)
-    local = local.replace(tzinfo=zone) if local.tzinfo is None else local.astimezone(zone)
-    expected = _expected_latest_session_date(market, local)
-    values = [str(d)[:10] for d in dates or []]
-    issues = []
-    if not values:
-        issues.append("일봉 날짜 없음")
-    elif values != sorted(set(values)):
-        issues.append("일봉 날짜 역순 또는 중복")
-    else:
-        if values[-1] > local.date().isoformat():
-            issues.append("미래 일봉 날짜")
-        if values[-1] < expected:
-            issues.append(f"오래된 일봉: {values[-1]} (필요 거래일 {expected})")
-        try:
-            for a, b in zip(values[:-1], values[1:]):
-                if _count_trading_sessions(market, a, b) > 1:
-                    issues.append(f"거래일 누락: {a}~{b}")
-                    break
-        except (TypeError, ValueError):
-            issues.append("일봉 날짜 해석 실패")
-    return {"available": not issues, "last_bar_date": values[-1] if values else None,
-            "expected_completed_date": expected, "issues": issues,
-            "quote_basis": "일봉 종가 또는 진행 중 일봉, 실시간 호가 아님"}
-
-
-def _scan_earnings_days(info, market, now=None):
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo("America/New_York" if market == "US" else "Asia/Seoul")
-    local = now or dt.now(zone)
-    local = local.replace(tzinfo=zone) if local.tzinfo is None else local.astimezone(zone)
-    days = []
-    for key in ("earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd"):
-        value = _scan_num(info.get(key), 0)
-        if value > 0:
-            try:
-                delta = (dt.fromtimestamp(value, zone).date() - local.date()).days
-                if delta >= 0:
-                    days.append(delta)
-            except (ValueError, OverflowError, OSError):
-                pass
-    return min(days) if days else None
 
 
 def scan_quant_momentum_score(cd: dict) -> float:
@@ -2958,10 +2903,6 @@ def _build_market_calendar_year(market: str, year: int) -> Dict:
             full_holidays[pd.Timestamp(value).strftime("%Y-%m-%d")] = (
                 _NASDAQ_HOLIDAY_LABELS.get(str(name), str(name))
             )
-        # Exceptional full closure (Nasdaq Equity Trader Alert ETA2025-1):
-        # https://www.nasdaqtrader.com/TraderNews.aspx?id=ETA2025-1
-        if year == 2025:
-            full_holidays["2025-01-09"] = "지미 카터 전 대통령 국가 애도의 날"
         # NYSE 공식 일정의 반복 조기폐장과 2026~2028 게시 일정을 캐시한다.
         thanksgiving = next(
             (pd.Timestamp(value) for value, name in holiday_series.items()
@@ -18231,81 +18172,6 @@ def _scan_last_bar_date(hist) -> str:
     return stamp.date().isoformat() if hasattr(stamp, "date") else str(stamp)[:10]
 
 
-def build_position_review(params, now=None):
-    """Read-only holding review, also usable when a holding fails scan selection."""
-    from zoneinfo import ZoneInfo
-    from market_briefing.scan_execution import scan_options, bounded_number, build_exit_review
-    from market_briefing.scan_box_plan import build_scan_box_plan
-    opts = scan_options(params)
-    ticker = str(params.get("ticker", "")).strip().upper()
-    if not re.fullmatch(r"[A-Z0-9][A-Z0-9.^=\-]{0,19}", ticker):
-        raise ValueError("유효한 ticker가 필요합니다")
-    if opts["market"] == "KRX" and _is_krx_short_code(ticker):
-        ticker, _, _ = resolve_ticker(ticker)
-    entry = bounded_number(params.get("entry_price"), "entry_price", 0.0001, 1e9)
-    shares = bounded_number(params.get("shares"), "shares", 0.000001, 1e9)
-    zone = ZoneInfo("America/New_York" if opts["market"] == "US" else "Asia/Seoul")
-    local = now or dt.now(zone)
-    local = local.replace(tzinfo=zone) if local.tzinfo is None else local.astimezone(zone)
-    entered = None
-    if params.get("entered_at"):
-        entered = dt.fromisoformat(str(params["entered_at"]).replace("Z", "+00:00"))
-        if entered.tzinfo is None:
-            entered = entered.replace(tzinfo=ZoneInfo("Asia/Seoul"))
-        entered = entered.astimezone(zone)
-        if entered > local:
-            raise ValueError("매수 시각이 현재보다 미래입니다")
-    frame = _scan_history_frame(yf.Ticker(ticker).history(period="2y", auto_adjust=True, timeout=15))
-    if frame is None:
-        return {"available": False, "ticker": ticker, "error": "정렬된 유효 OHLCV를 확보하지 못했습니다"}
-    dates = [stamp.date().isoformat() for stamp in frame.index]
-    quality = _scan_freshness(opts["market"], dates, local)
-    running = _bar_in_progress(opts["market"], dates[-1], local)
-    o, hi, lo, c, v = (frame[key].tolist() for key in ("Open", "High", "Low", "Close", "Volume"))
-    box = build_scan_box_plan(o, hi, lo, c, v, dates=dates, market=opts["market"],
-                              in_progress=running, now=local.date().isoformat())
-    targets = [t for t in (box.get("target1"), box.get("target2")) if t]
-    cost = opts["round_trip_bps"] / 20_000
-    breakeven = entry * (1 + cost) / (1 - cost)
-    targets.insert(0, {"price": breakeven, "label": "비용 포함 손익분기"})
-    if params.get("target_price") is not None:
-        targets.insert(0, {"price": bounded_number(params["target_price"], "target_price", 0.0001, 1e9),
-                           "label": "사용자 매도 목표"})
-    stop = (box.get("stop") or {}).get("price")
-    if params.get("stop_price") is not None:
-        stop = bounded_number(params["stop_price"], "stop_price", 0.0001, 1e9)
-    review = build_exit_review(o, hi, lo, c, v, targets=targets, stop_price=stop,
-        horizon_days=opts["horizon_days"], in_progress=running, shares=shares, entry_price=entry,
-        round_trip_bps=opts["round_trip_bps"], participation_rate=opts["participation_rate"],
-        exit_days=opts["exit_days"])
-    completed_date = dates[-2] if running else dates[-1]
-    review.update(ticker=ticker, market=opts["market"], currency=opts["currency"],
-        data_quality=quality, as_of=dates[-1], box_plan=box,
-        generated_at=local.astimezone(ZoneInfo("UTC")).isoformat(),
-        horizon_end=_project_trading_date(opts["market"], dates[-1], opts["horizon_days"]))
-    if entered:
-        base = entered.date().isoformat()
-        review["timeline"] = {
-            "entered_at_market": entered.isoformat(),
-            "entered_at_kst": entered.astimezone(ZoneInfo("Asia/Seoul")).isoformat(),
-            "completed_sessions_after_entry_date": _count_trading_sessions(opts["market"], base, completed_date),
-            "review_on": _project_trading_date(opts["market"], base, opts["horizon_days"]),
-            "basis": "매수 현지 날짜 다음 거래일부터 N개 거래일 마감 후 재점검, 자동 매도일 아님",
-        }
-        review["timeline"]["review_due"] = completed_date >= review["timeline"]["review_on"]["date"]
-        purchase_rows = frame.loc[[stamp.date().isoformat() == base for stamp in frame.index]]
-        if not purchase_rows.empty:
-            row = purchase_rows.iloc[0]
-            review["timeline"]["entry_within_daily_range"] = float(row["Low"]) <= entry <= float(row["High"])
-        if "Stock Splits" in frame and (frame.loc[frame.index.date >= entered.date(), "Stock Splits"] != 0).any():
-            review["warnings"].append("매수일 이후 주식분할 존재 — 실제 체결가·수량의 분할 조정 확인 필요")
-    if not quality["available"]:
-        review["available"] = False
-        review["warnings"].extend(quality["issues"])
-    review["warnings"].append("목표·손절은 현재 일봉으로 재산출한 기준이며 매수 당시 신호를 복원한 결과가 아님")
-    return review
-
-
 def route(path: str, params: Dict) -> Dict:
     if path == "/api/technique-validation":
         from market_briefing.technique_prune import pruning_report
@@ -19917,26 +19783,15 @@ def route(path: str, params: Dict) -> Dict:
     # /api/portfolio        → 포트폴리오 리스크 평가
     # /api/market-immune    → 시장 위험 면역 시스템
 
-    if path == "/api/position-review":
-        try:
-            return build_position_review(params)
-        except (TypeError, ValueError) as exc:
-            return {"available": False, "error": str(exc)}
-        except Exception as exc:
-            return {"available": False, "error": f"보유 종목 데이터 확인 실패: {type(exc).__name__}"}
-
     if path == "/api/scan":
         """7단계 스캔 엔진 API.
 
         파라미터:
           tickers  — 쉼표 구분 종목 코드 (선택, 없으면 기본 유니버스)
           market   — KRX / US (기본 KRX)
-          equity   — 호가 통화 기준 자본 (KRX: KRW 100000000 / US: USD 10000)
+          equity   — 포트폴리오 자본 (숫자, 기본 100000000)
           risk_pct — 거래당 리스크 비율 (기본 1.0)
           mode     — FULL / CORE_LITE (기본 FULL)
-          horizon_days — 매도 목표 검토 기간 (1~60거래일, 기본 3)
-          participation_rate / exit_days — 거래참여율 / 청산 기간 (기본 1% / 1거래일)
-          round_trip_bps — 왕복 총비용 가정 (기본 20bp, 실제 비용 아님)
         """
         try:
             import sys as _sys, os as _os
@@ -19946,9 +19801,7 @@ def route(path: str, params: Dict) -> Dict:
                 SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
                 is_scan_price_eligible, apply_leader_promotion,
                 apply_momentum_promotion, apply_vcp_promotion,
-                finalize_scan_safety, finalize_box_execution,
             )
-            from market_briefing.scan_execution import scan_options, build_exit_review, EXECUTION_VERSION
             from market_briefing.scan_box_plan import attach_box_plans, apply_target3_gate, INCOMPLETE_REASONS
             from market_briefing.quality_filter import get_quality_score_from_info
             from market_briefing.hybrid_signals import compute_regime, detect_vol_regime, _calc_atr, _calc_adx, _calc_ma
@@ -19984,11 +19837,9 @@ def route(path: str, params: Dict) -> Dict:
                     return {"available": False, "stage": "NONE", "stage_label": "신호 모듈 없음",
                             "reason": "vcp 모듈을 불러오지 못했습니다."}
 
-            _execution_options = scan_options(params)
-            market_p = _execution_options["market"]
-            equity   = _execution_options["equity"]
-            risk_pct = _execution_options["risk_pct"]
-            _horizon = _execution_options["horizon_days"]
+            market_p = params.get("market", "KRX").upper()
+            equity   = float(params.get("equity", 100_000_000))
+            risk_pct = float(params.get("risk_pct", 1.0))
             mode_p   = params.get("mode", "FULL").upper()
             if mode_p not in ("FULL", "CORE_LITE"):
                 mode_p = "FULL"
@@ -20186,7 +20037,6 @@ def route(path: str, params: Dict) -> Dict:
             from market_briefing.technique_prune import rules_cache_token
             _prune_cache_token = rules_cache_token()
             _cache_key = f"scan|v10|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
-            _cache_key += "|" + EXECUTION_VERSION + "|" + json.dumps(_execution_options, sort_keys=True)
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -20194,8 +20044,7 @@ def route(path: str, params: Dict) -> Dict:
 
             def _hist_to_lists(hist):
                 """yf.Ticker().history() DataFrame → (closes, highs, lows, volumes, opens)."""
-                hist = _scan_history_frame(hist)
-                if hist is None:
+                if hist is None or hist.empty:
                     return None
                 required_cols = ["Close", "High", "Low", "Volume", "Open"]
                 if any(col not in hist.columns for col in required_cols):
@@ -20227,14 +20076,12 @@ def route(path: str, params: Dict) -> Dict:
             bench_highs  = []
             bench_lows   = []
             _bh, bench_sym, _bench_label = _benchmark_history(market_p)
-            _bench_price_by_date = {}
-            if (not _bh.empty and all(k in _bh.columns for k in ("Close", "High", "Low"))
-                    and not _bh[["Close", "High", "Low"]].isna().any().any()
-                    and _bh.index.is_monotonic_increasing and not _bh.index.has_duplicates):
+            if not _bh.empty:
+                # 열별 dropna 는 서로 다른 날짜를 이어 붙일 수 있어 한 번에 정렬해 제거한다.
+                _bh = _bh.dropna(subset=["Close", "High", "Low"])
                 bench_closes = _bh["Close"].tolist()
                 bench_highs  = _bh["High"].tolist()
                 bench_lows   = _bh["Low"].tolist()
-                _bench_price_by_date = {str(s.date()): float(c) for s, c in zip(_bh.index, bench_closes)}
             else:
                 print(f"[scan] benchmark unavailable for {market_p} — regime/RS fall back to neutral")
 
@@ -20270,10 +20117,9 @@ def route(path: str, params: Dict) -> Dict:
             _bulk_ohlcv: dict = {}
             _scan_bar_dates: dict = {}
             _scan_dates_map: dict = {}   # ticker → 일봉 날짜 목록 (박스 플랜의 지연·박스 기간 표기용)
-            _history_issues_map: dict = {}
             try:
                 _bd = yf.download(" ".join(raw_list), period="1y", group_by="ticker",
-                                  threads=True, progress=False, timeout=25, auto_adjust=True)
+                                  threads=True, progress=False, timeout=25)
                 if _bd is not None and not _bd.empty:
                     _bd_is_multi = isinstance(_bd.columns, pd.MultiIndex)
                     _bd_tickers = (set(_bd.columns.get_level_values(0))
@@ -20292,10 +20138,7 @@ def route(path: str, params: Dict) -> Dict:
                                      if c in _sub.columns]
                             if len(_need) < 5:
                                 continue
-                            _sub = _scan_history_frame(_sub)
-                            if _sub is None:
-                                _history_issues_map[_t] = "OHLCV 결측·정렬·가격 범위 또는 이력 길이 검사 실패"
-                                continue
+                            _sub = _sub.dropna(subset=_need)
                             _cl = _sub["Close"].tolist()
                             _hi = _sub["High"].tolist()
                             _lo = _sub["Low"].tolist()
@@ -20332,7 +20175,6 @@ def route(path: str, params: Dict) -> Dict:
             }
 
             _ETF_SET = {"QQQ", "SPY", "SOXL", "TQQQ", "SQQQ", "DIA", "IWM"}
-            _data_quality_map = {}
 
             # Last-bar dates are retained per symbol; stale symbols must not shift a completed bar.
 
@@ -20346,11 +20188,10 @@ def route(path: str, params: Dict) -> Dict:
                     if pre is not None:
                         closes, highs, lows, volumes, opens = pre
                     else:
-                        hist = _scan_history_frame(yf.Ticker(tkr).history(period="1y", auto_adjust=True))
+                        hist = yf.Ticker(tkr).history(period="1y")
                         ohlcv = _hist_to_lists(hist)
                         _scan_bar_dates[tkr] = _scan_last_bar_date(hist)
                         if ohlcv is None:
-                            _history_issues_map[tkr] = "OHLCV 결측·정렬·가격 범위 또는 이력 길이 검사 실패"
                             return None
                         closes, highs, lows, volumes, opens = ohlcv
                         # _hist_to_lists 는 결측·중복 행이 있으면 None 이므로 여기서는 행이 1:1 대응한다.
@@ -20363,22 +20204,6 @@ def route(path: str, params: Dict) -> Dict:
                         bench_closes=bench_closes,
                         volume_in_progress=_bar_in_progress(market_p, _scan_bar_dates.get(tkr, "")),
                     )
-                    _dq = _scan_freshness(market_p, _scan_dates_map.get(tkr))
-                    _ds = _scan_dates_map.get(tkr) or []
-                    _b0 = _bench_price_by_date.get(_ds[0]) if _ds else None
-                    _b1 = _bench_price_by_date.get(_ds[-1]) if _ds else None
-                    if _b0 and _b1 and _b0 > 0 and closes[0] > 0:
-                        snap.rs_vs_bench = round(((closes[-1]/closes[0]-1) - (_b1/_b0-1))*100, 2)
-                        _dq["relative_strength_basis"] = "종목·벤치마크 시작·종료 날짜 일치"
-                    else:
-                        snap.rs_vs_bench = 0.0
-                        _dq["relative_strength_basis"] = "날짜 일치 벤치마크 미확보, 중립값"
-                    _data_quality_map[tkr] = _dq
-                    snap.data_issues.extend(_dq["issues"])
-                    if _dq["issues"]:
-                        _history_issues_map[tkr] = " · ".join(_dq["issues"])
-                    else:
-                        _history_issues_map.pop(tkr, None)
                     change = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2) \
                              if len(closes) >= 2 and closes[-2] != 0 else 0.0
                     return {"tkr": tkr, "snap": snap, "change": change}
@@ -20405,7 +20230,6 @@ def route(path: str, params: Dict) -> Dict:
                             market_p, _scan_num(_info.get("marketCap"), 0.0),
                             cap_hint.get(tkr, "")),
                         "market_cap": _scan_num(_info.get("marketCap"), 0.0),
-                        "days_to_earnings": _scan_earnings_days(_info, market_p),
                     }
                 except Exception:
                     # info 실패해도 이름·티어는 힌트로 유지해 기술 분석은 살린다
@@ -20461,8 +20285,7 @@ def route(path: str, params: Dict) -> Dict:
                 mcap_map[t]   = res.get("market_cap", 0.0)
                 universe.append(StockUniverse(
                     t, res.get("name") or t,
-                    res.get("sleeve") or "CORE", sector=res.get("sector", ""),
-                    currency=_execution_options["currency"], days_to_earnings=res.get("days_to_earnings")))
+                    res.get("sleeve") or "CORE", sector=res.get("sector", "")))
 
             def _run_pool(fn, items, workers, timeout_s):
                 """공통 풀 실행 — (결과 리스트, 예산초과 여부)를 반환."""
@@ -20492,7 +20315,7 @@ def route(path: str, params: Dict) -> Dict:
             _budget_hit = False
             # B1: 히스토리 (잔여 예산의 40%)
             _remain = SCAN_COLLECT_BUDGET_S - (time.time() - _collect_start)
-            _t1 = max(0.0, _remain * 0.40)
+            _t1 = max(5.0, _remain * 0.40)
             _b1_res, _b1_hit = _run_pool(_scan_history_one, raw_list, _workers, _t1)
             for _r in _b1_res:
                 _ingest_history(_r)
@@ -20501,7 +20324,7 @@ def route(path: str, params: Dict) -> Dict:
             _survivors = list(_hist_hold.keys())
             # B2: info (잔여 예산 전부, 6워커)
             _remain2 = SCAN_COLLECT_BUDGET_S - (time.time() - _collect_start)
-            _t2 = max(0.0, _remain2)
+            _t2 = max(5.0, _remain2)
             _b2_res, _b2_hit = _run_pool(_scan_info_one, _survivors, SCAN_INFO_WORKERS, _t2)
             _b2_done: set = set()
             for _r in _b2_res:
@@ -20663,8 +20486,6 @@ def route(path: str, params: Dict) -> Dict:
                 portfolio_equity   = equity,
                 risk_pct_per_trade = risk_pct,
                 scan_mode          = mode_p,
-                participation_rate = _execution_options["participation_rate"],
-                exit_days          = _execution_options["exit_days"],
             )
 
             from dataclasses import asdict
@@ -20677,7 +20498,6 @@ def route(path: str, params: Dict) -> Dict:
                 d["cap_tier"]       = cap_map.get(c.ticker, "MID")
                 d["cap_tier_ko"]    = SCAN_CAP_TIER_KO.get(d["cap_tier"], "중형")
                 d["market_cap"]     = mcap_map.get(c.ticker, 0.0)
-                d["data_quality"]   = _data_quality_map.get(c.ticker, {})
                 d["leader_reversal"] = leader_map.get(
                     c.ticker,
                     {"available": False, "stage": "NONE", "stage_label": "해당 없음"},
@@ -20721,14 +20541,9 @@ def route(path: str, params: Dict) -> Dict:
                 except Exception as _mv_e:
                     print(f"[scan] vcp promotion failed ({type(_mv_e).__name__}: {_mv_e})")
 
-            # Final gates run again after supplementary signals change entry/stop/sizing.
-            _safety = finalize_scan_safety(cands, universe, snap_map, equity, risk_pct,
-                participation_rate=_execution_options["participation_rate"],
-                exit_days=_execution_options["exit_days"])
-
             # 승격 반영 후 상태 집계 (요약 카드와 선정 목록 일치용)
             _post_ready = sum(1 for cd in cands
-                              if cd.get("entry_eligible"))
+                              if cd.get("passes_tech_filters") and cd.get("status") == "READY")
             _post_watch = sum(1 for cd in cands
                               if cd.get("passes_tech_filters")
                               and cd.get("status") in ("WATCH", "WAIT_PULLBACK"))
@@ -20746,8 +20561,7 @@ def route(path: str, params: Dict) -> Dict:
                 cd["composite_score"]      = scan_composite_score(cd)
 
             def _is_tier1(cd: dict) -> bool:
-                return bool(cd.get("passes_tech_filters")) and (
-                    cd.get("entry_eligible") or cd.get("status") in SCAN_GOOD_STATES)
+                return bool(cd.get("passes_tech_filters")) and cd.get("status") in SCAN_GOOD_STATES
 
             def _is_tier2(cd: dict) -> bool:
                 return (bool(cd.get("passes_tech_filters"))
@@ -20767,14 +20581,7 @@ def route(path: str, params: Dict) -> Dict:
             _plan_stats = attach_box_plans(
                 cands, snap_map, market=market_p, dates_map=_scan_dates_map,
                 in_progress=lambda _t: _bar_in_progress(market_p, _scan_bar_dates.get(_t, "")))
-            _box_safety = finalize_box_execution(cands, universe, snap_map, equity, risk_pct,
-                participation_rate=_execution_options["participation_rate"],
-                exit_days=_execution_options["exit_days"])
-            _post_ready = _box_safety["entry_eligible"]
-            _safety["entry_eligible"] = _post_ready
-            _safety["box_blocked"] = _box_safety["blocked"]
-            _plan_pool = [cd for cd in cands if (cd.get("box_plan") or {}).get("complete")
-                          and cd.get("display_eligible")]
+            _plan_pool = [cd for cd in cands if (cd.get("box_plan") or {}).get("complete")]
 
             # ── 3차 목표(예측 탭 ⚖️ 중립적 TP2 의 가장 높은 가격): 1차<2차<3차 로 오르지 않는 종목은 제외 ──
             #    플랜 완성 후보 전체에 종합점수 순으로 계산하고(시간이 모자라면 낮은 순위부터 건너뜀) 게이트를 건다.
@@ -20783,14 +20590,6 @@ def route(path: str, params: Dict) -> Dict:
                                  dates_map=_scan_dates_map,
                                  deadline=(_collect_start + SCAN_TARGET3_BUDGET_S) if os.getenv("VERCEL") else None)
             apply_target3_gate(cands, _plan_stats)
-            for cd in cands:
-                if (cd.get("box_plan") or {}).get("target3_unchecked"):
-                    cd["entry_eligible"] = False
-                    if cd.get("box_execution"):
-                        cd["box_execution"]["entry_eligible"] = False
-            _post_ready = sum(bool(cd.get("entry_eligible")) for cd in cands
-                              if (cd.get("box_plan") or {}).get("complete"))
-            _safety["entry_eligible"] = _post_ready
             _plan_pool = [cd for cd in _plan_pool if (cd.get("box_plan") or {}).get("complete")]
 
             tier1 = _by_score([cd for cd in _plan_pool if _is_tier1(cd)])
@@ -20813,22 +20612,6 @@ def route(path: str, params: Dict) -> Dict:
                 selected += _got
 
             _relaxed = (_tier_used[2] > 0 or _tier_used[3] > 0)
-
-            # Exit horizon is anchored at today's quote and is distinct from re-entry timing.
-            for cd in selected:
-                _ss = snap_map[cd["ticker"]]
-                _bp = cd.get("box_plan") or {}
-                cd["exit_review"] = build_exit_review(
-                    _ss.opens, _ss.highs, _ss.lows, _ss.closes, _ss.volumes,
-                    targets=[_bp[k] for k in ("target1", "target2", "target3") if _bp.get(k)],
-                    stop_price=(_bp.get("stop") or {}).get("price"), horizon_days=_horizon,
-                    in_progress=_ss.volume_in_progress, shares=(cd.get("box_execution") or {}).get("shares") or None,
-                    round_trip_bps=_execution_options["round_trip_bps"],
-                    participation_rate=_execution_options["participation_rate"],
-                    exit_days=_execution_options["exit_days"])
-                cd["exit_review"]["as_of"] = _scan_bar_dates.get(cd["ticker"])
-                cd["exit_review"]["horizon_end"] = _project_trading_date(
-                    market_p, _scan_bar_dates[cd["ticker"]], _horizon)
 
             # 분포 집계 (투명성·UI 표기용)
             _tier_dist = {"LARGE": 0, "MID": 0, "SMALL": 0}
@@ -20864,7 +20647,7 @@ def route(path: str, params: Dict) -> Dict:
                                   for _k, _n in sorted(_plan_stats["excluded"].items(),
                                                        key=lambda kv: -kv[1])],
                 },
-                "filter_desc":     "박스 실행 플랜 5개 항목과 최종 위험·청산 수량 조건을 통과하고 현재가 < 1차 < 2차 < 3차 목표인 종목만 + 진입 가능권 우선 + 품질 등급 단계 보강(최대 15개) + 시총·섹터 분산(MMR)"
+                "filter_desc":     "박스 실행 플랜 5개 항목이 모두 산출되고 현재가 < 1차 < 2차 < 3차 목표인 종목만 + 진입 가능권 우선 + 품질 등급 단계 보강(최대 15개) + 시총·섹터 분산(MMR)"
                                    + (f" + 미국 ${SCAN_US_MAX_PRICE:g} 이하" if market_p == "US" else "")
                                    + (" + 리더 돌파 진입준비 승격" if market_p == "US" and _promoted else "")
                                    + (" + 모멘텀 지속 진입준비 승격" if _momentum_on and _momentum_promoted else "")
@@ -20879,9 +20662,7 @@ def route(path: str, params: Dict) -> Dict:
                     "note": ("유니버스 전수 검토 완료"
                              + ("(일부 보조정보 기본값)" if _budget_hit else "")
                              if _unresolved == 0
-                             else f"{_unresolved}종목 미수집 — " +
-                             ("수집 시간 예산 초과" if _budget_hit else "데이터 확보·유효성 검사 실패")),
-                    "data_issues": [{"ticker": t, "reason": reason} for t, reason in sorted(_history_issues_map.items())],
+                             else f"수집 시간 예산 초과로 {_unresolved}종목 미수집"),
                 },
                 "promoted_count":  _promoted,
                 "leader_pruned_count": _leader_pruned if market_p == "US" else 0,
@@ -20913,16 +20694,6 @@ def route(path: str, params: Dict) -> Dict:
                 } if _vcp_on else None),
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
-                "execution_options": _execution_options,
-                "execution_stats": _safety,
-                "scan_exclusions": result.exclusions,
-                "risk_context": {"equity_explicit": "equity" in params, "currency": _execution_options["currency"],
-                                 "existing_positions_supplied": False,
-                                 "basis": "입력·기본 자본과 빈 기존 포지션 가정. 실제 계좌 잔고·집중도는 미확인"},
-                "data_quality": {"invalid_or_stale": len(_history_issues_map),
-                                 "earnings_unknown": sum(s.days_to_earnings is None for s in universe),
-                                 "benchmark_available": bool(_bench_price_by_date),
-                                 "quote_basis": "일봉 종가 또는 진행 중 일봉, 실시간 호가 아님"},
             }
             # 응답 캐시 저장 (만료 키 정리 포함)
             _now = time.time()
@@ -22858,7 +22629,7 @@ input::placeholder{color:#484f58}
         <h2 style="font-size:20px;font-weight:700;margin-bottom:3px">🔬 7단계 스캔 엔진</h2>
         <p style="font-size:12px;color:#8b949e">🧭 박스 실행 플랜(1·2·3차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되는 후보 종목(현재가 &lt; 1차 &lt; 2차 &lt; 3차 목표) 발굴</p>
       </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:100%">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:nowrap">
         <select id="scan-market" style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:12px;flex:1 1 0;min-width:0">
           <option value="KRX">🇰🇷 KRX (한국)</option>
           <option value="US">🇺🇸 US (미국)</option>
@@ -22867,14 +22638,6 @@ input::placeholder{color:#484f58}
           <option value="FULL">전체 스캔</option>
           <option value="CORE_LITE">핵심 종목 (빠름)</option>
         </select>
-        <label style="font-size:12px;color:#8b949e">검토 기간
-          <select id="scan-horizon" aria-label="매도 목표 검토 거래일" style="background:#21262d;color:#e6edf3;padding:6px;border:1px solid #30363d;border-radius:6px">
-            <option value="3">3거래일</option><option value="5">5거래일</option>
-            <option value="10">10거래일</option><option value="20">20거래일</option>
-          </select>
-        </label>
-        <input id="scan-tickers" aria-label="집중 스캔 종목 코드" placeholder="종목 코드 (예: GRAB)" style="width:150px;background:#21262d;color:#e6edf3;padding:7px;border:1px solid #30363d;border-radius:6px">
-        <input id="scan-equity" type="number" min="1" step="any" aria-label="호가 통화 기준 스캔 자본" placeholder="자본 (USD / KRW)" style="width:145px;background:#21262d;color:#e6edf3;padding:7px;border:1px solid #30363d;border-radius:6px">
         <button onclick="runScan()" id="scan-run-btn"
           style="background:#1f6feb;border:none;border-radius:8px;padding:8px 16px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0">
           🔍 스캔 실행
@@ -22882,28 +22645,12 @@ input::placeholder{color:#484f58}
         <button onclick="runScan(true)" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 12px;color:#8b949e;font-size:13px;cursor:pointer;white-space:nowrap;flex-shrink:0">🔄</button>
       </div>
     </div>
-    <details class="card" style="margin-bottom:14px">
-      <summary style="cursor:pointer;font-weight:600">보유 종목 점검 — 매수가·수량·보유기간</summary>
-      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;font-size:12px">
-        <label for="position-ticker">종목 코드 <input id="position-ticker" placeholder="GRAB" size="9"></label>
-        <label for="position-entry">주당 매수가 <input id="position-entry" type="number" min="0.0001" step="any" style="width:90px"></label>
-        <label for="position-shares">보유 수량 <input id="position-shares" type="number" min="0.000001" step="any" style="width:75px"></label>
-        <label for="position-time">매수 시각 (한국시간) <input id="position-time" type="datetime-local"></label>
-        <label for="position-target">매도 목표 (선택) <input id="position-target" type="number" min="0.0001" step="any" style="width:90px"></label>
-        <label for="position-stop">손절 기준 (선택) <input id="position-stop" type="number" min="0.0001" step="any" style="width:90px"></label>
-        <label for="position-cost">왕복 총비용 가정 (bp) <input id="position-cost" type="number" min="0" max="1000" value="20" style="width:65px"></label>
-        <button type="button" id="position-review-btn" onclick="reviewPosition()">보유 종목 점검</button>
-      </div>
-      <p style="font-size:11px;color:#8b949e">위의 시장·검토 기간을 사용합니다. 미국 가격은 USD, 한국 가격은 KRW입니다. 매도 목표와 손절을 비우면 현재 박스 기준을 참고합니다.</p>
-      <div id="position-review" aria-live="polite" style="font-size:12px;line-height:1.8"></div>
-    </details>
-    <p style="font-size:11px;color:#8b949e">재진입 기간은 매도 시점과 다릅니다. 일봉 시세와 거래량으로 검토하며, 목표 가격 도달·청산 수량 한도는 주문 체결을 보장하지 않습니다. 자본 미입력 시 미국 $10,000·한국 1억원을 가정하며 기존 보유 종목은 반영하지 않습니다.</p>
     <!-- 스캔 전 안내 -->
     <div id="scan-intro" class="home-section" style="text-align:center;padding:32px 20px;color:#484f58">
       <div style="font-size:36px;margin-bottom:12px">🔬</div>
       <div style="font-size:14px;font-weight:600;color:#8b949e;margin-bottom:8px">7단계 스캔 엔진 준비 완료</div>
       <div style="font-size:12px;line-height:1.7">종목 유니버스 → 기술필터 → 상태분류 → BQS 랭킹 → 리스크 게이트 → 추격 방지 → 포지션 사이징 → 🧭 박스 실행 플랜</div>
-      <div style="font-size:11px;color:#484f58;margin-top:8px">시세·기업정보 수집으로 10~30초 소요될 수 있습니다</div>
+      <div style="font-size:11px;color:#484f58;margin-top:8px">⚠️ 실시간 데이터 수집으로 10~30초 소요될 수 있습니다</div>
     </div>
     <!-- 로딩 -->
     <div id="scan-loading" style="display:none;text-align:center;padding:40px;color:#8b949e">
@@ -22927,16 +22674,14 @@ input::placeholder{color:#484f58}
             <th>종목</th>
             <th>카테고리</th>
             <th style="text-align:right">현재가</th>
-            <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 규칙 점수(0~100). 검증된 성공 확률이 아닙니다">돌파 신뢰도</th>
+            <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 신뢰도</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 1차 목표(박스 중간) — 박스 상·하단의 중간값(되돌림 1차 매물). 현재가보다 높은 종목만 표시합니다">1차 목표</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 2차 목표(박스 상단) — 박스 상단 저항(3봉 확인 고점). 현재가보다 높은 종목만 표시합니다">2차 목표</th>
             <th style="text-align:right" title="🔮 예측 탭 › 🛡️ 리스크 관리와 목표 청산 › ⚖️ 중립적 카드 TP2 의 목표 가격 범위 중 가장 높은 가격. ATR·피보나치 기반 모델이라 박스 구조의 2차 목표 이하로 나오는 종목은 목록에서 제외합니다(현재가 < 1차 < 2차 < 3차). 순위에는 쓰지 않습니다">3차 목표</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 손절 기준 — 이 가격 아래로 종가가 마감하면 계획 취소">손절 기준</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 재진입 후보 구간 — 조건부 후보는 조건이 충족된 뒤에만 유효합니다">재진입 후보</th>
-            <th style="text-align:right" title="재진입 기준가에 닿는 경우의 첫 도달일 25~75백분위 또는 박스 확인 최소 기간. 매도 목표 도달일이 아닙니다">재진입 기간</th>
-            <th style="text-align:right" title="20거래일 안에 재진입 기준가에 닿는 무추세 변동성 모델 추정. 1차 매도 목표 도달 확률이 아닙니다">재진입 터치 추정</th>
-            <th style="text-align:right" title="선택한 거래일 안에 현재 일봉 시세에서 1차 매도 목표에 닿는 무추세 모델 추정. 기간은 닿는 경우에 한하며 손절 선행·실제 체결 미반영">기간 내 매도 목표</th>
-            <th style="text-align:right" title="확정 20봉 평균·중앙 거래량 중 작은 값의 1%를 하루에 거래한다는 계획 기준 수량 한도. 실제 호가 깊이·스프레드는 미확인">청산 수량 한도</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 예상 기간(거래일 기준) — 도달 기준가에 닿는 경우의 첫 도달일 25~75백분위. 변동성만으로 본 추정이며 방향 예측이 아닙니다. 도달 기간이 없으면 박스 확정·종가 확인에 필요한 최소 거래일을 표시합니다">예상 기간</th>
+            <th style="text-align:right" title="🧭 박스 실행 플랜의 도달 확률 — 20거래일 안에 도달 기준가(재진입 후보 구간 상단 또는 이탈 실패 확인가)에 닿을 가능성. 변동성 추정 오차를 반영한 최소~최대 범위이며 1차 목표 도달 확률이 아닙니다">도달 확률</th>
           </tr></thead>
           <tbody id="scan-tbody"></tbody>
         </table>
@@ -30130,13 +29875,8 @@ async function runScan(force) {
   if (runBtn)   runBtn.disabled = true;
 
   try {
-    var horizon = (document.getElementById('scan-horizon') || {}).value || '3';
-    var tickers = (document.getElementById('scan-tickers') || {}).value || '';
-    var equity = (document.getElementById('scan-equity') || {}).value || '';
-    var url = '/api/scan?market=' + market + '&mode=' + mode + '&horizon_days=' + encodeURIComponent(horizon) +
-      (tickers.trim() ? '&tickers=' + encodeURIComponent(tickers.trim()) : '') + (force ? '&refresh=1' : '');
-    if (equity) url += '&equity=' + encodeURIComponent(equity);
-    var r   = await fetch(url);
+    var url = '/api/scan?market=' + market + '&mode=' + mode + (force ? '&refresh=1' : '');
+    var r   = await fetch(url, {cache: 'no-store'});
     var d   = await r.json();
 
     if (d.error) {
@@ -30267,12 +30007,6 @@ function renderScanResult(d, market) {
             ? '<span style="font-size:10px;color:#3fb950;margin-left:6px">전수 검토</span>'
             : '<span style="font-size:10px;color:#d29922;border:1px solid #d2992255;border-radius:3px;padding:0 5px;margin-left:6px">시간 초과로 ' + (d.coverage.unresolved || 0) + '종목 미검토</span>')
         : '') +
-      (d.execution_options ? '<span style="color:#d29922">매도 목표 검토 ' + d.execution_options.horizon_days + '거래일 · 자본 통화 ' + _scanEsc(d.execution_options.currency) + '</span>' : '') +
-      (d.execution_stats ? '<span style="color:#8b949e">조건 충족(가정) ' + d.execution_stats.entry_eligible + ' · 위험 차단 ' + (d.execution_stats.blocked + (d.execution_stats.box_blocked || 0)) + '</span>' : '') +
-      (d.risk_context ? '<span style="color:#8b949e" title="' + _scanEsc(d.risk_context.basis) + '">기존 보유 미반영</span>' : '') +
-      ((d.scan_exclusions || []).length ? '<span style="color:#8b949e" title="' + _scanEsc(d.scan_exclusions.map(function(x) {return x.ticker + ': ' + x.reason;}).join(' · ')) + '">초기 단계 제외 ' + d.scan_exclusions.length + '</span>' : '') +
-      (d.data_quality ? '<span style="color:#8b949e" title="실적 일정 미확인은 일정 위험이 없다는 뜻이 아닙니다">지연·오류 일봉 ' + d.data_quality.invalid_or_stale + ' · 실적 일정 미확인 ' + d.data_quality.earnings_unknown + '</span>' : '') +
-      '<span style="color:#8b949e;font-size:11px">일봉 시세 기준 · 실시간 호가 미확인</span>' +
       (ts ? '<span style="color:#484f58;font-size:10px;margin-left:auto">생성: ' + ts + '</span>' : '');
   }
 
@@ -30281,7 +30015,7 @@ function renderScanResult(d, market) {
   if (!tbody) return;
   var cands = d.candidates || [];
   if (cands.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="14" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 박스 실행 플랜(1·2·3차 목표, 손절 기준, 재진입 후보, 재진입 기간·터치 추정)과 위험·유동성 조건을 통과하고 현재가 < 1차 < 2차 < 3차 목표인 종목이 없습니다' +
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;padding:24px;color:#484f58">선정 종목 없음 — 박스 실행 플랜(1·2·3차 목표, 손절 기준, 재진입 후보, 예상 기간·도달 확률)이 모두 산출되고 현재가 < 1차 < 2차 < 3차 목표인 종목이 없습니다' +
       (d.plan_stats ? '<div style="font-size:11px;margin-top:6px;color:#6e7681">' + _scanEsc(planExcludedTip(d.plan_stats)) + '</div>' : '') + '</td></tr>';
     return;
   }
@@ -30299,26 +30033,6 @@ function renderScanResult(d, market) {
   var NA = '<span style="font-size:11px;color:#484f58">—</span>';
   var noCalc = function(tip) {
     return '<span' + (tip ? ' title="' + _scanEsc(tip) + '"' : '') + ' style="font-size:11px;color:#6e7681">산출 불가</span>';
-  };
-  var exitCell = function(review) {
-    var t = review && review.available && (review.targets || [])[0];
-    if (!t || !t.touch_probability) return noCalc('매도 목표 모델 미확보');
-    var p = t.touch_probability;
-    var tip = review.horizon_days + '거래일 내 ' + t.label + ' ' + fmtP(t.price) + ' 터치 모델 추정. ' + t.touch_basis;
-    var text = review.horizon_days + '일 내 ' + (100*p.low).toFixed(1) + '~' + (100*p.high).toFixed(1) + '%';
-    var days = t.days_if_reached;
-    var ref = t.historical_reference;
-    tip += ref ? ' · 과거 비중첩 경로 ' + ref.sample_count + '건' +
-      (ref.available ? ', 손절 전 목표 도달 참고 빈도 ' + (100*ref.target_before_stop_rate).toFixed(1) + '%' : ' (표본 부족, 참고 빈도 보류)') : '';
-    return '<span title="' + _scanEsc(tip) + '">' + _scanEsc(text) + '</span>' +
-      subLine(days ? '닿는 경우 ' + days[0] + '~' + days[1] + '거래일' : '기간 산출 보류') + subLine('체결·손절 선행 미반영');
-  };
-  var liquidityCell = function(liq) {
-    if (!liq || !liq.available || liq.capacity_shares == null) return noCalc('확정 거래량 부족');
-    var text = Number(liq.capacity_shares).toLocaleString('ko-KR') + '주 / ' + liq.exit_days + '일';
-    var ratio = liq.relative_volume == null ? '비교량 없음' : '확정 거래량 ' + Number(liq.relative_volume).toFixed(2) + '배';
-    return '<span title="' + _scanEsc(liq.limitations + ' · 거래참여율 ' + (liq.participation_rate*100).toFixed(2) + '%') + '">' + _scanEsc(text) + '</span>' +
-      subLine(ratio) + subLine('호가·체결 미확인');
   };
   var subLine = function(txt, color, tip) {
     if (!txt) return '';
@@ -30403,17 +30117,15 @@ function renderScanResult(d, market) {
 
     // 열 순서(판단 흐름): # → 기본 정보(종목·카테고리·현재가) → 진입 조건(돌파 신뢰도)
     // → 목표(1차·2차·3차) → 위험 관리(손절 기준·재진입 후보) → 예상 기간·도달 확률.
-    // 열 머리글(#page-scan thead)과 순서·개수가 같아야 한다(14칸).
+    // 열 머리글(#page-scan thead)과 순서·개수가 같아야 한다(12칸, 빈 목록 메시지 colspan 도 12).
     // 상태·치명적 약점·순복합 점수·리더 반전·모멘텀 지속·VCP 수축·진입 트리거 열은 화면에서 삭제했다
     // (API 응답에는 그대로 유지).
-    var safeTicker = encodeURIComponent(String(c.ticker || '')).replace(/'/g, '%27');
-    return '<tr onclick="openStockDetail(decodeURIComponent(\'' + safeTicker + '\'), \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
+    return '<tr onclick="openStockDetail(\'' + c.ticker + '\', \'' + (isKrx ? 'KRX' : 'US') + '\')" style="cursor:pointer">' +
       '<td style="color:#484f58;font-size:11px">' + (i+1) + '</td>' +
-      '<td' + (trigTip ? ' title="' + _scanEsc(trigTip) + '"' : '') + '><div style="font-weight:700;font-size:13px;color:#e6edf3">' + _scanEsc(displayName) + capBadge + '</div>' +
-           (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + _scanEsc(displayCode) + '</div>' : '') +
-           (c.entry_eligible === false ? subLine('관찰 후보 · 즉시 진입 조건 미충족', '#d29922') : '') + '</td>' +
-      '<td><span class="cat-badge">' + _scanEsc(cat) + '</span></td>' +
-      '<td title="' + _scanEsc(((c.data_quality || {}).last_bar_date || '') + ' 일봉 시세, 실시간 호가 아님') + '" style="text-align:right;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums">' + fmtP(c.price) + '</td>' +
+      '<td' + (trigTip ? ' title="' + _scanEsc(trigTip) + '"' : '') + '><div style="font-weight:700;font-size:13px;color:#e6edf3">' + displayName + capBadge + '</div>' +
+           (displayCode ? '<div style="font-size:10px;color:#484f58;margin-top:2px">' + displayCode + '</div>' : '') + '</td>' +
+      '<td><span class="cat-badge">' + cat + '</span></td>' +
+      '<td style="text-align:right;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums">' + fmtP(c.price) + '</td>' +
       '<td style="min-width:60px">' + scoreBar(c.bqs, bqsColor) + '</td>' +
       '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + targetCell(bp.target1, '박스 중간') + '</td>' +
       '<td style="text-align:right;min-width:100px;font-variant-numeric:tabular-nums">' + targetCell(bp.target2, '박스 상단') + '</td>' +
@@ -30422,58 +30134,10 @@ function renderScanResult(d, market) {
       '<td style="text-align:right;min-width:150px;font-variant-numeric:tabular-nums">' + reentryCell(bp.reentry, bp.verdict) + '</td>' +
       '<td style="text-align:right;min-width:80px">' + periodCell(bp.wait) + '</td>' +
       '<td style="text-align:right;min-width:110px">' + probCell(bp.wait) + '</td>' +
-      '<td style="text-align:right;min-width:170px">' + exitCell(c.exit_review) + '</td>' +
-      '<td style="text-align:right;min-width:150px">' + liquidityCell((c.box_execution || {}).liquidity || c.liquidity) + '</td>' +
     '</tr>';
   }).join('');
 
   tbody.innerHTML = rows;
-}
-
-async function reviewPosition() {
-  var el = document.getElementById('position-review');
-  var button = document.getElementById('position-review-btn');
-  var value = function(id) { return (document.getElementById(id) || {}).value || ''; };
-  var q = new URLSearchParams({market: value('scan-market'), ticker: value('position-ticker'),
-    entry_price: value('position-entry'), shares: value('position-shares'),
-    horizon_days: value('scan-horizon') || '3', round_trip_bps: value('position-cost') || '0'});
-  if (value('position-time')) q.set('entered_at', value('position-time') + '+09:00');
-  if (value('position-target')) q.set('target_price', value('position-target'));
-  if (value('position-stop')) q.set('stop_price', value('position-stop'));
-  el.textContent = '일봉·거래량·보유기간을 확인 중입니다...';
-  button.disabled = true;
-  try {
-    var response = await fetch('/api/position-review?' + q.toString());
-    renderPositionReview(await response.json());
-  } catch (error) { el.textContent = '조회 실패: ' + error.message; }
-  finally { button.disabled = false; }
-}
-
-function renderPositionReview(d) {
-  var el = document.getElementById('position-review');
-  if (!el) return;
-  if (d.error) { el.textContent = d.error; return; }
-  var esc = function(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch) {
-    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); };
-  var money = function(v, digits) { return v == null ? '산출 불가' : (Number(v) < 0 ? '-' : '') +
-    (d.currency === 'USD' ? '$' : '₩') + Math.abs(Number(v)).toFixed(digits == null ? (d.currency === 'USD' ? 2 : 0) : digits); };
-  var p = d.position || {}, liq = d.liquidity || {}, timeline = d.timeline || {};
-  var lines = ['<strong>' + esc(d.ticker) + ' · ' + esc(d.as_of) + ' 일봉 기준 ' + money(d.quote) + '</strong>',
-    '평가손익 (비용 전) ' + money(p.gross_pnl) + ' · 왕복 비용 가정 반영 ' + money(p.estimated_net_pnl),
-    '계산상 비용 포함 손익분기 ' + money(p.break_even_price, 4) + ' · 왕복 총비용 가정 ' + Number((d.cost_assumption || {}).round_trip_bps || 0) + 'bp'];
-  if (timeline.entered_at_market) lines.push('매수 현지 시각 ' + esc(timeline.entered_at_market) +
-    ' · 매수일 이후 완료 거래일 ' + Number(timeline.completed_sessions_after_entry_date || 0) +
-    ' · 최초 재점검 ' + esc((timeline.review_on || {}).date) + (timeline.review_due ? ' (기준 경과)' : ' (자동 매도 아님)'));
-  lines.push(liq.available ? '보유 수량 ' + Number(p.shares) + '주 · 계획 청산 한도 ' + Number(liq.capacity_shares).toLocaleString('ko-KR') +
-    '주 / ' + Number(liq.exit_days) + '거래일 · 호가·체결 미확인' : '청산 여력 산출 불가');
-  (d.targets || []).forEach(function(t) {
-    var band = t.touch_probability;
-    lines.push(esc(t.label) + ' ' + money(t.price, t.label === '비용 포함 손익분기' ? 4 : undefined) + (t.already_reached ? ' · 현재 일봉 시세에서 도달한 가격' :
-      band ? ' · 앞으로 ' + Number(d.horizon_days) + '거래일 내 터치 모델 추정 ' + (100*band.low).toFixed(1) + '~' + (100*band.high).toFixed(1) + '%' : ' · 모델 보류') +
-      ' · 목표가 청산 시 비용 가정 반영 손익 ' + money(t.net_pnl));
-  });
-  lines.push('<span style="color:#d29922">' + (d.warnings || []).map(esc).join('<br>') + '</span>');
-  el.innerHTML = lines.join('<br>');
 }
 
 
@@ -30991,9 +30655,14 @@ def _send(handler_self, data: Any, status: int = 200, content_type: str = "appli
             # 현재가가 갱신되지 않는다. 항상 서버에서 최신가를 계산해 반환한다.
             cache_control = "no-store, no-cache, must-revalidate, proxy-revalidate"
 
-        elif path == "/" or path == "/index.html":
-            # HTML — 1시간 캐시 (정적에 가깝고 자주 바뀌지 않음)
-            cache_control = "public, s-maxage=3600"
+        elif path in ("/", "/index.html"):
+            # The embedded UI and API must come from the current deployment.
+            cache_control = "no-store"
+
+        elif path == "/api/scan":
+            # Keep the internal result cache, but never reuse HTTP errors or
+            # let CDN stale responses override an explicit refresh request.
+            cache_control = "no-store"
 
         elif path.startswith("/api/"):
             # 기타 API — 10초 캐시 (기본값 유지)
