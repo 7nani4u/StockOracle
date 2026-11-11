@@ -19,6 +19,8 @@ from market_briefing.scan_engine import (
 )
 from market_briefing.quality_filter import get_quality_score_from_info
 from market_briefing.dual_score_v2 import REGIME_BULLISH, VOL_NORMAL
+from market_briefing.scan_execution import aligned_history_frame
+from market_briefing.session_bars import last_bar_in_progress
 
 
 # ── 스캔 대상 종목 정의 ─────────────────────────────────────────────────────
@@ -36,14 +38,14 @@ UNIVERSE = [
 def fetch_ohlcv(ticker: str, period: str = "1y") -> dict:
     """yfinance에서 OHLCV 데이터 다운로드 (Ticker.history 사용 — MultiIndex 안전)."""
     try:
-        hist = yf.Ticker(ticker).history(period=period)
-        if hist.empty:
+        hist = aligned_history_frame(yf.Ticker(ticker).history(period=period, auto_adjust=True))
+        if hist is None:
             return {}
-        cl = hist["Close"].dropna().tolist()
-        hi = hist["High"].dropna().tolist()
-        lo = hist["Low"].dropna().tolist()
-        vo = hist["Volume"].dropna().tolist()
-        op = hist["Open"].dropna().tolist()
+        cl = hist["Close"].tolist()
+        hi = hist["High"].tolist()
+        lo = hist["Low"].tolist()
+        vo = hist["Volume"].tolist()
+        op = hist["Open"].tolist()
         n  = min(len(cl), len(hi), len(lo), len(vo), len(op))
         return {
             "closes":  cl[:n],
@@ -51,6 +53,7 @@ def fetch_ohlcv(ticker: str, period: str = "1y") -> dict:
             "lows":    lo[:n],
             "volumes": vo[:n],
             "opens":   op[:n],
+            "dates": [stamp.date().isoformat() for stamp in hist.index],
         }
     except Exception as e:
         print(f"[ERROR] {ticker} 데이터 로드 실패: {e}")
@@ -86,6 +89,7 @@ def main():
             volumes      = ohlcv["volumes"],
             opens        = ohlcv["opens"],
             bench_closes = bench_closes,
+            volume_in_progress = last_bar_in_progress("KRX", ohlcv["dates"][-1]),
         )
         snap_map[stock.ticker] = snap
 
@@ -140,7 +144,7 @@ def main():
         )
 
     # READY 후보 상세 출력
-    ready = [c for c in result.candidates if c.status == "READY" and c.passes_tech_filters]
+    ready = [c for c in result.candidates if c.entry_eligible]
     if ready:
         print(f"\n🟢 READY 후보 상세 ({len(ready)}개)")
         for c in ready:
