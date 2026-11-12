@@ -658,6 +658,9 @@ def ncs_action(ncs: float, fws: float) -> str:
 
 # ── 종합 진입점 ───────────────────────────────────────────────────────────────
 
+_HURST_UNSET = object()
+
+
 def compute_hybrid_score(
     closes:           list[float],
     highs:            list[float],
@@ -670,6 +673,7 @@ def compute_hybrid_score(
     adv_decline:      float | None = None,
     earnings_days:    int   | None = None,          # 실적 발표까지 남은 일수
     volume_in_progress: bool = False,               # 마지막 막대가 장중 진행 중(거래량 누적 중)인가
+    hurst_value:      Any = _HURST_UNSET,           # 호출측이 이미 계산한 허스트(None 포함) — 주면 다시 계산하지 않는다
 ) -> dict:
     """단일 진입점: 종목의 HybridTurtle 복합 점수 전체 계산.
 
@@ -688,6 +692,8 @@ def compute_hybrid_score(
         volume_in_progress: True 면 마지막 막대의 거래량이 장중 누적값(최종값 이하)이므로 거래량 비율·BIS 의
                       거래량 항목을 직전 확정 막대 기준으로 계산한다. 조회 시각만으로 FWS(거래량 위험)가
                       커지고 NCS 가 내려가던 현상을 없앤다. 가격·ADX·ATR 등은 마지막 막대를 그대로 쓴다.
+        hurst_value:  ``calc_hurst_v2(closes)`` 를 이미 계산했다면 그 값(없으면 None). 소수 넷째 자리로 반올림해
+                      쓰므로 ``calc_hurst(closes)`` 와 같은 값이다. 생략하면 여기서 계산한다.
 
     Returns:
         {
@@ -758,7 +764,10 @@ def compute_hybrid_score(
     dist_to_high = max(0.0, (high_20d - cur_price) / cur_price * 100) if cur_price else 0.0
 
     # 허스트 (수익률 R/S, 50봉 미만이면 산정하지 않는다)
-    hurst = calc_hurst(closes) if n >= 50 else None
+    if hurst_value is _HURST_UNSET:
+        hurst = calc_hurst(closes) if n >= 50 else None
+    else:
+        hurst = None if hurst_value is None else round(float(hurst_value), 4)
 
     # BIS (브레이크아웃 무결성)
     # BIS 의 거래량 항목도 같은 기준(진행 중이면 직전 확정 막대)으로 맞춘다.

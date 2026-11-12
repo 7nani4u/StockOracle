@@ -736,6 +736,10 @@ SCAN_DISPLAY_CAP      = 15   # 최종 출력 종목 수 상한 (양 시장 공�
 SCAN_COLLECT_WORKERS  = 16
 SCAN_INFO_WORKERS     = 6    # info 전용 (야후 401 레이트리밋 회피용 소수 워커)
 SCAN_COLLECT_BUDGET_S = 42.0   # 이 시간 내 도착한 종목만으로 진행 (타임아웃 하드가드)
+# 품질(QMJ) 단계 가용성 기준 — 재무 정보를 받은 종목이 수집 종목의 이 비율에 못 미치면 이 단계(필터·가점)를 통째로 끈다.
+# 정보 도착이 시간 예산·조회 실패에 좌우돼 소수 종목에만 걸리면 순위가 우연(스레드 완료 순서)으로 갈리기 때문이다.
+# 0 이면 항상 적용(이전 동작). 실측: 미국 93종목 스캔에서 정보를 받은 종목은 1~3개뿐이었고 한국 46종목은 93%였다.
+SCAN_QUALITY_MIN_COVERAGE = float(os.getenv("STOCKORACLE_SCAN_QUALITY_MIN_COVERAGE", "0.8") or 0)
 SCAN_TARGET3_BUDGET_S = 52.0   # Vercel 에서만: 수집 시작 후 이 시간이 지나면 3차 목표 계산을 건너뛴다(함수 제한 60초 보호). 로컬은 제한 없음
 
 # 출력 선정 게이트 — 진입 가능권(상태)만 노출 (신호 조건 제거)
@@ -796,10 +800,23 @@ def scan_quant_momentum_score(cd: dict) -> float:
     return round(tier_sc * 0.7 + mult * 100.0 * 0.3, 2)
 
 
+def scan_ncs_qmj_adjust_enabled() -> bool:
+    """복원 스위치: 종합 점수의 NCS 축에 QMJ 품질 배율을 곱한 adjusted_ncs 를 쓸지(기본 꺼짐)."""
+    return os.getenv("STOCKORACLE_SCAN_NCS_QMJ_ADJUST", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def scan_ncs_score(cd: dict) -> float:
-    """순복합 점수 (0~100) — adjusted_ncs 우선, 없으면 ncs (0.0도 유효값으로 처리)."""
-    adj = cd.get("adjusted_ncs")
-    return _scan_num(adj if adj is not None else cd.get("ncs"), 0.0)
+    """순복합 점수 (0~100) — 기술 점수 NCS 그대로(0.0도 유효값). QMJ 배율을 곱한 adjusted_ncs 는 쓰지 않는다.
+
+    품질 등급은 종합 점수의 세 번째 축(scan_quant_momentum_score)에서 한 번만 반영한다. 예전에는 이 축이
+    adjusted_ncs(= NCS × 품질 배율)를 써서 같은 등급이 NCS 축 안의 곱셈, 세 번째 축의 등급 점수, 그 축의 배율 항까지
+    세 군데에 들어갔고, 재무 정보를 받지 못한 종목('unknown', 배율 0.5)은 기술 점수가 절반이 됐다(정보 조회 실패가
+    순위를 깎음). 복원: STOCKORACLE_SCAN_NCS_QMJ_ADJUST=1.
+    """
+    if scan_ncs_qmj_adjust_enabled() and cd.get("adjusted_ncs") is not None:
+        return _scan_num(cd.get("adjusted_ncs"), 0.0)
+    ncs = cd.get("ncs")
+    return _scan_num(ncs if ncs is not None else cd.get("adjusted_ncs"), 0.0)
 
 
 def scan_composite_score(cd: dict) -> float:
@@ -19800,7 +19817,7 @@ def route(path: str, params: Dict) -> Dict:
                 StockUniverse, run_full_scan, build_snapshot_from_ohlcv,
                 SCAN_US_MAX_PRICE, SCAN_COLLECT_CAP_US_FULL, SCAN_COLLECT_CAP_US_LITE,
                 is_scan_price_eligible, apply_leader_promotion,
-                apply_momentum_promotion, apply_vcp_promotion,
+                apply_momentum_promotion, apply_vcp_promotion, stale_quote_tickers,
             )
             from market_briefing.scan_box_plan import attach_box_plans, apply_target3_gate, INCOMPLETE_REASONS
             from market_briefing.quality_filter import get_quality_score_from_info
@@ -20034,9 +20051,10 @@ def route(path: str, params: Dict) -> Dict:
             #   refresh=1 파라미터로 강제 갱신 가능.
             _refresh   = str(params.get("refresh", "")).lower() in ("1", "true", "yes")
             _momentum_on, _vcp_on = _scan_signal_options(params)
+            _ncs_qmj_on = scan_ncs_qmj_adjust_enabled()
             from market_briefing.technique_prune import rules_cache_token
             _prune_cache_token = rules_cache_token()
-            _cache_key = f"scan|v10|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{_prune_cache_token}|{','.join(raw_list)}"
+            _cache_key = f"scan|v11|{market_p}|{mode_p}|{equity}|{risk_pct}|{int(_momentum_on)}|{int(_vcp_on)}|{int(_ncs_qmj_on)}|{_prune_cache_token}|{','.join(raw_list)}"
             if not _refresh:
                 _hit = _SCAN_RESULT_CACHE.get(_cache_key)
                 if _hit and (time.time() - _hit[1]) < _SCAN_RESULT_TTL:
@@ -20070,6 +20088,13 @@ def route(path: str, params: Dict) -> Dict:
             # 벤치마크 데이터 (레짐 감지용) — Ticker.history() 사용
             # 수집 전체에 시간 예산을 공유한다 (Vercel 60s 대응)
             _collect_start = time.time()
+            _phase: dict = {}                      # 단계별 소요 시간(초) — data_quality.timings_s 로 노출
+            _lap_at = [_collect_start]
+
+            def _lap(name: str) -> None:
+                _now = time.time()
+                _phase[name] = round(_now - _lap_at[0], 1)
+                _lap_at[0] = _now
             # KRX 의 ^KS200 은 Yahoo 가 history() 에 1행만 돌려줘 레짐·RS 가 조용히 상수가 됐다.
             # _benchmark_history 가 일봉이 충분한 지수/ETF 를 순서대로 고른다.
             bench_closes = []
@@ -20097,12 +20122,15 @@ def route(path: str, params: Dict) -> Dict:
                 ) if _bn >= 30 else None
                 ma200 = _calc_ma(bench_closes, 200) if len(bench_closes) >= 200 else None
                 vix_v = None
-                try:
-                    _vh = yf.Ticker("^VIX").history(period="5d")
-                    if not _vh.empty:
-                        vix_v = float(_vh["Close"].dropna().iloc[-1])
-                except Exception:
-                    pass
+                # VIX 는 미국 공포지수라 미국 시장 레짐에만 쓴다(compute_regime 문서: '미국 시장 전용'). 한국 스캔에 섞어도
+                # 5년 1,207거래일 중 레짐이 달라진 날이 0일이라 결과는 같고 불필요한 외부 요청 한 번만 줄어든다.
+                if market_p == "US":
+                    try:
+                        _vh = yf.Ticker("^VIX").history(period="5d")
+                        if not _vh.empty:
+                            vix_v = float(_vh["Close"].dropna().iloc[-1])
+                    except Exception:
+                        pass
                 # ma200 이 없을 때 지수 자신의 가격을 넣으면 price==ma200 → 약세 3점+CHOP 으로 고정된다.
                 rd = compute_regime(bench_closes[-1], ma200, adx_d, vix_v)
                 regime = rd["regime"]
@@ -20114,6 +20142,7 @@ def route(path: str, params: Dict) -> Dict:
             # 112종목 × (history + info) 순차 호출은 레이트리밋으로 붕괴하므로,
             # OHLCV는 yf.download 1회로 전수 확보하고 info만 개별 조회한다.
             # 실패 시 Phase B에서 기존 개별 수집으로 폴백한다.
+            _lap("benchmark_s")
             _bulk_ohlcv: dict = {}
             _scan_bar_dates: dict = {}
             _scan_dates_map: dict = {}   # ticker → 일봉 날짜 목록 (박스 플랜의 지연·박스 기간 표기용)
@@ -20158,6 +20187,7 @@ def route(path: str, params: Dict) -> Dict:
             except Exception as _bd_e:
                 print(f"[scan] bulk download failed ({type(_bd_e).__name__}: {_bd_e}) — per-ticker fallback")
                 _bulk_ohlcv = {}
+            _lap("bulk_s")
 
             # OHLCV 수집 + 스냅샷/품질 빌드
             universe    = []
@@ -20285,7 +20315,8 @@ def route(path: str, params: Dict) -> Dict:
                 mcap_map[t]   = res.get("market_cap", 0.0)
                 universe.append(StockUniverse(
                     t, res.get("name") or t,
-                    res.get("sleeve") or "CORE", sector=res.get("sector", "")))
+                    res.get("sleeve") or "CORE", sector=res.get("sector", ""),
+                    currency="KRW" if market_p == "KRX" else "USD"))
 
             def _run_pool(fn, items, workers, timeout_s):
                 """공통 풀 실행 — (결과 리스트, 예산초과 여부)를 반환."""
@@ -20319,6 +20350,12 @@ def route(path: str, params: Dict) -> Dict:
             _b1_res, _b1_hit = _run_pool(_scan_history_one, raw_list, _workers, _t1)
             for _r in _b1_res:
                 _ingest_history(_r)
+            # 마지막 일봉이 시장 기준일보다 5일 넘게 오래된 종목(거래정지·상장폐지·공급자 누락)은 낡은 가격으로 박스 플랜·점수를
+            # 만들게 되므로 뺀다. info 조회 전에 걸러 불필요한 요청도 줄인다. 연휴처럼 시장 전체가 쉬는 날은 날짜가 같아 걸리지 않는다.
+            _stale_out = stale_quote_tickers({_t: _scan_bar_dates.get(_t, "") for _t in _hist_hold})
+            for _t in _stale_out:
+                _hist_hold.pop(_t, None)
+            _lap("history_s")
             # B1에서 bulk에 없던 종목은 개별 폴백으로 재시도하지 않고(레이트리밋 방지)
             # 스냅샷 미확보 종목으로 집계한다.
             _survivors = list(_hist_hold.keys())
@@ -20339,9 +20376,19 @@ def route(path: str, params: Dict) -> Dict:
                              "sleeve": "ETF" if _t in _ETF_SET else "CORE",
                              "cap_tier": cap_hint.get(_t, "MID"), "market_cap": 0.0})
             _budget_hit = bool(_b1_hit or _b2_hit)
+            _lap("info_s")
 
             if not snap_map:
                 return {"error": "데이터 수집 실패 — 네트워크 연결을 확인하거나 잠시 후 다시 시도하세요"}
+
+            # 품질(QMJ) 단계 가용성 — 재무 정보가 대부분 도착하지 못했다면 소수 종목에만 필터·가점이 걸려 순위가 우연으로 갈린다.
+            # 정보를 받은 종목 비율이 기준 미만이면 이 단계를 통째로 끈다(필터도 가점도 없음: 모두 'unknown'). data_quality 로 알린다.
+            _q_known = sum(1 for _q in quality_map.values() if getattr(_q, "quality_tier", "unknown") != "unknown")
+            _q_cov = _q_known / len(snap_map)
+            _q_applied = _q_cov >= SCAN_QUALITY_MIN_COVERAGE
+            if not _q_applied:
+                print(f"[scan] quality info for {_q_known}/{len(snap_map)} tickers (<{SCAN_QUALITY_MIN_COVERAGE:.0%}) — QMJ stage skipped")
+                quality_map.clear()
 
             # ── 리더주 반전 신호 (미국 전용 보조 지표, 점수 미반영) ──
             leader_map: dict = {}
@@ -20477,6 +20524,7 @@ def route(path: str, params: Dict) -> Dict:
                 except Exception as _vp_e:
                     print(f"[scan] vcp prune gate failed ({type(_vp_e).__name__}) — allow all")
 
+            _lap("signals_s")
             result = run_full_scan(
                 universe           = [u for u in universe if u.ticker in snap_map],
                 snap_map           = snap_map,
@@ -20486,7 +20534,9 @@ def route(path: str, params: Dict) -> Dict:
                 portfolio_equity   = equity,
                 risk_pct_per_trade = risk_pct,
                 scan_mode          = mode_p,
+                market             = market_p,
             )
+            _lap("engine_s")
 
             from dataclasses import asdict
             cands = []
@@ -20508,6 +20558,11 @@ def route(path: str, params: Dict) -> Dict:
                 d["vcp"] = (vcp_map.get(c.ticker)
                     if _vcp_on else
                     {"available": False, "stage": "NONE", "stage_label": "신호 꺼짐"})
+                # 기법 검증 게이트가 막으면 passes_tech_filters 가 False 로 덮이므로, 원래 2단계(기술 필터) 판정은
+                # filter_detail.passes_all 에서 꺼내 stage2_passed 로 따로 보여 준다(화면은 쓰지 않는 추가 필드).
+                _fd = d.get("filter_detail") or {}
+                d["stage2_passed"] = bool(_fd.get("passes_all"))
+                d["entry_signal"] = {"allowed": not bool(_fd.get("pruned")), "reason": _fd.get("prune_reason") or ""}
                 cands.append(d)
 
             # ── 리더 반전 BREAKOUT 승격 (미국 전용): 상태를 진입 준비로 ──
@@ -20581,6 +20636,7 @@ def route(path: str, params: Dict) -> Dict:
             _plan_stats = attach_box_plans(
                 cands, snap_map, market=market_p, dates_map=_scan_dates_map,
                 in_progress=lambda _t: _bar_in_progress(market_p, _scan_bar_dates.get(_t, "")))
+            _lap("score_plan_s")
             _plan_pool = [cd for cd in cands if (cd.get("box_plan") or {}).get("complete")]
 
             # ── 3차 목표(예측 탭 ⚖️ 중립적 TP2 의 가장 높은 가격): 1차<2차<3차 로 오르지 않는 종목은 제외 ──
@@ -20590,6 +20646,7 @@ def route(path: str, params: Dict) -> Dict:
                                  dates_map=_scan_dates_map,
                                  deadline=(_collect_start + SCAN_TARGET3_BUDGET_S) if os.getenv("VERCEL") else None)
             apply_target3_gate(cands, _plan_stats)
+            _lap("target3_s")
             _plan_pool = [cd for cd in _plan_pool if (cd.get("box_plan") or {}).get("complete")]
 
             tier1 = _by_score([cd for cd in _plan_pool if _is_tier1(cd)])
@@ -20621,7 +20678,27 @@ def route(path: str, params: Dict) -> Dict:
                 _sec = _scan_sector_key(cd) or "기타"
                 _sector_dist[_sec] = _sector_dist.get(_sec, 0) + 1
 
-            _unresolved = max(0, len(raw_list) - len(snap_map) - len(_price_capped_out))
+            _unresolved = max(0, len(raw_list) - len(snap_map) - len(_price_capped_out) - len(_stale_out))
+            # 단계별 남은 수 — '필터 통과'가 기법 검증 게이트 때문에 0이어도 각 단계에서 몇 종목이 남는지 보이게 한다.
+            _stage_funnel = {
+                "universe": len(raw_list), "collected": len(snap_map), "price_capped": len(_price_capped_out),
+                "stale_excluded": len(_stale_out), "scanned": result.total_scanned,
+                "quality_excluded": max(0, result.total_scanned - len(result.candidates) - len(result.skipped)),
+                "calc_skipped": len(result.skipped),
+                "stage2_passed": sum(1 for cd in cands if cd.get("stage2_passed")),
+                "entry_signal_allowed": sum(1 for cd in cands if (cd.get("entry_signal") or {}).get("allowed")),
+                "plan_complete": _plan_stats["complete"], "selected": len(selected),
+            }
+            _data_quality = {
+                "stale_excluded": [{"ticker": _t, **_v} for _t, _v in sorted(_stale_out.items())],
+                "calc_skipped": list(result.skipped),
+                "quality_unknown": sum(1 for cd in cands if (cd.get("quality_tier") or "unknown") == "unknown"),
+                "quality_unknown_selected": sum(1 for cd in selected if (cd.get("quality_tier") or "unknown") == "unknown"),
+                "info_budget_hit": bool(_budget_hit),
+                "quality_stage": "applied" if _q_applied else "skipped_low_coverage",
+                "quality_coverage": round(_q_cov, 3),
+                "timings_s": {**_phase, "total_s": round(time.time() - _collect_start, 1)},
+            }
             _resp = {
                 "regime":          result.regime,
                 "vol_regime":      result.vol_regime,
@@ -20656,6 +20733,7 @@ def route(path: str, params: Dict) -> Dict:
                     "universe": len(raw_list),
                     "collected": len(snap_map),
                     "price_capped": len(_price_capped_out),
+                    "stale_excluded": len(_stale_out),
                     "unresolved": _unresolved,
                     "budget_hit": _budget_hit,
                     "full_review": _unresolved == 0,
@@ -20692,6 +20770,8 @@ def route(path: str, params: Dict) -> Dict:
                                if (cd.get("vcp") or {}).get("stage") == stage)
                     for stage in ("PASS", "CONTRACTING", "NONE")
                 } if _vcp_on else None),
+                "stage_funnel":    _stage_funnel,
+                "data_quality":    _data_quality,
                 "candidates":      selected,
                 "generated_at":    result.generated_at,
             }
@@ -22674,7 +22754,7 @@ input::placeholder{color:#484f58}
             <th>종목</th>
             <th>카테고리</th>
             <th style="text-align:right">현재가</th>
-            <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 신뢰도</th>
+            <th style="text-align:center" title="추세·거래량·돌파 조건을 종합한 BQS 점수">돌파 점수</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 1차 목표(박스 중간) — 박스 상·하단의 중간값(되돌림 1차 매물). 현재가보다 높은 종목만 표시합니다">1차 목표</th>
             <th style="text-align:right" title="🧭 박스 실행 플랜의 2차 목표(박스 상단) — 박스 상단 저항(3봉 확인 고점). 현재가보다 높은 종목만 표시합니다">2차 목표</th>
             <th style="text-align:right" title="🔮 예측 탭 › 🛡️ 리스크 관리와 목표 청산 › ⚖️ 중립적 카드 TP2 의 목표 가격 범위 중 가장 높은 가격. ATR·피보나치 기반 모델이라 박스 구조의 2차 목표 이하로 나오는 종목은 목록에서 제외합니다(현재가 < 1차 < 2차 < 3차). 순위에는 쓰지 않습니다">3차 목표</th>
@@ -30115,7 +30195,7 @@ function renderScanResult(d, market) {
     var bp = c.box_plan || {};
     var trigTip = triggerTip(c);
 
-    // 열 순서(판단 흐름): # → 기본 정보(종목·카테고리·현재가) → 진입 조건(돌파 신뢰도)
+    // 열 순서(판단 흐름): # → 기본 정보(종목·카테고리·현재가) → 진입 조건(돌파 점수)
     // → 목표(1차·2차·3차) → 위험 관리(손절 기준·재진입 후보) → 예상 기간·도달 확률.
     // 열 머리글(#page-scan thead)과 순서·개수가 같아야 한다(12칸, 빈 목록 메시지 colspan 도 12).
     // 상태·치명적 약점·순복합 점수·리더 반전·모멘텀 지속·VCP 수축·진입 트리거 열은 화면에서 삭제했다

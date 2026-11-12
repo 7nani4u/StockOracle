@@ -101,6 +101,43 @@ def is_scan_price_eligible(market: str, price: Any) -> bool:
     return value <= SCAN_US_MAX_PRICE
 
 
+# 마지막 일봉이 같은 시장의 기준일보다 이 달력일 수를 넘게 오래된 종목은 낡은 시세로 본다(거래정지·상장폐지·공급자 누락).
+# 주말(2일)과 하루 지연은 넘기되 일주일 가까이 멈춘 종목은 거른다. 시장 전체가 쉬는 연휴에는 모든 종목의 마지막
+# 날짜가 같아 걸리지 않는다.
+STALE_QUOTE_MAX_LAG_DAYS = 5
+
+
+def stale_quote_tickers(last_bar_dates: Dict[str, Any], max_lag_days: int = STALE_QUOTE_MAX_LAG_DAYS,
+                        min_reference_count: int = 3) -> Dict[str, Dict[str, Any]]:
+    """마지막 일봉 날짜가 시장 기준일보다 ``max_lag_days`` 넘게 오래된 종목 → {티커: {last_bar, lag_days, reference}}.
+
+    기준일은 ``min_reference_count`` 종목 이상이 공유하는 가장 최신 날짜다(한 종목의 잘못된 미래 날짜가 기준이
+    되지 않게). 날짜를 읽을 수 없는 종목은 판단하지 않는다(수집 실패와 구분). 절대 raise 하지 않는다.
+    """
+    try:
+        parsed: Dict[str, Any] = {}
+        for ticker, raw in (last_bar_dates or {}).items():
+            try:
+                parsed[ticker] = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                continue
+        if len(parsed) < 2:
+            return {}
+        counts: Dict[Any, int] = {}
+        for day in parsed.values():
+            counts[day] = counts.get(day, 0) + 1
+        shared = [day for day, n in counts.items() if n >= min_reference_count]
+        reference = max(shared) if shared else max(parsed.values())
+        stale: Dict[str, Dict[str, Any]] = {}
+        for ticker, day in parsed.items():
+            lag = (reference - day).days
+            if lag > max_lag_days:
+                stale[ticker] = {"last_bar": day.isoformat(), "lag_days": lag, "reference": reference.isoformat()}
+        return stale
+    except Exception:
+        return {}
+
+
 def apply_leader_promotion(
     cands: List[Dict],
     leader_map: Dict[str, Dict] | None,
@@ -375,6 +412,8 @@ class TechnicalSnapshot:
     atr_spiking:    bool  = False
     atr_collapsing: bool  = False
     hybrid_signal: Dict[str, Any] = field(default_factory=dict)
+    # 마지막 막대가 장중 진행 중인가 — 기법 게이트의 맥락 조건(거래량·추세)을 확정 막대 기준으로 계산할 때 쓴다.
+    bar_in_progress: bool = False
 
 
 @dataclass
@@ -465,6 +504,8 @@ class ScanResult:
     passed_anti_chase: int = 0
     scan_mode:      str = "FULL"
     generated_at:   str = field(default_factory=lambda: datetime.now().isoformat())
+    # 계산 중 예외가 나거나 값이 유한하지 않아 건너뛴 종목 — 조용히 사라지지 않게 호출측이 보고한다.
+    skipped:        List[str] = field(default_factory=list)
 
 
 # ── Stage 2: 기술적 필터 ──────────────────────────────────────────────────────
@@ -852,6 +893,53 @@ def _build_snapshot(
 
 # ── 메인 스캔 파이프라인 ──────────────────────────────────────────────────────
 
+def _scan_market(market: Optional[str], stock: "StockUniverse") -> str:
+    """기법 검증 규칙을 고르는 시장 키(KRX/US).
+
+    호출측이 시장을 알려 주면 그 값을 쓴다. 예전에는 StockUniverse.currency 기본값("KRW")만 보고 정해서,
+    통화를 넣지 않고 만든 미국 종목이 전부 KRX 규칙·근거로 평가됐다.
+    """
+    if market:
+        return "KRX" if str(market).strip().upper() == "KRX" else "US"
+    return "KRX" if stock.currency == "KRW" else "US"
+
+
+_FINITE_SNAPSHOT_FIELDS = (
+    "current_price", "ma200", "adx", "plus_di", "minus_di", "atr", "atr_pct", "vol_ratio", "high_20d",
+    "efficiency", "rs_vs_bench", "weekly_adx", "ema20", "bis_score", "median_atr_14",
+)
+
+
+def _snapshot_is_finite(snap: "TechnicalSnapshot") -> bool:
+    """스냅샷의 숫자 지표가 모두 유한한가(NaN·inf 한 개가 순위 계산을 통째로 중단시키지 않도록)."""
+    for name in _FINITE_SNAPSHOT_FIELDS:
+        value = getattr(snap, name, 0.0)
+        try:
+            if not math.isfinite(float(value)):
+                return False
+        except (TypeError, ValueError):
+            return False
+    hurst = snap.hurst
+    return hurst is None or math.isfinite(float(hurst))
+
+
+def _hybrid_gate_conditions(snap: "TechnicalSnapshot", *, ncs: float, fws: float, regime: str,
+                            vol_regime: str, distance_pct: float) -> Dict[str, str]:
+    """기법 검증 게이트(hybrid_breakout)에 넘기는 조건 키.
+
+    맥락 조건(추세·변동성·거래량)은 리더·모멘텀·VCP 게이트와 같이 **확정된 막대**로 계산한다 — 마지막 막대가
+    장중 진행 중이면 그 막대를 뺀다(진행 중 거래량은 누적값이라 최종값 이하).
+    """
+    from .technique_prune import hybrid_conditions, context_conditions
+    conditions = hybrid_conditions(snap.hybrid_signal or {
+        "ncs": ncs, "fws": fws, "regime": regime, "vol_regime": vol_regime,
+        "adx": snap.adx, "dist_to_high": distance_pct})
+    cut = -1 if snap.bar_in_progress else None
+    conditions.update(context_conditions(
+        snap.closes[:cut], snap.highs[:cut], snap.lows[:cut], snap.volumes[:cut]))
+    return conditions
+
+
 def run_full_scan(
     universe:           List[StockUniverse],
     snap_map:           Dict[str, TechnicalSnapshot],   # ticker → TechnicalSnapshot
@@ -865,6 +953,7 @@ def run_full_scan(
     risk_pct_per_trade: float = 1.0,
     scan_mode:          str  = "FULL",
     is_monday:          bool = False,
+    market:             Optional[str] = None,
 ) -> ScanResult:
     """7단계 종목 스캔 파이프라인.
 
@@ -881,6 +970,7 @@ def run_full_scan(
         risk_pct_per_trade: 거래당 리스크 비율 (%, 기본 1%)
         scan_mode:          FULL / CORE_LITE
         is_monday:          월요일 여부 (추격 방지 강화)
+        market:             KRX / US. 기법 검증 규칙을 고르는 시장(없으면 종목의 통화로 추정)
 
     Returns:
         ScanResult
@@ -890,23 +980,27 @@ def run_full_scan(
 
     is_core_lite = scan_mode == "CORE_LITE"
     candidates: List[ScanCandidate] = []
+    skipped: List[str] = []
 
-    for stock in universe:
+    def _scan_one(stock: StockUniverse) -> Optional[ScanCandidate]:
+        """종목 하나의 Stage 1~7. 건너뛸 종목이면 None. 예외는 호출측이 종목 단위로 격리한다."""
         ticker = stock.ticker
         snap   = snap_map.get(ticker)
         if snap is None:
             logger.warning("[Scan] %s: 스냅샷 없음 — 건너뜀", ticker)
-            continue
+            return None
 
+        if not _snapshot_is_finite(snap):
+            raise ValueError("스냅샷에 유한하지 않은 값이 있습니다")
         price = snap.current_price
         if price <= 0:
-            continue
+            return None
 
         # ── Stage 1: QMJ 품질 필터 ──────────────────────────────────────────
         qmj = quality_map.get(ticker)
         if qmj and not qmj.pass_filter:
             logger.info("[Scan] %s: QMJ 탈락 (%s)", ticker, qmj.quality_tier)
-            continue
+            return None
 
         quality_tier = qmj.quality_tier if qmj else "unknown"
         momentum_mult = TIER_MULTIPLIER.get(quality_tier, 0.5)
@@ -1008,12 +1102,10 @@ def run_full_scan(
                     )
             passes_chase = anti_chase_res["passed"]
 
-        from .technique_prune import hybrid_conditions, technique_allowed, technique_evidence, context_conditions
-        _market = "KRX" if stock.currency == "KRW" else "US"
-        _hybrid_conditions = hybrid_conditions(snap.hybrid_signal or {
-            "ncs": ncs, "fws": fws, "regime": regime, "vol_regime": vol_regime,
-            "adx": snap.adx, "dist_to_high": distance_pct})
-        _hybrid_conditions.update(context_conditions(snap.closes, snap.highs, snap.lows, snap.volumes))
+        from .technique_prune import technique_allowed, technique_evidence
+        _market = _scan_market(market, stock)
+        _hybrid_conditions = _hybrid_gate_conditions(
+            snap, ncs=ncs, fws=fws, regime=regime, vol_regime=vol_regime, distance_pct=distance_pct)
         _prune_allowed, _prune_reason = technique_allowed("hybrid_breakout", _market, _hybrid_conditions)
         filter_result["technique_validation"] = technique_evidence("hybrid_breakout", _market)
         if not _prune_allowed:
@@ -1064,7 +1156,17 @@ def run_full_scan(
             hurst_warn     = hurst_warn,
             scan_mode      = scan_mode,
         )
-        candidates.append(candidate)
+        return candidate
+
+    for stock in universe:
+        try:
+            candidate = _scan_one(stock)
+        except Exception as exc:   # 한 종목의 이상 값이 시장 전체 스캔을 중단시키지 않게 격리한다
+            logger.warning("[Scan] %s: 계산 실패로 건너뜀 (%s: %s)", stock.ticker, type(exc).__name__, exc)
+            skipped.append(stock.ticker)
+            continue
+        if candidate is not None:
+            candidates.append(candidate)
 
     # ── 최종 정렬: AdjustedNCS 기반 (READY → WATCH → FAR 순서 유지) ─────────
     status_order = {
@@ -1093,6 +1195,7 @@ def run_full_scan(
         passed_risk     = sum(1 for c in passed if c.passes_risk_gates),
         passed_anti_chase = sum(1 for c in passed if c.passes_anti_chase),
         scan_mode       = scan_mode,
+        skipped         = skipped,
     )
 
 
@@ -1132,6 +1235,9 @@ def build_snapshot_from_ohlcv(
         logger.warning("[Snapshot] %s: 데이터 부족 (%d봉)", ticker, n)
         return TechnicalSnapshot(ticker=ticker, closes=closes, highs=highs, lows=lows, volumes=volumes)
 
+    # 허스트(수익률 R/S)는 한 번만 계산해 hybrid 점수에도 넘긴다 — 같은 입력으로 두 번 돌리면 스냅샷 비용의 약 40%가 낭비된다.
+    hurst = calc_hurst_v2(closes) if n >= 50 else None
+
     # hybrid_signals의 compute_hybrid_score로 지표 계산
     try:
         hs = compute_hybrid_score(
@@ -1142,6 +1248,7 @@ def build_snapshot_from_ohlcv(
             open_prices   = opens,
             bench_closes  = bench_closes,
             volume_in_progress = volume_in_progress,
+            hurst_value   = hurst,
         )
     except Exception as e:
         logger.error("[Snapshot] %s: hybrid_score 계산 실패: %s", ticker, e)
@@ -1172,15 +1279,15 @@ def build_snapshot_from_ohlcv(
     # 거래량 비율 (진행 중 막대면 직전 확정 막대 기준)
     vol_ratio = _calc_vol_ratio(volumes, in_progress=volume_in_progress)
 
-    # RS vs 벤치마크
+    # RS vs 벤치마크 — 종목 창과 같은 길이의 꼬리 구간끼리 비교한다. 상장한 지 얼마 안 돼 봉이 벤치마크보다 적은 종목을
+    # 벤치마크 전체 기간과 비교하면 서로 다른 기간의 수익률 차이가 RS 로 들어간다(길이가 같으면 이전 계산과 같다).
     rs = 0.0
-    if bench_closes and len(bench_closes) >= 2 and n >= 2:
-        t_ret = (closes[-1] / closes[0] - 1) * 100 if closes[0] > 0 else 0
-        b_ret = (bench_closes[-1] / bench_closes[0] - 1) * 100 if bench_closes[0] > 0 else 0
+    m = min(n, len(bench_closes)) if bench_closes else 0
+    if m >= 2:
+        t0, b0 = closes[-m], bench_closes[-m]
+        t_ret = (closes[-1] / t0 - 1) * 100 if t0 > 0 else 0
+        b_ret = (bench_closes[-1] / b0 - 1) * 100 if b0 > 0 else 0
         rs = round(t_ret - b_ret, 2)
-
-    # Hurst 지수 (50봉 이상 필요)
-    hurst = calc_hurst_v2(closes) if n >= 50 else None
 
     # BIS (최신 캔들)
     bis = 0.0
@@ -1234,6 +1341,7 @@ def build_snapshot_from_ohlcv(
         median_atr_14   = median_atr,
         atr_spiking     = atr_spiking,
         atr_collapsing  = atr_collapsing,
+        bar_in_progress = bool(volume_in_progress),
     )
 
 
