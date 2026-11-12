@@ -166,6 +166,14 @@ import numpy as np
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
+# yfinance 쿠키 재사용 — 위에서 영속 쿠키 캐시를 끄면 모든 HTTP 요청이 fc.yahoo.com 쿠키를 다시 받고 그 호출이 전역 락 안에서
+# 직렬로 일어난다(스레드를 늘려도 한 줄; 미국 122종목 yf.download 49초, info 93종목 38초). 받은 쿠키를 기억해 이를 푼다.
+# 근거·측정: docs/scan_engine_audit_20261112.md ⑧. 복원: STOCKORACLE_YF_COOKIE_REUSE=0
+try:
+    from market_briefing.yf_cookie import enable_cookie_reuse as _enable_yf_cookie_reuse
+    YF_COOKIE_REUSE = bool(_enable_yf_cookie_reuse())
+except Exception:
+    YF_COOKIE_REUSE = False
 from market_briefing.prediction_contract import (
     apply_prediction_price_contract,
     build_price_anchor,
@@ -20697,6 +20705,7 @@ def route(path: str, params: Dict) -> Dict:
                 "info_budget_hit": bool(_budget_hit),
                 "quality_stage": "applied" if _q_applied else "skipped_low_coverage",
                 "quality_coverage": round(_q_cov, 3),
+                "yf_cookie_reuse": bool(YF_COOKIE_REUSE),
                 "timings_s": {**_phase, "total_s": round(time.time() - _collect_start, 1)},
             }
             _resp = {
