@@ -1,0 +1,218 @@
+{
+  "ticker": "GRAB",
+  "as_of": "2026-11-10",
+  "close": 3.3499999046325684,
+  "before": {
+    "version": "2026-11-05.box-plan-v1",
+    "verdict": {
+      "key": "watch",
+      "icon": "🟠",
+      "label": "관망",
+      "headline": "관망 — 측정 목표 도달 · 재확인 기회 지남"
+    },
+    "stage": {
+      "key": "not_met",
+      "label": "조건 미충족"
+    },
+    "strategy": {
+      "key": "retest",
+      "label": "돌파 후 재확인 매수"
+    },
+    "prices": {
+      "entry": {
+        "low": 3.28,
+        "high": 3.35,
+        "ref": 3.32,
+        "label": "재진입 후보(조건부) · 위쪽 새 박스 하단",
+        "basis": "박스 하단 $3.28 ~ 하단+min(박스 높이 25%, 0.5 ATR)",
+        "kind": "new_box_above",
+        "conditional": true,
+        "condition": "새 고점·새 저점 없이 3거래일 유지 → 새 박스 확정 · 새 고점·저점이 나오면 가격 갱신"
+      },
+      "trigger": {
+        "price": 3.58,
+        "pct_from_quote": 6.87,
+        "label": "돌파 확인가(잠정)",
+        "condition": "새 박스 상단 $3.56 위 종가 2회"
+      },
+      "add": null,
+      "stop": {
+        "price": 3.22,
+        "pct_from_entry": -2.87,
+        "pct_from_quote": -3.88,
+        "basis": "박스 하단 − 0.35 ATR (하단 이탈 = 지지 실패)"
+      },
+      "holder_stop": {
+        "price": 2.7,
+        "pct_from_entry": -4.76,
+        "pct_from_quote": -19.4,
+        "basis": "깨진 상단 − 0.6 ATR (영상: 올라가다 실패해 되돌아오면 손절)"
+      },
+      "targets": [
+        {
+          "price": 3.42,
+          "label": "1차 목표 · 박스 중간",
+          "basis": "박스 상·하단의 중간값(되돌림 1차 매물)",
+          "role": "box_mid",
+          "pct_from_entry": 3.17,
+          "pct_from_quote": 2.09,
+          "rr": 1.11
+        },
+        {
+          "price": 3.56,
+          "label": "2차 목표 · 박스 상단",
+          "basis": "박스 상단 저항(3봉 확인 고점)",
+          "role": "box_top",
+          "pct_from_entry": 7.39,
+          "pct_from_quote": 6.27,
+          "rr": 2.58
+        }
+      ],
+      "rr": 2.58,
+      "rr_t1": 1.11,
+      "entry_ref": 3.32,
+      "overhead": null,
+      "entry_unavailable": null
+    },
+    "timing": {
+      "immediate": false,
+      "confirm_bars": 3,
+      "confirm_rule": "새 박스 고점·저점 각각 3봉 유지",
+      "touch": null,
+      "estimate_label": "새 박스는 최소 3거래일 뒤에 확정될 수 있습니다(그 사이 새 고점·새 저점이 나오지 않을 때).",
+      "review": "매 거래일 종가 마감 후 재계산",
+      "expiry_bars": 20
+    },
+    "volume_confirmation": null,
+    "evidence": [
+      "현재 박스 $2.67 ~ $2.80 · 2026-10-26부터 5봉 · 상단 접촉 2회 / 하단 접촉 2회",
+      "박스 높이 1.3 ATR · ATR $0.1579 · 직전 박스보다 아래(하락 계단)",
+      "박스 계단: 하락 박스 3단 계단",
+      "상단·하단은 Darvas 3봉 규칙(이후 3봉이 넘지·깨지 않은 고점·저점), 이탈은 종가가 0.1 ATR 넘게 벗어난 경우",
+      "하락 계단 중인 박스를 위로 이탈 — 영상의 '바뀌는 자리' 후보(아직 새 박스 미확정)"
+    ]
+  },
+  "after": {
+    "version": "2026-11-11.box-plan-v2-volume",
+    "verdict": {
+      "key": "watch",
+      "icon": "🟠",
+      "label": "관망",
+      "headline": "관망 — 측정 목표 도달 · 재확인 기회 지남"
+    },
+    "stage": {
+      "key": "not_met",
+      "label": "조건 미충족"
+    },
+    "strategy": {
+      "key": "retest",
+      "label": "돌파 후 재확인 매수"
+    },
+    "prices": {
+      "entry": {
+        "low": 3.28,
+        "high": 3.35,
+        "ref": 3.32,
+        "label": "재진입 후보(조건부) · 위쪽 새 박스 하단",
+        "basis": "박스 하단 $3.28 ~ 하단+min(박스 높이 25%, 0.5 ATR)",
+        "kind": "new_box_above",
+        "conditional": true,
+        "condition": "새 고점·새 저점 없이 3거래일 유지 → 새 박스 확정 · 새 고점·저점이 나오면 가격 갱신"
+      },
+      "trigger": {
+        "price": 3.58,
+        "pct_from_quote": 6.87,
+        "label": "돌파 확인가(잠정)",
+        "condition": "새 박스 상단 $3.56 위 종가 2회"
+      },
+      "add": null,
+      "stop": {
+        "price": 3.22,
+        "pct_from_entry": -2.87,
+        "pct_from_quote": -3.88,
+        "basis": "박스 하단 − 0.35 ATR (하단 이탈 = 지지 실패)"
+      },
+      "holder_stop": {
+        "price": 2.7,
+        "pct_from_entry": -4.76,
+        "pct_from_quote": -19.4,
+        "basis": "깨진 상단 − 0.6 ATR (영상: 올라가다 실패해 되돌아오면 손절)"
+      },
+      "targets": [
+        {
+          "price": 3.42,
+          "label": "1차 목표 · 박스 중간",
+          "basis": "박스 상·하단의 중간값(되돌림 1차 매물)",
+          "role": "box_mid",
+          "pct_from_entry": 3.17,
+          "pct_from_quote": 2.09,
+          "rr": 1.11
+        },
+        {
+          "price": 3.56,
+          "label": "2차 목표 · 박스 상단",
+          "basis": "박스 상단 저항(3봉 확인 고점)",
+          "role": "box_top",
+          "pct_from_entry": 7.39,
+          "pct_from_quote": 6.27,
+          "rr": 2.58
+        }
+      ],
+      "rr": 2.58,
+      "rr_t1": 1.11,
+      "entry_ref": 3.32,
+      "overhead": null,
+      "entry_unavailable": null
+    },
+    "timing": {
+      "immediate": false,
+      "confirm_bars": 3,
+      "confirm_rule": "새 박스 고점·저점 각각 3봉 유지",
+      "touch": null,
+      "estimate_label": "새 박스는 최소 3거래일 뒤에 확정될 수 있습니다(그 사이 새 고점·새 저점이 나오지 않을 때).",
+      "review": "매 거래일 종가 마감 후 재계산",
+      "expiry_bars": 20
+    },
+    "volume_confirmation": {
+      "policy": "breakout",
+      "passed": true,
+      "status": "confirmed",
+      "reason": "돌파 확인 2봉 평균 거래량 1.86배 (돌파 직전 20봉 대비)",
+      "evidence": {
+        "version": "2026-11-11.box-volume-v2",
+        "available": true,
+        "lookback": 20,
+        "basis": "완료 일봉 · 사건 이전 20거래일 평균 대비",
+        "last_date": "2026-11-10",
+        "latest_ratio": 1.1686368881738585,
+        "breakout": {
+          "available": true,
+          "index": 1247,
+          "bars_since": 7,
+          "date": "2026-11-02",
+          "initial_ratio": 1.1551276595886366,
+          "confirmation_ratio": 1.8563372642404652,
+          "confirmation_bars": 2,
+          "average_before": 60067560.0,
+          "average_event": 111505650.0
+        },
+        "pullback_ratio": 0.833752669334095,
+        "close_location": 0.6363622570842744,
+        "reason": null,
+        "latest_volume": 82322300.0,
+        "average_volume": 70443010.0,
+        "latest_return_pct": -2.6162834619430586,
+        "money_flow_5": 0.29760376382202647
+      }
+    },
+    "evidence": [
+      "현재 박스 $2.67 ~ $2.80 · 2026-10-26부터 5봉 · 상단 접촉 2회 / 하단 접촉 2회",
+      "박스 높이 1.3 ATR · ATR $0.1579 · 직전 박스보다 아래(하락 계단)",
+      "박스 계단: 하락 박스 3단 계단",
+      "상단·하단은 Darvas 3봉 규칙(이후 3봉이 넘지·깨지 않은 고점·저점), 이탈은 종가가 0.1 ATR 넘게 벗어난 경우",
+      "하락 계단 중인 박스를 위로 이탈 — 영상의 '바뀌는 자리' 후보(아직 새 박스 미확정)",
+      "거래량 확인: 돌파 확인 2봉 평균 거래량 1.86배 (돌파 직전 20봉 대비)",
+      "최근 5봉 거래량 가중 종가 위치 +0.30 (일봉 가격·거래량 지표)"
+    ]
+  }
+}

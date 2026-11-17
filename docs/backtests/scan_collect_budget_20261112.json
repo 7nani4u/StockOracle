@@ -1,0 +1,961 @@
+{
+ "title": "스캔 수집 시간 예산 — 미국 재무정보 수신률 4% 원인 규명과 수정 (후보 a·b·c·d 측정)",
+ "date": "2026-11-12",
+ "branch": "feat/weekly-index-forecast",
+ "environment": {
+  "host": "개발 PC (Windows 10, 논리 CPU 12)",
+  "python": "3.14.3",
+  "yfinance": "1.2.0",
+  "curl_cffi": "0.13.0",
+  "app_patches": "api/index.py 의 yfinance 패치 적용 상태로 측정(영속 쿠키·시간대 캐시 dummy, IPv4 강제, 30초 타임아웃)",
+  "market_state": "미국 정규장 시작 직후(09:33 ET) — 오늘 막대가 진행 중이라 마지막 막대 값은 호출마다 움직인다. 한국장은 마감 후",
+  "universe": {
+   "US": 122,
+   "US_info_targets_after_$23_cap": 93,
+   "KRX": 46
+  },
+  "caveat": "Vercel 에서는 측정하지 못했다. 절대 시간은 이 PC 의 네트워크 지연에 좌우된다."
+ },
+ "root_cause": {
+  "finding": "앱이 yfinance 영속 쿠키 캐시를 dummy 로 꺼서 YfData._cookie 가 영원히 None → 모든 HTTP 요청이 fc.yahoo.com 쿠키 요청을 먼저 보내고, 그 요청이 전역 락(_cookie_lock) 안에서 일어나 스레드가 한 줄로 선다.",
+  "requests_per_call_fresh_ticker": {
+   "history": {
+    "cookie_reuse_off": {
+     "total": 4,
+     "by_kind": {
+      "cookie": 2,
+      "chart(tz)": 1,
+      "chart(history)": 1
+     }
+    },
+    "cookie_reuse_on": {
+     "total": 2,
+     "by_kind": {
+      "chart(tz)": 1,
+      "chart(history)": 1
+     }
+    }
+   },
+   "info": {
+    "cookie_reuse_off": {
+     "total": 6,
+     "by_kind": {
+      "cookie": 3,
+      "quoteSummary": 1,
+      "other:quote": 1,
+      "other:AFRM": 1
+     }
+    },
+    "cookie_reuse_on": {
+     "total": 3,
+     "by_kind": {
+      "quoteSummary": 1,
+      "other:quote": 1,
+      "other:PINS": 1
+     }
+    }
+   }
+  },
+  "profile_note": "cProfile(Ticker.history 6회): 누적 3.2초 중 curl_easy_perform 2.96초(92%) — 파이썬 처리(pandas 등)는 0.05초 안팎. 병목은 CPU 가 아니라 요청 직렬화",
+  "single_call_latency_s": {
+   "history": [
+    1.97,
+    0.25,
+    0.249
+   ],
+   "info": [
+    0.903,
+    0.418,
+    0.418
+   ]
+  },
+  "raw_http_chart_pool_default_state": {
+   "1": {
+    "tickers": 48,
+    "s": 13.36,
+    "ok_200": 48,
+    "mean_call_s": 0.278,
+    "bytes_mean": 28525,
+    "statuses": [
+     "200"
+    ]
+   },
+   "6": {
+    "tickers": 48,
+    "s": 5.92,
+    "ok_200": 48,
+    "mean_call_s": 0.705,
+    "bytes_mean": 28525,
+    "statuses": [
+     "200"
+    ]
+   },
+   "12": {
+    "tickers": 48,
+    "s": 7.55,
+    "ok_200": 48,
+    "mean_call_s": 1.741,
+    "bytes_mean": 28525,
+    "statuses": [
+     "200"
+    ]
+   },
+   "24": {
+    "tickers": 48,
+    "s": 10.73,
+    "ok_200": 48,
+    "mean_call_s": 4.756,
+    "bytes_mean": 28526,
+    "statuses": [
+     "200"
+    ]
+   }
+  },
+  "pinned_cookie_probe_48_tickers": {
+   "default": [
+    {
+     "workers": 1,
+     "tickers": 48,
+     "s": 27.58,
+     "ok": 48,
+     "errors": 0,
+     "mean_call_s": 0.575
+    },
+    {
+     "workers": 6,
+     "tickers": 48,
+     "s": 6.48,
+     "ok": 48,
+     "errors": 0,
+     "mean_call_s": 0.778
+    },
+    {
+     "workers": 12,
+     "tickers": 48,
+     "s": 7.22,
+     "ok": 48,
+     "errors": 0,
+     "mean_call_s": 1.664
+    }
+   ],
+   "cookie_pinned": [
+    {
+     "workers": 1,
+     "tickers": 48,
+     "s": 9.28,
+     "ok": 48,
+     "errors": 0,
+     "mean_call_s": 0.193
+    },
+    {
+     "workers": 6,
+     "tickers": 48,
+     "s": 2.02,
+     "ok": 48,
+     "errors": 0,
+     "mean_call_s": 0.221
+    },
+    {
+     "workers": 12,
+     "tickers": 48,
+     "s": 1.52,
+     "ok": 48,
+     "errors": 0,
+     "mean_call_s": 0.269
+    }
+   ]
+  }
+ },
+ "candidates": {
+  "baseline_download_122": {
+   "s": 49.21,
+   "tickers_returned": 122,
+   "rows": 252,
+   "err": null
+  },
+  "c_pooled_ticker_history_default_state": {
+   "workers": {
+    "6": {
+     "s": 29.73,
+     "ok": 122,
+     "errors": 0,
+     "error_samples": {},
+     "per_call_mean_s": 1.439,
+     "per_call_max_s": 3.294
+    },
+    "12": {
+     "s": 31.45,
+     "ok": 122,
+     "errors": 0,
+     "error_samples": {},
+     "per_call_mean_s": 3.022,
+     "per_call_max_s": 5.883
+    },
+    "24": {
+     "s": 29.5,
+     "ok": 122,
+     "errors": 0,
+     "error_samples": {},
+     "per_call_mean_s": 5.515,
+     "per_call_max_s": 9.969
+    }
+   },
+   "note": "워커 수와 무관하게 약 30초(= 요청 직렬화). yf.download 49.2초 대비 40% 단축에 그쳐 info 38초와 합치면 예산 초과"
+  },
+  "b_incremental": {
+   "serial_20_tickers_default_state": [
+    {
+     "period": "1y",
+     "tickers": 20,
+     "s": 16.37,
+     "per_ticker_s": 0.818,
+     "mean_rows": 252.0
+    },
+    {
+     "period": "5d",
+     "tickers": 20,
+     "s": 8.11,
+     "per_ticker_s": 0.405,
+     "mean_rows": 5.0
+    },
+    {
+     "period": "1y",
+     "tickers": 20,
+     "s": 8.41,
+     "per_ticker_s": 0.421,
+     "mean_rows": 252.0
+    },
+    {
+     "period": "5d",
+     "tickers": 20,
+     "s": 7.91,
+     "per_ticker_s": 0.396,
+     "mean_rows": 5.0
+    }
+   ],
+   "serial_20_tickers_cookie_reuse_on": [
+    {
+     "period": "1y",
+     "tickers": 20,
+     "s": 5.06,
+     "per_ticker_s": 0.253,
+     "mean_rows": 252.0
+    },
+    {
+     "period": "5d",
+     "tickers": 20,
+     "s": 4.06,
+     "per_ticker_s": 0.203,
+     "mean_rows": 5.0
+    },
+    {
+     "period": "1y",
+     "tickers": 20,
+     "s": 3.06,
+     "per_ticker_s": 0.153,
+     "mean_rows": 252.0
+    },
+    {
+     "period": "5d",
+     "tickers": 20,
+     "s": 3.15,
+     "per_ticker_s": 0.157,
+     "mean_rows": 5.0
+    }
+   ],
+   "corporate_action_exposure_122": {
+    "tickers_checked": 122,
+    "errors": 0,
+    "event_in_last_1_bars": 0,
+    "event_share_last_1_bars": 0.0,
+    "event_in_last_3_bars": 1,
+    "event_share_last_3_bars": 0.008,
+    "event_in_last_5_bars": 4,
+    "event_share_last_5_bars": 0.033,
+    "event_in_last_10_bars": 9,
+    "event_share_last_10_bars": 0.074,
+    "event_in_last_20_bars": 11,
+    "event_share_last_20_bars": 0.09,
+    "tickers_with_any_event_1y": 52
+   },
+   "overlap_5d_vs_1y": {
+    "tickers": 122,
+    "identical_overlap": 122,
+    "differs": 0,
+    "max_rel_diff": 0.0,
+    "differing_tickers_sample": []
+   },
+   "verdict": "받는 양(252행 vs 5행)이 아니라 요청 수가 비용이라 시간 이득이 없다. 최근 5/10/20 막대 안에 배당락·분할이 있었던 종목이 3.3%/7.4%/9.0% — 낡은 증분 캐시는 이 종목들의 수정주가가 조용히 달라진다"
+  },
+  "a_info_daily_cache": {
+   "cold_fill_93_tickers_default_state": {
+    "6": {
+     "s": 38.23,
+     "ok": 93,
+     "errors": 0,
+     "error_samples": {},
+     "quality_known": 93,
+     "quality_coverage": 1.0,
+     "tier_counts": {
+      "medium": 34,
+      "low": 28,
+      "junk": 14,
+      "high": 17
+     },
+     "per_call_mean_s": 2.435,
+     "per_call_max_s": 6.758
+    },
+    "12": {
+     "s": 36.31,
+     "ok": 93,
+     "errors": 0,
+     "error_samples": {},
+     "quality_known": 93,
+     "quality_coverage": 1.0,
+     "tier_counts": {
+      "medium": 34,
+      "low": 28,
+      "junk": 14,
+      "high": 17
+     },
+     "per_call_mean_s": 4.558,
+     "per_call_max_s": 8.744
+    }
+   },
+   "cold_fill_93_tickers_cookie_reuse_on": {
+    "6": {
+     "s": 10.94,
+     "ok": 93,
+     "errors": 0,
+     "error_samples": {},
+     "quality_known": 93,
+     "quality_coverage": 1.0,
+     "tier_counts": {
+      "medium": 34,
+      "low": 28,
+      "junk": 14,
+      "high": 17
+     },
+     "per_call_mean_s": 0.686
+    },
+    "12": {
+     "s": 4.95,
+     "ok": 93,
+     "errors": 0,
+     "error_samples": {},
+     "quality_known": 93,
+     "quality_coverage": 1.0,
+     "tier_counts": {
+      "medium": 34,
+      "low": 28,
+      "junk": 14,
+      "high": 17
+     },
+     "per_call_mean_s": 0.607
+    }
+   },
+   "stale_budget_live_scan": {
+    "info_budget_s": 5.0,
+    "tickers_received": "6/93",
+    "quality_coverage": 0.065
+   },
+   "repeat_fetch_field_diff": {
+    "compared": 93,
+    "tickers_with_diff": 84,
+    "fields_differing": [
+     "marketCap"
+    ],
+    "samples": {
+     "UEC": {
+      "marketCap": [
+       3454324224,
+       3438465536
+      ]
+     },
+     "JBLU": {
+      "marketCap": [
+       1488652928,
+       1498049024
+      ]
+     },
+     "NLY": {
+      "marketCap": [
+       14170109952,
+       14185472000
+      ]
+     },
+     "KOS": {
+      "marketCap": [
+       1256613504,
+       1247680256
+      ]
+     },
+     "SOFI": {
+      "marketCap": [
+       20856295424,
+       20758956032
+      ]
+     }
+    }
+   },
+   "verdict": "웜 인스턴스에서만 info 단계가 0초이고 콜드 스캔(수신률 6.5%)은 그대로다. 원인 수정 후에는 콜드에서도 10.9초라 불필요"
+  },
+  "d_cookie_reuse_chosen": {
+   "download_122": {
+    "s": 8.04,
+    "tickers_returned": 122,
+    "rows": 252
+   },
+   "pooled_ticker_history": {
+    "6": {
+     "s": 7.75,
+     "ok": 122,
+     "errors": 0,
+     "error_samples": {},
+     "per_call_mean_s": 0.372
+    },
+    "12": {
+     "s": 4.85,
+     "ok": 122,
+     "errors": 0,
+     "error_samples": {},
+     "per_call_mean_s": 0.442
+    },
+    "24": {
+     "s": 2.81,
+     "ok": 122,
+     "errors": 0,
+     "error_samples": {},
+     "per_call_mean_s": 0.507
+    }
+   },
+   "info_93": {
+    "6": {
+     "s": 10.94,
+     "ok": 93,
+     "errors": 0,
+     "error_samples": {},
+     "quality_known": 93,
+     "quality_coverage": 1.0,
+     "tier_counts": {
+      "medium": 34,
+      "low": 28,
+      "junk": 14,
+      "high": 17
+     },
+     "per_call_mean_s": 0.686
+    },
+    "12": {
+     "s": 4.95,
+     "ok": 93,
+     "errors": 0,
+     "error_samples": {},
+     "quality_known": 93,
+     "quality_coverage": 1.0,
+     "tier_counts": {
+      "medium": 34,
+      "low": 28,
+      "junk": 14,
+      "high": 17
+     },
+     "per_call_mean_s": 0.607
+    }
+   }
+  }
+ },
+ "equality": {
+  "pooled_history_vs_download_default_state_US122": "pool6/12/24 vs download: 종목 122 날짜 집합 동일, 값은 78종목 동일·44종목(배당 종목) 상대차 ≤4e-7(마지막 막대는 장중이라 별도). 같은 방식 반복(pool6 vs pool12 등)도 43~45종목·≤3.8e-7로 같은 수준 = 공급자 변동",
+  "cookie_reuse_download_before_vs_after_US122": {
+   "download_before_vs_after": {
+    "tickers": 122,
+    "identical_all_bars": 0,
+    "identical_history_bars": 78,
+    "history_differs_tickers": 44,
+    "max_rel_diff_history": 3.45092554030571e-07,
+    "date_mismatch": []
+   },
+   "download_after_vs_pool6_after": {
+    "tickers": 122,
+    "identical_all_bars": 9,
+    "identical_history_bars": 80,
+    "history_differs_tickers": 42,
+    "max_rel_diff_history": 4.0720056837856337e-07,
+    "date_mismatch": []
+   }
+  },
+  "cookie_reuse_info_93": {
+   "compared": 93,
+   "tickers_with_diff": 0,
+   "samples": {}
+  },
+  "cookie_reuse_ABAB_download_KRX46": {
+   "order": [
+    "A1_on",
+    "B1_off",
+    "A2_on",
+    "B2_off"
+   ],
+   "pairs": {
+    "A1_on vs B1_off": {
+     "identical": 39,
+     "differs": 7,
+     "missing": 0,
+     "history_bars_differ_tickers": 7,
+     "max_rel_history_excl_last": 2.100057006047429e-07,
+     "last_bar_differ_tickers": 0,
+     "last_bar_max_rel_by_col": {
+      "Open": 0.0,
+      "High": 0.0,
+      "Low": 0.0,
+      "Close": 0.0,
+      "Volume": 0.0
+     }
+    },
+    "A1_on vs A2_on": {
+     "identical": 38,
+     "differs": 8,
+     "missing": 0,
+     "history_bars_differ_tickers": 8,
+     "max_rel_history_excl_last": 2.145648785187299e-07,
+     "last_bar_differ_tickers": 0,
+     "last_bar_max_rel_by_col": {
+      "Open": 0.0,
+      "High": 0.0,
+      "Low": 0.0,
+      "Close": 0.0,
+      "Volume": 0.0
+     }
+    },
+    "A1_on vs B2_off": {
+     "identical": 38,
+     "differs": 8,
+     "missing": 0,
+     "history_bars_differ_tickers": 8,
+     "max_rel_history_excl_last": 2.1994471917089804e-07,
+     "last_bar_differ_tickers": 0,
+     "last_bar_max_rel_by_col": {
+      "Open": 0.0,
+      "High": 0.0,
+      "Low": 0.0,
+      "Close": 0.0,
+      "Volume": 0.0
+     }
+    },
+    "B1_off vs A2_on": {
+     "identical": 38,
+     "differs": 8,
+     "missing": 0,
+     "history_bars_differ_tickers": 8,
+     "max_rel_history_excl_last": 2.145648785187299e-07,
+     "last_bar_differ_tickers": 0,
+     "last_bar_max_rel_by_col": {
+      "Open": 0.0,
+      "High": 0.0,
+      "Low": 0.0,
+      "Close": 0.0,
+      "Volume": 0.0
+     }
+    },
+    "B1_off vs B2_off": {
+     "identical": 37,
+     "differs": 9,
+     "missing": 0,
+     "history_bars_differ_tickers": 9,
+     "max_rel_history_excl_last": 2.379594029360621e-07,
+     "last_bar_differ_tickers": 0,
+     "last_bar_max_rel_by_col": {
+      "Open": 0.0,
+      "High": 0.0,
+      "Low": 0.0,
+      "Close": 0.0,
+      "Volume": 0.0
+     }
+    },
+    "A2_on vs B2_off": {
+     "identical": 38,
+     "differs": 8,
+     "missing": 0,
+     "history_bars_differ_tickers": 8,
+     "max_rel_history_excl_last": 2.3398766827955068e-07,
+     "last_bar_differ_tickers": 0,
+     "last_bar_max_rel_by_col": {
+      "Open": 0.0,
+      "High": 0.0,
+      "Low": 0.0,
+      "Close": 0.0,
+      "Volume": 0.0
+     }
+    }
+   }
+  }
+ },
+ "live_scan": {
+  "us_off": {
+   "wall_s": 60.9,
+   "timings_s": {
+    "benchmark_s": 2.2,
+    "bulk_s": 49.7,
+    "history_s": 0.5,
+    "info_s": 5.0,
+    "signals_s": 0.2,
+    "engine_s": 0.0,
+    "score_plan_s": 0.1,
+    "target3_s": 3.1,
+    "total_s": 60.8
+   },
+   "quality_stage": "skipped_low_coverage",
+   "quality_coverage": 0.065,
+   "info_budget_hit": true,
+   "yf_cookie_reuse": false,
+   "quality_excluded": 0,
+   "scanned": 93,
+   "plan_complete": 22,
+   "selected": 15,
+   "selected_tickers": [
+    "PBR",
+    "VFC",
+    "NCLH",
+    "SOUN",
+    "GRAB",
+    "SG",
+    "PENN",
+    "KEY",
+    "UUUU",
+    "BBD",
+    "RIG",
+    "OPEN",
+    "JOBY",
+    "IAG",
+    "BTG"
+   ]
+  },
+  "us_on": {
+   "wall_s": 23.4,
+   "timings_s": {
+    "benchmark_s": 1.8,
+    "bulk_s": 7.7,
+    "history_s": 0.7,
+    "info_s": 11.1,
+    "signals_s": 0.2,
+    "engine_s": 0.0,
+    "score_plan_s": 0.1,
+    "target3_s": 1.9,
+    "total_s": 23.4
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 1.0,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": true,
+   "quality_excluded": 42,
+   "scanned": 93,
+   "plan_complete": 15,
+   "selected": 15,
+   "selected_tickers": [
+    "PBR",
+    "KEY",
+    "BBD",
+    "NCLH",
+    "SG",
+    "SOUN",
+    "UUUU",
+    "BTG",
+    "IAG",
+    "GRAB",
+    "JOBY",
+    "UPST",
+    "GAP",
+    "HBAN",
+    "AAL"
+   ]
+  },
+  "us_on_rep1": {
+   "wall_s": 22.4,
+   "timings_s": {
+    "benchmark_s": 1.7,
+    "bulk_s": 6.8,
+    "history_s": 0.8,
+    "info_s": 10.6,
+    "signals_s": 0.2,
+    "engine_s": 0.0,
+    "score_plan_s": 0.1,
+    "target3_s": 2.2,
+    "total_s": 22.3
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 1.0,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": true,
+   "quality_excluded": 42,
+   "scanned": 93,
+   "plan_complete": 15,
+   "selected": 15,
+   "selected_tickers": [
+    "PBR",
+    "KEY",
+    "NCLH",
+    "BBD",
+    "SOUN",
+    "RSI",
+    "SG",
+    "UUUU",
+    "GRAB",
+    "IAG",
+    "UEC",
+    "UPST",
+    "CLF",
+    "HBAN",
+    "GAP"
+   ]
+  },
+  "us_on_rep2": {
+   "wall_s": 23.0,
+   "timings_s": {
+    "benchmark_s": 2.2,
+    "bulk_s": 6.9,
+    "history_s": 0.5,
+    "info_s": 11.0,
+    "signals_s": 0.2,
+    "engine_s": 0.0,
+    "score_plan_s": 0.1,
+    "target3_s": 2.2,
+    "total_s": 23.0
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 1.0,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": true,
+   "quality_excluded": 42,
+   "scanned": 93,
+   "plan_complete": 14,
+   "selected": 14,
+   "selected_tickers": [
+    "KEY",
+    "NCLH",
+    "BBD",
+    "SOUN",
+    "GRAB",
+    "RSI",
+    "SG",
+    "UUUU",
+    "IAG",
+    "UEC",
+    "HBAN",
+    "PL",
+    "UPST",
+    "GAP"
+   ]
+  },
+  "us_on_rep3": {
+   "wall_s": 22.6,
+   "timings_s": {
+    "benchmark_s": 1.9,
+    "bulk_s": 6.8,
+    "history_s": 0.5,
+    "info_s": 10.9,
+    "signals_s": 0.2,
+    "engine_s": 0.0,
+    "score_plan_s": 0.1,
+    "target3_s": 2.2,
+    "total_s": 22.6
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 1.0,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": true,
+   "quality_excluded": 42,
+   "scanned": 93,
+   "plan_complete": 14,
+   "selected": 14,
+   "selected_tickers": [
+    "PBR",
+    "KEY",
+    "BBD",
+    "NCLH",
+    "SOUN",
+    "RSI",
+    "SG",
+    "UUUU",
+    "GRAB",
+    "IAG",
+    "UEC",
+    "UPST",
+    "GAP",
+    "HBAN"
+   ]
+  },
+  "krx_off": {
+   "wall_s": 42.6,
+   "timings_s": {
+    "benchmark_s": 1.5,
+    "bulk_s": 20.2,
+    "history_s": 0.4,
+    "info_s": 19.4,
+    "signals_s": 0.1,
+    "engine_s": 0.0,
+    "score_plan_s": 0.0,
+    "target3_s": 0.9,
+    "total_s": 42.5
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 0.935,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": false,
+   "quality_excluded": 7,
+   "scanned": 46,
+   "plan_complete": 5,
+   "selected": 5,
+   "selected_tickers": [
+    "033780.KS",
+    "214150.KQ",
+    "005380.KS",
+    "028300.KQ",
+    "112040.KQ"
+   ]
+  },
+  "krx_off_rep1": {
+   "wall_s": 38.9,
+   "timings_s": {
+    "benchmark_s": 1.7,
+    "bulk_s": 19.3,
+    "history_s": 0.3,
+    "info_s": 16.3,
+    "signals_s": 0.0,
+    "engine_s": 0.1,
+    "score_plan_s": 0.0,
+    "target3_s": 1.1,
+    "total_s": 38.8
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 0.935,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": false,
+   "quality_excluded": 7,
+   "scanned": 46,
+   "plan_complete": 5,
+   "selected": 5,
+   "selected_tickers": [
+    "033780.KS",
+    "214150.KQ",
+    "005380.KS",
+    "028300.KQ",
+    "112040.KQ"
+   ]
+  },
+  "krx_off_rep2": {
+   "wall_s": 38.3,
+   "timings_s": {
+    "benchmark_s": 1.5,
+    "bulk_s": 19.0,
+    "history_s": 0.2,
+    "info_s": 16.6,
+    "signals_s": 0.1,
+    "engine_s": 0.0,
+    "score_plan_s": 0.0,
+    "target3_s": 0.9,
+    "total_s": 38.3
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 0.935,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": false,
+   "quality_excluded": 7,
+   "scanned": 46,
+   "plan_complete": 5,
+   "selected": 5,
+   "selected_tickers": [
+    "033780.KS",
+    "214150.KQ",
+    "005380.KS",
+    "028300.KQ",
+    "112040.KQ"
+   ]
+  },
+  "krx_on": {
+   "wall_s": 13.2,
+   "timings_s": {
+    "benchmark_s": 2.2,
+    "bulk_s": 2.8,
+    "history_s": 0.3,
+    "info_s": 6.8,
+    "signals_s": 0.1,
+    "engine_s": 0.0,
+    "score_plan_s": 0.0,
+    "target3_s": 0.9,
+    "total_s": 13.1
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 0.935,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": true,
+   "quality_excluded": 7,
+   "scanned": 46,
+   "plan_complete": 5,
+   "selected": 5,
+   "selected_tickers": [
+    "033780.KS",
+    "214150.KQ",
+    "005380.KS",
+    "028300.KQ",
+    "112040.KQ"
+   ]
+  },
+  "krx_on_rep1": {
+   "wall_s": 13.0,
+   "timings_s": {
+    "benchmark_s": 1.7,
+    "bulk_s": 2.8,
+    "history_s": 0.4,
+    "info_s": 6.9,
+    "signals_s": 0.0,
+    "engine_s": 0.1,
+    "score_plan_s": 0.0,
+    "target3_s": 1.0,
+    "total_s": 12.9
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 0.935,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": true,
+   "quality_excluded": 7,
+   "scanned": 46,
+   "plan_complete": 5,
+   "selected": 5,
+   "selected_tickers": [
+    "033780.KS",
+    "214150.KQ",
+    "005380.KS",
+    "028300.KQ",
+    "112040.KQ"
+   ]
+  },
+  "krx_on_rep2": {
+   "wall_s": 12.5,
+   "timings_s": {
+    "benchmark_s": 1.4,
+    "bulk_s": 2.7,
+    "history_s": 0.4,
+    "info_s": 6.8,
+    "signals_s": 0.1,
+    "engine_s": 0.0,
+    "score_plan_s": 0.0,
+    "target3_s": 1.0,
+    "total_s": 12.5
+   },
+   "quality_stage": "applied",
+   "quality_coverage": 0.935,
+   "info_budget_hit": false,
+   "yf_cookie_reuse": true,
+   "quality_excluded": 7,
+   "scanned": 46,
+   "plan_complete": 5,
+   "selected": 5,
+   "selected_tickers": [
+    "033780.KS",
+    "214150.KQ",
+    "005380.KS",
+    "028300.KQ",
+    "112040.KQ"
+   ]
+  }
+ }
+}

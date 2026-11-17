@@ -1,0 +1,504 @@
+{
+  "compared": 71,
+  "all_numeric_prices_unchanged": true,
+  "all_box_edges_unchanged": true,
+  "rows": [
+    {
+      "ticker": "000270_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "000660_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "003670_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "005380_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "005930_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "009150_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "010140_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "011200_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "012330_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "015760_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "033780_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "035420_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "035720_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "035900_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "051910_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "058470_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "068270_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "086790_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "095340_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "buy",
+      "after": "buy"
+    },
+    {
+      "ticker": "105560_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "140860_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "214150_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "222800_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "240810_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "259960_KS",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "357780_KQ",
+      "date": "2026-10-06",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "AAPL",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "AFRM",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "AVGO",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "DDOG",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "DELL",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "DKNG",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "HOOD",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "IONQ",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "JPM",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "LMND",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "META",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "MSFT",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "MU",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "NET",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "NVDA",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "PINS",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "RBLX",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "RIVN",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "RKLB",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "ROKU",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "SOFI",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "TSLA",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "U",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "UNH",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "V",
+      "date": "2026-10-07",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "005490_KS",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "006400_KS",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "028260_KS",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "028300_KQ",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "034020_KS",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "047050_KS",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "055550_KS",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "066570_KS",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "086520_KQ",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "ABEV",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "BBD",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "ERIC",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "F",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "GRAB",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "LYG",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "NOK",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "watch",
+      "after": "watch"
+    },
+    {
+      "ticker": "OPEN",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    },
+    {
+      "ticker": "PLUG",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "conditional",
+      "after": "conditional"
+    },
+    {
+      "ticker": "VALE",
+      "date": "2026-11-10",
+      "price_geometry_unchanged": true,
+      "before": "exclude",
+      "after": "exclude"
+    }
+  ]
+}

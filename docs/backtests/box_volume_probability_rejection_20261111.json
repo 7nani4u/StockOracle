@@ -1,0 +1,151 @@
+{
+  "experiment": "price-touch probability calibration, exploratory",
+  "deployed": false,
+  "reason": "Both fitted candidates had higher purged development out-of-fold Brier error than the original model.",
+  "out_of_fold": {
+    "raw": {
+      "n": 4540,
+      "brier": 0.18003400121054236,
+      "mean_probability": 0.577496862742549,
+      "observed_rate": 0.5551506657323055
+    },
+    "price": {
+      "n": 4540,
+      "brier": 0.1813003269190201,
+      "mean_probability": 0.5392420585573823,
+      "observed_rate": 0.5551506657323055
+    },
+    "volume": {
+      "n": 4540,
+      "brier": 0.18277486280797084,
+      "mean_probability": 0.5371265534629903,
+      "observed_rate": 0.5551506657323055
+    }
+  },
+  "validation": {
+    "all": {
+      "raw": {
+        "n": 4060,
+        "brier": 0.17357860876804107,
+        "mean_probability": 0.5659581693268579,
+        "observed_rate": 0.5518801685130286
+      },
+      "price": {
+        "n": 4060,
+        "brier": 0.17177614089943918,
+        "mean_probability": 0.5409042423225763,
+        "observed_rate": 0.5518801685130286
+      },
+      "volume": {
+        "n": 4060,
+        "brier": 0.1722715992723967,
+        "mean_probability": 0.5420961421004765,
+        "observed_rate": 0.5518801685130286
+      }
+    },
+    "groups": {
+      "market:KRX": {
+        "raw": {
+          "n": 1970,
+          "brier": 0.1715577014233769,
+          "mean_probability": 0.5602892051758175,
+          "observed_rate": 0.5450421257290992
+        },
+        "price": {
+          "n": 1970,
+          "brier": 0.17127751596620844,
+          "mean_probability": 0.535682827629842,
+          "observed_rate": 0.5450421257290992
+        },
+        "volume": {
+          "n": 1970,
+          "brier": 0.17298456763249392,
+          "mean_probability": 0.5369127765349304,
+          "observed_rate": 0.5450421257290992
+        }
+      },
+      "market:US": {
+        "raw": {
+          "n": 2090,
+          "brier": 0.17545538278719042,
+          "mean_probability": 0.571222816744887,
+          "observed_rate": 0.5582305145952453
+        },
+        "price": {
+          "n": 2090,
+          "brier": 0.17223920335624024,
+          "mean_probability": 0.5457532599999094,
+          "observed_rate": 0.5582305145952453
+        },
+        "volume": {
+          "n": 2090,
+          "brier": 0.17160948059672407,
+          "mean_probability": 0.5469098243560512,
+          "observed_rate": 0.5582305145952453
+        }
+      },
+      "horizon:5": {
+        "raw": {
+          "n": 3277,
+          "brier": 0.17051432780080064,
+          "mean_probability": 0.46231092830116566,
+          "observed_rate": 0.43484894720781203
+        },
+        "price": {
+          "n": 3277,
+          "brier": 0.16952218940157832,
+          "mean_probability": 0.4410454964723005,
+          "observed_rate": 0.43484894720781203
+        },
+        "volume": {
+          "n": 3277,
+          "brier": 0.16963165739596422,
+          "mean_probability": 0.44266350608917787,
+          "observed_rate": 0.43484894720781203
+        }
+      },
+      "horizon:20": {
+        "raw": {
+          "n": 783,
+          "brier": 0.17678475459487583,
+          "mean_probability": 0.6744038937333693,
+          "observed_rate": 0.6743295019157088
+        },
+        "price": {
+          "n": 783,
+          "brier": 0.17413444200368247,
+          "mean_probability": 0.645386078258513,
+          "observed_rate": 0.6743295019157088
+        },
+        "volume": {
+          "n": 783,
+          "brier": 0.17503376068014548,
+          "mean_probability": 0.646132140890076,
+          "observed_rate": 0.6743295019157088
+        }
+      }
+    },
+    "scan_price_cap": {
+      "raw": {
+        "n": 2203,
+        "brier": 0.1684287441433065,
+        "mean_probability": 0.5614015213403281,
+        "observed_rate": 0.5523205534736235
+      },
+      "price": {
+        "n": 2203,
+        "brier": 0.1680155385395669,
+        "mean_probability": 0.5371125917080355,
+        "observed_rate": 0.5523205534736235
+      },
+      "volume": {
+        "n": 2203,
+        "brier": 0.1695150472577506,
+        "mean_probability": 0.5382086213609577,
+        "observed_rate": 0.5523205534736235
+      }
+    }
+  },
+  "runtime_model_created": false,
+  "fitted_runtime_code_retained": false
+}

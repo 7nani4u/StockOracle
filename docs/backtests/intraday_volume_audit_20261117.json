@@ -1,0 +1,518 @@
+{
+  "dates": [
+    "2025-03-14",
+    "2025-06-13",
+    "2025-09-15",
+    "2025-12-12",
+    "2026-03-13",
+    "2026-06-15",
+    "2026-09-15"
+  ],
+  "samples_per_cell": 364,
+  "metric_definitions": {
+    "breakout_prob_pp": {
+      "path": [
+        "risk_scenarios",
+        "breakout_probability_pct"
+      ],
+      "kind": "abs"
+    },
+    "downside_risk_pts": {
+      "path": [
+        "buy_price",
+        "downside_risk",
+        "score"
+      ],
+      "kind": "abs"
+    },
+    "risk_card_downside_pts": {
+      "path": [
+        "risk_scenarios",
+        "downside_risk_score"
+      ],
+      "kind": "abs"
+    },
+    "cons_TP1_prob_pp": {
+      "path": [
+        "risk_scenarios",
+        "conservative",
+        "tp_levels",
+        0,
+        "prob_pct"
+      ],
+      "kind": "abs"
+    },
+    "bal_TP1_prob_pp": {
+      "path": [
+        "risk_scenarios",
+        "balanced",
+        "tp_levels",
+        0,
+        "prob_pct"
+      ],
+      "kind": "abs"
+    },
+    "agg_TP1_prob_pp": {
+      "path": [
+        "risk_scenarios",
+        "aggressive",
+        "tp_levels",
+        0,
+        "prob_pct"
+      ],
+      "kind": "abs"
+    },
+    "bal_EV_pp": {
+      "path": [
+        "risk_scenarios",
+        "balanced",
+        "expected_value_pct"
+      ],
+      "kind": "abs"
+    },
+    "scenario_up_pp": {
+      "path": [
+        "prediction_outlook",
+        "forecast",
+        "scenario_probabilities",
+        "up"
+      ],
+      "kind": "abs"
+    },
+    "scenario_side_pp": {
+      "path": [
+        "prediction_outlook",
+        "forecast",
+        "scenario_probabilities",
+        "sideways"
+      ],
+      "kind": "abs"
+    },
+    "forecast_base_pct": {
+      "path": [
+        "prediction_outlook",
+        "forecast",
+        "base_price"
+      ],
+      "kind": "rel"
+    },
+    "A_step1_price_pct": {
+      "path": [
+        "buy_price",
+        "aggressive_bands",
+        0,
+        "steps",
+        0,
+        "price"
+      ],
+      "kind": "rel"
+    },
+    "B_step1_price_pct": {
+      "path": [
+        "buy_price",
+        "recommended_bands",
+        0,
+        "steps",
+        0,
+        "price"
+      ],
+      "kind": "rel"
+    },
+    "B_range_lo_pct": {
+      "path": [
+        "buy_price",
+        "recommended_bands",
+        0,
+        "range",
+        0
+      ],
+      "kind": "rel"
+    },
+    "B_step_reach_pp": {
+      "path": [
+        "buy_price",
+        "recommended_bands",
+        0,
+        "steps",
+        0,
+        "reach_probability_pct"
+      ],
+      "kind": "abs"
+    }
+  },
+  "mean_abs_gap_to_end_of_day": {
+    "old": {
+      "breakout_prob_pp": {
+        "session_30pct": 11.7165,
+        "session_60pct": 6.7159
+      },
+      "downside_risk_pts": {
+        "session_30pct": 2.4725,
+        "session_60pct": 2.1923
+      },
+      "risk_card_downside_pts": {
+        "session_30pct": 2.544,
+        "session_60pct": 2.2692
+      },
+      "cons_TP1_prob_pp": {
+        "session_30pct": 0.7341,
+        "session_60pct": 0.5269
+      },
+      "bal_TP1_prob_pp": {
+        "session_30pct": 0.5462,
+        "session_60pct": 0.3739
+      },
+      "agg_TP1_prob_pp": {
+        "session_30pct": 1.0665,
+        "session_60pct": 0.7297
+      },
+      "bal_EV_pp": {
+        "session_30pct": 0.1553,
+        "session_60pct": 0.1057
+      },
+      "scenario_up_pp": {
+        "session_30pct": 1.3654,
+        "session_60pct": 1.1071
+      },
+      "scenario_side_pp": {
+        "session_30pct": 2.4533,
+        "session_60pct": 1.9698
+      },
+      "forecast_base_pct": {
+        "session_30pct": 0.0309,
+        "session_60pct": 0.0297
+      },
+      "A_step1_price_pct": {
+        "session_30pct": 0.3283,
+        "session_60pct": 0.2798
+      },
+      "B_step1_price_pct": {
+        "session_30pct": 0.2647,
+        "session_60pct": 0.2161
+      },
+      "B_range_lo_pct": {
+        "session_30pct": 0.428,
+        "session_60pct": 0.2985
+      },
+      "B_step_reach_pp": {
+        "session_30pct": 0.8198,
+        "session_60pct": 0.6525
+      }
+    },
+    "carry": {
+      "breakout_prob_pp": {
+        "session_30pct": 6.4396,
+        "session_60pct": 6.4396
+      },
+      "downside_risk_pts": {
+        "session_30pct": 1.7747,
+        "session_60pct": 1.7747
+      },
+      "risk_card_downside_pts": {
+        "session_30pct": 1.8462,
+        "session_60pct": 1.8462
+      },
+      "cons_TP1_prob_pp": {
+        "session_30pct": 0.3761,
+        "session_60pct": 0.3761
+      },
+      "bal_TP1_prob_pp": {
+        "session_30pct": 0.2849,
+        "session_60pct": 0.2849
+      },
+      "agg_TP1_prob_pp": {
+        "session_30pct": 0.5527,
+        "session_60pct": 0.5527
+      },
+      "bal_EV_pp": {
+        "session_30pct": 0.0738,
+        "session_60pct": 0.0738
+      },
+      "scenario_up_pp": {
+        "session_30pct": 0.978,
+        "session_60pct": 0.978
+      },
+      "scenario_side_pp": {
+        "session_30pct": 1.7445,
+        "session_60pct": 1.7445
+      },
+      "forecast_base_pct": {
+        "session_30pct": 0.0275,
+        "session_60pct": 0.0275
+      },
+      "A_step1_price_pct": {
+        "session_30pct": 0.2411,
+        "session_60pct": 0.2411
+      },
+      "B_step1_price_pct": {
+        "session_30pct": 0.1874,
+        "session_60pct": 0.1874
+      },
+      "B_range_lo_pct": {
+        "session_30pct": 0.2421,
+        "session_60pct": 0.2421
+      },
+      "B_step_reach_pp": {
+        "session_30pct": 0.5863,
+        "session_60pct": 0.5863
+      }
+    },
+    "neutral": {
+      "breakout_prob_pp": {
+        "session_30pct": 6.2151,
+        "session_60pct": 6.2151
+      },
+      "downside_risk_pts": {
+        "session_30pct": 1.9341,
+        "session_60pct": 1.9341
+      },
+      "risk_card_downside_pts": {
+        "session_30pct": 1.978,
+        "session_60pct": 1.978
+      },
+      "cons_TP1_prob_pp": {
+        "session_30pct": 0.4764,
+        "session_60pct": 0.4764
+      },
+      "bal_TP1_prob_pp": {
+        "session_30pct": 0.3549,
+        "session_60pct": 0.3549
+      },
+      "agg_TP1_prob_pp": {
+        "session_30pct": 0.6742,
+        "session_60pct": 0.6742
+      },
+      "bal_EV_pp": {
+        "session_30pct": 0.0946,
+        "session_60pct": 0.0946
+      },
+      "scenario_up_pp": {
+        "session_30pct": 1.0192,
+        "session_60pct": 1.0192
+      },
+      "scenario_side_pp": {
+        "session_30pct": 1.8132,
+        "session_60pct": 1.8132
+      },
+      "forecast_base_pct": {
+        "session_30pct": 0.0331,
+        "session_60pct": 0.0331
+      },
+      "A_step1_price_pct": {
+        "session_30pct": 0.2895,
+        "session_60pct": 0.2895
+      },
+      "B_step1_price_pct": {
+        "session_30pct": 0.1967,
+        "session_60pct": 0.1967
+      },
+      "B_range_lo_pct": {
+        "session_30pct": 0.2994,
+        "session_60pct": 0.2994
+      },
+      "B_step_reach_pp": {
+        "session_30pct": 0.4742,
+        "session_60pct": 0.4742
+      }
+    },
+    "lb_neutral": {
+      "breakout_prob_pp": {
+        "session_30pct": 6.044,
+        "session_60pct": 5.2879
+      },
+      "downside_risk_pts": {
+        "session_30pct": 1.9066,
+        "session_60pct": 1.7582
+      },
+      "risk_card_downside_pts": {
+        "session_30pct": 1.9505,
+        "session_60pct": 1.7857
+      },
+      "cons_TP1_prob_pp": {
+        "session_30pct": 0.4728,
+        "session_60pct": 0.4541
+      },
+      "bal_TP1_prob_pp": {
+        "session_30pct": 0.3478,
+        "session_60pct": 0.3291
+      },
+      "agg_TP1_prob_pp": {
+        "session_30pct": 0.6574,
+        "session_60pct": 0.6176
+      },
+      "bal_EV_pp": {
+        "session_30pct": 0.0923,
+        "session_60pct": 0.0854
+      },
+      "scenario_up_pp": {
+        "session_30pct": 1.0192,
+        "session_60pct": 1.0165
+      },
+      "scenario_side_pp": {
+        "session_30pct": 1.8132,
+        "session_60pct": 1.8104
+      },
+      "forecast_base_pct": {
+        "session_30pct": 0.0331,
+        "session_60pct": 0.033
+      },
+      "A_step1_price_pct": {
+        "session_30pct": 0.2895,
+        "session_60pct": 0.2657
+      },
+      "B_step1_price_pct": {
+        "session_30pct": 0.1984,
+        "session_60pct": 0.1903
+      },
+      "B_range_lo_pct": {
+        "session_30pct": 0.3027,
+        "session_60pct": 0.2929
+      },
+      "B_step_reach_pp": {
+        "session_30pct": 0.4805,
+        "session_60pct": 0.4555
+      }
+    },
+    "lb_carry": {
+      "breakout_prob_pp": {
+        "session_30pct": 6.417,
+        "session_60pct": 5.519
+      },
+      "downside_risk_pts": {
+        "session_30pct": 1.7857,
+        "session_60pct": 1.7363
+      },
+      "risk_card_downside_pts": {
+        "session_30pct": 1.8681,
+        "session_60pct": 1.8022
+      },
+      "cons_TP1_prob_pp": {
+        "session_30pct": 0.3731,
+        "session_60pct": 0.3764
+      },
+      "bal_TP1_prob_pp": {
+        "session_30pct": 0.2821,
+        "session_60pct": 0.2835
+      },
+      "agg_TP1_prob_pp": {
+        "session_30pct": 0.5489,
+        "session_60pct": 0.5607
+      },
+      "bal_EV_pp": {
+        "session_30pct": 0.0732,
+        "session_60pct": 0.0748
+      },
+      "scenario_up_pp": {
+        "session_30pct": 0.9725,
+        "session_60pct": 0.9533
+      },
+      "scenario_side_pp": {
+        "session_30pct": 1.7363,
+        "session_60pct": 1.6978
+      },
+      "forecast_base_pct": {
+        "session_30pct": 0.0277,
+        "session_60pct": 0.027
+      },
+      "A_step1_price_pct": {
+        "session_30pct": 0.2411,
+        "session_60pct": 0.2034
+      },
+      "B_step1_price_pct": {
+        "session_30pct": 0.1872,
+        "session_60pct": 0.1713
+      },
+      "B_range_lo_pct": {
+        "session_30pct": 0.2384,
+        "session_60pct": 0.2041
+      },
+      "B_step_reach_pp": {
+        "session_30pct": 0.5857,
+        "session_60pct": 0.5835
+      }
+    }
+  },
+  "mean_abs_drift_30_vs_60": {
+    "old": {
+      "breakout_prob_pp": 5.0005,
+      "downside_risk_pts": 0.5879,
+      "risk_card_downside_pts": 0.6264,
+      "cons_TP1_prob_pp": 0.2126,
+      "bal_TP1_prob_pp": 0.1766,
+      "agg_TP1_prob_pp": 0.3764,
+      "bal_EV_pp": 0.0524,
+      "scenario_up_pp": 0.3022,
+      "scenario_side_pp": 0.5769,
+      "forecast_base_pct": 0.0101,
+      "A_step1_price_pct": 0.1062,
+      "B_step1_price_pct": 0.085,
+      "B_range_lo_pct": 0.1807,
+      "B_step_reach_pp": 0.2558
+    },
+    "carry": {
+      "breakout_prob_pp": 0.0,
+      "downside_risk_pts": 0.0,
+      "risk_card_downside_pts": 0.0,
+      "cons_TP1_prob_pp": 0.0,
+      "bal_TP1_prob_pp": 0.0,
+      "agg_TP1_prob_pp": 0.0,
+      "bal_EV_pp": 0.0,
+      "scenario_up_pp": 0.0,
+      "scenario_side_pp": 0.0,
+      "forecast_base_pct": 0.0,
+      "A_step1_price_pct": 0.0,
+      "B_step1_price_pct": 0.0,
+      "B_range_lo_pct": 0.0,
+      "B_step_reach_pp": 0.0
+    },
+    "neutral": {
+      "breakout_prob_pp": 0.0,
+      "downside_risk_pts": 0.0,
+      "risk_card_downside_pts": 0.0,
+      "cons_TP1_prob_pp": 0.0,
+      "bal_TP1_prob_pp": 0.0,
+      "agg_TP1_prob_pp": 0.0,
+      "bal_EV_pp": 0.0,
+      "scenario_up_pp": 0.0,
+      "scenario_side_pp": 0.0,
+      "forecast_base_pct": 0.0,
+      "A_step1_price_pct": 0.0,
+      "B_step1_price_pct": 0.0,
+      "B_range_lo_pct": 0.0,
+      "B_step_reach_pp": 0.0
+    },
+    "lb_neutral": {
+      "breakout_prob_pp": 0.756,
+      "downside_risk_pts": 0.1484,
+      "risk_card_downside_pts": 0.1648,
+      "cons_TP1_prob_pp": 0.0187,
+      "bal_TP1_prob_pp": 0.0192,
+      "agg_TP1_prob_pp": 0.0453,
+      "bal_EV_pp": 0.0074,
+      "scenario_up_pp": 0.0027,
+      "scenario_side_pp": 0.0027,
+      "forecast_base_pct": 0.0001,
+      "A_step1_price_pct": 0.025,
+      "B_step1_price_pct": 0.0094,
+      "B_range_lo_pct": 0.0113,
+      "B_step_reach_pp": 0.0299
+    },
+    "lb_carry": {
+      "breakout_prob_pp": 2.5618,
+      "downside_risk_pts": 0.6099,
+      "risk_card_downside_pts": 0.6264,
+      "cons_TP1_prob_pp": 0.1286,
+      "bal_TP1_prob_pp": 0.108,
+      "agg_TP1_prob_pp": 0.2113,
+      "bal_EV_pp": 0.0294,
+      "scenario_up_pp": 0.1951,
+      "scenario_side_pp": 0.3407,
+      "forecast_base_pct": 0.0068,
+      "A_step1_price_pct": 0.1344,
+      "B_step1_price_pct": 0.0857,
+      "B_range_lo_pct": 0.1179,
+      "B_step_reach_pp": 0.2077
+    }
+  },
+  "generated_at": "2026-11-17T22:56:30"
+}
