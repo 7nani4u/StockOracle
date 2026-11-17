@@ -6710,9 +6710,15 @@ def _is_finite_number(value: Any) -> bool:
 
 
 def _krx_tick_size(price: float, market: str = "KOSPI") -> int:
-    """KRX 주권시장 호가가격단위. KOSDAQ은 10만원 이상도 100원 단위다."""
+    """KRX 주권시장 호가가격단위.
+
+    2023-01-25(EXTURE 3.0) 개편으로 유가증권·코스닥·코넥스 호가단위가 하나로 통일됐다: 2천원 미만 1원,
+    5천원 미만 5원, 2만원 미만 10원, 5만원 미만 50원, 20만원 미만 100원, 50만원 미만 500원, 그 이상 1,000원.
+    예전 코스닥 규칙(5만원 이상 100원)이 남아 있어 20만원 이상 코스닥 종목의 목표·손절가가 주문할 수 없는
+    가격(예: 401,100원)으로 나오던 것을 고쳤다. ``market`` 인자는 하위 호환용으로만 받는다
+    (``box_plan.tick_size`` 와 같은 표).
+    """
     p = max(0.0, _kr_surge_float(price))
-    market_name = str(market or "").upper()
     if p < 2_000:
         return 1
     if p < 5_000:
@@ -6722,8 +6728,6 @@ def _krx_tick_size(price: float, market: str = "KOSPI") -> int:
     if p < 50_000:
         return 50
     if p < 200_000:
-        return 100
-    if "KOSDAQ" in market_name or market_name in {"KQ", "KOSDAQ_GLOBAL"}:
         return 100
     if p < 500_000:
         return 500
@@ -6735,9 +6739,15 @@ def _snap_tick_units(units: float) -> float:
 
     4.26 / 0.01 = 425.99999999999994 처럼 이미 호가에 맞는 가격이 floor 에서 한 호가 내려가거나
     ceil 에서 한 호가 올라가면, 같은 가격을 두 번 맞췄을 때 값이 달라지고 단계 가격이 밴드 경계를 벗어난다.
+
+    허용 오차는 float32 정밀도(상대 2^-24≈6e-8)를 덮는 상대 1e-6 이다. 야후 일봉은 float32 에서 온 값
+    (17.07 → 17.06999969482422)이라 미국 OHLC 의 51%가 1e-9 오차를 넘고, 25.6%는 floor 에서 한 호가가
+    빠졌다(2026-11-17, 52종목 캐시 13만 값). 1e-6 은 호가 수(units)에 대한 상대값이라 17달러 종목이면
+    호가의 0.17%, 20만원 종목이면 호가의 0.04% 안쪽만 같은 호가로 본다 — 실제로 호가 사이에 있는 계산값을
+    잘못 붙이는 일은 사실상 없다.
     """
     nearest = round(units)
-    return float(nearest) if abs(units - nearest) <= 1e-9 * max(1.0, abs(units)) else units
+    return float(nearest) if abs(units - nearest) <= 1e-6 * max(1.0, abs(units)) else units
 
 
 def _round_krx_price(price: float, market: str = "KOSPI", mode: str = "nearest") -> int:
@@ -9254,6 +9264,16 @@ def analyze_score(dd: Dict, market: str = "KRX", period: str = "1y", volume_in_p
         _pattern["context_conditions"] = dict(_trade_context)
         _conditions = {**_trade_context, **(pattern_conditions(_pattern) if _is_geo else candle_conditions(_pattern))}
         _pattern["validation"] = technique_evidence(_tech, market)
+        if _is_geo and _pattern.get("pattern_status") == "confirmed":
+            # 가이드의 '신뢰도 %' 대신 348종목·10년 사건 연구의 실측 근거(표시 전용, 점수·확률 가중치 없음).
+            try:
+                from market_briefing.pattern_evidence import evidence_text, pattern_evidence
+                _evidence = pattern_evidence(_pid, _pattern.get("direction_code"))
+                if _evidence:
+                    _pattern["measured_evidence"] = _evidence
+                    _pattern["evidence_text"] = evidence_text(_evidence)
+            except Exception as _evidence_exc:
+                print(f"[analyze_score] pattern evidence skipped: {type(_evidence_exc).__name__}: {_evidence_exc}")
         _allow, _reason = technique_allowed(_tech, market, _conditions)
         if _is_geo and _allow:
             _allow, _reason = technique_allowed("pattern_breakout", market, _conditions)
@@ -16541,6 +16561,7 @@ def build_prediction_outlook(
     quote_date: str | None = None,
     data_warnings: List[str] | None = None,
     regime_layers: Dict | None = None,
+    volume_settle: Dict | None = None,
 ) -> Dict:
     """이미 계산된 분석 결과를 예측 탭용 조건부 구조로 재조합한다.
 
@@ -16732,6 +16753,13 @@ def build_prediction_outlook(
         volume_key, volume_label, volume_tone = "dry", "거래량 위축", "neutral"
     else:
         volume_key, volume_label, volume_tone = "normal", "평균 수준", "neutral"
+    # 장중 진행 중인 봉: 분석 사본의 오늘 거래량은 직전 확정 봉 거래량이라 위 라벨은 사실상 어제 거래량의 상태다.
+    # 오늘 거래량처럼 쓰면 사실이 아니므로 집계 중임을 밝히고, 실제 누적 비율은 참고로만 보여 준다.
+    _volume_settled = bool(isinstance(volume_settle, dict) and volume_settle.get("applied"))
+    _settle_live_ratio = _finite_or_none((volume_settle or {}).get("live_ratio")) if _volume_settled else None
+    _settle_completed_ratio = _finite_or_none((volume_settle or {}).get("completed_ratio")) if _volume_settled else None
+    if _volume_settled and volume_available:
+        volume_key, volume_label, volume_tone = "in_progress", "장중 집계 중", "neutral"
 
     high_vol_threshold = 4.0 if market == "KRX" else 3.2
     if atr_pct >= high_vol_threshold:
@@ -16963,6 +16991,11 @@ def build_prediction_outlook(
     down_checks_met = sum((last_price < support_price, volume_available and volume_ratio >= 1.5 and not candle_up,
                            (macd_available and macd_gap < 0) or (rsi_available and rsi < 40)))
     volume_now_text = f"현재 {volume_ratio:.2f}배" if volume_available else "현재 거래량 데이터 미확보"
+    if _volume_settled and volume_available:
+        volume_now_text = ("장중 집계 중 — 판단은 직전 확정 봉 "
+                           + (f"{_settle_completed_ratio:.2f}배" if _settle_completed_ratio is not None else "거래량")
+                           + " 기준"
+                           + (f", 지금까지 누적 {_settle_live_ratio:.2f}배" if _settle_live_ratio is not None else ""))
     rsi_now_text = f"현재 RSI {rsi:.1f}" if rsi_available else "현재 RSI 데이터 미확보"
 
     manipulation_up = ("세력 흔들림 의심 패턴 감지 시에도 종가가 주요 지지선을 유지해야 반등 시나리오 유효"
@@ -17060,8 +17093,10 @@ def build_prediction_outlook(
                             f"{support_label} {_price_label(support_price)} 종가 유지와 거래량 회복이 함께 확인될 때만 "
                             f"단기 반등 시나리오를 유효하게 봅니다.{flow_summary}")
     else:
+        _volume_summary = (("장중 집계 중(마감 전 누적값 대신 직전 확정 봉 기준으로 판단)" if _volume_settled else
+                            f"최근 20봉 평균의 {volume_ratio:.2f}배") if volume_available else "현재 데이터 미확보")
         decision_summary = (f"{trend_label}, "
-                            f"거래량은 {f'최근 20봉 평균의 {volume_ratio:.2f}배' if volume_available else '현재 데이터 미확보'}입니다. "
+                            f"거래량은 {_volume_summary}입니다. "
                             f"{support_label} {_price_label(support_price)} 유지와 거래량 확인 시 단계적 접근을 검토하되, "
                             f"종가 이탈 시 관망을 우선합니다.{flow_summary}")
 
@@ -17284,8 +17319,14 @@ def build_prediction_outlook(
             {"key": "trend", "label": "단기 추세", "value": trend_label, "tone": trend_tone,
              "detail": " · ".join(ma_detail), "help": "이동평균·RSI·MACD를 함께 본 방향"},
             {"key": "volume", "label": "거래량", "value": volume_label, "tone": volume_tone,
-             "detail": (f"최근 20봉 평균 대비 {volume_ratio:.2f}배 · 전일 종가 대비 {'상승' if candle_up else '하락'} · "
-                        f"{'신뢰 보강' if volume_ratio >= 1.2 else '거래량 확인 필요'}"
+             "detail": ((("지금까지 누적 " + (f"{_settle_live_ratio:.2f}배" if _settle_live_ratio is not None else "—")
+                          + " (마감 전 부분값이라 판단에 쓰지 않음)"
+                          + (f" · 판단 기준: 직전 확정 봉 {_settle_completed_ratio:.2f}배" if _settle_completed_ratio is not None
+                             else " · 판단 기준: 직전 확정 봉")
+                          + f" · 전일 종가 대비 {'상승' if candle_up else '하락'}")
+                         if _volume_settled else
+                         (f"최근 20봉 평균 대비 {volume_ratio:.2f}배 · 전일 종가 대비 {'상승' if candle_up else '하락'} · "
+                          f"{'신뢰 보강' if volume_ratio >= 1.2 else '거래량 확인 필요'}"))
                         if volume_available else "거래량 또는 비교 평균이 없어 시나리오 가중치에 반영하지 않음"),
              "help": "가격 움직임에 실제 거래 참여가 동반됐는지 확인"},
             {"key": "volatility", "label": "변동성", "value": vol_label, "tone": vol_tone,
@@ -18671,6 +18712,20 @@ def route(path: str, params: Dict) -> Dict:
         # 바로 비교하면 같은 종목이 조회 시각만으로 '거래량 위축'(하이브리드 NCS 평균 -7.5~-11점)이 되므로,
         # 거래량 비율은 직전 확정 막대 기준으로 계산한다. 가격·지표는 지금까지와 같이 마지막 막대를 쓴다.
         _volume_in_progress = _bar_in_progress(market, _last_bar_date)
+        # 거래량 비율을 한 칸 앞 막대로 보는 곳(4단계 점수·하이브리드·상관 엔진·박스)과 달리 리스크·매수 구간·눌림목·
+        # 목표가·예측 요약·OBV·매수 압력·거래대금은 Volume[-1] 을 그대로 읽어, 같은 가격에서도 조회 시각만으로
+        # 돌파 확률(최대 29.8%p)·단계 가격(최대 9.7%)·하락 위험 점수(±8)가 바뀌었다. 분석 사본에서만 오늘 막대의
+        # 거래량을 직전 확정 봉 거래량으로 두고(다른 네 곳과 같은 기준), 차트·현재 거래량 표시는 실제 누적값을 쓴다.
+        # 끄려면 STOCKORACLE_INPROGRESS_VOLUME_SETTLE=0 (근거: market_briefing/session_bars.settle_in_progress_volume).
+        _live_volume_series = list(dd.get("Volume") or [])
+        volume_settle: Dict[str, Any] = {"applied": False}
+        if _volume_in_progress and os.environ.get("STOCKORACLE_INPROGRESS_VOLUME_SETTLE", "1") != "0":
+            try:
+                from market_briefing.session_bars import settle_in_progress_volume
+                dd, volume_settle = settle_in_progress_volume(dd)
+            except Exception as _settle_e:
+                _log_route_issue(sym, "inprogress_volume_settle", _settle_e)
+                volume_settle = {"applied": False, "reason": "error"}
         score, steps, patterns, geo_patterns, ai_strategy = analyze_score(
             dd, market, period, volume_in_progress=_volume_in_progress)
         raw_technical_score = score
@@ -18806,6 +18861,13 @@ def route(path: str, params: Dict) -> Dict:
             and isinstance(_dates[-1], str)
         )
         arty_dd = dd if _has_daily_history else (fetch_arty_daily_data(sym, market) or dd)
+        if (volume_settle.get("applied") and arty_dd is not dd
+                and str((arty_dd.get("Date") or [""])[-1])[:10] == _last_bar_date):
+            try:
+                from market_briefing.session_bars import settle_in_progress_volume
+                arty_dd, _ = settle_in_progress_volume(arty_dd)
+            except Exception as _arty_settle_e:
+                _log_route_issue(sym, "inprogress_volume_settle_arty", _arty_settle_e)
         # 예측 탭의 동적 RSI 매수 타이밍은 선택한 차트가 분봉이어도 항상 일봉으로 고정한다.
         # SMMA 전략이 이미 확보한 일봉을 재사용하므로 별도 네트워크 호출은 추가하지 않는다.
         dynamic_rsi = dynamic_rsi_daily_snapshot(arty_dd, market=market)
@@ -19186,6 +19248,7 @@ def route(path: str, params: Dict) -> Dict:
                 quote_date=realtime_meta.get("trade_date") or None,
                 data_warnings=list(_route_warnings),
                 regime_layers=regime_layers,
+                volume_settle=volume_settle,
             )
         except Exception as e:
             print(f"[route] build_prediction_outlook failed symbol={sym} market={market} err={type(e).__name__}:{e} atr={atr_val}")
@@ -19245,6 +19308,20 @@ def route(path: str, params: Dict) -> Dict:
             pattern_overlays = build_pattern_overlays(geo_patterns)
         except (ImportError, ValueError, TypeError, KeyError, IndexError):
             pattern_overlays = []
+
+        # 반응 기반 수평선(2회 이상 반응) — 일봉에서만. 근거 연구가 일봉 사건이라 분봉에는 적용하지 않는다.
+        # 서술용 참고선이며 점수·확률에 들어가지 않는다. 끄려면 STOCKORACLE_SR_LEVELS=0.
+        sr_levels_payload: Dict[str, Any] = {}
+        if os.environ.get("STOCKORACLE_SR_LEVELS", "1") != "0":
+            try:
+                from market_briefing.pattern_engine import resolve_timeframe as _resolve_tf
+                if _resolve_tf(period) == "1D":
+                    from market_briefing.sr_levels import chart_levels
+                    sr_levels_payload = chart_levels(
+                        dd.get("Open", []), dd.get("High", []), dd.get("Low", []), dd.get("Close", []))
+            except Exception as _sr_exc:
+                _log_route_issue(sym, "sr_levels", _sr_exc)
+                sr_levels_payload = {}
 
         _price_rnd = 4 if market == "US" else 2
         # ── 투자매력 진단 (ChoiceStock 스마트스코어 참고) ──────────────────
@@ -19322,7 +19399,12 @@ def route(path: str, params: Dict) -> Dict:
             if price_correction and abs(float(price_correction.get("delta_pct") or 0)) >= 3:
                 _dq_warnings.append(
                     f"실시간 보정으로 마지막 캔들 종가를 {price_correction['delta_pct']:+.1f}% 조정했습니다.")
-            if _volume_in_progress:
+            if _volume_in_progress and volume_settle.get("applied"):
+                _dq_warnings.append(
+                    "장중 거래량은 아직 누적 중이라 오늘 봉의 누적 거래량 대신 직전 확정 봉 거래량으로 모든 거래량 판단"
+                    "(거래량 비율·돌파·하락 위험·매수 구간·OBV 등)을 계산했습니다 "
+                    "(가격·지표는 현재가 반영, 차트 거래량은 실제 누적값).")
+            elif _volume_in_progress:
                 _dq_warnings.append(
                     "장중 거래량은 아직 누적 중이라 거래량 비율은 직전 확정 봉 기준으로 계산했습니다 (가격·지표는 현재가 반영).")
             if market == "KRX":
@@ -19346,6 +19428,7 @@ def route(path: str, params: Dict) -> Dict:
                 "last_bar_date": _last_bar,
                 "history_bars": _bars,
                 "volume_basis": "completed_bar" if _volume_in_progress else "live_bar",
+                "volume_settle": volume_settle,
                 "warnings": _dq_warnings,
                 "component_status": dict(_component_status),
                 "missing_sessions": _missing_sessions,
@@ -19368,8 +19451,9 @@ def route(path: str, params: Dict) -> Dict:
             "session_name": session_name,
             # 미확보 지표를 RSI 50(중립)·거래량 0으로 채우면 실제 값처럼 보이므로 null 로 둔다.
             "rsi": round(float((dd.get("RSI") or [None])[-1]), 1) if (dd.get("RSI") or []) and _is_finite_number((dd.get("RSI") or [])[-1]) else None,
-            "volume": (_safe_int((dd.get("Volume") or [None])[-1], default=0, log_ctx=f"{sym} route volume")
-                       if (dd.get("Volume") or []) and _is_finite_number((dd.get("Volume") or [])[-1]) else None),
+            # 현재 거래량은 실제 누적값(분석 사본의 정착 값이 아님)을 보여 준다.
+            "volume": (_safe_int(_live_volume_series[-1], default=0, log_ctx=f"{sym} route volume")
+                       if _live_volume_series and _is_finite_number(_live_volume_series[-1]) else None),
             "atr": round(_safe_finite_float(atr_val, last*0.02 if math.isfinite(last) and last>0 else 0.02), _price_rnd),
             "score": score, "prob_up": prob_up, "prob_down": prob_down,
             "prob_up_raw": prob_up_raw, "prob_down_raw": prob_down_raw,
@@ -19387,7 +19471,7 @@ def route(path: str, params: Dict) -> Dict:
                 "high": dd.get("High", []),
                 "low": dd.get("Low", []),
                 "close": dd.get("Close", []),
-                "volume": dd.get("Volume", []),
+                "volume": _live_volume_series if len(_live_volume_series) == len(dd.get("Close") or []) else dd.get("Volume", []),
                 "ma20": dd.get("MA20", []),
                 "ma60": dd.get("MA60", []),
                 "bb_upper": dd.get("BB_Upper", []),
@@ -19399,6 +19483,7 @@ def route(path: str, params: Dict) -> Dict:
                 "macd": dd.get("MACD", []),
                 "signal_line": dd.get("Signal_Line", []),
                 "pattern_overlays": pattern_overlays,
+                "sr_levels": sr_levels_payload,
                 "pattern_overlay_options": {
                     "show_pattern_overlay": True,
                     "interaction_mode": "hover_touch",
@@ -21229,6 +21314,9 @@ input::placeholder{color:#484f58}
 .pattern-head{display:flex;align-items:flex-start;gap:8px;font-weight:700;line-height:1.5;word-break:keep-all;overflow-wrap:anywhere}
 .pattern-icon{flex-shrink:0}
 .pattern-desc{font-size:12px;color:#8b949e;line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
+.pattern-evid{font-size:11px;color:#6e7681;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere;border-top:1px dashed #30363d;padding-top:6px;width:100%}
+.sr-level-note{margin-top:8px;font-size:11px;color:#8b949e;line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
+.sr-level-warning{color:#d29922;font-weight:600;margin-bottom:4px}
 .pattern-bull{background:#0d2d1a}
 .pattern-bear{background:#2d0d0d}
 .pattern-neu{background:#21262d}
@@ -22462,6 +22550,7 @@ input::placeholder{color:#484f58}
         <div class="card">
           <div class="card-title">가격 차트 (캔들 + MA + 볼린저 + 거래량)</div>
           <div id="price-chart" style="height:380px"></div>
+          <div id="sr-level-note" class="sr-level-note" style="display:none"></div>
         </div>
         <div class="two-col-grid" style="gap:12px">
           <div class="card">
@@ -25117,8 +25206,13 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
   const supplyScore = Math.min(100, Math.max(0, Math.round(sScore)));
 
   // ── 5. 캔들·차트 패턴 신호 ──────────────────────────────────────
-  const bullPat = patterns.filter(p => p.direction === '상승').length;
-  const bearPat = patterns.filter(p => p.direction === '하락').length;
+  // 백엔드 analyze_score 와 같은 기준: 검증 제외(pruned)·미확정·실패·만료 패턴은 방향 개수에 넣지 않는다.
+  // (이전에는 형성 중·무효화 패턴까지 '상승/하락' 라벨만 보고 세어, 점수에서 이미 뺀 신호가 등급에 다시 들어왔다.
+  //  10년 사건 연구에서 이 차원은 이후 수익과 상관 -0.004 였다.)
+  const scoredPatterns = patterns.filter(p => p.score_eligible !== false && !p.pruned);
+  const bullPat = scoredPatterns.filter(p => p.direction === '상승').length;
+  const bearPat = scoredPatterns.filter(p => p.direction === '하락').length;
+  const patternSignalActive = bullPat + bearPat > 0;
   let pScore = 50;
   if (bullPat + bearPat > 0) {
     pScore = Math.round((bullPat / (bullPat + bearPat)) * 80 + 10);
@@ -25130,7 +25224,7 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
   const hasSupply = (isKrx && flow && flow.ok) || (!isKrx && d.us_enriched && d.us_enriched && d.us_enriched.sentiment);
   const dims = [techScore, momentumScore, volScore, supplyScore, patScore];
   const dimNameMap = ['기술추세', '모멘텀', '변동성', '수급', '패턴신호'];
-  const activeDimsInfo = dims.map((v, i) => ({ v, name: dimNameMap[i], active: (i !== 3 || hasSupply) && (i !== 1 || rsiAvailable) }));
+  const activeDimsInfo = dims.map((v, i) => ({ v, name: dimNameMap[i], active: (i !== 3 || hasSupply) && (i !== 1 || rsiAvailable) && (i !== 4 || patternSignalActive) }));
   const activeDims = activeDimsInfo.filter(x => x.active);
   const activeItemCount = activeDims.length;
   const avg  = Math.round(activeDims.reduce((s, x) => s + x.v, 0) / activeItemCount);
@@ -25204,7 +25298,8 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
     bp.vol_trend === 'contracting' ? '변동성 수축 (안정화)' : '변동성 안정'}` : '변동성 데이터 없음';
   const supplyDesc = isKrx ? calcSupplyDesc(flow) : '수급 데이터 없음';
   const patDesc    = patterns.length === 0 ? '특이 캔들 패턴 없음'
-    : `상승패턴 ${bullPat}개 · 하락패턴 ${bearPat}개 감지`;
+    : patternSignalActive ? `상승패턴 ${bullPat}개 · 하락패턴 ${bearPat}개 감지`
+    : `검증을 통과한 패턴 없음 — 종합 등급 계산에서 제외 (감지 ${patterns.length}개는 참고용)`;
 
   // ── 단계별 분석 스텝 HTML 빌더 ─────────────────────────────────────────────
   const allSteps    = d.analysis_steps || [];
@@ -25214,6 +25309,7 @@ function renderTechnicalDiagnosis(d, isKrx, diagEl) {
     return `<div class="pattern-item ${pcls}">
       <div class="pattern-head"><span class="pattern-icon">${icon}</span><span>${p.name}</span></div>
       <div class="pattern-desc">${p.desc}</div>
+      ${p.evidence_text ? `<div class="pattern-evid">${p.evidence_text}</div>` : ''}
     </div>`;
   }).join('') || '<p class="empty-note">특이한 캔들 패턴이 감지되지 않았습니다.</p>';
 
@@ -27129,6 +27225,29 @@ function renderCharts(d, isKrx) {
         if (Number.isFinite(price) && price > 0) candleSeries.createPriceLine({price, color: key === 'support' ? '#3fb950' : '#f85149', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: key === 'support' ? '박스 지지' : '박스 저항'});
       });
     });
+
+    // 반응 기반 수평선(2회 이상 반응). 서술용 참고선이며 매수·매도 신호가 아니다 — 실측 근거는 아래 안내에 표시한다.
+    const srPayload = cd.sr_levels || {};
+    (Array.isArray(srPayload.levels) ? srPayload.levels : []).forEach(lv => {
+      if (!Number.isFinite(lv.price) || lv.price <= 0) return;
+      candleSeries.createPriceLine({
+        price: lv.price,
+        color: lv.role === 'support' ? 'rgba(63,185,80,0.8)' : 'rgba(248,81,73,0.8)',
+        lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+        title: String(lv.label || ''),
+      });
+    });
+    const srNoteEl = document.getElementById('sr-level-note');
+    if (srNoteEl) {
+      const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+      const parts = [];
+      if (srPayload.warning) {
+        parts.push(`<div class="sr-level-warning">⚠️ ${esc(srPayload.warning.text)} · ${esc(srPayload.warning.evidence_text)}</div>`);
+      }
+      if (srPayload.note) parts.push(`<div>${esc(srPayload.note)}</div>`);
+      srNoteEl.innerHTML = parts.join('');
+      srNoteEl.style.display = parts.length ? 'block' : 'none';
+    }
 
     // 패턴은 기본적으로 숨기고 차트에 마우스를 올리거나 터치한 동안만 표시한다.
     const overlayOptions = cd.pattern_overlay_options || {};

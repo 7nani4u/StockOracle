@@ -139,7 +139,9 @@ def round_tick(price, market="KRX", mode="nearest"):
     tick = tick_size(value, market)
     units = value / tick
     nearest = round(units)
-    if abs(units - nearest) <= 1e-9 * max(1.0, abs(units)):
+    # float32 에서 온 야후 가격(17.07 → 17.0699997)이 floor 에서 한 호가 빠지지 않도록 상대 1e-6 까지 같은 호가로 본다
+    # (api/index.py::_snap_tick_units 와 같은 기준).
+    if abs(units - nearest) <= 1e-6 * max(1.0, abs(units)):
         units = float(nearest)
     if mode == "floor":
         units = math.floor(units)
