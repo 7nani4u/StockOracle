@@ -21157,36 +21157,6 @@ input::placeholder{color:#484f58}
 .rise-us{color:#3fb950}
 .fall-us{color:#f85149}
 
-/* 신호 신뢰도 — 점수 → 해석 → 핵심 상태 배지 → 제한 요인 순서 */
-.signal-confidence-card{padding:16px}
-.signal-confidence-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
-.signal-confidence-title{font-size:13px;font-weight:700;color:#e6edf3}
-.signal-confidence-help{font-size:10px;color:#8b949e;line-height:1.5;margin-top:4px}
-.signal-confidence-status{display:none !important;font-size:10px;font-weight:700;padding:4px 9px;border:1px solid currentColor;border-radius:999px;white-space:nowrap}
-.signal-confidence-overview{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(300px,1.2fr);gap:10px}
-.signal-confidence-score-panel,.signal-confidence-interpretation{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:13px}
-.signal-confidence-score-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-height:22px}
-.signal-confidence-score-head .signal-confidence-kicker{margin-bottom:0;flex-shrink:0}
-.signal-confidence-kicker{font-size:10px;color:#8b949e;margin-bottom:5px}
-.signal-confidence-score-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
-.signal-confidence-score{font-size:32px;font-weight:850;line-height:1}
-.signal-confidence-range{font-size:10px;color:#8b949e;text-align:right;line-height:1.45}
-.signal-confidence-meter{position:relative;height:10px;background:#21262d;border-radius:999px;margin-top:12px;overflow:hidden}
-.signal-confidence-interval{position:absolute;top:0;height:100%;border-radius:999px}
-.signal-confidence-marker{position:absolute;top:-2px;width:3px;height:14px;border-radius:2px;transform:translateX(-1px)}
-.signal-confidence-axis{display:flex;justify-content:space-between;font-size:9px;color:#484f58;margin-top:4px}
-.signal-confidence-interpretation-title{font-size:14px;font-weight:750;margin-bottom:5px}
-.signal-confidence-interpretation-text{font-size:11px;color:#c9d1d9;line-height:1.6}
-.signal-confidence-definition{font-size:10px;color:#8b949e;line-height:1.55;margin-top:8px;padding-top:8px;border-top:1px solid #21262d}
-.signal-confidence-chips{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin:0 0 3px auto}
-.signal-confidence-chip{font-size:11px;border:1px solid currentColor;border-radius:4px;padding:2px 8px;white-space:nowrap}
-.signal-confidence-section{margin-top:11px}
-.signal-confidence-section-title{font-size:11px;font-weight:700;color:#c9d1d9;margin-bottom:7px}
-.signal-confidence-reason-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
-.signal-confidence-reason{display:flex;gap:7px;align-items:flex-start;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 9px;font-size:10px;color:#c9d1d9;line-height:1.5}
-.signal-confidence-reason-icon{color:#d29922;flex-shrink:0}
-.signal-confidence-news-meta{font-size:9px;color:#6e7681;line-height:1.5;margin-top:8px}
-
 /* 탭 */
 .tabs{display:flex;gap:6px;border-bottom:1px solid #21262d;margin-bottom:16px;padding-bottom:2px}
 .tab-btn{padding:7px 14px;border-radius:8px;border:none;background:none;color:#8b949e;font-size:13px;font-weight:500;cursor:pointer;transition:all .15s;position:relative}
@@ -21633,7 +21603,6 @@ input::placeholder{color:#484f58}
   .dynamic-rsi-condition-grid,.dynamic-rsi-execution{grid-template-columns:1fr}
   /* 900px 이하: 3열 */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr))}
-  .signal-confidence-overview{grid-template-columns:1fr}
 }
 
 /* ── 모바일 (≤ 768px) ── */
@@ -21688,7 +21657,6 @@ input::placeholder{color:#484f58}
 
   /* 메트릭 카드 */
   .m-value{font-size:18px}
-  .signal-confidence-reason-grid{grid-template-columns:1fr}
   /* 768px 이하: 3열 (세로가 짧아도 카드당 여유 확보) */
   .sector-cards{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
 }
@@ -21708,8 +21676,6 @@ input::placeholder{color:#484f58}
   .sector-card-pct{font-size:12px}
   .sector-card-mood{font-size:10px;padding:2px 5px}
   .metric-card{padding:10px}
-  .signal-confidence-score-head{flex-wrap:wrap}
-  .signal-confidence-chips{width:100%;justify-content:flex-start;margin-left:0}
   .metric-price-row{justify-content:space-between;gap:10px}
   #r-prob{font-size:10px!important;gap:3px!important}
   .m-label{font-size:10px}
@@ -22531,7 +22497,6 @@ input::placeholder{color:#484f58}
           <div class="fund-item"><div class="fund-label">산업</div><div class="fund-val" id="f-industry" style="font-size:12px"></div></div>
         </div>
       </div>
-      <div id="signal-confidence-card" style="display:none" class="card signal-confidence-card"></div>
       <div class="tabs" id="result-tabs">
         <button class="tab-btn active" onclick="switchTab('chart')">📊 차트</button>
         <button class="tab-btn" onclick="switchTab('ai')" id="tab-ai-btn">🧠 규칙 기반 진단<span class="tab-badge" id="investor-badge" title="투자자 수급 데이터 있음"></span></button>
@@ -23837,7 +23802,6 @@ async function analyze(tickerOverride = '') {
       _tickerInputEl.value = d.company;
     }
     renderResult(d);
-    renderSignalConfidence(d);
     setState('result');
     // 미국 주식: 5초마다 현재가 자동 갱신
     if (d.market === 'US' && d.symbol) {
@@ -23885,7 +23849,6 @@ async function analyze(tickerOverride = '') {
               _selectedStockTicker = liteD.symbol || ticker;
               if (liteD.market) currentMarket = liteD.market;
               renderResult(liteD);
-              renderSignalConfidence(liteD);
               setState('result');
               if (liteD.market === 'US' && liteD.symbol) _startPricePolling(liteD.symbol);
               renderFlowTab(liteD);
@@ -23977,112 +23940,6 @@ function fmtRange(lo, hi, isKrx) {
   return isKrx ? _fmtKrNum(lo) + '~' + _fmtKrNum(hi) + '원' : '$' + _fmtUsNum(lo) + '~$' + _fmtUsNum(hi);
 }
 
-// ── 🧭 신호 신뢰도 종합 카드 (confidence_engine 결과) ──────────────────────
-function renderSignalConfidence(d) {
-  const el = document.getElementById('signal-confidence-card');
-  if (!el) return;
-  const sc = d && d.signal_confidence;
-  if (!sc || sc.confidence == null) { el.style.display = 'none'; return; }
-  el.style.display = '';
-
-  const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
-  const conf = clamp(sc.confidence);
-  const ci = sc.confidence_interval || {};
-  const lo = clamp(ci.lower != null ? ci.lower : conf);
-  const hi = clamp(ci.upper != null ? ci.upper : conf);
-  const spread = Number(ci.spread != null ? ci.spread : Math.max(0, hi - lo));
-  const level = conf >= 70
-    ? {label:'높음', color:'#3fb950', description:'여러 분석 근거가 비교적 일관됩니다.'}
-    : conf >= 55
-      ? {label:'보통', color:'#58a6ff', description:'참고할 수 있지만 추가 확인이 필요합니다.'}
-      : conf >= 45
-        ? {label:'제한적', color:'#d29922', description:'근거 간 편차가 있어 단독 판단에 부적합합니다.'}
-        : {label:'낮음', color:'#f85149', description:'신호 일관성이 낮아 관망과 재확인이 우선입니다.'};
-
-  const signalKey = String(sc.signal || 'NEUTRAL').toUpperCase();
-  const signalMeta = signalKey === 'BUY'
-    ? {label:'상승', color:'#3fb950'}
-    : signalKey === 'SELL'
-      ? {label:'하락', color:'#f85149'}
-      : {label:'중립', color:'#d29922'};
-  const weighted = Number(sc.weighted_score);
-  const weightedText = Number.isFinite(weighted) ? weighted.toFixed(1) : '—';
-
-  const regimeKoMap = {'Risk-On':'위험선호', 'Risk-Off':'위험회피', 'Neutral':'중립', 'Transition':'전환'};
-  const macro = sc.macro_regime || {};
-  const regime = macro.regime || 'Neutral';
-  const regimeColor = regime === 'Risk-On' ? '#3fb950' : regime === 'Risk-Off' ? '#f85149' : regime === 'Transition' ? '#d29922' : '#8b949e';
-  const regimeChip = '<span class="signal-confidence-chip" style="color:' + regimeColor + '">거시 ' +
-    _escPrediction(regimeKoMap[regime] || regime) + '</span>';
-
-  const sector = sc.sector_relative || {};
-  let sectorChip = '';
-  if (sector.sector && sector.sector.pct5d != null) {
-    const sectorName = sector.sector.name || sector.sector.etf || '관련 업종';
-    const sectorPct = Number(sector.sector.pct5d);
-    const sectorColor = sector.aligned === true ? '#3fb950' : sector.aligned === false ? '#f85149' : '#8b949e';
-    sectorChip = '<span class="signal-confidence-chip" style="color:' + sectorColor + '">업종 ' +
-      _escPrediction(sectorName) + ' ' + (sectorPct >= 0 ? '+' : '') + sectorPct.toFixed(1) + '%' +
-      (sector.aligned === true ? ' ▲정렬' : sector.aligned === false ? ' ⚠불일치' : '') + '</span>';
-  }
-
-  const days = Number(sc.days_to_earnings);
-  const hasEarningsDate = sc.days_to_earnings != null && Number.isFinite(days);
-  const earningsChip = sc.earnings_risk && hasEarningsDate
-    ? '<span class="signal-confidence-chip" style="color:#f97316;font-weight:700">⚠️ 실적 D-' + days + '</span>'
-    : '';
-
-  const sentiment = sc.sentiment || {};
-  const sentimentScore = Number(sentiment.sentiment_score);
-  const sentimentSourceMap = {'finbert':'FinBERT', 'kr-finbert':'KR-FinBERT', 'keyword':'금융사전'};
-  const sentimentSource = sentimentSourceMap[sentiment.sentiment_source] || '분류 정보 없음';
-  const sentimentColor = sentiment.overall === 'positive' ? '#3fb950' : sentiment.overall === 'negative' ? '#f85149' : '#8b949e';
-  const sentimentChip = Number.isFinite(sentimentScore)
-    ? '<span class="signal-confidence-chip" style="color:' + sentimentColor + '">뉴스감정 ' +
-      sentimentScore.toFixed(0) + ' (' + _escPrediction(sentimentSource) + ')</span>'
-    : '';
-
-  const historyConfidence = sc.history_confidence || {};
-  const historyDays = Number(historyConfidence.available_trading_days);
-  const historyCap = Number(historyConfidence.confidence_cap);
-  const optimalDays = Number(historyConfidence.optimal_lookback_days);
-  const historyChip = Number.isFinite(historyDays) && Number.isFinite(historyCap)
-    ? '<span class="signal-confidence-chip" style="color:#d29922">데이터 ' + historyDays.toFixed(0) +
-      '일 · 상한 ' + historyCap.toFixed(0) + '%' +
-      (Number.isFinite(optimalDays) && optimalDays > 0 ? ' · 최적 ' + optimalDays.toFixed(0) + '일' : '') +
-      '</span>'
-    : '';
-
-  el.innerHTML =
-    '<div class="signal-confidence-header">' +
-      '<div><div class="signal-confidence-title">🧭 신호 신뢰도 종합</div>' +
-      '<div class="signal-confidence-help">분석 결과가 서로 얼마나 일치하는지 보여주는 보조 지표입니다.</div></div>' +
-    '</div>' +
-    '<div class="signal-confidence-overview">' +
-      '<div class="signal-confidence-score-panel">' +
-        '<div class="signal-confidence-score-head">' +
-          '<div class="signal-confidence-kicker">종합 신뢰도</div>' +
-          '<div class="signal-confidence-chips">' + regimeChip + sectorChip + earningsChip + sentimentChip + historyChip + '</div>' +
-        '</div>' +
-        '<div class="signal-confidence-score-row">' +
-          '<div class="signal-confidence-score" style="color:' + level.color + '">' + conf.toFixed(0) + '<span style="font-size:14px;color:#8b949e">%</span></div>' +
-          '<div class="signal-confidence-range">예상 구간 ' + lo.toFixed(0) + '~' + hi.toFixed(0) + '%<br>구간 폭 ' + spread.toFixed(0) + '점</div>' +
-        '</div>' +
-        '<div class="signal-confidence-meter" role="meter" aria-label="종합 신뢰도" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + conf.toFixed(0) + '">' +
-          '<div class="signal-confidence-interval" style="left:' + lo + '%;width:' + Math.max(2, hi - lo) + '%;background:' + level.color + '44"></div>' +
-          '<div class="signal-confidence-marker" style="left:' + Math.min(99, conf) + '%;background:' + level.color + '"></div>' +
-        '</div>' +
-        '<div class="signal-confidence-axis"><span>0 낮음</span><span>50 제한적</span><span>100 높음</span></div>' +
-      '</div>' +
-      '<div class="signal-confidence-interpretation">' +
-        '<div class="signal-confidence-kicker">현재 해석</div>' +
-        '<div class="signal-confidence-interpretation-title"><span style="color:' + signalMeta.color + '">' + signalMeta.label + ' 신호</span> · ' + level.label + ' 신뢰도</div>' +
-        '<div class="signal-confidence-interpretation-text">' + _escPrediction(level.description) +
-          ' 방향 종합점수는 ' + weightedText + '점이며 50점은 중립 기준입니다.</div>' +
-        '<div class="signal-confidence-definition">주의: ' + conf.toFixed(0) + '%는 주가의 상승확률이나 적중확률이 아닙니다. AI·기술·뉴스·시장 신호의 일치도와 데이터 불확실성을 종합한 값입니다.</div>' +
-      '</div>' +
-    '</div>';
-}
 // ── 종목 분석 결과 렌더링 ──
 function renderResult(d) {
   const isKrx = (d.currency === 'KRW') || d.market === 'KRX';
