@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """7단계 스캔 VCP 편입 테스트. 점수 미반영·승격만 검증."""
 import json
+import re
 import shutil
 import subprocess
 
@@ -96,26 +97,29 @@ def _scan_markup() -> str:
     )[0]
 
 
-def test_scan_table_columns_reordered_without_chg_signal_quant():
+def test_scan_table_columns_show_box_plan_without_removed_columns():
     markup = _scan_markup()
     assert ">등락률<" not in markup
     assert ">신호<" not in markup
     assert ">퀀트 모멘텀 점수<" not in markup
-    assert ">VCP 수축<" in markup
-    order = ["종목", "상태", "현재가", "진입 트리거", "돌파 신뢰도",
-             "치명적 약점", "순복합 점수", "카테고리", "리더 반전",
-             "모멘텀 지속", "VCP 수축"]
+    # 2026-11-07: 화면에서 삭제한 열
+    for removed in ("상태", "치명적 약점", "순복합 점수", "리더 반전", "모멘텀 지속", "VCP 수축", "진입 트리거"):
+        assert f">{removed}<" not in markup, removed
+    order = ["종목", "카테고리", "현재가", "돌파 점수",
+             "1차 목표", "2차 목표", "3차 목표", "손절 기준",
+             "재진입 후보", "예상 기간", "도달 확률"]
     positions = [markup.index(f">{label}<") for label in order]
     assert positions == sorted(positions)
 
 
 def test_scan_empty_message_spans_all_columns():
-    # 빈 목록 메시지는 JS 렌더러에 있으므로 HTML 전체에서 확인 (12열)
-    assert 'colspan="12"' in HTML
+    # 빈 목록 메시지는 JS 렌더러에 있으므로 HTML 전체에서 확인 (# + 11열 = 12칸)
+    assert 'colspan="12"' in HTML and 'colspan="11"' not in HTML
     assert "선정 종목 없음" in HTML
 
 
-def test_vcp_badges_render_in_scan_table():
+def test_vcp_badges_no_longer_render_in_scan_table():
+    """VCP 수축 열은 삭제됐다: 신호 자체(API 응답·승격)는 남기고 화면 배지만 없앤다."""
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is needed for the scan renderer regression check")
@@ -163,9 +167,12 @@ console.log(JSON.stringify({table: elements['scan-tbody'].innerHTML}));
         capture_output=True, check=True, timeout=20,
     )
     table = json.loads(completed.stdout)["table"]
-    assert "VCP 돌파" in table
-    assert "통과" in table and "주의" in table
-    assert "수축중" in table
+    for badge in ("VCP 돌파", "수축중", "통과·주의", "📐", "🌀"):
+        assert badge not in table, badge
+    # 진입 트리거 열은 삭제됐고, 승격으로 바뀐 트리거의 출처만 종목 칸 툴팁으로 남는다
+    assert "진입 트리거 출처: VCP 피벗 돌파" in table
+    assert re.search(r'<td title="진입 트리거 출처: VCP 피벗 돌파[^"]*"><div[^>]*>VCP Pass', table)
+    assert "$130.00" not in table      # entry_trigger 값은 더 이상 화면에 그리지 않는다
 
 
 @pytest.fixture(autouse=True)

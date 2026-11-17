@@ -29,14 +29,14 @@ def test_scan_cache_identity_includes_effective_switches():
                       and any(isinstance(target, ast.Name) and target.id == "_cache_key"
                               for target in node.targets)
                       and isinstance(node.value, ast.JoinedStr)
-                      and any(isinstance(part, ast.Constant) and "scan|v6|" in str(part.value)
+                      and any(isinstance(part, ast.Constant) and "scan|v11|" in str(part.value)
                               for part in node.value.values))
     code = compile(ast.Expression(expression), "scan-cache", "eval")
     values = dict(market_p="US", mode_p="full", equity=10000, risk_pct=1,
-                  raw_list=["TEST"], _prune_cache_token="artifact1")
-    keys = {eval(code, dict(values, _momentum_on=momentum, _vcp_on=vcp))
-            for momentum in (False, True) for vcp in (False, True)}
-    assert len(keys) == 4
+                  raw_list=["TEST"], _prune_cache_token="artifact1", _ncs_qmj_on=False)
+    keys = {eval(code, dict(values, _momentum_on=momentum, _vcp_on=vcp, _ncs_qmj_on=qmj))
+            for momentum in (False, True) for vcp in (False, True) for qmj in (False, True)}
+    assert len(keys) == 8      # 종합 점수 방식(QMJ 배율 복원 스위치)도 캐시 식별자에 들어간다
     first = eval(code, dict(values, _momentum_on=True, _vcp_on=True))
     second = eval(code, dict(values, _momentum_on=True, _vcp_on=True, _prune_cache_token="artifact2"))
     assert first != second

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""리더주 반전매매 신호 + 미국 $70 상한 필터 + 진입준비 승격 검증."""
+"""리더주 반전매매 신호 + 미국 $23 상한 필터 + 진입준비 승격 검증."""
 import math
 
 from market_briefing.leader_reversal import detect_leader_reversal
@@ -119,10 +119,11 @@ def test_never_raises_on_garbage():
 
 
 def test_us_price_cap_boundary():
-    assert SCAN_US_MAX_PRICE == 70.0
-    assert is_scan_price_eligible("US", 70.0) is True
-    assert is_scan_price_eligible("US", 69.99) is True
-    assert is_scan_price_eligible("US", 70.01) is False
+    assert SCAN_US_MAX_PRICE == 23.0
+    assert is_scan_price_eligible("US", 23.0) is True
+    assert is_scan_price_eligible("US", 22.99) is True
+    assert is_scan_price_eligible("US", 23.01) is False
+    assert is_scan_price_eligible("US", 70.0) is False   # 이전 상한
     assert is_scan_price_eligible("US", 250.0) is False
     assert is_scan_price_eligible("US", 0) is False
     assert is_scan_price_eligible("US", None) is False

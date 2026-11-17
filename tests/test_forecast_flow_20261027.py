@@ -15,13 +15,9 @@ def test_forecast_follows_decision_evidence_scenarios_entry_execution_risk():
 
 def test_execution_renderer_is_separate_and_clears_old_plan():
     source = 'function renderPredictionSections' + HTML.split('function renderPredictionSections', 1)[1].split('function renderTechnicalSignals', 1)[0]
+    from tests.test_box_plan import make_seq, plan_for
     data = {'prediction_outlook': {'decision': {'key': 'watch'}},
-            'box_range': {'tactics': {'regime': {'key': 'range_support', 'tradeable': True,
-                         'label': '지지 확인'}, 'summary': '시험 실행',
-                         'plan': {'status': 'wait', 'tradeable': False, 'entry': {'low': 90, 'high': 91},
-                                  'geometry': {'first_target_rr': 1.5, 'breakeven_rate': .57,
-                                               'measured_rate': None, 'ok': None},
-                                  'entry_checks': [{'label': '확정 일봉 재시험 지지', 'ok': False}]}}},
+            'box_range': {'execution_plan': plan_for(make_seq(last_close=51000, prev_close=51100), current=51000)},
             'buy_price': {'box_stage_display': True}, 'risk_scenarios': None}
     script = r'''
 const vm = require('vm');
@@ -45,9 +41,8 @@ console.log(JSON.stringify({plan, entries, cleared:elements['box-execution-secti
     rendered = json.loads(result.stdout)
     assert '박스 실행 플랜' in rendered['plan']
     assert '대기' in rendered['plan']
-    assert '비교 자료 부족' in rendered['plan']
+    assert '지금 무엇을 해야 하나?' in rendered['plan']
     assert '감사 0%' not in rendered['plan']
-    assert '확정 일봉 재시험 지지' in rendered['plan']
     assert '박스 실행 플랜' not in rendered['entries']
     assert rendered['cleared']['innerHTML'] == ''
     assert rendered['cleared']['hidden'] is True

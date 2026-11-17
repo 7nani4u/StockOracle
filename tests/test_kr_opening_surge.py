@@ -60,7 +60,23 @@ def test_krx_tick_size_respects_kospi_and_kosdaq_price_bands():
     assert _krx_tick_size(50_000, "KOSPI") == 100
     assert _krx_tick_size(200_000, "KOSPI") == 500
     assert _krx_tick_size(500_000, "KOSPI") == 1_000
-    assert _krx_tick_size(500_000, "KOSDAQ") == 100
+    # 2023-01-25 개편 이후 코스닥도 유가증권시장과 같은 표(20만원 이상 500원, 50만원 이상 1,000원)를 쓴다.
+    assert _krx_tick_size(199_900, "KOSDAQ") == 100
+    assert _krx_tick_size(200_000, "KOSDAQ") == 500
+    assert _krx_tick_size(500_000, "KOSDAQ") == 1_000
+    assert _krx_tick_size(350_000, "KQ") == 500
+
+
+def test_kosdaq_high_price_card_uses_unified_krx_ticks():
+    """20만원 이상 코스닥 종목의 목표·손절가는 500원 단위여야 주문할 수 있다(예전 표는 100원 단위)."""
+    quote = _quote(ticker="196170.KQ", code="196170", name="알테오젠", market="KOSDAQ",
+                   price=401_000, prev_close=376_000, change_pct=6.65, open=380_000,
+                   high=405_000, low=378_000, volume=900_000, turnover=360_000_000_000)
+    item = _kr_surge_item(quote, {**_analysis(), "atr": 13_300}, 2.1, "regular")
+
+    assert item is not None
+    for key in ("entry_low", "entry_high", "target_price", "stop_loss", "upper_limit"):
+        assert item[key] % 500 == 0, (key, item[key])
 
 
 def test_kr_surge_score_rewards_confirmed_liquidity_and_penalizes_chasing():
